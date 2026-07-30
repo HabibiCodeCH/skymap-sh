@@ -42,6 +42,11 @@ ALIASES = {
     "hk": "hong kong", "cdmx": "mexico city", "sp": "sao paulo",
     "rio": "rio de janeiro", "blr": "bangalore", "bombay": "mumbai",
     "peking": "beijing", "saigon": "ho chi minh city",
+    # IATA airport codes people reach for out of habit
+    "cph": "copenhagen", "bcn": "barcelona", "ams": "amsterdam",
+    "cdg": "paris", "lhr": "london", "fra": "frankfurt",
+    "muc": "munich", "dxb": "dubai", "sin": "singapore",
+    "ist": "istanbul",
 }
 
 

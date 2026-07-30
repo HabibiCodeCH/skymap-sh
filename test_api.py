@@ -7,6 +7,20 @@ import unittest
 import api
 
 
+class Aliases(unittest.TestCase):
+    def test_airport_code_aliases_resolve(self):
+        expected = {
+            "cph": "Copenhagen", "bcn": "Barcelona", "ams": "Amsterdam",
+            "cdg": "Paris", "lhr": "London", "fra": "Frankfurt",
+            "muc": "Munich", "dxb": "Dubai", "sin": "Singapore",
+            "ist": "Istanbul",
+        }
+        for code, city in expected.items():
+            p = api.lookup_place(code)
+            self.assertIsNotNone(p, f"'{code}' did not resolve at all")
+            self.assertEqual(p.name, city, f"'{code}' resolved to {p.name!r}")
+
+
 class NearestCity(unittest.TestCase):
     def test_finds_a_city_near_geneva(self):
         # 46.20, 6.10 is near the Geneva/Lausanne area.
