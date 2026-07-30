@@ -710,7 +710,7 @@ PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
 </style></head><body><div class="w">
 <pre class="cta">curl skymap.sh{path}</pre>
 <p class="t"><b>skymap.sh</b> — this page is what that prints.
-<a href="/help">usage</a></p>
+<a href="/demo">demo</a> · <a href="/help">help</a></p>
 {explore}<pre>{body}</pre>
 <p class="t" style="margin-top:18px">Created by <a href="https://x.com/habibicode">@habibicode</a>
 · <a href="https://github.com/HabibiCodeCH/skymap-sh">see the repo</a></p>

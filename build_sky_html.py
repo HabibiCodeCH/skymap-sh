@@ -77,7 +77,7 @@ TERM = """<div class="term"><div class="bar"><span class="dot" style="background
 
 PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>skymap.sh -- examples</title><style>
+<title>skymap.sh -- demo</title><style>
  body{{margin:0;background:#04060a;color:#c9d1d9;font-family:ui-sans-serif,-apple-system,"Segoe UI",Roboto,sans-serif;padding:30px 16px 60px}}
  .wrap{{max-width:1180px;margin:0 auto}}
  h1{{font-size:19px;font-weight:600;margin:0 0 4px;color:#e6edf3;letter-spacing:-.01em}}
@@ -94,7 +94,7 @@ PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
  code{{font-family:ui-monospace,Menlo,monospace;font-size:11.5px;color:#9fb4c7}}
  .cap{{color:#6e7681;font-size:12.5px;margin:9px 2px 0;line-height:1.55}}
 </style></head><body><div class="wrap">
-<h1>skymap.sh -- examples</h1>
+<h1>skymap.sh -- demo</h1>
 <p class="sub">Six real renders, one composition layer -- <code>api.py</code> is what
 <code>cli.py</code>, <code>curl</code>, and this page all call, so none of these can drift
 from what the live service actually does. <a href="/">home</a> &middot; <a href="/help">usage</a></p>
