@@ -91,7 +91,12 @@ def city_matches(spec):
 
 
 def label(h):
-    """'San Francisco, California, United States' - enough to tell them apart."""
+    """'San Francisco, California, United States' - enough to tell them apart.
+
+    TODO: the admin/city duplicate check only catches exact matches, so a city
+    whose admin region shares its name in another language slips through --
+    e.g. "Geneva, Genève, Switzerland" (city name is English, canton name is
+    French). Worth a looser match here at some point."""
     _lat, _lon, _z, _iso2, country, admin, _pop, disp = h
     bits = [disp]
     if admin and norm_name(admin) != norm_name(disp):
