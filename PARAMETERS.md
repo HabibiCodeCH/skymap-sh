@@ -102,6 +102,12 @@ The ISS is marked automatically whenever a real pass is up — no flag needed.
 That needs `python3 tle.py` to have run first, to fetch the current orbit from
 CelesTrak. Without a fetched element set the ISS is quietly left off.
 
+`?w=100` renders at that many columns instead of the default, scaling both
+dimensions together so the aspect ratio stays honest. Clamped to 60–220. Fit
+any terminal automatically by adding this to your shell profile:
+
+    skymap() { curl "skymap.sh/${1:-}?w=$(tput cols)"; }
+
 JSON keys, night view: `place lat lon tz_offset when_utc when_local view facing
 span sun_alt moon bodies brightest asterisms stars_up iss_pass prose`
 

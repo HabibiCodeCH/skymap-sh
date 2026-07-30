@@ -224,7 +224,10 @@ def glyph_for(mag):
             return g
     return "·"
 
-def render(when_utc, lat, lon, height=34, color=True, show_lines=True, mag_limit=4.2):
+def render(when_utc, lat, lon, height=34, color=True, show_lines=True, mag_limit=4.2,
+          width=None):
+    if width is not None:
+        height = max(30, min(110, int(width))) // 2   # disc is always W = 2*H
     W, H = height * 2, height
     jd = julian(when_utc)
     lst = (gmst_hours(jd) + lon / 15.0) % 24
@@ -822,7 +825,7 @@ def pick_constellations(cpos, cons, jd, lat, lst, alt_max, sectors=6, extra=2,
 def render_linear(when_utc, lat, lon, W=176, H=22, color=True, show_lines=True,
                   mag_limit=4.0, tle=None, alt_max=70, facing=None, span=None,
                   alt_lo=None, alt_hi=None, target=None, overlay=None,
-                  bodies=None, inset=True):
+                  bodies=None, inset=True, width=None):
     """Horizon panorama. facing=None gives the full 360 deg sweep; facing='SW'
     gives a window centred there, which is narrow enough to be undistorted."""
     req_span = span                    # the else-branch below clobbers `span`
@@ -853,6 +856,14 @@ def render_linear(when_utc, lat, lon, W=176, H=22, color=True, show_lines=True,
         centre = float(target["az"])
         H = max(8, int(round(W * alt_rng / (2 * span))))
         clamped = ""
+    if width is not None:
+        # Rescale both dimensions by the same factor so aspect stays exactly
+        # what it was -- this only changes how many terminal columns the same
+        # honest render is spread across, not the geometry itself.
+        width = max(60, min(220, int(width)))
+        scale = width / W
+        W = width
+        H = max(6, int(round(H * scale)))
     jd = julian(when_utc)
     lst = (gmst_hours(jd) + lon / 15.0) % 24
     LM = 5

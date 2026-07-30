@@ -243,6 +243,12 @@ def _build(request: Req, place: str | None):
             span = float(q["span"])
         except ValueError:
             pass
+    width = None
+    if q.get("w"):
+        try:
+            width = float(q["w"])
+        except ValueError:
+            pass
     return api.Request(
         place=place,
         when=when,
@@ -256,6 +262,7 @@ def _build(request: Req, place: str | None):
         tle=app.state.tle,   # shown automatically whenever a real pass is up;
                              # ?iss= is no longer required, kept as a no-op
         night=bool(q.get("night")),
+        width=width,
     )
 
 
@@ -272,7 +279,7 @@ UNKNOWN = """\
 
 def _cache_key(r, daytime):
     q = (round(r.place.lat, 1), round(r.place.lon, 1), r.view, r.facing, r.span,
-         (r.find or "").lower(), bool(r.tle), r.night)
+         (r.find or "").lower(), bool(r.tle), r.night, r.width)
     bucket = DAY_BUCKET if daytime else NIGHT_BUCKET
     stamp = int(r.when_utc.timestamp() // bucket)
     return (q, stamp)

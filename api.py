@@ -258,12 +258,16 @@ def resolve_place(spec, fallback=None):
 class Request:
     def __init__(self, place=None, when=None, view="horizon", facing=None, span=None,
                  find=None, iss=False, lines=True, color=True, fallback=None,
-                 tle=None, now=None, night=False):
+                 tle=None, now=None, night=False, width=None):
         self.place = resolve_place(place, fallback)
         self.view, self.facing, self.span = view, facing, span
         self.find, self.iss, self.lines, self.color = find, iss, lines, color
         self.night = night
         self.tle = tle
+        # clamped once, here, so it's already canonical by the time it ever
+        # reaches a cache key -- otherwise every distinct raw ?w= value before
+        # clamping would be its own cache entry even if they render identically
+        self.width = max(60, min(220, int(width))) if width else None
         now = now or dt.datetime.now(dt.timezone.utc).replace(tzinfo=None)
         when = quantise_time(when, now)
         if when:                                     # local wall clock at that place
@@ -391,7 +395,7 @@ def _compose_find(r):
     lo = max(0.0, min(90.0 - rng, tgt["alt"] - rng / 2))
     art, st = render_linear(shown_utc, p.lat, p.lon, color=c, show_lines=r.lines,
                             tle=r.tle, span=sp, alt_lo=lo, alt_hi=lo + rng,
-                            target=tgt, mag_limit=5.0)
+                            target=tgt, mag_limit=5.0, width=r.width)
     shown_local = shown_utc + dt.timedelta(hours=p.offset(shown_utc))
     guide = find_text(tgt, st["visible"], p.lat)
 
@@ -418,11 +422,11 @@ def _compose_sky(r):
     p, c = r.place, r.color
     if r.view == "disc" and not r.facing:
         art, st = render(r.when_utc, p.lat, p.lon, height=34, color=c,
-                         show_lines=r.lines)
+                         show_lines=r.lines, width=r.width)
         mode = "looking up, north at top"
     else:
         art, st = render_linear(r.when_utc, p.lat, p.lon, color=c, show_lines=r.lines,
-                                tle=r.tle, facing=r.facing, span=r.span)
+                                tle=r.tle, facing=r.facing, span=r.span, width=r.width)
         mode = (f"facing {r.facing.upper()}, {int(round(st['span']))}° wide"
                 f"{' (' + st['clamped'] + ')' if st['clamped'] else ''}, true shape"
                 if r.facing else "horizon panorama, 0-70° + zenith inset")
@@ -511,7 +515,7 @@ def _compose_day(r):
     art, st = render_linear(r.when_utc, p.lat, p.lon, color=c, show_lines=False,
                             mag_limit=-5.0, alt_lo=0.0, alt_hi=alt_hi,
                             overlay=(arc, SUN_COL, "SUN", (sa_now, sz_now)),
-                            bodies=show, inset=False)
+                            bodies=show, inset=False, width=r.width)
 
     jd = julian(r.when_utc)
     lst = (gmst_hours(jd) + p.lon / 15.0) % 24
@@ -626,8 +630,12 @@ OPTIONS
   ?nolines=1            stars only, no asterism lines
   ?format=json          the same facts, structured
   ?plain=1              no ANSI colour
+  ?w=100                render at N columns wide instead of the default
 
   10° is a closed fist at arm's length, so the gridlines are a ruler.
+
+  Fit any terminal automatically, add to your shell profile:
+    skymap() { curl "skymap.sh/${1:-}?w=$(tput cols)"; }
 
 Stars: Yale Bright Star Catalogue. Planets: JPL approximate elements.
 Sun and Moon: Meeus. Satellites: CelesTrak.
@@ -695,8 +703,13 @@ PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
  .ex .tries{{color:#6e7681;font-size:12px;margin:0}}
  .ex .tries a{{color:#87d7ff;text-decoration:none}}
  .ex .tries a:hover{{text-decoration:underline}}
+ .cta{{background:#0d1117;border:1px solid #30363d;border-radius:6px;
+      padding:10px 14px;margin:0 0 14px;color:#7ee787;font-size:13px;
+      display:inline-block}}
+ .cta::before{{content:"$ ";color:#6e7681}}
 </style></head><body><div class="w">
-<p class="t"><b>skymap.sh</b> — this page is what <code>curl skymap.sh{path}</code> prints.
+<pre class="cta">curl skymap.sh{path}</pre>
+<p class="t"><b>skymap.sh</b> — this page is what that prints.
 <a href="/help">usage</a></p>
 {explore}<pre>{body}</pre>
 <p class="t" style="margin-top:18px">Created by <a href="https://x.com/habibicode">@habibicode</a>
