@@ -162,7 +162,7 @@ def quantise_time(when, now=None):
     inside a 5-minute grain shares an entry. Returns None if out of range."""
     if when is None:
         return None
-    now = now or dt.datetime.utcnow()
+    now = now or dt.datetime.now(dt.timezone.utc).replace(tzinfo=None)
     if abs((when - now).days) > TIME_WINDOW_DAYS:
         return None
     epoch = dt.datetime(2000, 1, 1)
@@ -246,7 +246,7 @@ class Request:
         self.find, self.iss, self.lines, self.color = find, iss, lines, color
         self.night = night
         self.tle = tle
-        now = now or dt.datetime.utcnow()
+        now = now or dt.datetime.now(dt.timezone.utc).replace(tzinfo=None)
         when = quantise_time(when, now)
         if when:                                     # local wall clock at that place
             self.when_local = when
