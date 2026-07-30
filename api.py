@@ -704,8 +704,9 @@ PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
 
 EXPLORE = """<div class="ex">
 <form id="explore" onsubmit="var p=document.getElementById('place').value.trim();
-if(!p)return false;var f=document.getElementById('find').value.trim();
-location.href='/'+encodeURIComponent(p)+(f?'?find='+encodeURIComponent(f):'');
+var f=document.getElementById('find').value.trim();
+if(!p&&!f)return false;
+location.href='/'+(p?encodeURIComponent(p):'')+(f?'?find='+encodeURIComponent(f):'');
 return false;">
 <input id="place" type="text" placeholder="city or lat,lon" autocomplete="off">
 <input id="find" type="text" placeholder="find (Venus, Big Dipper...)" autocomplete="off">

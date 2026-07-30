@@ -323,7 +323,7 @@ def _respond(request: Req, place: str | None):
     if mode == "html":
         body = api.PAGE.format(title=f"skymap.sh — {r.place.name}",
                                path=f"/{r.place.slug}" if place else "",
-                               explore=api.EXPLORE if not place else "",
+                               explore=api.EXPLORE,
                                body=api.ansi_to_html(res.text))
         return HTMLResponse(body, status_code=res.status, headers=headers)
     text = res.text if colour else api.strip_ansi(res.text)
@@ -352,8 +352,8 @@ def help_(request: Req):
     mode, _colour = _wants(request)
     headers = {"Cache-Control": "public, max-age=3600"}
     if mode == "html":
-        body = api.PAGE.format(title="skymap.sh — usage", path="/help", explore="",
-                               body=html.escape(api.HELP))
+        body = api.PAGE.format(title="skymap.sh — usage", path="/help",
+                               explore=api.EXPLORE, body=html.escape(api.HELP))
         return HTMLResponse(body, headers=headers)
     return PlainTextResponse(api.HELP, headers=headers)
 
