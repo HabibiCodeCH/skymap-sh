@@ -75,29 +75,36 @@ TERM = """<div class="term"><div class="bar"><span class="dot" style="background
 <span class="dot" style="background:#febc2e"></span><span class="dot" style="background:#28c840"></span>
 <span class="t">{cmd}</span></div><pre>{body}</pre></div>"""
 
+# .cta and .t match api.PAGE exactly (same header on every page, demo included).
+# Kept as a literal copy rather than an import because this is a static build
+# script generating a standalone file, not a live request handler -- but any
+# header style change to api.PAGE should be mirrored here too.
 PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>skymap.sh -- demo</title><style>
- body{{margin:0;background:#04060a;color:#c9d1d9;font-family:ui-sans-serif,-apple-system,"Segoe UI",Roboto,sans-serif;padding:30px 16px 60px}}
+ body{{margin:0;background:#04060a;color:#c9d1d9;font-family:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;padding:24px 16px 48px;-webkit-font-smoothing:antialiased}}
  .wrap{{max-width:1180px;margin:0 auto}}
- h1{{font-size:19px;font-weight:600;margin:0 0 4px;color:#e6edf3;letter-spacing:-.01em}}
- .sub{{color:#8b949e;font-size:13.5px;margin:0 0 26px;line-height:1.6}}
- .sub a{{color:#87d7ff}}
- h2{{font-size:12px;text-transform:uppercase;letter-spacing:.09em;color:#8b949e;font-weight:600;margin:32px 0 10px}}
+ .t{{color:#6e7681;font-size:12px;margin:0 0 18px}}
+ .t b{{color:#c9d1d9;font-weight:600}}
+ a{{color:#87d7ff}}
+ .cta{{background:#0d1117;border:1px solid #30363d;border-radius:6px;padding:10px 14px;margin:0 0 14px;color:#7ee787;font-size:13px;display:inline-block;font-family:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace}}
+ .cta::before{{content:"$ ";color:#6e7681}}
+ h2{{font-size:12px;text-transform:uppercase;letter-spacing:.09em;color:#8b949e;font-weight:600;margin:32px 0 10px;font-family:ui-sans-serif,-apple-system,"Segoe UI",Roboto,sans-serif}}
  h2 .n{{text-transform:none;letter-spacing:0;font-weight:400;color:#6e7681;margin-left:8px;font-family:ui-monospace,Menlo,monospace}}
  .term{{background:#080b11;border:1px solid #1b2027;border-radius:10px;overflow:hidden;box-shadow:0 10px 34px rgba(0,0,0,.6)}}
  .bar{{background:#12161d;padding:9px 14px;display:flex;align-items:center;gap:7px;border-bottom:1px solid #1b2027}}
  .dot{{width:11px;height:11px;border-radius:50%}}
- .bar .t{{margin-left:10px;font-size:11.5px;color:#8b949e;font-family:ui-monospace,Menlo,monospace}}
+ .bar .t{{margin:0 0 0 10px;font-size:11.5px;color:#8b949e}}
  pre{{margin:0;padding:14px 14px 16px;overflow-x:auto;font-family:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
       font-size:10px;line-height:1.22;font-variant-ligatures:none;-webkit-font-smoothing:antialiased}}
  code{{font-family:ui-monospace,Menlo,monospace;font-size:11.5px;color:#9fb4c7}}
- .cap{{color:#6e7681;font-size:12.5px;margin:9px 2px 0;line-height:1.55}}
+ .cap{{color:#6e7681;font-size:12.5px;margin:9px 2px 0;line-height:1.55;font-family:ui-sans-serif,-apple-system,"Segoe UI",Roboto,sans-serif}}
 </style></head><body><div class="wrap">
-<h1>skymap.sh -- demo</h1>
-<p class="sub">Six real renders, one composition layer -- <code>api.py</code> is what
-<code>cli.py</code>, <code>curl</code>, and this page all call, so none of these can drift
-from what the live service actually does. <a href="/">home</a> &middot; <a href="/help">usage</a></p>
+<pre class="cta">curl skymap.sh/demo</pre>
+<p class="t"><b>skymap.sh</b> — six real renders, one composition layer: <code>api.py</code> is
+what <code>cli.py</code>, <code>curl</code>, and this page all call, so none of these can drift
+from what the live service actually does.
+<a href="/">home</a> · <a href="/demo">demo</a> · <a href="/help">help</a></p>
 {sections}
 </div></body></html>"""
 
