@@ -708,7 +708,7 @@ PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
       display:inline-block}}
  .cta::before{{content:"$ ";color:#6e7681}}
 </style></head><body><div class="w">
-<pre class="cta">curl https://skymap.sh{path}</pre>
+<pre class="cta">curl skymap.sh{path}</pre>
 <p class="t"><b>skymap.sh</b> — this page is what that prints.
 <a href="/help">usage</a></p>
 {explore}<pre>{body}</pre>
