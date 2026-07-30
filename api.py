@@ -712,7 +712,7 @@ return false;">
 <input id="find" type="text" placeholder="find (Venus, Big Dipper...)" autocomplete="off">
 <button type="submit">go</button>
 </form>
-<p class="tries">try, one per continent:
+<p class="tries">Examples:
 <a href="/Nairobi">Nairobi</a> ·
 <a href="/Tokyo">Tokyo</a> ·
 <a href="/London">London</a> ·
