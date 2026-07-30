@@ -683,8 +683,43 @@ PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
  .t{{color:#6e7681;font-size:12px;margin:0 0 18px}}
  .t b{{color:#c9d1d9;font-weight:600}}
  a{{color:#87d7ff}}
+ .ex{{margin:0 0 18px}}
+ .ex form{{display:flex;gap:8px;flex-wrap:wrap;margin:0 0 10px}}
+ .ex input{{background:#0d1117;border:1px solid #30363d;color:#c9d1d9;
+           padding:6px 10px;border-radius:4px;font:inherit;font-size:12px}}
+ .ex input#place{{width:170px}}
+ .ex input#find{{width:190px}}
+ .ex button{{background:#238636;border:0;color:#fff;padding:6px 14px;
+            border-radius:4px;font:inherit;font-size:12px;cursor:pointer}}
+ .ex button:hover{{background:#2ea043}}
+ .ex .tries{{color:#6e7681;font-size:12px;margin:0}}
+ .ex .tries a{{color:#87d7ff;text-decoration:none}}
+ .ex .tries a:hover{{text-decoration:underline}}
 </style></head><body><div class="w">
 <p class="t"><b>skymap.sh</b> — this page is what <code>curl skymap.sh{path}</code> prints.
 <a href="/help">usage</a></p>
-<pre>{body}</pre>
+{explore}<pre>{body}</pre>
 </div></body></html>"""
+
+
+EXPLORE = """<div class="ex">
+<form id="explore" onsubmit="var p=document.getElementById('place').value.trim();
+if(!p)return false;var f=document.getElementById('find').value.trim();
+location.href='/'+encodeURIComponent(p)+(f?'?find='+encodeURIComponent(f):'');
+return false;">
+<input id="place" type="text" placeholder="city or lat,lon" autocomplete="off">
+<input id="find" type="text" placeholder="find (Venus, Big Dipper...)" autocomplete="off">
+<button type="submit">go</button>
+</form>
+<p class="tries">try, one per continent:
+<a href="/Nairobi">Nairobi</a> ·
+<a href="/Tokyo">Tokyo</a> ·
+<a href="/London">London</a> ·
+<a href="/New%20York">New York</a> ·
+<a href="/Buenos%20Aires">Buenos Aires</a> ·
+<a href="/Sydney">Sydney</a> ·
+<a href="/90,0">North Pole</a> ·
+<a href="/-90,0">South Pole</a>
+</p>
+</div>
+"""
