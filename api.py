@@ -286,9 +286,9 @@ class Result:
 
 # ---------------------------------------------------------------- helpers
 def _footer(p, c):
-    return paint(f"  curl skymap.sh/{p.slug}"
-                 f"{' ' * max(2, 20 - len(p.slug))}·  skymap.sh/{p.lat:.2f},{p.lon:.2f}"
-                 f"  ·  ?find=Venus  ·  /help", C.MUTE, c)
+    return (paint("  Follow ", C.MUTE, c) +
+            paint("@habibicode", "\033[38;5;117m", c) +
+            paint(" for skymap.sh updates", C.MUTE, c))
 
 
 def _bodies_json(st):
@@ -708,7 +708,7 @@ PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
       display:inline-block}}
  .cta::before{{content:"$ ";color:#6e7681}}
 </style></head><body><div class="w">
-<pre class="cta">curl skymap.sh{path}</pre>
+<pre class="cta">curl https://skymap.sh{path}</pre>
 <p class="t"><b>skymap.sh</b> — this page is what that prints.
 <a href="/help">usage</a></p>
 {explore}<pre>{body}</pre>
