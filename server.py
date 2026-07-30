@@ -365,6 +365,14 @@ def help_(request: Req):
     return PlainTextResponse(api.HELP, headers=headers)
 
 
+@app.get("/demo", response_class=HTMLResponse)
+def demo():
+    # Static, pre-rendered by build_sky_html.py -- already a complete page,
+    # not run through api.PAGE, so just served as-is.
+    with open(f"{api.sky.BASE}/sky_demo.html") as f:
+        return HTMLResponse(f.read(), headers={"Cache-Control": "public, max-age=3600"})
+
+
 @app.get("/healthz", response_class=PlainTextResponse)
 def healthz():
     p = app.state.tle
