@@ -45,7 +45,8 @@ def main(argv):
         lines="--nolines" not in flags,
         night="--night" in flags,
         color="--plain" not in flags,
-        tle=(tle.current() or f"{api.sky.BASE}/demo.tle") if "--iss" in flags else None,
+        # shown automatically whenever a real pass is up; --iss is a no-op now
+        tle=tle.current() or f"{api.sky.BASE}/demo.tle",
     )
     res = api.compose(r)
     print(json.dumps(res.data, indent=2, default=str) if "--json" in flags else res.text)

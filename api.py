@@ -606,6 +606,9 @@ skymap.sh — the night sky above you, as text
   curl skymap.sh/Zurich               a named city
   curl skymap.sh/47.38,8.54           any coordinates
 
+If the ISS has a real pass overhead right now, it's marked on the chart
+automatically -- no flag needed.
+
 VIEWS
   ?view=horizon    panorama, N-E-S-W-N, altitude 0-70° + zenith inset (default)
   ?view=disc       whole sky as a circle, north up, east left
@@ -619,7 +622,6 @@ FIND
 
 OPTIONS
   ?t=2026-08-12T23:00   local time at that place (default: now)
-  ?iss=1                mark the next visible ISS pass
   ?nolines=1            stars only, no asterism lines
   ?format=json          the same facts, structured
   ?plain=1              no ANSI colour

@@ -95,12 +95,12 @@ the window here too.
 | nothing (terminal) | colour |
 | `--plain` / `?plain=1` | no colour codes |
 | `--json` / `?format=json` | structured data, same facts |
-| `--iss` / `?iss=1` | marks the next visible ISS pass |
 | browser | the same text in a page |
 | `-H 'Accept: text/plain'` | plain text |
 
-`--iss` needs `python3 tle.py` first, to fetch the current orbit from CelesTrak.
-Without it the ISS is quietly left off.
+The ISS is marked automatically whenever a real pass is up — no flag needed.
+That needs `python3 tle.py` to have run first, to fetch the current orbit from
+CelesTrak. Without a fetched element set the ISS is quietly left off.
 
 JSON keys, night view: `place lat lon tz_offset when_utc when_local view facing
 span sun_alt moon bodies brightest asterisms stars_up iss_pass prose`

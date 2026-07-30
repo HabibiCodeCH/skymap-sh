@@ -56,7 +56,7 @@ _finds = Counter()
 _TOP_KEEP = 2000            # trim the long tail so the tables cannot grow forever
 
 
-def _tally(r, daytime, hit, mode, status):
+def _tally(r, daytime, hit, mode, status, data):
     _stat["requests"] += 1
     _stat["hit" if hit else "miss"] += 1
     _stat["day" if daytime else "night"] += 1
@@ -65,7 +65,9 @@ def _tally(r, daytime, hit, mode, status):
         _stat[f"status:{status}"] += 1
     _stat["view:find" if r.find else
           f"view:{'facing' if r.facing else r.view}"] += 1
-    if r.iss or r.tle:
+    # ISS is shown to everyone now, so this counts something more useful than
+    # "asked for it": how often a visitor's chart actually included a real pass.
+    if data.get("iss_pass"):
         _stat["iss"] += 1
     _places[r.place.name] += 1
     if r.find:
@@ -251,7 +253,8 @@ def _build(request: Req, place: str | None):
         lines=not q.get("nolines"),
         color=True,
         fallback=_geo(request),
-        tle=app.state.tle if q.get("iss") else None,
+        tle=app.state.tle,   # shown automatically whenever a real pass is up;
+                             # ?iss= is no longer required, kept as a no-op
         night=bool(q.get("night")),
     )
 
@@ -310,7 +313,7 @@ def _respond(request: Req, place: str | None):
         return PlainTextResponse(msg, status_code=404)
     r = _build(request, place)
     res, daytime, hit = _cached(r)
-    _tally(r, daytime, hit, mode, res.status)
+    _tally(r, daytime, hit, mode, res.status, res.data)
     edge = DAY_EDGE if daytime else NIGHT_EDGE
     headers = {"Cache-Control": f"public, max-age={edge // 4}, s-maxage={edge}, "
                                 f"stale-while-revalidate=600",

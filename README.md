@@ -28,7 +28,7 @@ Command line, same engine:
 ```
 python3 cli.py Sydney --facing=S --span=90
 python3 cli.py Zurich --find="Big Dipper"
-python3 cli.py Zurich 2026-08-12T23:00 --iss --json
+python3 cli.py Zurich 2026-08-12T23:00 --json    # marks a real ISS pass automatically
 ```
 
 ## Layout
