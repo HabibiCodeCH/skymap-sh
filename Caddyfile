@@ -7,8 +7,15 @@
 # would work once at bootstrap and then silently fail to renew ~60 days later.
 # Generate the pair at Cloudflare dashboard -> SSL/TLS -> Origin Server, and
 # set Cloudflare's SSL/TLS mode to Full (strict).
-skymap.sh, www.skymap.sh {
-	tls /etc/caddy/skymap-sh.pem /etc/caddy/skymap-sh.key
+#
+# Served on both https:// and http://, in separate blocks -- Caddy won't let
+# one block mix a plain-HTTP address with TLS connection policies. Without
+# the http:// block, Caddy's automatic-HTTPS feature treats this domain as
+# HTTPS-only and 308s any plain HTTP request. That breaks the product's own
+# flagship command: bare `curl skymap.sh` defaults to http:// and doesn't
+# follow redirects by default, so it would silently print nothing. Public,
+# read-only, no cookies/auth: serving it over plain HTTP too is a fine trade.
+(shared) {
 	encode zstd gzip
 	reverse_proxy 127.0.0.1:8000 {
 		header_up X-Real-IP {remote_host}
@@ -21,4 +28,13 @@ skymap.sh, www.skymap.sh {
 		output file /var/log/caddy/sky.log
 		format json
 	}
+}
+
+skymap.sh, www.skymap.sh {
+	tls /etc/caddy/skymap-sh.pem /etc/caddy/skymap-sh.key
+	import shared
+}
+
+http://skymap.sh, http://www.skymap.sh {
+	import shared
 }
