@@ -4,11 +4,11 @@ The night sky above you, as text.
 
 ```
 curl skymap.sh                      located by IP
-curl skymap.sh/Zurich               any of 40,803 cities
-curl 'skymap.sh/San Francisco, US'  country code, country, or US state
-curl skymap.sh/47.38,8.54           any coordinates
-curl skymap.sh/Zurich?find=Venus    frame one object, told in fists
-curl 'skymap.sh/Zurich?format=json' the same facts, structured
+curl skymap.sh Zurich               any of 40,803 cities
+curl 'skymap.sh 'San Francisco, US'  country code, country, or US state
+curl skymap.sh 47.38,8.54           any coordinates
+curl skymap.sh Zurich --find=Venus    frame one object, told in fists
+curl 'skymap.sh Zurich --format=json' the same facts, structured
 ```
 
 Stars to magnitude 4–5, asterisms people actually recognise, planets, the Moon
