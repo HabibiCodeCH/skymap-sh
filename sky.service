@@ -8,10 +8,14 @@ Type=exec
 User=sky
 WorkingDirectory=/srv/sky
 Environment=PYTHONUNBUFFERED=1
-# Workers share nothing, so the per-process rate limit multiplies by this
-# number. Keep it small, or move the buckets to Redis. 2 is plenty given
-# ~180 req/s per core uncached and a 5-minute edge cache in front.
-ExecStart=/srv/sky/venv/bin/uvicorn server:app --host 127.0.0.1 --port 8000 --workers 2
+# Workers share nothing -- the per-process rate limit and the /stats
+# counters both multiply/fragment per worker, and Caddy's proxy routes by
+# source IP with enough stickiness that two different visitors can land on
+# two different workers and see two different, non-overlapping /stats
+# totals. 1 worker means one shared counter and an honest rate limit,
+# and ~180 req/s per core uncached is far more than this traffic needs.
+# Raise this only alongside moving rate-limit/stats state to Redis.
+ExecStart=/srv/sky/venv/bin/uvicorn server:app --host 127.0.0.1 --port 8000 --workers 1
 Restart=always
 RestartSec=2
 NoNewPrivileges=true

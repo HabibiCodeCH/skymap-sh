@@ -88,8 +88,10 @@ cheaper render and a longer bucket. `?night=1` overrides.
 Per-IP token bucket in `server.py`: 30 requests/minute sustained, burst 45.
 Someone running `watch -n 1 curl skymap.sh` is 86,400 requests a day; they get a
 429 that explains the sky is recomputed every five minutes and suggests
-`watch -n 300`. The buckets are per process — with N uvicorn workers the real
-ceiling is N × RATE, which is why `sky.service` pins workers to 2.
+`watch -n 300`. The buckets (and the `/stats` counters) are per process, and
+Caddy's proxy has enough source-IP stickiness that different visitors can land
+on different workers and see different, non-overlapping numbers — so
+`sky.service` runs a single worker rather than multiplying either one.
 
 Cache-key surfaces are bounded in code so a client cannot generate misses for
 free: `?t=` snaps to a 5-minute grain and clamps to ±2 years, coordinates snap to
