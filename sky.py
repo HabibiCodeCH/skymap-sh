@@ -464,13 +464,18 @@ def iss_track(tle_path, when_utc, lat, lon, minutes=110, step=0.5):
         alt = math.degrees(math.asin(du / rng))
         az = math.degrees(math.atan2(de, dn)) % 360
         # sunlit? shadow cylinder test against the Sun direction
-        su = sun(julian(t))
+        jd = julian(t)
+        su = sun(jd)
         sra, sdec = su["ra"] * 15 * D, su["dec"] * D
         sv = (math.cos(sdec) * math.cos(sra), math.cos(sdec) * math.sin(sra), math.sin(sdec))
         dot = sx*sv[0] + sy*sv[1] + sz*sv[2]
         perp = math.sqrt(max(sx*sx + sy*sy + sz*sz - dot*dot, 0))
         sunlit = dot > 0 or perp > R
-        if alt > 10 and sunlit:
+        # is the observer's own sky dark enough to see something this bright?
+        # the ISS peaks around Venus-ish brightness, so borrow that threshold.
+        lst = (gmst_hours(jd) + lon / 15.0) % 24
+        obs_sun_alt, _ = altaz(su["ra"], su["dec"], lat, lst)
+        if alt > 10 and sunlit and dark_enough(obs_sun_alt, -3.5):
             track.append((i * step, alt, az))
         elif track:
             best = best or track
