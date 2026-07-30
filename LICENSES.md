@@ -1,5 +1,8 @@
 # Data provenance and licensing
 
+This file covers the *data* — see `LICENSE` in the repo root for the code
+itself (MIT).
+
 Everything shipped in this repo is either public domain, hand-authored here, or
 US-government work. **No copyleft data is bundled.** You can release this under
 any licence you like, including a closed commercial service.
