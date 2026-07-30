@@ -118,6 +118,37 @@ def suggest(spec, n=6):
             break
     return res
 
+def _nearest_city(lat, lon, max_radius_deg=5):
+    """Nearest city in cities.json to (lat, lon), or None beyond max_radius_deg
+    (open ocean, poles). Used to give bare coordinates a real IANA timezone
+    instead of the DST-blind longitude/15 fallback, and a "near X" hint.
+
+    Memoised per 0.1-degree cell: CF-IPLatitude/Longitude are already rounded
+    that coarsely before this is called, so repeat visitors from the same area
+    cost a dict lookup, not a fresh scan."""
+    key = (round(lat, 1), round(lon, 1))
+    hit = _NEAREST_CACHE.get(key)
+    if hit is not None:
+        return hit or None
+    best, best_d2 = None, None
+    cutoff2 = max_radius_deg * max_radius_deg
+    coslat = math.cos(math.radians(lat))
+    for hits in _cities().values():
+        for h in hits:
+            hlat, hlon = h[0], h[1]
+            dy, dx = hlat - lat, (hlon - lon) * coslat
+            d2 = dy * dy + dx * dx
+            if d2 <= cutoff2 and (best_d2 is None or d2 < best_d2):
+                best, best_d2 = h, d2
+    if len(_NEAREST_CACHE) >= _NEAREST_MAX:
+        _NEAREST_CACHE.clear()
+    _NEAREST_CACHE[key] = best
+    return best
+
+
+_NEAREST_CACHE = {}
+_NEAREST_MAX = 4000
+
 LATLON = re.compile(r"^\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*$")
 
 TIME_GRAIN = 300          # seconds; matches the night render bucket
@@ -140,8 +171,10 @@ def quantise_time(when, now=None):
 
 
 class Place:
-    def __init__(self, name, lat, lon, zone=None):
+    def __init__(self, name, lat, lon, zone=None, near=None):
         self.name, self.lat, self.lon, self.zone = name, lat, lon, zone
+        self.near = near   # "Geneva, Switzerland" if this is bare coordinates
+                            # resolved to a nearby known city, else None
 
     def offset(self, when_utc):
         """Hours east of UTC at that instant. Real DST for named zones;
@@ -186,13 +219,21 @@ def lookup_place(spec):
 
 
 def resolve_place(spec, fallback=None):
-    """As above, but always yields something: spec, then CDN geo, then Zurich."""
+    """As above, but always yields something: spec, then CDN geo, then Zurich.
+
+    Fallback coordinates keep the coordinates as the displayed name — this is
+    still "47.38,8.54", not silently swapped for a city — but borrow the
+    nearest known city's real timezone so the clock shown is actually right,
+    and carry that city's name along as a "near X" hint."""
     p = lookup_place(spec)
     if p:
         return p
     if fallback:
         lat, lon = fallback
-        return Place(f"{lat:.2f},{lon:.2f}", lat, lon)
+        near = _nearest_city(lat, lon)
+        zone = near[2] if near else None
+        return Place(f"{lat:.2f},{lon:.2f}", lat, lon, zone,
+                     label(near) if near else None)
     return Place("Zurich", 47.3769, 8.5417, "Europe/Zurich")
 
 
@@ -370,7 +411,8 @@ def _compose_sky(r):
 
     hemi = 'N' if p.lat >= 0 else 'S'
     ew = 'E' if p.lon >= 0 else 'W'
-    head = (f"  {p.name}  {abs(p.lat):.2f}°{hemi} {abs(p.lon):.2f}°{ew}"
+    near = f"  (near {p.near})" if p.near else ""
+    head = (f"  {p.name}  {abs(p.lat):.2f}°{hemi} {abs(p.lon):.2f}°{ew}{near}"
             f"   {r.when_local:%d %b %Y %H:%M}   {mode}")
     prose = sky_read(st, p.name, r.when_local, f"UTC{r.tz:+g}")
 
@@ -389,7 +431,7 @@ def _compose_sky(r):
 
     mo, su = st["moon"], st["sun"]
     data = dict(
-        place=p.name, lat=p.lat, lon=p.lon, tz_offset=r.tz,
+        place=p.name, near=p.near, lat=p.lat, lon=p.lon, tz_offset=r.tz,
         when_utc=r.when_utc.isoformat() + "Z", when_local=r.when_local.isoformat(),
         view="disc" if (r.view == "disc" and not r.facing) else "horizon",
         facing=r.facing, span=round(st.get("span", 360), 1),
@@ -501,13 +543,14 @@ def _compose_day(r):
 
     hemi = 'N' if p.lat >= 0 else 'S'
     ew = 'E' if p.lon >= 0 else 'W'
-    head = (f"  {p.name}  {abs(p.lat):.2f}°{hemi} {abs(p.lon):.2f}°{ew}"
+    near = f"  (near {p.near})" if p.near else ""
+    head = (f"  {p.name}  {abs(p.lat):.2f}°{hemi} {abs(p.lon):.2f}°{ew}{near}"
             f"   {r.when_local:%d %b %Y %H:%M}   the Sun's path today")
     out = ["", paint(head, C.HEAD, c), "", art, ""]
     out += [paint("  " + l, C.LABEL, c) for l in body]
     out += ["", _footer(p, c), ""]
 
-    data = dict(place=p.name, lat=p.lat, lon=p.lon, tz_offset=off,
+    data = dict(place=p.name, near=p.near, lat=p.lat, lon=p.lon, tz_offset=off,
                 when_utc=r.when_utc.isoformat() + "Z",
                 when_local=r.when_local.isoformat(),
                 view="day", daytime=True,
