@@ -1,0 +1,3 @@
+# Refresh the ISS element set. CelesTrak issues a few per day; this is polite
+# and keeps pass predictions inside a few seconds of truth.
+17 */6 * * * cd /srv/sky && venv/bin/python tle.py >> /var/log/sky-tle.log 2>&1

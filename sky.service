@@ -1,0 +1,24 @@
+[Unit]
+Description=skymap.sh
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=exec
+User=sky
+WorkingDirectory=/srv/sky
+Environment=PYTHONUNBUFFERED=1
+# Workers share nothing, so the per-process rate limit multiplies by this
+# number. Keep it small, or move the buckets to Redis. 2 is plenty given
+# ~180 req/s per core uncached and a 5-minute edge cache in front.
+ExecStart=/srv/sky/venv/bin/uvicorn server:app --host 127.0.0.1 --port 8000 --workers 2
+Restart=always
+RestartSec=2
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/srv/sky
+MemoryMax=512M
+
+[Install]
+WantedBy=multi-user.target

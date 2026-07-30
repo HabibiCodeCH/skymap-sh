@@ -1,0 +1,16 @@
+# TLS, compression and a small edge cache in front of uvicorn.
+# Cloudflare in front of this absorbs the launch burst; Caddy is the origin.
+skymap.sh, www.skymap.sh {
+	encode zstd gzip
+	reverse_proxy 127.0.0.1:8000 {
+		header_up X-Real-IP {remote_host}
+	}
+	header {
+		-Server
+		Referrer-Policy no-referrer
+	}
+	log {
+		output file /var/log/caddy/sky.log
+		format json
+	}
+}

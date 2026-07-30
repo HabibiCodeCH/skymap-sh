@@ -1,0 +1,10 @@
+venv/
+__pycache__/
+*.pyc
+_to_delete/
+iss.tle
+tle.log
+.DS_Store
+PROJECT_STATE.md
+NOTES.md
+DEPLOY.md
