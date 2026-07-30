@@ -1,6 +1,14 @@
 # TLS, compression and a small edge cache in front of uvicorn.
 # Cloudflare in front of this absorbs the launch burst; Caddy is the origin.
+#
+# Uses a Cloudflare Origin CA cert (15-year validity) instead of automatic
+# Let's Encrypt: with Cloudflare proxying permanently (orange cloud), Caddy
+# never has a reachable path for an ACME renewal challenge, so Let's Encrypt
+# would work once at bootstrap and then silently fail to renew ~60 days later.
+# Generate the pair at Cloudflare dashboard -> SSL/TLS -> Origin Server, and
+# set Cloudflare's SSL/TLS mode to Full (strict).
 skymap.sh, www.skymap.sh {
+	tls /etc/caddy/skymap-sh.pem /etc/caddy/skymap-sh.key
 	encode zstd gzip
 	reverse_proxy 127.0.0.1:8000 {
 		header_up X-Real-IP {remote_host}
