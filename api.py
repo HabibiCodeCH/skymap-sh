@@ -622,6 +622,7 @@ FIND
 
 OPTIONS
   ?t=2026-08-12T23:00   local time at that place (default: now)
+  ?night=1              force the star chart even while the Sun is up
   ?nolines=1            stars only, no asterism lines
   ?format=json          the same facts, structured
   ?plain=1              no ANSI colour

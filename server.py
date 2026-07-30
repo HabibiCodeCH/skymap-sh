@@ -9,7 +9,7 @@ skymap.sh — one URL, four consumers.
 
 Run:  uvicorn server:app --host 0.0.0.0 --port 8000
 """
-import datetime as dt, json, os, time
+import datetime as dt, html, json, os, time
 from collections import OrderedDict
 from fastapi import FastAPI, Request as Req
 from fastapi.responses import PlainTextResponse, HTMLResponse, JSONResponse
@@ -347,8 +347,14 @@ async def ratelimit(request: Req, call_next):
 
 @app.get("/help", response_class=PlainTextResponse)
 @app.get("/usage", response_class=PlainTextResponse)
-def help_():
-    return PlainTextResponse(api.HELP, headers={"Cache-Control": "public, max-age=3600"})
+def help_(request: Req):
+    mode, _colour = _wants(request)
+    headers = {"Cache-Control": "public, max-age=3600"}
+    if mode == "html":
+        body = api.PAGE.format(title="skymap.sh — usage", path="/help",
+                               body=html.escape(api.HELP))
+        return HTMLResponse(body, headers=headers)
+    return PlainTextResponse(api.HELP, headers=headers)
 
 
 @app.get("/healthz", response_class=PlainTextResponse)
