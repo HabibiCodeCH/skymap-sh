@@ -16,6 +16,13 @@ class NearestCity(unittest.TestCase):
         self.assertIn(country, ("Switzerland", "France"))
         self.assertTrue(zone)
 
+    def test_prefers_the_recognisable_city_over_a_closer_suburb(self):
+        # Vernier (a Geneva suburb, near the airport) can be a touch closer to
+        # these exact coordinates than Geneva itself -- the fix must still
+        # surface Geneva, since nobody looks up a chart and expects "Vernier".
+        near = api._nearest_city(46.20, 6.10)
+        self.assertEqual(near[7], "Geneva")
+
     def test_none_in_the_middle_of_the_ocean(self):
         # South Pacific, nowhere near land.
         near = api._nearest_city(-30.0, -140.0)

@@ -118,10 +118,18 @@ def suggest(spec, n=6):
             break
     return res
 
-def _nearest_city(lat, lon, max_radius_deg=5):
-    """Nearest city in cities.json to (lat, lon), or None beyond max_radius_deg
-    (open ocean, poles). Used to give bare coordinates a real IANA timezone
-    instead of the DST-blind longitude/15 fallback, and a "near X" hint.
+def _nearest_city(lat, lon, prefer_radius_deg=0.5, max_radius_deg=5):
+    """The well-known city near (lat, lon), or None beyond max_radius_deg (open
+    ocean, poles). Used to give bare coordinates a real IANA timezone instead
+    of the DST-blind longitude/15 fallback, and a "near X" hint.
+
+    Within prefer_radius_deg (~55 km) this picks the most populous candidate,
+    not the literal closest point -- otherwise a point on the edge of a city
+    resolves to whichever small suburb happens to be a few hundred metres
+    closer, instead of the city anyone would actually recognise. Both radii
+    are small enough that a same-timezone pick is effectively guaranteed.
+    Beyond prefer_radius_deg it falls back to strict nearest-point, since at
+    that range "most populous" could jump somewhere no longer actually nearby.
 
     Memoised per 0.1-degree cell: CF-IPLatitude/Longitude are already rounded
     that coarsely before this is called, so repeat visitors from the same area
@@ -130,16 +138,21 @@ def _nearest_city(lat, lon, max_radius_deg=5):
     hit = _NEAREST_CACHE.get(key)
     if hit is not None:
         return hit or None
-    best, best_d2 = None, None
+    closest, closest_d2 = None, None
+    biggest, biggest_pop = None, -1
     cutoff2 = max_radius_deg * max_radius_deg
+    prefer2 = prefer_radius_deg * prefer_radius_deg
     coslat = math.cos(math.radians(lat))
     for hits in _cities().values():
         for h in hits:
             hlat, hlon = h[0], h[1]
             dy, dx = hlat - lat, (hlon - lon) * coslat
             d2 = dy * dy + dx * dx
-            if d2 <= cutoff2 and (best_d2 is None or d2 < best_d2):
-                best, best_d2 = h, d2
+            if d2 <= cutoff2 and (closest_d2 is None or d2 < closest_d2):
+                closest, closest_d2 = h, d2
+            if d2 <= prefer2 and h[6] > biggest_pop:
+                biggest, biggest_pop = h, h[6]
+    best = biggest or closest
     if len(_NEAREST_CACHE) >= _NEAREST_MAX:
         _NEAREST_CACHE.clear()
     _NEAREST_CACHE[key] = best
