@@ -823,9 +823,9 @@ def pick_constellations(cpos, cons, jd, lat, lst, alt_max, sectors=6, extra=2,
 
 
 def render_linear(when_utc, lat, lon, W=176, H=22, color=True, show_lines=True,
-                  mag_limit=4.0, tle=None, alt_max=70, facing=None, span=None,
+                  mag_limit=4.0, line_limit=None, tle=None, alt_max=70, facing=None, span=None,
                   alt_lo=None, alt_hi=None, target=None, overlay=None,
-                  bodies=None, inset=True, width=None):
+                  bodies=None, inset=True, width=None, height=None):
     """Horizon panorama. facing=None gives the full 360 deg sweep; facing='SW'
     gives a window centred there, which is narrow enough to be undistorted."""
     req_span = span                    # the else-branch below clobbers `span`
@@ -864,6 +864,12 @@ def render_linear(when_utc, lat, lon, W=176, H=22, color=True, show_lines=True,
         scale = width / W
         W = width
         H = max(6, int(round(H * scale)))
+    if height is not None:
+        # Independent of width -- same alt_lo/alt_hi vertical slice, just
+        # more (or fewer) rows of resolution across it, so the two axes can
+        # be tuned separately (e.g. a narrower, taller GIF export) without
+        # this being a different or cropped view of the sky.
+        H = max(6, min(90, int(height)))
     jd = julian(when_utc)
     lst = (gmst_hours(jd) + lon / 15.0) % 24
     LM = 5
@@ -937,10 +943,16 @@ def render_linear(when_utc, lat, lon, W=176, H=22, color=True, show_lines=True,
                                      in_view=lambda z: col_of(z) is not None)
         for item in chosen:
             con = item["con"]
+            item["visible"] = False
             for poly in con["lines"]:
                 pts = []
                 for hip in poly:
-                    if hip not in cpos:
+                    # line_limit, when set (animate frames), gates each segment
+                    # endpoint by the same fading threshold as the star field
+                    # itself, so lines and names fade in/out in step with the
+                    # stars they connect. Ordinary requests leave it unset and
+                    # keep the existing all-or-nothing show_lines behaviour.
+                    if hip not in cpos or (line_limit is not None and cpos[hip][2] > line_limit):
                         pts.append(None); continue
                     ra, dec, _m = cpos[hip]
                     ra, dec = precess(ra, dec, jd)
@@ -964,10 +976,13 @@ def render_linear(when_utc, lat, lon, W=176, H=22, color=True, show_lines=True,
                     for c, r, g in _walk(cells)[1:-1]:
                         if 0 <= r < H and 0 <= c < W and not lock[r][c] and free(r, c):
                             grid[r][c], tint[r][c], soft[r][c] = g, C.DIM, False
+                    item["visible"] = True
                 # the pattern's own vertex stars, so the nodes read clearly
                 for hip in poly:
                     if hip in cpos:
                         ra, dec, m = cpos[hip]
+                        if line_limit is not None and m > line_limit:
+                            continue
                         ra, dec = precess(ra, dec, jd)
                         a, z = altaz(ra, dec, lat, lst)
                         if a > 0:
@@ -1055,6 +1070,8 @@ def render_linear(when_utc, lat, lon, W=176, H=22, color=True, show_lines=True,
         text(target["az"], target["alt"], target["name"].upper(), TC)
 
     for item in chosen:                       # names last, so they win the space
+        if line_limit is not None and not item.get("visible", False):
+            continue                           # animate frames: fully faded out
         text(item["caz"], min(max(item["calt"], alt_lo), alt_hi),
              item["con"]["name"].upper(), C.CNAME)
 

@@ -4,6 +4,7 @@ __pycache__/
 _to_delete/
 iss.tle
 tle.log
+gif_cache/
 .DS_Store
 PROJECT_STATE.md
 NOTES.md

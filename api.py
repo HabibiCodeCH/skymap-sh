@@ -13,7 +13,7 @@ import sky
 from sky import (C, paint, julian, gmst_hours, altaz, compass, moon_glyph,
                  phase_name, resolve_target, visibility, next_visible,
                  solar_elongation, find_text, sky_read, render, render_linear,
-                 sun, moon, planet, sun_arc, sun_events)
+                 sun, moon, planet, sun_arc, sun_events, dark_enough)
 
 # 10,567 cities in 155 countries, timezone baked in at build time
 # (build_cities.py). Names are normalised, and where a name repeats the most
@@ -283,6 +283,20 @@ class Request:
             self.when_local = now + dt.timedelta(hours=self.place.offset(now))
         self.tz = self.place.offset(self.when_utc)
 
+    def at(self, when_utc):
+        """A cheap copy of this Request at a different instant, reusing the
+        already-resolved place instead of re-running geo/nearest-city lookup.
+        Used by animation, which needs the same place at ~100 different times."""
+        r2 = Request.__new__(Request)
+        r2.place = self.place
+        r2.view, r2.facing, r2.span = self.view, self.facing, self.span
+        r2.find, r2.iss, r2.lines, r2.color = None, False, self.lines, self.color
+        r2.night, r2.tle, r2.width = self.night, None, self.width
+        r2.when_utc = when_utc
+        r2.when_local = when_utc + dt.timedelta(hours=self.place.offset(when_utc))
+        r2.tz = self.place.offset(when_utc)
+        return r2
+
 
 class Result:
     def __init__(self, text, data, status=200):
@@ -423,6 +437,71 @@ def _compose_find(r):
 
 
 # ---------------------------------------------------------------- sky views
+# The full 360 deg sweep's default shape -- narrower than render_linear's
+# own 176-col default, which was wide enough to need horizontal scrolling
+# in a normal terminal window and made a huge PNG/GIF export. 110/24 is the
+# same size already measured close to X's 16:9 recommendation for the GIF
+# export; reusing it here means the live terminal view, the static page,
+# and both image exports are all the same shape and scale by default, not
+# a patchwork of different sizes for different output modes. An explicit
+# ?w= still overrides it. Only applies to the full sweep; a facing= window
+# already has its own aspect-locked "true shape" formula and shouldn't be
+# second-guessed by this.
+DEFAULT_HORIZON_WIDTH = 110
+HORIZON_COLS_PER_ROW = 110 / 24
+
+
+def _effective_width(r):
+    return r.width or DEFAULT_HORIZON_WIDTH
+
+
+def _horizon_height(r):
+    return round(_effective_width(r) / HORIZON_COLS_PER_ROW)
+
+
+def _sun_path_mode(r):
+    """'the Sun's path today' only when when_local's date is the real
+    current date at that place -- an explicit ?t= on another day isn't
+    "today" just because it's daytime there."""
+    now = dt.datetime.now(dt.timezone.utc).replace(tzinfo=None)
+    now_local = now + dt.timedelta(hours=r.place.offset(now))
+    return "the Sun's path today" if r.when_local.date() == now_local.date() \
+        else "the Sun's path"
+
+
+def _horizon_head(r, mode):
+    p = r.place
+    hemi = 'N' if p.lat >= 0 else 'S'
+    ew = 'E' if p.lon >= 0 else 'W'
+    near = f"  (near {p.near})" if p.near else ""
+    return (f"  {p.name}  {abs(p.lat):.2f}°{hemi} {abs(p.lon):.2f}°{ew}{near}"
+            f"   {r.when_local:%d %b %Y %H:%M}   {mode}")
+
+
+def _png_url(r):
+    """The horizon.png link matching this exact view -- facing/span/night/w
+    all change which chart /{place}/horizon.png renders, so they have to
+    travel with the link or it'd show the default full sweep instead of
+    whatever's actually on screen."""
+    q = []
+    if r.facing: q.append(f"facing={r.facing}")
+    if r.span: q.append(f"span={r.span:g}")
+    if r.night: q.append("night=1")
+    if r.width: q.append(f"w={int(r.width)}")
+    qs = ("?" + "&".join(q)) if q else ""
+    return f"{{base_url}}/{r.place.slug}/horizon.png{qs}"
+
+
+def _animate_gif_url(r):
+    """Relative -- fetched same-origin by the page's own JS, so no base_url
+    substitution needed. No query params: compose_frame (shared by the CLI's
+    ?animate= and this) always renders the full 360 sweep, continuous day/
+    night blend -- facing/night/width from the static view don't apply and
+    would be silently ignored, so they're left off rather than implying
+    they'd change anything."""
+    return f"/{r.place.slug}/animate.gif"
+
+
 def _compose_sky(r):
     p, c = r.place, r.color
     if r.view == "disc" and not r.facing:
@@ -431,16 +510,14 @@ def _compose_sky(r):
         mode = "looking up, north at top"
     else:
         art, st = render_linear(r.when_utc, p.lat, p.lon, color=c, show_lines=r.lines,
-                                tle=r.tle, facing=r.facing, span=r.span, width=r.width)
+                                tle=r.tle, facing=r.facing, span=r.span,
+                                width=r.width if r.facing else _effective_width(r),
+                                height=None if r.facing else _horizon_height(r))
         mode = (f"facing {r.facing.upper()}, {int(round(st['span']))}° wide"
                 f"{' (' + st['clamped'] + ')' if st['clamped'] else ''}, true shape"
                 if r.facing else "horizon panorama, 0-70° + zenith inset")
 
-    hemi = 'N' if p.lat >= 0 else 'S'
-    ew = 'E' if p.lon >= 0 else 'W'
-    near = f"  (near {p.near})" if p.near else ""
-    head = (f"  {p.name}  {abs(p.lat):.2f}°{hemi} {abs(p.lon):.2f}°{ew}{near}"
-            f"   {r.when_local:%d %b %Y %H:%M}   {mode}")
+    head = _horizon_head(r, mode)
     prose = sky_read(st, p.name, r.when_local, f"UTC{r.tz:+g}")
 
     out = ["", paint(head, C.HEAD, c), "", art, ""]
@@ -454,6 +531,11 @@ def _compose_sky(r):
                          "\033[38;5;48m", c))
     elif st.get("iss_err"):
         out.append(paint(f"  ISS: {st['iss_err']}", C.MUTE, c))
+    # {base_url} is a literal placeholder -- api.py doesn't know its own
+    # host, server.py substitutes the real one on the way out, on both
+    # cache hits and misses, so a cached render never leaks whatever host
+    # first produced it.
+    out.append(paint(f"  Share as a PNG: {_png_url(r)}", SUN_COL, c))
     out += ["", _footer(p, c), ""]
 
     mo, su = st["moon"], st["sun"]
@@ -520,7 +602,8 @@ def _compose_day(r):
     art, st = render_linear(r.when_utc, p.lat, p.lon, color=c, show_lines=False,
                             mag_limit=-5.0, alt_lo=0.0, alt_hi=alt_hi,
                             overlay=(arc, SUN_COL, "SUN", (sa_now, sz_now)),
-                            bodies=show, inset=False, width=r.width)
+                            bodies=show, inset=False, width=_effective_width(r),
+                            height=_horizon_height(r))
 
     jd = julian(r.when_utc)
     lst = (gmst_hours(jd) + p.lon / 15.0) % 24
@@ -568,13 +651,10 @@ def _compose_day(r):
     for l in lines:
         body.extend(textwrap.wrap(l, 76))
 
-    hemi = 'N' if p.lat >= 0 else 'S'
-    ew = 'E' if p.lon >= 0 else 'W'
-    near = f"  (near {p.near})" if p.near else ""
-    head = (f"  {p.name}  {abs(p.lat):.2f}°{hemi} {abs(p.lon):.2f}°{ew}{near}"
-            f"   {r.when_local:%d %b %Y %H:%M}   the Sun's path today")
+    head = _horizon_head(r, _sun_path_mode(r))
     out = ["", paint(head, C.HEAD, c), "", art, ""]
     out += [paint("  " + l, C.LABEL, c) for l in body]
+    out.append(paint(f"  Share as a PNG: {_png_url(r)}", SUN_COL, c))
     out += ["", _footer(p, c), ""]
 
     data = dict(place=p.name, near=p.near, lat=p.lat, lon=p.lon, tz_offset=off,
@@ -593,6 +673,165 @@ def _compose_day(r):
                           illum=round(mo["illum"] * 100)),
                 prose="\n".join(body))
     return Result("\n".join(out), data)
+
+
+# ---------------------------------------------------------------- animation
+_SUN_GRADIENT = ["\033[38;5;220m", "\033[38;5;214m", "\033[38;5;208m",
+                 "\033[38;5;202m", "\033[38;5;196m"]   # yellow -> red
+
+
+def _sun_color(alt):
+    """Yellow high in the sky, stepping through orange to red near the
+    horizon -- real atmospheric reddening (the same reason real sunsets look
+    like this), computed fresh from altitude each frame so it naturally
+    reverses on the way back up. Standard xterm-256 palette, same as every
+    other colour in the app -- a first version used true 24-bit colour for a
+    smoother gradient, but that silently fails to plain white on terminals
+    without full truecolour support, which is worse than a few visible steps."""
+    if alt >= 25:
+        return _SUN_GRADIENT[0]
+    if alt <= -12:
+        return _SUN_GRADIENT[-1]
+    t = 1 - max(0.0, min(1.0, (alt + 12) / 37.0))   # 25 -> 0, -12 -> 1
+    return _SUN_GRADIENT[round(t * (len(_SUN_GRADIENT) - 1))]
+
+
+def compose_frame(r, dusk_lead_minutes=0, dawn_lag_minutes=0):
+    """Header + chart only, no prose/footer/ISS/zenith inset -- for animation
+    frames, which are on screen for a fraction of a second and can't be read
+    as text anyway.
+
+    One unified render for both day and night rather than switching between
+    two differently-shaped views: stars and planets fade in smoothly as the
+    sky actually darkens (mag_limit ramps from -5 at sunset to 4.0 by
+    astronomical twilight, the same threshold band dark_enough() already uses
+    for single-object visibility), and the Sun's own marker is always drawn,
+    reddening as it approaches the horizon. No hard cut at sunrise/sunset --
+    the transition is the same real physics the rest of the app already
+    models, just shown continuously instead of as a single before/after.
+
+    dusk_lead_minutes and dawn_lag_minutes each nudge, purely for the star/
+    constellation fade threshold below, which moment's Sun altitude gets
+    used -- the Sun marker itself always tracks its real position. A tiny
+    epsilon sample tells whether the Sun is currently setting or rising:
+    while setting, dusk_lead_minutes samples *ahead*, so the fade reads as
+    darker than the moment actually is and the night sky starts showing a
+    few frames early; while rising, dawn_lag_minutes samples *behind*, so
+    the fade reads as darker than the moment actually is right through
+    dawn too, and the stars last longer instead of cutting off early."""
+    p, c = r.place, r.color
+    jd = julian(r.when_utc)
+    lst = (gmst_hours(jd) + p.lon / 15.0) % 24
+    su = sun(jd)
+    sun_alt, sun_az = altaz(su["ra"], su["dec"], p.lat, lst)
+
+    fade_minutes = 0
+    if dusk_lead_minutes or dawn_lag_minutes:
+        eps_jd = julian(r.when_utc + dt.timedelta(minutes=1))
+        eps_lst = (gmst_hours(eps_jd) + p.lon / 15.0) % 24
+        eps_su = sun(eps_jd)
+        eps_alt, _ = altaz(eps_su["ra"], eps_su["dec"], p.lat, eps_lst)
+        setting = eps_alt < sun_alt
+        fade_minutes = dusk_lead_minutes if setting else -dawn_lag_minutes
+
+    if fade_minutes:
+        fade_jd = julian(r.when_utc + dt.timedelta(minutes=fade_minutes))
+        fade_lst = (gmst_hours(fade_jd) + p.lon / 15.0) % 24
+        fade_su = sun(fade_jd)
+        fade_alt, _ = altaz(fade_su["ra"], fade_su["dec"], p.lat, fade_lst)
+    else:
+        fade_alt = sun_alt
+
+    if fade_alt >= 0:
+        mag_limit = -5.0
+    elif fade_alt <= -18:
+        mag_limit = 4.0
+    else:
+        # biased, not linear: stars stay suppressed through the brighter part
+        # of twilight and catch up fast near full dark -- late to appear at
+        # dusk, early to vanish at dawn, symmetrically, since this is a pure
+        # function of altitude with no notion of which direction time runs.
+        t = ((0 - fade_alt) / 18.0) ** 1.6
+        mag_limit = -5.0 + t * 9.0
+
+    visible_bodies = {n for n in ("Mercury", "Venus", "Mars", "Jupiter",
+                                  "Saturn", "Uranus", "Neptune")
+                      if dark_enough(fade_alt, planet(n, jd)["mag"])}
+    if dark_enough(fade_alt, -12.7):     # Moon's rough peak brightness
+        visible_bodies.add("Moon")
+
+    off = p.offset(r.when_utc)
+    day0_local = r.when_local.replace(hour=0, minute=0, second=0, microsecond=0)
+    day0 = day0_local - dt.timedelta(hours=off)
+    arc = sun_arc(day0, p.lat, p.lon, step_min=DAY_BUCKET)
+    top = max((a for _t, a in ((x[0], x[1]) for x in arc)), default=45)
+    alt_hi = max(70.0, min(90.0, top + 8))
+
+    # Below the horizon the Sun overlay disappears entirely, trail included --
+    # otherwise the trail (coloured once, for the whole arc, by the *current*
+    # frame's altitude) keeps showing as a lingering red line long after the
+    # Sun has actually set, rather than genuinely vanishing.
+    overlay = (arc, _sun_color(sun_alt), "SUN", (sun_alt, sun_az)) if sun_alt >= 0 else None
+    # line_limit ties constellation lines/names to the same fading threshold as
+    # the stars (see mag_limit above) -- they pop in/out star-by-star through
+    # twilight instead of snapping on/off at a fixed show_lines boolean.
+    art, _st = render_linear(r.when_utc, p.lat, p.lon, color=c, show_lines=r.lines,
+                             mag_limit=mag_limit, line_limit=mag_limit, tle=None,
+                             inset=False, alt_lo=0.0, alt_hi=alt_hi,
+                             width=_effective_width(r), height=_horizon_height(r),
+                             overlay=overlay, bodies=visible_bodies)
+
+    if sun_alt >= -1:      mode = _sun_path_mode(r)
+    elif sun_alt >= -6:    mode = "civil twilight"
+    elif sun_alt >= -12:   mode = "nautical twilight"
+    elif sun_alt >= -18:   mode = "astronomical twilight"
+    else:                  mode = "horizon panorama"
+
+    head = _horizon_head(r, mode)
+    return paint(head, C.HEAD, c) + "\n\n" + art, sun_alt
+
+
+def compose_chart_only(r):
+    """Just the horizon chart itself -- no header, prose, footer, or zenith
+    inset -- for the PNG export. Same day/night and facing logic as
+    _compose_sky/_compose_day, minus everything that isn't the chart, so the
+    PNG matches whatever the static view above it is actually showing."""
+    p, c = r.place, r.color
+    if not r.night and is_daytime(r):
+        off = p.offset(r.when_utc)
+        day0_local = r.when_local.replace(hour=0, minute=0, second=0, microsecond=0)
+        day0 = day0_local - dt.timedelta(hours=off)
+        arc = sun_arc(day0, p.lat, p.lon, step_min=DAY_BUCKET)
+        top = max((a for _t, a in ((x[0], x[1]) for x in arc)), default=10)
+        alt_hi = max(30.0, min(90.0, top + 8))
+        jd_now = julian(r.when_utc)
+        lst_now = (gmst_hours(jd_now) + p.lon / 15.0) % 24
+        su_now = sun(jd_now)
+        sa_now, sz_now = altaz(su_now["ra"], su_now["dec"], p.lat, lst_now)
+        mo_now = moon(jd_now)
+        show = {"Moon"} if mo_now["illum"] > 0.4 else set()
+        art, _st = render_linear(r.when_utc, p.lat, p.lon, color=c, show_lines=False,
+                                 mag_limit=-5.0, alt_lo=0.0, alt_hi=alt_hi,
+                                 overlay=(arc, SUN_COL, "SUN", (sa_now, sz_now)),
+                                 bodies=show, inset=False, width=_effective_width(r),
+                                 height=_horizon_height(r))
+        head = _horizon_head(r, _sun_path_mode(r))
+        return paint(head, C.HEAD, c) + "\n\n" + art
+    if r.view == "disc" and not r.facing:
+        art, _st = render(r.when_utc, p.lat, p.lon, height=34, color=c,
+                          show_lines=r.lines, width=r.width)
+        head = _horizon_head(r, "looking up, north at top")
+        return paint(head, C.HEAD, c) + "\n\n" + art
+    art, st = render_linear(r.when_utc, p.lat, p.lon, color=c, show_lines=r.lines,
+                            tle=r.tle, facing=r.facing, span=r.span,
+                            width=r.width if r.facing else _effective_width(r),
+                            height=None if r.facing else _horizon_height(r),
+                            inset=False)
+    mode = (f"facing {r.facing.upper()}, {int(round(st['span']))}° wide"
+            f"{' (' + st['clamped'] + ')' if st['clamped'] else ''}, true shape"
+            if r.facing else "horizon panorama")
+    head = _horizon_head(r, mode)
+    return paint(head, C.HEAD, c) + "\n\n" + art
 
 
 def compose(r):
@@ -712,13 +951,103 @@ PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
       padding:10px 14px;margin:0 0 14px;color:#7ee787;font-size:13px;
       display:inline-block}}
  .cta::before{{content:"$ ";color:#6e7681}}
+ .chart-row{{display:flex;gap:18px;align-items:flex-start;flex-wrap:wrap}}
+ .chart-row pre{{flex:1;min-width:0}}
+ .chart-side{{display:flex;flex-direction:column;gap:8px;flex-shrink:0;padding-top:2px}}
+ .chart-side a{{color:#ffd700;font-size:12px;text-decoration:none;white-space:nowrap}}
+ .chart-side a:hover{{text-decoration:underline}}
+ .animate-btn{{background:#0d1117;border:1px solid #30363d;color:#ffd700;
+              padding:6px 12px;border-radius:4px;font:inherit;font-size:12px;
+              cursor:pointer;margin:0 0 10px;display:inline-block}}
+ .animate-btn:hover{{border-color:#ffd700}}
+ .animate-btn:disabled{{opacity:.6;cursor:default}}
 </style></head><body><div class="w">
 <pre class="cta">curl skymap.sh{path}</pre>
 <p class="t"><b>skymap.sh</b> — this page is what that prints.
 <a href="/demo">demo</a> · <a href="/help">help</a></p>
-{explore}<pre>{body}</pre>
+{explore}{animate_btn}<div class="chart-row"><pre id="chart-pre">{body}</pre><div class="chart-side" id="chart-side">{extra}</div></div>
 <p class="t" style="margin-top:18px">Created by <a href="https://x.com/habibicode">@habibicode</a>
 · <a href="https://github.com/HabibiCodeCH/skymap-sh">see the repo</a></p>
+<script>
+function xtermHex(n){{
+  n=parseInt(n,10);
+  if(n<16){{
+    var base=["000000","800000","008000","808000","000080","800080","008080","c0c0c0",
+              "808080","ff0000","00ff00","ffff00","0000ff","ff00ff","00ffff","ffffff"];
+    return "#"+base[n];
+  }}
+  if(n<232){{
+    n-=16;
+    var lv=[0,95,135,175,215,255];
+    var r=lv[Math.floor(n/36)],g=lv[Math.floor(n/6)%6],b=lv[n%6];
+    return "#"+[r,g,b].map(function(x){{return x.toString(16).padStart(2,'0');}}).join('');
+  }}
+  var v=8+(n-232)*10,h=v.toString(16).padStart(2,'0');
+  return "#"+h+h+h;
+}}
+function escapeHtml(s){{
+  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}}
+function ansiToHtml(text){{
+  var re=/\\x1b\\[(?:38;5;(\\d+)|0)m/g;
+  var out='',pos=0,open=false,m;
+  while((m=re.exec(text))!==null){{
+    out+=escapeHtml(text.slice(pos,m.index));
+    pos=re.lastIndex;
+    if(open){{out+='</span>';open=false;}}
+    if(m[1]){{out+='<span style="color:'+xtermHex(m[1])+'">';open=true;}}
+  }}
+  out+=escapeHtml(text.slice(pos));
+  if(open)out+='</span>';
+  return out;
+}}
+function skymapAnimate(btn){{
+  // Live preview plays right in the chart itself from the same streaming
+  // ?animate= text the CLI uses (nogif=1 so it skips its own now-unused
+  // GIF render). Nothing ever swaps the chart for the GIF -- the GIF is
+  // deliberately a different (larger, social-sized) render, so showing it
+  // inline just replaced a correctly-sized live view with an oversized
+  // image. Once both the live loop and the parallel GIF render finish,
+  // the sidebar link quietly becomes "Share as a GIF".
+  var gifUrl=btn.getAttribute('data-gif-url');
+  var liveUrl=btn.getAttribute('data-live-url');
+  var pre=document.getElementById('chart-pre');
+  btn.disabled=true;btn.textContent='animating…';
+  var gifPromise=fetch(gifUrl).then(function(r){{
+    return r.headers.get('X-Gif-Id');
+  }});
+  var livePromise=fetch(liveUrl).then(function(resp){{
+    var reader=resp.body.getReader();
+    var decoder=new TextDecoder();
+    var buf='';
+    function pump(){{
+      return reader.read().then(function(res){{
+        if(res.done){{
+          if(buf.trim())pre.innerHTML=ansiToHtml(buf);
+          return;
+        }}
+        buf+=decoder.decode(res.value,{{stream:true}});
+        var parts=buf.split('\\x1b[2J\\x1b[H');
+        buf=parts.pop();
+        for(var i=0;i<parts.length;i++){{
+          if(parts[i].trim())pre.innerHTML=ansiToHtml(parts[i]);
+        }}
+        return pump();
+      }});
+    }}
+    return pump();
+  }});
+  livePromise.then(function(){{return gifPromise;}}).then(function(gifId){{
+    if(gifId){{
+      document.getElementById('chart-side').innerHTML=
+        '<a href="/animate/'+gifId+'.gif" target="_blank" rel="noopener">Share as a GIF</a>';
+    }}
+    btn.disabled=false;btn.textContent='▶ animate';
+  }}).catch(function(){{
+    btn.disabled=false;btn.textContent='animate failed — try again';
+  }});
+}}
+</script>
 </div></body></html>"""
 
 
