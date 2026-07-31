@@ -593,7 +593,7 @@ def _compose_sky(r):
                                 # bodies that survive this filter, and
                                 # sky_read() below needs st["sun"]["alt"].
                                 bodies=_fade_visible_bodies(sun_alt, jd) | {"Sun"},
-                                dso_limit=dso_limit, quadrant=r.quadrant)
+                                dso_limit=dso_limit, quadrant=r.quadrant, quadrants=True)
         quad_bit = f", quadrant {st['quad_applied']}" if st.get("quad_applied") else ""
         # a quadrant crop replaces the zenith inset (there's no room, and no
         # need -- the crop already narrows the view), so the header must stop
@@ -942,7 +942,7 @@ def compose_chart_only(r):
                             mag_limit=mag_limit, line_limit=mag_limit,
                             bodies=_fade_visible_bodies(sun_alt, jd) | {"Sun"},
                             dso_limit=DSO_LIMIT if r.dso else None, quadrant=r.quadrant,
-                            inset=False)
+                            quadrants=True, inset=False)
     mode = (f"facing {r.facing.upper()}, {int(round(st['span']))}° wide"
             f"{' (' + st['clamped'] + ')' if st['clamped'] else ''}, true shape"
             if r.facing else "horizon panorama")

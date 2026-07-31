@@ -126,17 +126,27 @@ class QuadrantGrid(unittest.TestCase):
 
     def test_render_linear_crops_to_the_requested_cell(self):
         t = dt.datetime(2026, 7, 30, 22, 0)
-        _art, base_st = sky.render_linear(t, 47.3769, 8.5417, color=False)
+        _art, base_st = sky.render_linear(t, 47.3769, 8.5417, color=False, quadrants=True)
         cell = base_st["quad_cells"][0]
-        _art, crop_st = sky.render_linear(t, 47.3769, 8.5417, color=False,
+        _art, crop_st = sky.render_linear(t, 47.3769, 8.5417, color=False, quadrants=True,
                                           quadrant=cell["letter"])
         self.assertEqual(crop_st["quad_applied"], cell["letter"])
         self.assertAlmostEqual(crop_st["span"], cell["az_span"], places=6)
         self.assertEqual(crop_st["quad_cells"], [])   # cropped: no overlay on itself
 
+    def test_no_grid_without_opting_in(self):
+        # render_linear's other callers (the daytime Sun's-arc view,
+        # compose_frame) never pass quadrants=True, so quad_cells must stay
+        # empty for them even though target is None -- regression test for
+        # the grid overlay leaking into every horizon-linear render.
+        t = dt.datetime(2026, 7, 30, 22, 0)
+        _art, st = sky.render_linear(t, 47.3769, 8.5417, color=False)
+        self.assertEqual(st["quad_cells"], [])
+
     def test_unknown_letter_falls_back_to_the_full_view(self):
         t = dt.datetime(2026, 7, 30, 22, 0)
-        _art, st = sky.render_linear(t, 47.3769, 8.5417, color=False, quadrant="ZZ")
+        _art, st = sky.render_linear(t, 47.3769, 8.5417, color=False, quadrants=True,
+                                     quadrant="ZZ")
         self.assertIsNone(st["quad_applied"])
         self.assertEqual(st["quad_error"], "ZZ")
         self.assertTrue(st["quad_cells"])   # still shows the base grid to pick from

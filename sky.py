@@ -890,7 +890,7 @@ def render_linear(when_utc, lat, lon, W=176, H=22, color=True, show_lines=True,
                   mag_limit=4.0, line_limit=None, tle=None, alt_max=70, facing=None, span=None,
                   alt_lo=None, alt_hi=None, target=None, overlay=None,
                   bodies=None, inset=True, width=None, height=None, dso_limit=None,
-                  quadrant=None):
+                  quadrant=None, quadrants=False):
     """Horizon panorama. facing=None gives the full 360 deg sweep; facing='SW'
     gives a window centred there, which is narrow enough to be undistorted."""
     req_span = span                    # the else-branch below clobbers `span`
@@ -922,7 +922,7 @@ def render_linear(when_utc, lat, lon, W=176, H=22, color=True, show_lines=True,
     alt_rng = alt_hi - alt_lo
 
     quad_cells, quad_error, quad_applied = [], None, None
-    if target is None:
+    if quadrants and target is None:
         quad_cells = quadrant_grid(centre, span, alt_lo, alt_hi)
         if quadrant is not None:
             letter = str(quadrant).upper()
@@ -1186,7 +1186,8 @@ def render_linear(when_utc, lat, lon, W=176, H=22, color=True, show_lines=True,
                     grid[r0+dr][c0], tint[r0+dr][c0], soft[r0+dr][c0] = "│", TC, False
         text(target["az"], target["alt"], target["name"].upper(), TC)
 
-    QL = "\033[1;38;5;226m"
+    QL = "\033[38;5;226m"   # plain 38;5;N, matching every other colour here --
+                            # ansi_to_html's regex doesn't parse a bold prefix
     for cell in quad_cells:
         text(cell["az_centre"], (cell["alt_lo"] + cell["alt_hi"]) / 2, cell["letter"], QL)
 
