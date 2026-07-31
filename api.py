@@ -1162,7 +1162,8 @@ PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
            padding:6px 10px;border-radius:4px;font:inherit;font-size:12px}}
  .ex input#place{{width:170px}}
  .ex input#find{{width:190px}}
- .ex input#when{{width:190px;color-scheme:dark}}
+ .ex input#whenDate{{width:140px;color-scheme:dark}}
+ .ex input#whenTime{{width:100px;color-scheme:dark}}
  .ex button{{background:#238636;border:0;color:#fff;padding:6px 14px;
             border-radius:4px;font:inherit;font-size:12px;cursor:pointer}}
  .ex button:hover{{background:#2ea043}}
@@ -1340,7 +1341,9 @@ function skymapRenderGif(btn){{
 EXPLORE = """<div class="ex">
 <form id="explore" onsubmit="var p=document.getElementById('place').value.trim();
 var f=document.getElementById('find').value.trim();
-var t=document.getElementById('when').value;
+var wd=document.getElementById('whenDate').value;
+var wt=document.getElementById('whenTime').value;
+var t=(wd&&wt)?(wd+'T'+wt):'';
 if(!p&&!f&&!t)return false;
 var q=[];
 if(f)q.push('find='+encodeURIComponent(f));
@@ -1349,7 +1352,8 @@ location.href='/'+(p?encodeURIComponent(p):'')+(q.length?'?'+q.join('&'):'');
 return false;">
 <input id="place" type="text" placeholder="city or lat,lon" autocomplete="off">
 <input id="find" type="text" placeholder="find (Venus, Big Dipper...)" autocomplete="off">
-<input id="when" type="datetime-local" title="local time at that place (default: now)">
+<input id="whenDate" type="date" title="local date at that place (default: today)">
+<input id="whenTime" type="time" title="local time at that place (default: now)">
 <button type="submit">go</button>
 </form>
 <p class="tries">Examples:
