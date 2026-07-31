@@ -69,5 +69,40 @@ class AnimateBrowserVsTerminal(unittest.TestCase):
         self.assertIn("/Ibiza/animate.gif?t=2026-08-12T18:00", resp.text)
 
 
+class StatsPagesInBrowser(unittest.TestCase):
+    """/stats and /stats/hourly both wrap their plain-text body in api.PAGE
+    for a browser -- every api.PAGE.format() call site has to supply every
+    placeholder the template defines, or str.format() raises. Adding
+    quadrant_btn to the template broke /stats specifically: its call site
+    wasn't updated, so a browser hit a 500 (KeyError: 'quadrant_btn') while
+    curl's plain-text response kept working, which is exactly why this
+    needs its own test rather than relying on the terminal-mode checks."""
+
+    def setUp(self):
+        client_cm = TestClient(server.app)
+        self.client = client_cm.__enter__()
+        self.addCleanup(client_cm.__exit__, None, None, None)
+
+    def test_stats_renders_in_a_browser(self):
+        resp = self.client.get("/stats", headers=BROWSER)
+        self.assertEqual(resp.status_code, 200)
+        self.assertTrue(resp.headers["content-type"].startswith("text/html"))
+
+    def test_stats_hourly_renders_in_a_browser(self):
+        resp = self.client.get("/stats/hourly", headers=BROWSER)
+        self.assertEqual(resp.status_code, 200)
+        self.assertTrue(resp.headers["content-type"].startswith("text/html"))
+
+    def test_stats_hourly_json_and_terminal_modes_still_work(self):
+        # The new html branch must not have disturbed the two modes that
+        # already worked.
+        resp = self.client.get("/stats/hourly?format=json", headers=BROWSER)
+        self.assertEqual(resp.status_code, 200)
+        self.assertTrue(resp.headers["content-type"].startswith("application/json"))
+        resp = self.client.get("/stats/hourly", headers=TERMINAL)
+        self.assertEqual(resp.status_code, 200)
+        self.assertTrue(resp.headers["content-type"].startswith("text/plain"))
+
+
 if __name__ == "__main__":
     unittest.main()

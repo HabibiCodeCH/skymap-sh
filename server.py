@@ -750,7 +750,7 @@ def stats(request: Req):
     if mode == "html":
         body = api.PAGE.format(title="skymap.sh — stats", path="/stats",
                                explore=api.EXPLORE, body=html.escape(stats_text()),
-                               extra="", animate_btn="")
+                               extra="", animate_btn="", quadrant_btn="")
         return HTMLResponse(body, headers=headers)
     return PlainTextResponse(stats_text(), headers=headers)
 
@@ -764,7 +764,14 @@ def stats_hourly(request: Req):
         days = 7
     if q.get("format") == "json":
         return JSONResponse(stats_hourly_json(days), headers={"Cache-Control": "no-store"})
-    return PlainTextResponse(stats_hourly_text(days), headers={"Cache-Control": "no-store"})
+    headers = {"Cache-Control": "no-store"}
+    mode, _colour = _wants(request)
+    if mode == "html":
+        body = api.PAGE.format(title="skymap.sh — stats", path="/stats/hourly",
+                               explore=api.EXPLORE, body=html.escape(stats_hourly_text(days)),
+                               extra="", animate_btn="", quadrant_btn="")
+        return HTMLResponse(body, headers=headers)
+    return PlainTextResponse(stats_hourly_text(days), headers=headers)
 
 
 @app.get("/robots.txt", response_class=PlainTextResponse)
