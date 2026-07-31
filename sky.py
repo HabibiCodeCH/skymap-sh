@@ -700,6 +700,19 @@ def resolve_target(name, jd, lat, lst):
                             ra=cra, dec=cdec,
                             lead=min(m for _r, _d, m in pts),
                             faint=max(m for _r, _d, m in pts))
+    for o in _load("deepsky.json"):
+        # o["n"] is already the best short label (Messier number, else a
+        # hand-picked common name, else the NGC number itself -- see
+        # build_deepsky.py) -- o["id"] (always "NGC####") is matched too so
+        # the catalogue number still works once an object has a nicer name.
+        names = {o["n"].lower(), o["id"].lower()}
+        if o.get("cn"):
+            names.add(o["cn"].lower())
+        if q in names:
+            ra, de = precess(o["ra"], o["de"], jd)
+            a, z = altaz(ra, de, lat, lst)
+            return dict(name=o.get("cn") or o["n"], alt=a, az=z, mag=o["m"],
+                        kind=DSO_NAMES.get(o["t"], o["t"]), ra=o["ra"], dec=o["de"])
     return None
 
 

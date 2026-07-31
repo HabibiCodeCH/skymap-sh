@@ -7,6 +7,7 @@ resolve a time, pick a view, assemble the text, and hand back a structured
 version of the same facts for anyone who would rather have JSON.
 """
 import datetime as dt, html, json, math, re, unicodedata
+from urllib.parse import quote
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import sky
@@ -415,7 +416,8 @@ def _compose_find(r):
     if tgt is None:
         txt = (f"\n  Don't know '{r.find}'.\n"
                f"  Try a planet, the Sun, the Moon, a named star (Vega, Altair),\n"
-               f"  or an asterism (Big Dipper, Orion's Belt, Teapot).\n")
+               f"  an asterism (Big Dipper, Orion's Belt, Teapot), or a deep-sky\n"
+               f"  object (M31, Andromeda Galaxy, Ring Nebula).\n")
         return Result(txt, dict(error="unknown_target", query=r.find), 404)
 
     ok, why = visibility(tgt, jd, p.lat, lst)
@@ -569,6 +571,7 @@ def _png_url(r):
     if r.width: q.append(f"w={int(r.width)}")
     if r.dso: q.append("dso=1")
     if r.quadrant: q.append(f"quadrant={r.quadrant}")
+    if r.find: q.append(f"find={quote(r.find)}")
     qs = ("?" + "&".join(q)) if q else ""
     return f"{{base_url}}/{r.place.slug}/horizon.png{qs}"
 
@@ -935,12 +938,49 @@ def compose_frame(r, dusk_lead_minutes=0, dawn_lag_minutes=0):
     return paint(head, C.HEAD, c) + "\n\n" + art, sun_alt
 
 
+def _find_chart_only(r):
+    """The PNG export's version of ?find= -- same resolve/visibility/
+    next-window logic _compose_find uses for the prose page, minus the
+    header and explanatory text, so a shared link (page + its own "Share as
+    a PNG") draws the same crosshair. Returns None if the name doesn't
+    resolve, so the caller falls back to the plain chart instead of a blank
+    image -- compose_chart_only used to skip this entirely, so ?find= was
+    silently dropped from every PNG regardless of whether it resolved."""
+    p, c = r.place, r.color
+    jd = julian(r.when_utc); lst = (gmst_hours(jd) + p.lon / 15.0) % 24
+    tgt = resolve_target(r.find, jd, p.lat, lst)
+    if tgt is None:
+        return None
+    ok, _why = visibility(tgt, jd, p.lat, lst)
+    shown_utc = r.when_utc
+    if not ok:
+        w, _a2, _z2 = next_visible_cached(tgt, p.lat, p.lon, r.when_utc)
+        if w is not None:
+            shown_utc = w
+            jd = julian(shown_utc); lst = (gmst_hours(jd) + p.lon / 15.0) % 24
+            tgt = resolve_target(r.find, jd, p.lat, lst)
+    sp = r.span or 60.0
+    rng = 26.0
+    lo = max(0.0, min(90.0 - rng, tgt["alt"] - rng / 2))
+    art, _st = render_linear(shown_utc, p.lat, p.lon, color=c, show_lines=r.lines,
+                             tle=r.tle, span=sp, alt_lo=lo, alt_hi=lo + rng,
+                             target=tgt, mag_limit=5.0, width=r.width)
+    shown_local = shown_utc + dt.timedelta(hours=p.offset(shown_utc))
+    head = (f"  {p.name}   {shown_local:%d %b %Y %H:%M}   "
+            f"finding {tgt['name']} — {int(sp)}° window")
+    return paint(head, C.HEAD, c) + "\n\n" + art
+
+
 def compose_chart_only(r):
     """Just the horizon chart itself -- no header, prose, footer, or zenith
     inset -- for the PNG export. Same day/night and facing logic as
     _compose_sky/_compose_day, minus everything that isn't the chart, so the
     PNG matches whatever the static view above it is actually showing."""
     p, c = r.place, r.color
+    if r.find:
+        found = _find_chart_only(r)
+        if found is not None:
+            return found
     if not r.night and is_daytime(r):
         off = p.offset(r.when_utc)
         day0_local = r.when_local.replace(hour=0, minute=0, second=0, microsecond=0)

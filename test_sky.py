@@ -108,6 +108,42 @@ class DeepSkyOverlay(unittest.TestCase):
         self.assertTrue(any(ch in on for ch in dso_chars))
 
 
+class FindResolvesDeepSkyObjects(unittest.TestCase):
+    """resolve_target() used to only know planets/Sun/Moon/stars/asterisms --
+    ?find=M31 or ?find=Andromeda+Galaxy fell through to "Don't know" even
+    though the exact same object was already drawn on the chart under
+    ?dso=1. It should answer to its Messier number, its hand-curated common
+    name (build_deepsky.py's COMMON_NAMES), and its raw NGC id."""
+
+    def setUp(self):
+        self.jd = sky.julian(dt.datetime(2026, 7, 30, 22, 0))
+        self.lst = (sky.gmst_hours(self.jd) + 8.5417 / 15.0) % 24
+
+    def test_messier_number(self):
+        t = sky.resolve_target("M31", self.jd, 47.3769, self.lst)
+        self.assertIsNotNone(t)
+        self.assertEqual(t["name"], "Andromeda Galaxy")
+        self.assertEqual(t["kind"], "galaxy")
+
+    def test_common_name_case_insensitive(self):
+        t = sky.resolve_target("andromeda galaxy", self.jd, 47.3769, self.lst)
+        self.assertIsNotNone(t)
+        self.assertEqual(t["name"], "Andromeda Galaxy")
+
+    def test_ngc_id_still_resolves_an_object_with_a_nicer_name(self):
+        t = sky.resolve_target("NGC224", self.jd, 47.3769, self.lst)
+        self.assertIsNotNone(t)
+        self.assertEqual(t["name"], "Andromeda Galaxy")
+
+    def test_object_with_no_common_name_answers_to_its_ngc_id(self):
+        t = sky.resolve_target("NGC1980", self.jd, 47.3769, self.lst)
+        self.assertIsNotNone(t)
+        self.assertEqual(t["name"], "NGC1980")
+
+    def test_unknown_deep_sky_query_still_returns_none(self):
+        self.assertIsNone(sky.resolve_target("Not A Real Galaxy", self.jd, 47.3769, self.lst))
+
+
 class QuadrantGrid(unittest.TestCase):
     """?quadrant= crops a request to one lettered cell of the same grid every
     time -- no server-side state, so the grid math itself has to be exact

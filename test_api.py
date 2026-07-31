@@ -131,6 +131,37 @@ class DsoAndQuadrantRequests(unittest.TestCase):
         self.assertIn("quadrant=C", url)
 
 
+class FindOnThePngExport(unittest.TestCase):
+    """?find= used to be silently dropped by the PNG export: _png_url()
+    never put it in the link, and compose_chart_only() never looked at
+    r.find even when it was there -- so "Share as a PNG" on a find page
+    quietly handed back the plain full-sweep chart instead of the crosshair
+    the page itself was showing."""
+
+    def test_png_url_carries_find_url_encoded(self):
+        r = api.Request(place="Zurich", find="Andromeda Galaxy")
+        url = api._png_url(r)
+        self.assertIn("find=Andromeda%20Galaxy", url)
+
+    def test_png_url_omits_find_when_not_asked_for(self):
+        r = api.Request(place="Zurich")
+        self.assertNotIn("find=", api._png_url(r))
+
+    def test_chart_only_draws_the_same_target_the_page_does(self):
+        r = api.Request(place="Zurich", when=dt.datetime(2026, 7, 30, 22, 0), find="M31")
+        page = api.compose(r)
+        png_art = api.compose_chart_only(r)
+        self.assertIn("ANDROMEDA GALAXY", page.text.upper())
+        self.assertIn("ANDROMEDA GALAXY", png_art.upper())
+
+    def test_chart_only_falls_back_to_the_plain_chart_for_an_unknown_target(self):
+        r = api.Request(place="Zurich", when=dt.datetime(2026, 7, 30, 22, 0), find="Not A Real Thing")
+        # Should not raise, and should still produce a real chart rather
+        # than nothing -- an unresolvable ?find= degrades gracefully.
+        art = api.compose_chart_only(r)
+        self.assertTrue(art)
+
+
 class NightOverrideDuringDaylight(unittest.TestCase):
     """?night=1 forces the star chart even while the Sun is up. The Moon
     used to be silently dropped from render_linear's bodies set whenever it

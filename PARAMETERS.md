@@ -126,10 +126,13 @@ anyway.
 | `--find="Big Dipper"` | `finding Big Dipper — 60° window` |
 | `--find=Vega` | any of 327 named stars |
 | `--find=Moon` | Sun and Moon too |
+| `--find=M31` | `finding Andromeda Galaxy — 60° window`, same as any of 739 deep-sky objects |
 | `--find=wombat` | `Don't know 'wombat'.` and what it does accept |
 
-Accepts: 7 planets, Sun, Moon, 327 named stars, 28 asterisms. `?span=` widens
-the window here too.
+Accepts: 7 planets, Sun, Moon, 327 named stars, 28 asterisms, 739 deep-sky
+objects (by Messier number, NGC id, or one of 28 common names — Andromeda
+Galaxy, Ring Nebula, Double Cluster and the like). `?span=` widens the window
+here too.
 
 ## Output format
 
