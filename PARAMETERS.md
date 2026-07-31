@@ -50,7 +50,8 @@ On the web the place is the path: `curl skymap.sh/Tokyo`, `curl 'skymap.sh/Paris
 | URL: `?t=2026-07-30T22:00` | same |
 
 Accepted range is ±2 years. Anything further away, or unparseable, falls back to
-now. Times snap to a 5-minute grain.
+now. Times snap to a 5-minute grain. On the web page, a date/time picker sits
+next to the place and find fields for this, no need to hand-type `?t=`.
 
 ## Which view
 
