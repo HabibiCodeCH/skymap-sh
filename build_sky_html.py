@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Builds sky_demo.html: six real renders showing off the range of views.
+"""Builds sky_demo.html: ten real renders showing off the range of views.
 
 Uses api.compose() directly, in-process -- the same composition layer cli.py
 and server.py call, so this can't drift from what the live service actually
@@ -39,6 +39,13 @@ CASES = [
      "both axes, a crosshair on the target, directions underneath in fists "
      "rather than degrees. Works for planets, the Moon, any named star, and "
      "asterisms."),
+    ("Animate", "Zurich, ?animate",
+     dict(place="Zurich", animate=True),
+     "The whole night streamed live, frame by frame, right in the terminal "
+     "or the page itself &mdash; stars and planets fade in and out with "
+     "real twilight, no hard cut at sunset. This GIF is a saved copy of "
+     "that same stream, exactly what --animate, ?animate, and the page's "
+     "own &#9654; animate button all produce."),
     ("Quadrants", "Zurich, ?quadrant",
      dict(place="Zurich", when=dt.datetime(2026, 7, 30, 23, 0), quadrant=""),
      "The horizon view splits into a fixed 4x3 grid, A through L, letters "
@@ -89,13 +96,26 @@ def cmd_for(kwargs):
         q.append(f"quadrant={kwargs['quadrant']}" if kwargs["quadrant"] else "quadrant")
     if kwargs.get("dso"):
         q.append("dso=1")
+    if kwargs.get("animate"):
+        q.append("animate")
     qs = "&".join(q)
-    return f"curl skymap.sh/{place}" + (f"?{qs}" if qs else "")
+    url = f"skymap.sh/{place}" + (f"?{qs}" if qs else "")
+    # Quoted: zsh (the default shell on macOS) treats a bare ? as a glob
+    # character and errors instead of running an unquoted URL like this.
+    return f"curl '{url}'" if qs else f"curl {url}"
 
 
 TERM = """<div class="term"><div class="bar"><span class="dot" style="background:#ff5f57"></span>
 <span class="dot" style="background:#febc2e"></span><span class="dot" style="background:#28c840"></span>
 <span class="t">{cmd}</span></div><pre>{body}</pre></div>"""
+
+# Same bar chrome as TERM, but the body is the actual saved GIF (see
+# demo_animate.gif, produced by /Zurich/animate.gif) instead of a rendered
+# <pre> -- there's no static text equivalent of "the whole night streamed
+# live", so this is the one panel that isn't api.compose() output.
+IMG_TERM = """<div class="term"><div class="bar"><span class="dot" style="background:#ff5f57"></span>
+<span class="dot" style="background:#febc2e"></span><span class="dot" style="background:#28c840"></span>
+<span class="t">{cmd}</span></div><img src="demo_animate.gif" alt="Animated night sky over Zurich, stars and planets fading in with twilight" style="display:block;width:100%"></div>"""
 
 # .cta and .t match api.PAGE exactly (same header on every page, demo included).
 # Kept as a literal copy rather than an import because this is a static build
@@ -125,19 +145,31 @@ PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
 <pre class="cta">curl skymap.sh/demo</pre>
 <p class="t"><b>skymap.sh</b>
 <a href="/">home</a> · <a href="/demo">demo</a> · <a href="/help">help</a> · <a href="/legend">legend</a></p>
+<p class="t">{nav_row}</p>
 {sections}
 </div></body></html>"""
 
+nav_row = " &middot; ".join(
+    f'<a href="#section-{i}">{i}. {title}</a>' for i, (title, _sub, _kwargs, _cap) in enumerate(CASES, 1))
+
 sections = []
 for i, (title, sub, kwargs, cap) in enumerate(CASES, 1):
-    r = api.Request(color=True, **kwargs)
-    res = api.compose(r)
-    body = api.ansi_to_html(res.text)
     cmd = cmd_for(kwargs)
+    if kwargs.get("animate"):
+        # No static-text equivalent of "the whole night streamed live" --
+        # demo_animate.gif is a saved copy of the real /animate.gif stream,
+        # not api.compose() output like every other panel here.
+        term_html = IMG_TERM.format(cmd=cmd)
+    else:
+        r = api.Request(color=True, **kwargs)
+        res = api.compose(r)
+        body = api.ansi_to_html(res.text)
+        term_html = TERM.format(cmd=cmd, body=body)
     sections.append(
-        f'<h2>{i} &middot; {title} <span class="n">{cmd}</span></h2>\n'
-        f'{TERM.format(cmd=cmd, body=body)}\n'
+        f'<h2 id="section-{i}">{i} &middot; {title} <span class="n">{cmd}</span></h2>\n'
+        f'{term_html}\n'
         f'<p class="cap">{cap}</p>')
 
-open("sky_demo.html", "w").write(PAGE.format(sections="\n".join(sections)))
+open("sky_demo.html", "w").write(
+    PAGE.format(nav_row=nav_row, sections="\n".join(sections)))
 print("ok")

@@ -689,6 +689,19 @@ def demo():
         return HTMLResponse(f.read(), headers={"Cache-Control": "public, max-age=3600"})
 
 
+@app.get("/demo_animate.gif")
+def demo_animate_gif():
+    # /demo has no trailing slash, so the demo page's own <img src="demo_
+    # animate.gif"> (a relative path) resolves against the browser's URL bar
+    # to /demo_animate.gif, not /demo/demo_animate.gif -- this is that route.
+    # Same static, pre-rendered file build_sky_html.py already produced.
+    path = f"{api.sky.BASE}/demo_animate.gif"
+    if not os.path.isfile(path):
+        return PlainTextResponse("", status_code=404)
+    return FileResponse(path, media_type="image/gif",
+                        headers={"Cache-Control": "public, max-age=3600"})
+
+
 @app.get("/gif-capacity")
 def gif_capacity():
     # Polled by the "Share as a GIF" button so it can grey itself out before
