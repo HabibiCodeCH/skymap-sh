@@ -1176,16 +1176,16 @@ PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
       padding:10px 14px;margin:0 0 14px;color:#7ee787;font-size:13px;
       display:inline-block}}
  .cta::before{{content:"$ ";color:#6e7681}}
- .chart-row{{display:flex;gap:18px;align-items:flex-start;flex-wrap:wrap}}
- .chart-row pre{{flex:1;min-width:0}}
- .chart-side{{display:flex;flex-direction:column;gap:8px;flex-shrink:0;padding-top:2px}}
- .chart-side a{{color:#ffd700;font-size:12px;text-decoration:none;white-space:nowrap}}
- .chart-side a:hover{{text-decoration:underline}}
- .animate-controls{{display:inline-flex;align-items:center;gap:8px;flex-wrap:wrap;margin:0 0 10px}}
+ .toolbar{{display:flex;justify-content:space-between;align-items:center;
+          flex-wrap:wrap;gap:10px;margin:0 0 14px}}
+ .toolbar-left{{display:flex;align-items:center;gap:10px;flex-wrap:wrap}}
+ .toolbar-right{{display:flex;align-items:center;gap:10px;flex-wrap:wrap}}
+ .toolbar-right a{{color:#ffd700;font-size:12px;text-decoration:none;white-space:nowrap}}
+ .toolbar-right a:hover{{text-decoration:underline}}
+ .animate-controls{{display:flex;align-items:center;gap:8px;flex-wrap:wrap}}
  .animate-btn{{background:#0d1117;border:1px solid #30363d;color:#ffd700;
               padding:6px 12px;border-radius:4px;font:inherit;font-size:12px;
-              cursor:pointer;margin:0 10px 10px 0;display:inline-block;
-              text-decoration:none}}
+              cursor:pointer;display:inline-block;text-decoration:none}}
  .animate-btn:hover{{border-color:#ffd700;text-decoration:none}}
  .animate-btn:disabled{{opacity:.6;cursor:default}}
  .animate-btn[hidden]{{display:none}}
@@ -1194,7 +1194,7 @@ PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
 <pre class="cta">curl skymap.sh{path}</pre>
 <p class="t"><b>skymap.sh</b>
 <a href="/demo">demo</a> · <a href="/help">help</a> · <a href="/legend">legend</a></p>
-{explore}{animate_btn}{quadrant_btn}<div class="chart-row"><pre id="chart-pre">{body}</pre><div class="chart-side" id="chart-side">{extra}</div></div>
+{explore}<div class="toolbar"><div class="toolbar-left">{animate_btn}{quadrant_btn}</div><div class="toolbar-right">{extra}</div></div><pre id="chart-pre">{body}</pre>
 <p class="t" style="margin-top:18px">Created by <a href="https://x.com/habibicode">@habibicode</a>
 · <a href="https://github.com/HabibiCodeCH/skymap-sh">see the repo</a></p>
 <script>
@@ -1230,28 +1230,6 @@ function ansiToHtml(text){{
   if(open)out+='</span>';
   return out;
 }}
-var SPACE_FACTS=[
-  "A day on Venus is longer than its year.",
-  "Neutron stars can spin over 600 times a second.",
-  "Saturn is less dense than water -- it would float.",
-  "A teaspoon of neutron star weighs about a billion tons.",
-  "The Sun holds over 99.8% of the Solar System's mass.",
-  "Sunlight takes about 8 minutes to reach Earth.",
-  "There are more stars in the universe than grains of sand on Earth.",
-  "Jupiter has at least 95 known moons.",
-  "There's no wind on the Moon, so footprints there can last millions of years.",
-  "A year on Mercury is just 88 Earth days.",
-  "The Milky Way and Andromeda will collide in about 4.5 billion years.",
-  "Space is silent -- sound needs a medium like air to travel.",
-  "The largest known star could hold over a billion Suns.",
-  "Uranus rotates almost on its side, at 98 degrees.",
-  "The Moon drifts about 3.8cm farther from Earth every year.",
-  "About a million Earths could fit inside the Sun.",
-  "The ISS orbits Earth roughly every 90 minutes.",
-  "Olympus Mons on Mars is nearly triple the height of Everest."
-];
-var SPIN_FRAMES=['⠋','⠙','⠹','⠸','⠼','⠴','⠦','⠧','⠇','⠏'];
-
 function skymapAnimate(btn){{
   // Live preview plays right in the chart itself from the same streaming
   // ?animate= text the CLI uses. The "Share as a GIF" button appears the
@@ -1311,26 +1289,23 @@ function skymapPollGifCapacity(gifBtn){{
 }}
 
 function skymapRenderGif(btn){{
+  // Rendering is fast enough now (on-demand, not pre-built for every
+  // viewer) that a plain status line is enough -- no spinner or facts
+  // needed to fill the wait.
   var gifUrl=btn.getAttribute('data-gif-url');
   var status=document.getElementById('gif-status');
-  var fact=SPACE_FACTS[Math.floor(Math.random()*SPACE_FACTS.length)];
-  var frame=0;
   btn.dataset.rendering='1';
-  btn.disabled=true;btn.textContent='Share as a GIF';
-  var spin=setInterval(function(){{
-    if(status)status.textContent=SPIN_FRAMES[frame++%SPIN_FRAMES.length]+' '+fact;
-  }},120);
+  btn.disabled=true;
+  if(status)status.textContent='Rendering…';
   fetch(gifUrl).then(function(r){{
     if(!r.ok)throw new Error('render failed');
     return r.headers.get('X-Gif-Id');
   }}).then(function(gifId){{
-    clearInterval(spin);
     if(status)status.textContent='';
     btn.dataset.rendering='0';
     btn.disabled=false;
     if(gifId)window.open('/animate/'+gifId+'.gif','_blank','noopener');
   }}).catch(function(){{
-    clearInterval(spin);
     if(status)status.textContent='render failed — try again';
     btn.dataset.rendering='0';
     btn.disabled=false;

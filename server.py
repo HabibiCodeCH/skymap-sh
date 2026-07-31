@@ -570,16 +570,16 @@ def _respond(request: Req, place: str | None):
         # the bare root same as an explicit place does), so these depend on
         # r.place rather than the raw `place` URL segment, which is None on
         # the root even though there's a real location to animate/share.
-        # Share as a PNG (always there) + Share as a GIF (hidden until
-        # animate starts, see skymapAnimate) sit next to the chart itself,
-        # not in the button row above it -- gif-btn/gif-status are found by
+        # Share as a GIF (hidden until animate starts, see skymapAnimate) +
+        # Share as a PNG (always there), right-aligned in the toolbar above
+        # the chart, not down beside it -- gif-btn/gif-status are found by
         # id from the JS now rather than by parentElement.querySelector, so
         # they can live in a different part of the page than animate-btn.
-        extra = (f'<a href="{png_href}" target="_blank" rel="noopener">Share as a PNG</a>'
-                f'<button id="gif-btn" class="animate-btn gif-btn" '
+        extra = (f'<button id="gif-btn" class="animate-btn gif-btn" '
                 f'data-gif-url="{api._animate_gif_url(r)}" '
                 'onclick="skymapRenderGif(this)" hidden>Share as a GIF</button>'
-                '<span id="gif-status" class="gif-status"></span>')
+                '<span id="gif-status" class="gif-status"></span>'
+                f'<a href="{png_href}" target="_blank" rel="noopener">Share as a PNG</a>')
         # Carries the exact moment on screen (r.when_local, whether that
         # came from ?t= or just defaulted to now) into the live-preview
         # fetch -- otherwise the animation would start from real "now"
