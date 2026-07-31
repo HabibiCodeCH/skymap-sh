@@ -1153,14 +1153,21 @@ def render_linear(when_utc, lat, lon, W=176, H=22, color=True, show_lines=True,
     track, iss_err = (None, None)
     if tle:
         track, iss_err = iss_track(tle, when_utc, lat, lon)
-    if track:                              # ISS: mark where it rises, peaks, sets
+    if track:                              # ISS: dotted path, one marker + label
         ISS = "\033[38;5;48m"
         for _t, a, z in track:
             place(z, a, "•", ISS, over=True)
-        for mk in (track[0], track[len(track)//2], track[-1]):
-            place(mk[2], mk[1], "Ξ", ISS, over=True)
         pk = max(track, key=lambda p: p[1])
-        text(pk[2], pk[1], "ISS", ISS)
+        # Prefer the peak -- but a high pass can crest above alt_hi (off the
+        # main chart, in the zenith inset's territory), in which case both
+        # the marker and its label would silently fail to place at all.
+        # Fall back to rise, then set, so there's always exactly one Xi
+        # (never three) and it's always somewhere the label can attach.
+        for mk in (pk, track[0], track[-1]):
+            if row_of(mk[1]) is not None and col_of(mk[2]) is not None:
+                place(mk[2], mk[1], "Ξ", ISS, over=True)
+                text(mk[2], mk[1], "ISS", ISS)
+                break
 
     if overlay:                            # Sun: thin path, marker on where it IS
         over_pts, over_col, over_lbl, over_mark = overlay

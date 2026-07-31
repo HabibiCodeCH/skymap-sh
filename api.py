@@ -1151,7 +1151,7 @@ PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
  .gif-status{{color:#6e7681;font-size:12px;white-space:nowrap}}
 </style></head><body><div class="w">
 <pre class="cta">curl skymap.sh{path}</pre>
-<p class="t"><b>skymap.sh</b> — this page is what that prints.
+<p class="t"><b>skymap.sh</b>
 <a href="/demo">demo</a> · <a href="/help">help</a> · <a href="/legend">legend</a></p>
 {explore}{animate_btn}<div class="chart-row"><pre id="chart-pre">{body}</pre><div class="chart-side" id="chart-side">{extra}</div></div>
 <p class="t" style="margin-top:18px">Created by <a href="https://x.com/habibicode">@habibicode</a>

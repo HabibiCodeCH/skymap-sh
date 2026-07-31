@@ -27,12 +27,12 @@ CASES = [
      "gets a different answer entirely: the Sun's arc across today, rise to "
      "set, with the current position marked and what's worth waiting up "
      "for once it's dark."),
-    ("ISS pass", "Sydney, marked automatically",
-     dict(place="Sydney", when=dt.datetime(2026, 7, 31, 6, 25), tle=TLE),
+    ("ISS pass", "Cape Town, marked automatically",
+     dict(place="Cape Town", when=dt.datetime(2026, 8, 1, 5, 11), tle=TLE),
      "No flag needed &mdash; if the ISS has a real pass overhead right now "
      "(above 10&deg;, sunlit, sky dark enough to see it), it's marked on "
-     "the chart automatically. This one peaks at 52&deg;, rising SW and "
-     "setting ENE."),
+     "the chart automatically. This one peaks at 73&deg;, rising SW and "
+     "setting SE."),
     ("Find one thing", "Zurich, find=Venus",
      dict(place="Zurich", when=dt.datetime(2026, 7, 30, 21, 30), find="Venus"),
      "Naming an object picks the framing for you: a window centred on it in "
@@ -123,9 +123,7 @@ PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
  .cap{{color:#6e7681;font-size:12.5px;margin:9px 2px 0;line-height:1.55;font-family:ui-sans-serif,-apple-system,"Segoe UI",Roboto,sans-serif}}
 </style></head><body><div class="wrap">
 <pre class="cta">curl skymap.sh/demo</pre>
-<p class="t"><b>skymap.sh</b> — six real renders, one composition layer: <code>api.py</code> is
-what <code>cli.py</code>, <code>curl</code>, and this page all call, so none of these can drift
-from what the live service actually does.
+<p class="t"><b>skymap.sh</b>
 <a href="/">home</a> · <a href="/demo">demo</a> · <a href="/help">help</a> · <a href="/legend">legend</a></p>
 {sections}
 </div></body></html>"""
