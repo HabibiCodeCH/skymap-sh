@@ -593,12 +593,14 @@ def _quadrant_toggle_url(r):
 
 def _animate_gif_url(r):
     """Relative -- fetched same-origin by the page's own JS, so no base_url
-    substitution needed. No query params: compose_frame (shared by the CLI's
-    ?animate= and this) always renders the full 360 sweep, continuous day/
-    night blend -- facing/night/width from the static view don't apply and
-    would be silently ignored, so they're left off rather than implying
-    they'd change anything."""
-    return f"/{r.place.slug}/animate.gif"
+    substitution needed. facing/night/width from the static view don't
+    apply and would be silently ignored -- compose_frame always renders the
+    full 360 sweep, continuous day/night blend -- so those are left off
+    rather than implying they'd change anything. t= does apply though (both
+    /animate.gif and ?animate= start their sequence from base_r.when_utc),
+    so it's carried over: without it, animating from a date/time picked on
+    the static view silently jumped back to the real current moment instead."""
+    return f"/{r.place.slug}/animate.gif?t={r.when_local:%Y-%m-%dT%H:%M}"
 
 
 def _compose_sky(r):
