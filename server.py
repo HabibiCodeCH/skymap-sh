@@ -486,12 +486,16 @@ def _render_and_save_gif(gif_id, frames):
     return data
 
 
-async def _animate(base_r, hours, base_url):
+async def _animate(base_r, hours, base_url, is_ui=False):
     """Live text preview only -- never renders a GIF. Every ?animate view
     used to also silently render and save a GIF in the background, which
     meant the expensive Pillow work happened on every view whether or not
     anyone wanted to share it. Now it only happens for whoever actually
-    asks, via /{place}/animate.gif -- see animate_gif_inline."""
+    asks, via /{place}/animate.gif -- see animate_gif_inline.
+
+    is_ui=True means this is the page's own JS fetch (marked with ?ui=1),
+    not a real terminal -- it already has a "Share as a GIF" button, so it
+    skips the trailing curl-command hint meant for actual curl/CLI users."""
     global _animate_active
     steps = int(hours * 60 / ANIMATE_STEP_MIN)
     start = base_r.when_utc
@@ -507,8 +511,9 @@ async def _animate(base_r, hours, base_url):
                                                dawn_lag_minutes=dawn_lag_minutes)
             yield f"\033[2J\033[H{body}\n".encode()
             await asyncio.sleep(ANIMATE_FRAME_DELAY)
-        yield (f"\n{api.SUN_COL}Want a shareable GIF of this? Run:\n"
-              f"  curl {base_url}/{base_r.place.slug}/animate.gif\033[0m\n").encode()
+        if not is_ui:
+            yield (f"\n{api.SUN_COL}Want a shareable GIF of this? Run:\n"
+                  f"  curl {base_url}/{base_r.place.slug}/animate.gif\033[0m\n").encode()
     finally:
         _animate_active -= 1
 
@@ -546,7 +551,7 @@ def _respond(request: Req, place: str | None):
         r = _build(request, place)
         base_url = str(request.base_url).rstrip("/")
         _stat["animate"] += 1
-        return StreamingResponse(_animate(r, hours, base_url),
+        return StreamingResponse(_animate(r, hours, base_url, is_ui=bool(q.get("ui"))),
                                  media_type="text/plain",
                                  headers={"Cache-Control": "no-store"})
     r = _build(request, place)
@@ -587,10 +592,15 @@ def _respond(request: Req, place: str | None):
         # for, which is confusing on any ?t= link and outright broken on a
         # future one.
         live_t = r.when_local.strftime("%Y-%m-%dT%H:%M")
+        # ui=1 marks this as the page's own JS fetch, not a real curl/terminal
+        # session -- fetch() doesn't send Accept: text/html by default, so
+        # _wants() can't tell the two apart on headers alone, and the
+        # browser already has a real "Share as a GIF" button, so it doesn't
+        # need the curl-command hint _animate() appends for actual terminals.
         animate_btn = (
             '<div class="animate-controls">'
             f'<button id="animate-btn" class="animate-btn" '
-            f'data-live-url="/{r.place.slug}?animate=24&t={live_t}" '
+            f'data-live-url="/{r.place.slug}?animate=24&t={live_t}&ui=1" '
             'onclick="skymapAnimate(this)">▶ animate</button>'
             '</div>')
         if q.get("animate") is not None:
