@@ -551,11 +551,14 @@ def _respond(request: Req, place: str | None):
     page_text = res.text.replace("{base_url}", base_url)
     if mode == "html":
         png_href = api._png_url(r).replace("{base_url}", "")  # relative is fine in a browser
-        extra = (f'<a href="{png_href}" target="_blank" rel="noopener">Share as a PNG</a>'
-                if place else "")
+        # r.place is always resolved by here (IP geolocation fills it in on
+        # the bare root same as an explicit place does), so these depend on
+        # r.place rather than the raw `place` URL segment, which is None on
+        # the root even though there's a real location to animate/share.
+        extra = f'<a href="{png_href}" target="_blank" rel="noopener">Share as a PNG</a>'
         animate_btn = (f'<button class="animate-btn" data-gif-url="{api._animate_gif_url(r)}" '
                       f'data-live-url="/{r.place.slug}?animate=24&amp;nogif=1" '
-                      f'onclick="skymapAnimate(this)">▶ animate</button>' if place else "")
+                      f'onclick="skymapAnimate(this)">▶ animate</button>')
         body = api.PAGE.format(title=f"skymap.sh — {r.place.name}",
                                path=f"/{r.place.slug}" if place else "",
                                explore=api.EXPLORE, animate_btn=animate_btn,
