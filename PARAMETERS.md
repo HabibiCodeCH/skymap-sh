@@ -163,8 +163,10 @@ at all.
 
 | URL | you get |
 |---|---|
-| `/help` | this list, short form |
-| `/healthz` | `ok stars=2887 asterisms=28 tle=… cache=… hitrate=…` |
+| `/help` (or `/usage`) | this list, short form |
+| `/legend` | every character and colour a chart can draw, explained |
+| `/demo` | six-plus real renders, side by side |
+| `/healthz` | `ok stars=2887 asterisms=28 deepsky=739 tle=… cache=… hitrate=…` |
 | `/stats` | what people ask for — top cities, top finds, views, cache hit rate |
 | `/stats?format=json` | the same, structured |
 | `/robots.txt` | allow all |
