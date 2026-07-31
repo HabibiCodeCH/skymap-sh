@@ -1179,7 +1179,8 @@ PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
  .toolbar{{display:flex;justify-content:space-between;align-items:center;
           flex-wrap:wrap;gap:10px;margin:0 0 14px}}
  .toolbar-left{{display:flex;align-items:center;gap:10px;flex-wrap:wrap}}
- .toolbar-right{{display:flex;align-items:center;gap:10px;flex-wrap:wrap}}
+ .toolbar-right{{display:flex;align-items:flex-start;gap:10px;flex-wrap:wrap;
+                padding-top:6px}}
  .toolbar-right a{{color:#ffd700;font-size:12px;text-decoration:none;white-space:nowrap}}
  .toolbar-right a:hover{{text-decoration:underline}}
  .animate-controls{{display:flex;align-items:center;gap:8px;flex-wrap:wrap}}
