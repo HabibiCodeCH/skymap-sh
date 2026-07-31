@@ -364,7 +364,11 @@ def _build(request: Req, place: str | None):
         night=bool(q.get("night")),
         width=width,
         dso=bool(q.get("dso")),
-        quadrant=q.get("quadrant") or None,
+        # "quadrant" in q (not q.get(...) or None) so a bare ?quadrant with no
+        # letter yet -- just asking to see the grid -- is still distinguished
+        # from the param being absent entirely; api.Request uses that
+        # difference to decide whether to switch dso on.
+        quadrant=(q["quadrant"] if "quadrant" in q else None),
     )
 
 

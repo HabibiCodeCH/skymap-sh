@@ -290,8 +290,12 @@ class Request:
         self.quadrant = raw_quadrant if re.fullmatch(r"[A-Z]", raw_quadrant) else None
         # A quadrant crop with nothing but stars is often near-empty -- the
         # whole point of zooming in is to reveal more, so asking for a
-        # quadrant turns the deep-sky layer on too unless it's already on.
-        self.dso = dso or bool(raw_quadrant)
+        # quadrant turns the deep-sky layer on too, even before a specific
+        # letter is picked (bare ?quadrant, showing the grid to choose from).
+        # That's why this checks the *raw* argument (quadrant is not None)
+        # rather than self.quadrant -- a blank or not-yet-chosen quadrant
+        # request should still switch dso on.
+        self.dso = dso or (quadrant is not None)
         self.tle = tle
         # clamped once, here, so it's already canonical by the time it ever
         # reaches a cache key -- otherwise every distinct raw ?w= value before

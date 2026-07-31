@@ -48,7 +48,11 @@ def main(argv):
         night="--night" in flags,
         color="--plain" not in flags,
         dso="--dso" in flags,
-        quadrant=flags.get("--quadrant") or None,
+        # bare --quadrant (no =letter) parses to boolean True in `flags`,
+        # not the empty string api.Request expects for "asked, no letter
+        # chosen yet" -- api.Request tells that apart from the flag being
+        # absent entirely (which stays None here).
+        quadrant=("" if flags.get("--quadrant") is True else flags.get("--quadrant")),
         # shown automatically whenever a real pass is up; --iss is a no-op now
         tle=tle.current() or f"{api.sky.BASE}/demo.tle",
     )
