@@ -1058,7 +1058,7 @@ def legend_text(color=True):
         " Galaxy...) are labelled by name",
         "",
         head("SATELLITE"),
-        f"  {P('◉', ISS_C)}  ISS, marked automatically whenever a real pass is up",
+        f"  {P('Ξ', ISS_C)}  ISS, marked automatically whenever a real pass is up",
         "",
         head("QUADRANTS  --  ?quadrant=A"),
         f"  {P('A B C D...', QUAD_C)}  lettered cells       {P('┊ ┈', BOUND_C)}  cell boundaries",

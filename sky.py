@@ -1158,7 +1158,7 @@ def render_linear(when_utc, lat, lon, W=176, H=22, color=True, show_lines=True,
         for _t, a, z in track:
             place(z, a, "•", ISS, over=True)
         for mk in (track[0], track[len(track)//2], track[-1]):
-            place(mk[2], mk[1], "◉", ISS, over=True)
+            place(mk[2], mk[1], "Ξ", ISS, over=True)
         pk = max(track, key=lambda p: p[1])
         text(pk[2], pk[1], "ISS", ISS)
 
