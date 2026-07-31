@@ -34,6 +34,9 @@ class C:
     MUTE = "\033[38;5;242m"
     PLANET = "\033[38;5;180m"
     MOON = "\033[38;5;253m"
+    DSO = "\033[38;5;120m"      # deep-sky objects -- green, so they read
+                                # apart from purple constellation names and
+                                # white stars/Moon at a glance
 
 # star colour by B-V index
 def star_colour(ci):
@@ -229,7 +232,8 @@ def glyph_for(mag):
 # galaxies/clusters/nebulae to mag 11. One glyph+colour per category, kept
 # off the star glyphs and moon-phase glyphs above so nothing collides.
 DSO_GLYPH = {
-    "gal": ("◍", "\033[38;5;183m"),   # galaxy -- pale purple
+    "gal": ("◍", C.DSO),              # galaxy -- green (too close to purple
+                                       # constellation names otherwise)
     "clu": ("⁂", "\033[38;5;221m"),   # open/globular cluster -- gold
     "neb": ("✳", "\033[38;5;211m"),   # nebula -- pink
     "pln": ("◈", "\033[38;5;51m"),    # planetary nebula -- cyan
