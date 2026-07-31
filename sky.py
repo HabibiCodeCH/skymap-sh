@@ -232,16 +232,15 @@ def glyph_for(mag):
 # galaxies/clusters/nebulae to mag 11. One glyph+colour per category, kept
 # off the star glyphs and moon-phase glyphs above so nothing collides.
 DSO_GLYPH = {
-    "gal": ("◍", C.DSO),              # galaxy -- green (too close to purple
+    "gal": ("✺", C.DSO),              # galaxy -- green (too close to purple
                                        # constellation names otherwise)
     "clu": ("⁂", "\033[38;5;221m"),   # open/globular cluster -- gold
     "neb": ("✳", "\033[38;5;211m"),   # nebula -- pink
     "pln": ("◈", "\033[38;5;51m"),    # planetary nebula -- cyan
 }
+DSO_NAMES = {"gal": "galaxy", "clu": "cluster", "neb": "nebula", "pln": "planetary nebula"}
 DSO_LEGEND = ("deep sky:  " +
-              "  ".join(f"{g} {n}" for g, n in
-                        (("◍", "galaxy"), ("⁂", "cluster"), ("✳", "nebula"),
-                         ("◈", "planetary nebula"))))
+              "  ".join(f"{DSO_GLYPH[k][0]} {DSO_NAMES[k]}" for k in DSO_NAMES))
 
 def deepsky_visible(dso_limit, jd, lat, lst):
     """Deep-sky objects above the horizon and brighter than dso_limit.
