@@ -91,9 +91,9 @@ there.
 | `--quadrant=A` / `?quadrant=A` | crops the chart to that lettered cell |
 | nothing | the whole view, with cell letters marked on it |
 
-The horizon view is split into a fixed 3x2 grid — `A B C` across the top,
-`D E F` across the bottom — always 6 cells, whatever the current span. The
-letters are computed fresh from `facing`/`span` every time, not stored anywhere, so
+The horizon view is split into a fixed 4x3 grid — `A B C D`, `E F G H`,
+`I J K L` — always 12 cells, whatever the current span. The letters are
+computed fresh from `facing`/`span` every time, not stored anywhere, so
 `?quadrant=A` means the same patch of sky on every request as long as the rest
 of the URL matches. There's no persistent session: to zoom in, rerun the same
 command with `--quadrant=` (or `?quadrant=`) added; a crop doesn't draw its own

@@ -862,12 +862,13 @@ def pick_constellations(cpos, cons, jd, lat, lst, alt_max, sectors=6, extra=2,
 
 LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
 
-def quadrant_grid(centre, span, alt_lo, alt_hi, cols=3, rows=2):
-    """Split an az/alt window into a fixed 3x2 grid, labelled A, B, C... in
-    reading order (left to right, top to bottom). Backs ?quadrant=: a
-    request crops itself to one cell instead of the whole window, computed
-    fresh from the same rule every time rather than any server-side state --
-    ?quadrant=A means the same patch of sky whichever request asks for it."""
+def quadrant_grid(centre, span, alt_lo, alt_hi, cols=4, rows=3):
+    """Split an az/alt window into a fixed 4x3 grid, labelled A, B, C... in
+    reading order (left to right, top to bottom). More, smaller cells means
+    a crop zooms in further. Backs ?quadrant=: a request crops itself to one
+    cell instead of the whole window, computed fresh from the same rule
+    every time rather than any server-side state -- ?quadrant=A means the
+    same patch of sky whichever request asks for it."""
     alt_rng = alt_hi - alt_lo
     az_w, alt_h = span / cols, alt_rng / rows
     cells = []
