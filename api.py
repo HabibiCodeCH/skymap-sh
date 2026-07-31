@@ -1165,11 +1165,12 @@ PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
  .chart-side{{display:flex;flex-direction:column;gap:8px;flex-shrink:0;padding-top:2px}}
  .chart-side a{{color:#ffd700;font-size:12px;text-decoration:none;white-space:nowrap}}
  .chart-side a:hover{{text-decoration:underline}}
- .animate-controls{{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:0 0 10px}}
+ .animate-controls{{display:inline-flex;align-items:center;gap:8px;flex-wrap:wrap;margin:0 0 10px}}
  .animate-btn{{background:#0d1117;border:1px solid #30363d;color:#ffd700;
               padding:6px 12px;border-radius:4px;font:inherit;font-size:12px;
-              cursor:pointer;display:inline-block}}
- .animate-btn:hover{{border-color:#ffd700}}
+              cursor:pointer;margin:0 10px 10px 0;display:inline-block;
+              text-decoration:none}}
+ .animate-btn:hover{{border-color:#ffd700;text-decoration:none}}
  .animate-btn:disabled{{opacity:.6;cursor:default}}
  .animate-btn[hidden]{{display:none}}
  .gif-status{{color:#6e7681;font-size:12px;white-space:nowrap}}
