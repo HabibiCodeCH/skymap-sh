@@ -1,0 +1,22 @@
+[Unit]
+Description=skymap.sh Bluesky bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=exec
+User=sky
+WorkingDirectory=/srv/sky
+Environment=PYTHONUNBUFFERED=1
+EnvironmentFile=/etc/sky/bsky_bot.env
+ExecStart=/srv/sky/venv/bin/python3 bsky_bot.py
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/srv/sky
+MemoryMax=256M
+
+[Install]
+WantedBy=multi-user.target
