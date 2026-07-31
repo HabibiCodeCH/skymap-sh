@@ -1112,7 +1112,7 @@ function skymapAnimate(btn){{
   var gifBtn=btn.parentElement.querySelector('.gif-btn');
   var pre=document.getElementById('chart-pre');
   btn.disabled=true;btn.textContent='animating…';
-  if(gifBtn)gifBtn.hidden=false;
+  if(gifBtn){{gifBtn.hidden=false;skymapPollGifCapacity(gifBtn);}}
   fetch(liveUrl).then(function(resp){{
     var reader=resp.body.getReader();
     var decoder=new TextDecoder();
@@ -1140,12 +1140,33 @@ function skymapAnimate(btn){{
   }});
 }}
 
+function skymapPollGifCapacity(gifBtn){{
+  // Greys the button out before a click would just 503, rather than only
+  // finding out after. A stale read is harmless -- the render endpoint
+  // still enforces the real cap itself, this is only ever a UX hint. Skips
+  // a tick entirely while this button's own render is in flight, so it
+  // doesn't fight skymapRenderGif's use of the same status line.
+  var status=gifBtn.parentElement.querySelector('.gif-status');
+  function poll(){{
+    if(gifBtn.dataset.rendering==='1')return;
+    fetch('/gif-capacity').then(function(r){{return r.json();}}).then(function(d){{
+      if(gifBtn.dataset.rendering==='1')return;
+      gifBtn.disabled=!d.available;
+      if(status)status.textContent=d.available?'':
+        'Too many GIFs rendering right now — please wait a few seconds';
+    }}).catch(function(){{}});
+  }}
+  poll();
+  setInterval(poll,4000);
+}}
+
 function skymapRenderGif(btn){{
   var gifUrl=btn.getAttribute('data-gif-url');
   var status=btn.parentElement.querySelector('.gif-status');
   var fact=SPACE_FACTS[Math.floor(Math.random()*SPACE_FACTS.length)];
   var frame=0;
-  btn.disabled=true;
+  btn.dataset.rendering='1';
+  btn.disabled=true;btn.textContent='Share as a GIF';
   var spin=setInterval(function(){{
     if(status)status.textContent=SPIN_FRAMES[frame++%SPIN_FRAMES.length]+' '+fact;
   }},120);
@@ -1155,11 +1176,13 @@ function skymapRenderGif(btn){{
   }}).then(function(gifId){{
     clearInterval(spin);
     if(status)status.textContent='';
+    btn.dataset.rendering='0';
     btn.disabled=false;
     if(gifId)window.open('/animate/'+gifId+'.gif','_blank','noopener');
   }}).catch(function(){{
     clearInterval(spin);
     if(status)status.textContent='render failed — try again';
+    btn.dataset.rendering='0';
     btn.disabled=false;
   }});
 }}

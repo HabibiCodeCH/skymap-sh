@@ -431,10 +431,14 @@ ANIMATE_MAX_CONCURRENT = 250       # the text stream costs ~1.4ms of CPU and
                                     # expensive path and gets its own,
                                     # much tighter cap
 _animate_active = 0
-GIF_RENDER_MAX_CONCURRENT = 4      # each render peaks ~180MB (measured, see
-                                    # gif.frames_to_gif); at sky.service's
-                                    # MemoryMax=1024M that's real headroom,
-                                    # not a number to raise casually
+GIF_RENDER_MAX_CONCURRENT = 7       # each render now peaks ~118MB (measured,
+                                    # down from ~180MB after gif.py's
+                                    # glyph-cache and streaming-encode fixes)
+                                    # -- 7 * 118 + ~110 baseline is ~936MB,
+                                    # against sky.service's MemoryMax=1024M.
+                                    # 8 would be ~1054MB, over the ceiling --
+                                    # not a number to raise without also
+                                    # raising MemoryMax
 _gif_render_active = 0
 _gif_render_lock = threading.Lock()    # animate_gif_inline runs in
                                         # Starlette's threadpool, not the
@@ -610,6 +614,17 @@ def demo():
     # not run through api.PAGE, so just served as-is.
     with open(f"{api.sky.BASE}/sky_demo.html") as f:
         return HTMLResponse(f.read(), headers={"Cache-Control": "public, max-age=3600"})
+
+
+@app.get("/gif-capacity")
+def gif_capacity():
+    # Polled by the "Share as a GIF" button so it can grey itself out before
+    # a click would just 503 -- a stale read here is harmless (the render
+    # endpoint still enforces the real cap itself), this is a UX hint, not
+    # the source of truth.
+    return JSONResponse(
+        {"available": _gif_render_active < GIF_RENDER_MAX_CONCURRENT},
+        headers={"Cache-Control": "no-store"})
 
 
 @app.get("/healthz", response_class=PlainTextResponse)
