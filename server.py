@@ -148,6 +148,14 @@ def stats_text(n=15):
              f"({100*_stat['hit']/req:.1f}% hit)")
     L.append(f"sky        {_stat['night']:,} night / {_stat['day']:,} day")
     L.append("")
+    if _stat["animate"] or _stat["gif"] or _stat["png"]:
+        L.append("sharing")
+        rej = f"  ({_stat['animate_rejected']:,} rejected)" if _stat["animate_rejected"] else ""
+        L.append(f"  {'animate':12} {_stat['animate']:>8,}{rej}")
+        rej = f"  ({_stat['gif_rejected']:,} rejected)" if _stat["gif_rejected"] else ""
+        L.append(f"  {'gif':12} {_stat['gif']:>8,}{rej}")
+        L.append(f"  {'png':12} {_stat['png']:>8,}")
+        L.append("")
     L.append("views")
     for k in sorted(k for k in _stat if k.startswith("view:")):
         L.append(f"  {k[5:]:12} {_stat[k]:>8,}")
@@ -180,6 +188,8 @@ def stats_json(n=50):
         uptime_s=round(time.time() - STARTED),
         requests=_stat["requests"], cache_hit=_stat["hit"], cache_miss=_stat["miss"],
         night=_stat["night"], day=_stat["day"], iss=_stat["iss"],
+        animate=_stat["animate"], animate_rejected=_stat["animate_rejected"],
+        gif=_stat["gif"], gif_rejected=_stat["gif_rejected"], png=_stat["png"],
         views={k[5:]: v for k, v in _stat.items() if k.startswith("view:")},
         modes={k[5:]: v for k, v in _stat.items() if k.startswith("mode:")},
         errors={k[7:]: v for k, v in _stat.items() if k.startswith("status:")},
@@ -508,6 +518,7 @@ def _respond(request: Req, place: str | None):
         return PlainTextResponse(msg, status_code=404)
     if q.get("animate") is not None:
         if _animate_active >= ANIMATE_MAX_CONCURRENT:
+            _stat["animate_rejected"] += 1
             return PlainTextResponse(
                 "Too many animations running right now -- try again shortly.\n",
                 status_code=503, headers={"Cache-Control": "no-store"})
@@ -518,6 +529,7 @@ def _respond(request: Req, place: str | None):
         hours = max(1.0, min(24.0, hours))
         r = _build(request, place)
         base_url = str(request.base_url).rstrip("/")
+        _stat["animate"] += 1
         return StreamingResponse(_animate(r, hours, base_url),
                                  media_type="text/plain",
                                  headers={"Cache-Control": "no-store"})
@@ -665,6 +677,7 @@ def horizon_png(request: Req, place: str):
     r = _build(request, place)
     art = api.compose_chart_only(r)
     data = gif.frame_to_png(art)
+    _stat["png"] += 1
     edge = DAY_EDGE if not r.night and api.is_daytime(r) else NIGHT_EDGE
     return Response(data, media_type="image/png",
                     headers={"Cache-Control": f"public, max-age={edge // 4}, s-maxage={edge}"})
@@ -685,6 +698,7 @@ def animate_gif_inline(request: Req, place: str):
     terminal = any(t in ua for t in TERMINALS)
     with _gif_render_lock:
         if _gif_render_active >= GIF_RENDER_MAX_CONCURRENT:
+            _stat["gif_rejected"] += 1
             msg = "Too many GIFs rendering right now -- try again in a few seconds.\n"
             return PlainTextResponse(msg, status_code=503,
                                      headers={"Cache-Control": "no-store"})
@@ -713,6 +727,7 @@ def animate_gif_inline(request: Req, place: str):
             frames.append(body)
         gif_id = secrets.token_urlsafe(6)
         data = _render_and_save_gif(gif_id, frames)
+        _stat["gif"] += 1
     finally:
         with _gif_render_lock:
             _gif_render_active -= 1
