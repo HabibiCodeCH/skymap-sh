@@ -39,6 +39,24 @@ CASES = [
      "both axes, a crosshair on the target, directions underneath in fists "
      "rather than degrees. Works for planets, the Moon, any named star, and "
      "asterisms."),
+    ("Quadrants", "Zurich, ?quadrant",
+     dict(place="Zurich", when=dt.datetime(2026, 7, 30, 23, 0), quadrant=""),
+     "The horizon view splits into a fixed 4x3 grid, A through L, letters "
+     "marked right on the chart. Asking for a quadrant at all switches the "
+     "deep-sky layer on too &mdash; a single cell of stars alone is often "
+     "near-empty, and the point of zooming in is to reveal more."),
+    ("Quadrant zoom", "Zurich, quadrant=B",
+     dict(place="Zurich", when=dt.datetime(2026, 7, 30, 23, 0), quadrant="B"),
+     "?quadrant=B crops to that one lettered cell instead of the whole sky. "
+     "No server-side state &mdash; the same letter means the same patch of "
+     "sky on every request, recomputed fresh from facing/span each time."),
+    ("Deep sky", "Zurich, ?dso=1",
+     dict(place="Zurich", when=dt.datetime(2026, 7, 30, 23, 0), dso=True),
+     "739 galaxies, clusters, nebulae and planetary nebulae from the "
+     "Revised NGC (public domain), pre-filtered to magnitude 11. About 30 "
+     "well-known ones &mdash; Andromeda Galaxy, Whirlpool Galaxy, the Double "
+     "Cluster among them &mdash; are labelled by name, the same way stars "
+     "and planets are."),
     ("A narrower width", "Zurich, ?w=90",
      dict(place="Zurich", when=dt.datetime(2026, 7, 30, 23, 0), width=90),
      "?w= rescales the render to fit any terminal &mdash; both dimensions "
@@ -67,6 +85,10 @@ def cmd_for(kwargs):
         q.append(f"facing={kwargs['facing']}")
     if kwargs.get("span"):
         q.append(f"span={int(kwargs['span'])}")
+    if "quadrant" in kwargs:
+        q.append(f"quadrant={kwargs['quadrant']}" if kwargs["quadrant"] else "quadrant")
+    if kwargs.get("dso"):
+        q.append("dso=1")
     qs = "&".join(q)
     return f"curl skymap.sh/{place}" + (f"?{qs}" if qs else "")
 
@@ -104,7 +126,7 @@ PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
 <p class="t"><b>skymap.sh</b> — six real renders, one composition layer: <code>api.py</code> is
 what <code>cli.py</code>, <code>curl</code>, and this page all call, so none of these can drift
 from what the live service actually does.
-<a href="/">home</a> · <a href="/demo">demo</a> · <a href="/help">help</a></p>
+<a href="/">home</a> · <a href="/demo">demo</a> · <a href="/help">help</a> · <a href="/legend">legend</a></p>
 {sections}
 </div></body></html>"""
 

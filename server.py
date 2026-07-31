@@ -656,6 +656,19 @@ def gif_capacity():
         headers={"Cache-Control": "no-store"})
 
 
+@app.get("/legend", response_class=PlainTextResponse)
+def legend(request: Req):
+    mode, colour = _wants(request)
+    headers = {"Cache-Control": "public, max-age=3600"}
+    if mode == "html":
+        body = api.PAGE.format(title="skymap.sh — legend", path="/legend",
+                               explore=api.EXPLORE,
+                               body=api.ansi_to_html(api.legend_text(True)),
+                               extra="", animate_btn="")
+        return HTMLResponse(body, headers=headers)
+    return PlainTextResponse(api.legend_text(colour), headers=headers)
+
+
 @app.get("/healthz", response_class=PlainTextResponse)
 def healthz():
     p = app.state.tle

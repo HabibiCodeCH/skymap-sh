@@ -1013,6 +1013,64 @@ Sun and Moon: Meeus. Satellites: CelesTrak.
 """
 
 
+def legend_text(color=True):
+    """Every character and colour a chart can draw, in one place -- so "what's
+    that dot" has an answer without reading sky.py. Colours come from the
+    same constants/functions the renderer itself calls (sky.C, star_colour,
+    DSO_GLYPH, moon_glyph's own phase glyphs), so this can't drift from what
+    a chart actually draws."""
+    SUN_C, ISS_C = "\033[38;5;227m", "\033[38;5;48m"
+    STARLABEL_C, QUAD_C, BOUND_C = "\033[38;5;231m", "\033[38;5;226m", "\033[38;5;240m"
+    starcol = sky.star_colour(None)
+    bluewhite, white = sky.star_colour(-0.1), sky.star_colour(0.1)
+    yellow, orangered = sky.star_colour(0.8), sky.star_colour(1.5)
+    gal_gl, gal_c = sky.DSO_GLYPH["gal"]
+    clu_gl, clu_c = sky.DSO_GLYPH["clu"]
+    neb_gl, neb_c = sky.DSO_GLYPH["neb"]
+    pln_gl, pln_c = sky.DSO_GLYPH["pln"]
+
+    def P(s, c):
+        return paint(s, c, color)
+
+    def head(s):
+        return paint(s, C.HEAD, color)
+
+    L = [
+        "skymap.sh -- legend", "",
+        head("STARS"),
+        f"  {P('●', starcol)}  bright, mag < 0.8      {P('•', starcol)}  ordinary, mag < 3.0"
+        f"      {P('·', starcol)}  faint, mag < 4.2 (5.5 once fully dark)",
+        f"  colour by temperature:  {P('blue-white', bluewhite)} -> {P('white', white)}"
+        f" -> {P('yellow', yellow)} -> {P('orange-red', orangered)}",
+        f"  {P('★', STARLABEL_C)}  the 3 brightest named stars, always labelled",
+        "",
+        head("CONSTELLATIONS"),
+        f"  {P('─ ╱ │ ╲', C.DIM)}  asterism lines        {P('NAME', C.CNAME)}  asterism name",
+        "",
+        head("SOLAR SYSTEM"),
+        f"  {P('☀', SUN_C)}  Sun        {P('◆', C.PLANET)}  planet",
+        f"  {P('○ ◔ ◐ ◕ ● ◕ ◐ ◔', C.MOON)}  Moon, by phase (new, first quarter, full, last quarter, new)",
+        "",
+        head("DEEP SKY  --  ?dso=1"),
+        f"  {P(gal_gl, gal_c)}  galaxy      {P(clu_gl, clu_c)}  open/globular cluster"
+        f"      {P(neb_gl, neb_c)}  nebula      {P(pln_gl, pln_c)}  planetary nebula",
+        "  about 30 well-known ones (Andromeda Galaxy, Orion Nebula, Whirlpool"
+        " Galaxy...) are labelled by name",
+        "",
+        head("SATELLITE"),
+        f"  {P('◉', ISS_C)}  ISS, marked automatically whenever a real pass is up",
+        "",
+        head("QUADRANTS  --  ?quadrant=A"),
+        f"  {P('A B C D...', QUAD_C)}  lettered cells       {P('┊ ┈', BOUND_C)}  cell boundaries",
+        "",
+        head("HORIZON"),
+        f"  {P('─', C.HOR)}  horizon line      {P('∙', C.HOR)}  degree ticks      "
+        f"{P('N E S W', C.CARD)}  cardinal points",
+        "",
+    ]
+    return "\n".join(L)
+
+
 # ---------------------------------------------------------------- ansi -> html
 ANSI = re.compile(r"\033\[(?:38;5;(\d+)|0)m")
 
@@ -1094,7 +1152,7 @@ PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
 </style></head><body><div class="w">
 <pre class="cta">curl skymap.sh{path}</pre>
 <p class="t"><b>skymap.sh</b> — this page is what that prints.
-<a href="/demo">demo</a> · <a href="/help">help</a></p>
+<a href="/demo">demo</a> · <a href="/help">help</a> · <a href="/legend">legend</a></p>
 {explore}{animate_btn}<div class="chart-row"><pre id="chart-pre">{body}</pre><div class="chart-side" id="chart-side">{extra}</div></div>
 <p class="t" style="margin-top:18px">Created by <a href="https://x.com/habibicode">@habibicode</a>
 · <a href="https://github.com/HabibiCodeCH/skymap-sh">see the repo</a></p>
