@@ -512,8 +512,14 @@ async def _animate(base_r, hours, base_url, is_ui=False):
             yield f"\033[2J\033[H{body}\n".encode()
             await asyncio.sleep(ANIMATE_FRAME_DELAY)
         if not is_ui:
+            # Same t= carry-over as the web button's data-live-url -- without
+            # it, copy-pasting this exact command renders from the real
+            # current moment instead of whatever the preview just played
+            # from, silently (no error, just the wrong GIF).
+            live_t = base_r.when_local.strftime("%Y-%m-%dT%H:%M")
             yield (f"\n{api.SUN_COL}Want a shareable GIF of this? Run:\n"
-                  f"  curl {base_url}/{base_r.place.slug}/animate.gif\033[0m\n").encode()
+                  f"  curl {base_url}/{base_r.place.slug}/animate.gif?t={live_t}"
+                  f"\033[0m\n").encode()
     finally:
         _animate_active -= 1
 

@@ -59,6 +59,15 @@ class AnimateBrowserVsTerminal(unittest.TestCase):
         self.assertIsNotNone(m)
         self.assertIn("t=2026-08-12T18:00", m.group(1))
 
+    def test_terminal_gif_followup_carries_the_requested_time(self):
+        # The streamed preview's own "Want a shareable GIF? Run: ..." command
+        # used to drop t= entirely, built from place.slug alone -- so
+        # copy-pasting it rendered from the real current moment instead of
+        # whatever the preview just played from, silently (no error, just
+        # the wrong GIF). animate=1 keeps this fast (4 frames, ~0.6s).
+        resp = self.client.get("/Ibiza?t=2026-08-12T18:00&animate=1", headers=TERMINAL)
+        self.assertIn("/Ibiza/animate.gif?t=2026-08-12T18:00", resp.text)
+
 
 if __name__ == "__main__":
     unittest.main()
