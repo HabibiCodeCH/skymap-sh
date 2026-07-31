@@ -390,6 +390,22 @@ def render(when_utc, lat, lon, height=34, color=True, show_lines=True, mag_limit
                 for k, ch in enumerate(nm):
                     grid[r][start + k], tint[r][start + k] = ch, col
 
+    # deepsky.json's cn field is hand-curated to the ~30 well-known objects
+    # (build_deepsky.py), so every one visible gets a label -- no brightness
+    # cap needed, the curation already did that job.
+    for o, a, z in dso:
+        if not o.get("cn"):
+            continue
+        x, y = project(a, z)
+        c, r = int(round(cx + x * cx)), int(round(cy - y * cy))
+        nm = o["cn"]
+        _gl, col = DSO_GLYPH[o["t"]]
+        start = c + 2 if c + 2 + len(nm) < W else c - len(nm) - 2
+        if 0 <= r < H and start >= 0 and start + len(nm) <= W:
+            if all(grid[r][start + k] == " " for k in range(len(nm))):
+                for k, ch in enumerate(nm):
+                    grid[r][start + k], tint[r][start + k] = ch, col
+
     lines = []
     for r in range(H):
         row = []
@@ -1111,7 +1127,8 @@ def render_linear(when_utc, lat, lon, W=176, H=22, color=True, show_lines=True,
         else:
             place(z, a, glyph_for(s["m"]), star_colour(s.get("ci")), over=s["m"] < 2.0)
 
-    for o, a, z in deepsky_visible(dso_limit, jd, lat, lst):
+    dso = deepsky_visible(dso_limit, jd, lat, lst)
+    for o, a, z in dso:
         gl, col = DSO_GLYPH[o["t"]]
         if a > alt_hi:
             inset_items.append((a, z, gl, col, None))
@@ -1169,6 +1186,15 @@ def render_linear(when_utc, lat, lon, W=176, H=22, color=True, show_lines=True,
         place(z, a, "★", "\033[38;5;231m", over=True)
         if not (target and target["name"] == s["n"]):
             text(z, a, s["n"], C.HEAD)
+
+    # deepsky.json's cn field is hand-curated to the ~30 well-known objects
+    # (build_deepsky.py), so every one visible gets a label -- no brightness
+    # cap needed, the curation already did that job.
+    for o, a, z in dso:
+        if not o.get("cn") or a > alt_hi:
+            continue
+        _gl, col = DSO_GLYPH[o["t"]]
+        text(z, a, o["cn"], col)
 
     if target is not None:
         TC = "\033[38;5;213m"

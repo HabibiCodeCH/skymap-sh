@@ -282,13 +282,16 @@ class Request:
         self.view, self.facing, self.span = view, facing, span
         self.find, self.iss, self.lines, self.color = find, iss, lines, color
         self.night = night
-        self.dso = dso
         # Bounded to a single letter (or None) here, before it ever reaches a
         # cache key -- otherwise arbitrary ?quadrant= garbage would each mint
         # its own cache entry, the same free-cache-miss surface ?w= and ?t=
         # are already guarded against elsewhere in this class.
-        quadrant = (quadrant or "").strip().upper()
-        self.quadrant = quadrant if re.fullmatch(r"[A-Z]", quadrant) else None
+        raw_quadrant = (quadrant or "").strip().upper()
+        self.quadrant = raw_quadrant if re.fullmatch(r"[A-Z]", raw_quadrant) else None
+        # A quadrant crop with nothing but stars is often near-empty -- the
+        # whole point of zooming in is to reveal more, so asking for a
+        # quadrant turns the deep-sky layer on too unless it's already on.
+        self.dso = dso or bool(raw_quadrant)
         self.tle = tle
         # clamped once, here, so it's already canonical by the time it ever
         # reaches a cache key -- otherwise every distinct raw ?w= value before
