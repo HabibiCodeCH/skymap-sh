@@ -16,6 +16,10 @@ Stars to magnitude 4–5, asterisms people actually recognise, planets, the Moon
 with its phase, and the next visible ISS pass. No API key, no signup, no data
 files to download.
 
+`?dso=1` overlays 739 galaxies, nebulae and clusters (Revised NGC, public
+domain). `?quadrant=A` crops the chart to one lettered cell instead of the
+whole sky, letters are marked on the chart to pick from.
+
 ## Run it
 
 ```
@@ -45,6 +49,8 @@ python3 cli.py Zurich 2026-08-12T23:00 --json    # marks a real ISS pass automat
 | `build_asterisms.py` | regenerates `asterisms.json` from Bayer designations |
 | `stars.json` | Yale BSC5, 2,887 stars to mag 5.5 |
 | `asterisms.json` | 28 hand-authored shapes |
+| `deepsky.json` | 739 galaxies/nebulae/clusters to mag 11, from the Revised NGC (public domain) |
+| `build_deepsky.py` | regenerates the above from the Revised NGC catalogue (build time only) |
 | `cities.json` | 40,803 cities with timezone, country, state, population |
 | `build_cities.py` | regenerates the above (needs `tzfpy`, build time only) |
 

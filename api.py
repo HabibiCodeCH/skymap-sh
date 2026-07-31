@@ -13,7 +13,12 @@ import sky
 from sky import (C, paint, julian, gmst_hours, altaz, angsep, compass, moon_glyph,
                  phase_name, resolve_target, visibility, next_visible,
                  solar_elongation, find_text, sky_read, render, render_linear,
-                 sun, moon, planet, sun_arc, sun_events, dark_enough)
+                 sun, moon, planet, sun_arc, sun_events, dark_enough, DSO_LEGEND)
+
+# deepsky.json is pre-filtered to mag 11 at build time (build_deepsky.py), so
+# ?dso=1 is a plain on/off toggle rather than a tunable cutoff -- the catalog
+# itself is already the curated set.
+DSO_LIMIT = 11.0
 
 # 10,567 cities in 155 countries, timezone baked in at build time
 # (build_cities.py). Names are normalised, and where a name repeats the most
@@ -272,11 +277,18 @@ def resolve_place(spec, fallback=None):
 class Request:
     def __init__(self, place=None, when=None, view="horizon", facing=None, span=None,
                  find=None, iss=False, lines=True, color=True, fallback=None,
-                 tle=None, now=None, night=False, width=None):
+                 tle=None, now=None, night=False, width=None, dso=False, quadrant=None):
         self.place = resolve_place(place, fallback)
         self.view, self.facing, self.span = view, facing, span
         self.find, self.iss, self.lines, self.color = find, iss, lines, color
         self.night = night
+        self.dso = dso
+        # Bounded to a single letter (or None) here, before it ever reaches a
+        # cache key -- otherwise arbitrary ?quadrant= garbage would each mint
+        # its own cache entry, the same free-cache-miss surface ?w= and ?t=
+        # are already guarded against elsewhere in this class.
+        quadrant = (quadrant or "").strip().upper()
+        self.quadrant = quadrant if re.fullmatch(r"[A-Z]", quadrant) else None
         self.tle = tle
         # clamped once, here, so it's already canonical by the time it ever
         # reaches a cache key -- otherwise every distinct raw ?w= value before
@@ -301,6 +313,7 @@ class Request:
         r2.view, r2.facing, r2.span = self.view, self.facing, self.span
         r2.find, r2.iss, r2.lines, r2.color = None, False, self.lines, self.color
         r2.night, r2.tle, r2.width = self.night, None, self.width
+        r2.dso, r2.quadrant = self.dso, self.quadrant
         r2.when_utc = when_utc
         r2.when_local = when_utc + dt.timedelta(hours=self.place.offset(when_utc))
         r2.tz = self.place.offset(when_utc)
@@ -539,6 +552,8 @@ def _png_url(r):
     if r.span: q.append(f"span={r.span:g}")
     if r.night: q.append("night=1")
     if r.width: q.append(f"w={int(r.width)}")
+    if r.dso: q.append("dso=1")
+    if r.quadrant: q.append(f"quadrant={r.quadrant}")
     qs = ("?" + "&".join(q)) if q else ""
     return f"{{base_url}}/{r.place.slug}/horizon.png{qs}"
 
@@ -560,9 +575,11 @@ def _compose_sky(r):
     su = sun(jd)
     sun_alt, _ = altaz(su["ra"], su["dec"], p.lat, lst)
     mag_limit = _fade_mag_limit(sun_alt)
+    dso_limit = DSO_LIMIT if r.dso else None
     if r.view == "disc" and not r.facing:
         art, st = render(r.when_utc, p.lat, p.lon, height=34, color=c,
-                         show_lines=r.lines, width=r.width, mag_limit=mag_limit)
+                         show_lines=r.lines, width=r.width, mag_limit=mag_limit,
+                         dso_limit=dso_limit)
         mode = "looking up, north at top"
     else:
         art, st = render_linear(r.when_utc, p.lat, p.lon, color=c, show_lines=r.lines,
@@ -575,10 +592,18 @@ def _compose_sky(r):
                                 # render_linear only computes alt/az for
                                 # bodies that survive this filter, and
                                 # sky_read() below needs st["sun"]["alt"].
-                                bodies=_fade_visible_bodies(sun_alt, jd) | {"Sun"})
+                                bodies=_fade_visible_bodies(sun_alt, jd) | {"Sun"},
+                                dso_limit=dso_limit, quadrant=r.quadrant)
+        quad_bit = f", quadrant {st['quad_applied']}" if st.get("quad_applied") else ""
+        # a quadrant crop replaces the zenith inset (there's no room, and no
+        # need -- the crop already narrows the view), so the header must stop
+        # promising an inset that render_linear didn't actually draw.
+        no_inset = st.get("quad_applied") is not None
         mode = (f"facing {r.facing.upper()}, {int(round(st['span']))}° wide"
-                f"{' (' + st['clamped'] + ')' if st['clamped'] else ''}, true shape"
-                if r.facing else "horizon panorama, 0-70° + zenith inset")
+                f"{' (' + st['clamped'] + ')' if st['clamped'] else ''}, true shape{quad_bit}"
+                if r.facing else
+                f"horizon panorama, 0-70°{quad_bit}" if no_inset else
+                f"horizon panorama, 0-70° + zenith inset{quad_bit}")
 
     head = _horizon_head(r, mode)
     prose = sky_read(st, p.name, r.when_local, f"UTC{r.tz:+g}")
@@ -594,6 +619,16 @@ def _compose_sky(r):
                          "\033[38;5;48m", c))
     elif st.get("iss_err"):
         out.append(paint(f"  ISS: {st['iss_err']}", C.MUTE, c))
+    if r.dso:
+        out.append(paint(f"  {DSO_LEGEND}", C.MUTE, c))
+    if st.get("quad_error"):
+        out.append(paint(f"  Unknown quadrant '{st['quad_error']}' -- showing the full view.",
+                         C.MUTE, c))
+    if st.get("quad_cells"):
+        letters = [cell["letter"] for cell in st["quad_cells"]]
+        out.append(paint(f"  Quadrants {letters[0]}-{letters[-1]} are marked on the chart. "
+                         f"To zoom in, rerun adding ?quadrant={letters[0]} "
+                         f"(or --quadrant={letters[0]} on the CLI).", C.MUTE, c))
     # {base_url} is a literal placeholder -- api.py doesn't know its own
     # host, server.py substitutes the real one on the way out, on both
     # cache hits and misses, so a cached render never leaks whatever host
@@ -617,6 +652,9 @@ def _compose_sky(r):
         asterisms=st.get("cons", []),
         stars_up=len(st["visible"]),
         iss_pass=_pass_json(st.get("track")),
+        dso=r.dso,
+        quadrant=dict(cells=[cell["letter"] for cell in st.get("quad_cells", [])],
+                     applied=st.get("quad_applied"), error=st.get("quad_error")),
         prose=prose,
     )
     return Result("\n".join(out), data)
@@ -888,7 +926,8 @@ def compose_chart_only(r):
         sun_alt, _ = altaz(su["ra"], su["dec"], p.lat, lst)
         art, _st = render(r.when_utc, p.lat, p.lon, height=34, color=c,
                           show_lines=r.lines, width=r.width,
-                          mag_limit=_fade_mag_limit(sun_alt))
+                          mag_limit=_fade_mag_limit(sun_alt),
+                          dso_limit=DSO_LIMIT if r.dso else None)
         head = _horizon_head(r, "looking up, north at top")
         return paint(head, C.HEAD, c) + "\n\n" + art
     jd = julian(r.when_utc)
@@ -902,6 +941,7 @@ def compose_chart_only(r):
                             height=None if r.facing else _horizon_height(r),
                             mag_limit=mag_limit, line_limit=mag_limit,
                             bodies=_fade_visible_bodies(sun_alt, jd) | {"Sun"},
+                            dso_limit=DSO_LIMIT if r.dso else None, quadrant=r.quadrant,
                             inset=False)
     mode = (f"facing {r.facing.upper()}, {int(round(st['span']))}° wide"
             f"{' (' + st['clamped'] + ')' if st['clamped'] else ''}, true shape"
@@ -948,6 +988,10 @@ OPTIONS
   ?t=2026-08-12T23:00   local time at that place (default: now)
   ?night=1              force the star chart even while the Sun is up
   ?nolines=1            stars only, no asterism lines
+  ?dso=1                overlay galaxies, nebulae and clusters to mag 11 (Revised NGC)
+  ?quadrant=A           crop to one lettered cell of the horizon view --
+                        letters are marked on the chart, rerun adding the
+                        one you want to zoom in (horizon view only)
   ?format=json          the same facts, structured
   ?plain=1              no ANSI colour
   ?w=100                render at N columns wide instead of the default

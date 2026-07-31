@@ -67,6 +67,41 @@ now. Times snap to a 5-minute grain.
 degrees. `span` is clamped to 90–344°; below 90 the shapes would stretch, so it
 says `(min)` in the header when it clamps.
 
+## Deep sky
+
+| you type | you get |
+|---|---|
+| `--dso` / `?dso=1` | galaxies, nebulae and clusters overlaid on the chart |
+| nothing | stars and planets only (the default) |
+
+739 objects from the Revised NGC (public domain, unlike most modern NGC/IC
+compilations — see `LICENSES.md`), pre-filtered to magnitude 11: faint enough
+to hold the entire Messier catalogue plus several hundred more, without the
+deep tail of galaxies that need a telescope. NGC-only, so a few well-known
+IC-numbered targets (the Heart, Soul, Pelican and Cocoon nebulae) aren't in
+there. Four glyphs: `◍` galaxy, `⁂` open/globular cluster, `✳` nebula, `◈`
+planetary nebula. Only on the horizon and disc views — `--dso` has no effect
+on `--find` or the daytime Sun's-path view, since there is nothing to overlay
+there.
+
+## Zoom into a quadrant
+
+| you type | you get |
+|---|---|
+| `--quadrant=A` / `?quadrant=A` | crops the chart to that lettered cell |
+| nothing | the whole view, with cell letters marked on it |
+
+The horizon view is split into roughly square cells, labelled `A`, `B`, `C`…
+left to right, top to bottom — 6 cells for the default full sweep, fewer or
+more depending on how narrow a `--facing` window already is. The letters are
+computed fresh from `facing`/`span` every time, not stored anywhere, so
+`?quadrant=A` means the same patch of sky on every request as long as the rest
+of the URL matches. There's no persistent session: to zoom in, rerun the same
+command with `--quadrant=` (or `?quadrant=`) added; a crop doesn't draw its own
+sub-grid, so there's no further zoom past one cell. An unrecognised letter is
+reported and ignored, falling back to the full view. Horizon view only — `disc`
+and `--find` ignore it.
+
 While the Sun is up you get `the Sun's path today` whatever else you asked for —
 its arc, with rise, transit and set, and the marker on where it is right now.
 `facing`, `span` and `view` are ignored during daylight and it says so, because

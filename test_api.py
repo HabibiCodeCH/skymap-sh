@@ -3,6 +3,7 @@
 
 Run:  python3 test_api.py
 """
+import datetime as dt
 import unittest
 import api
 
@@ -72,6 +73,62 @@ class ResolvePlaceFallback(unittest.TestCase):
     def _true_offset(p):
         import datetime as dt
         return p.offset(dt.datetime(2026, 7, 30, 8, 32))
+
+
+class DsoAndQuadrantRequests(unittest.TestCase):
+    """?dso= and ?quadrant= are off/unset by default and only take effect on
+    the night chart -- covers the Request plumbing added alongside them."""
+
+    def _night_request(self, **kw):
+        return api.Request(place="Zurich", when=dt.datetime(2026, 7, 30, 22, 0),
+                           night=True, **kw)
+
+    def test_defaults_are_off(self):
+        r = api.Request(place="Zurich")
+        self.assertFalse(r.dso)
+        self.assertIsNone(r.quadrant)
+
+    def test_quadrant_letter_is_upper_cased(self):
+        r = api.Request(place="Zurich", quadrant="b")
+        self.assertEqual(r.quadrant, "B")
+
+    def test_multi_char_garbage_is_dropped_before_it_can_reach_a_cache_key(self):
+        # A single letter (or None) is the only shape ?quadrant= is allowed to
+        # take by the time it reaches Request -- otherwise arbitrary garbage
+        # values would each mint a fresh cache entry (server._cache_key keys
+        # on r.quadrant), a free cache-busting surface.
+        r = api.Request(place="Zurich", quadrant="ZZ")
+        self.assertIsNone(r.quadrant)
+        r = api.Request(place="Zurich", quadrant="7")
+        self.assertIsNone(r.quadrant)
+
+    def test_dso_flag_reaches_the_composed_output(self):
+        r = self._night_request(dso=True)
+        res = api.compose(r)
+        self.assertTrue(res.data["dso"])
+        self.assertIn("dso=1", res.text)
+
+    def test_quadrant_reaches_the_composed_output(self):
+        r = self._night_request(quadrant="A")
+        res = api.compose(r)
+        self.assertEqual(res.data["quadrant"]["applied"], "A")
+        self.assertIn("quadrant A", res.text)
+
+    def test_unknown_quadrant_is_reported_not_errored(self):
+        # "Z" is a well-formed single letter, just not one the default grid
+        # (A-F) generates -- this is the realistic typo case, distinct from
+        # the malformed-input case covered above.
+        r = self._night_request(quadrant="Z")
+        res = api.compose(r)
+        self.assertEqual(res.status, 200)
+        self.assertEqual(res.data["quadrant"]["error"], "Z")
+        self.assertIsNone(res.data["quadrant"]["applied"])
+
+    def test_png_url_carries_both_params(self):
+        r = self._night_request(dso=True, quadrant="C")
+        url = api._png_url(r)
+        self.assertIn("dso=1", url)
+        self.assertIn("quadrant=C", url)
 
 
 if __name__ == "__main__":

@@ -9,6 +9,8 @@ skymap.sh on the command line. Same composition layer the HTTP service uses, so
     python3 cli.py Zurich --facing=NNW --span=90
     python3 cli.py Zurich --find="Big Dipper"
     python3 cli.py Zurich --iss --json
+    python3 cli.py Zurich --dso
+    python3 cli.py Zurich --quadrant=A
 """
 import sys, json, datetime as dt
 import api, tle
@@ -45,6 +47,8 @@ def main(argv):
         lines="--nolines" not in flags,
         night="--night" in flags,
         color="--plain" not in flags,
+        dso="--dso" in flags,
+        quadrant=flags.get("--quadrant") or None,
         # shown automatically whenever a real pass is up; --iss is a no-op now
         tle=tle.current() or f"{api.sky.BASE}/demo.tle",
     )

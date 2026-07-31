@@ -81,5 +81,66 @@ class WidthParameter(unittest.TestCase):
         self.assertLessEqual(max(widths), 60)
 
 
+class DeepSkyOverlay(unittest.TestCase):
+    """deepsky.json objects only appear when a dso_limit is explicitly
+    passed -- most of them need binoculars, so the layer must stay off by
+    default rather than cluttering the naked-eye chart."""
+
+    def test_off_by_default(self):
+        jd = sky.julian(dt.datetime(2026, 7, 30, 22, 0))
+        lst = (sky.gmst_hours(jd) + 8.5417 / 15.0) % 24
+        self.assertEqual(sky.deepsky_visible(None, jd, 47.3769, lst), [])
+
+    def test_respects_the_magnitude_cutoff(self):
+        jd = sky.julian(dt.datetime(2026, 7, 30, 22, 0))
+        lst = (sky.gmst_hours(jd) + 8.5417 / 15.0) % 24
+        visible = sky.deepsky_visible(11.0, jd, 47.3769, lst)
+        self.assertTrue(visible)
+        self.assertTrue(all(o["m"] <= 11.0 for o, _a, _z in visible))
+        self.assertTrue(all(a > 0 for _o, a, _z in visible))
+
+    def test_render_linear_draws_a_dso_glyph_when_enabled(self):
+        t = dt.datetime(2026, 7, 30, 22, 0)
+        off, _st = sky.render_linear(t, 47.3769, 8.5417, color=False)
+        on, _st = sky.render_linear(t, 47.3769, 8.5417, color=False, dso_limit=11.0)
+        dso_chars = set(sky.DSO_GLYPH[k][0] for k in sky.DSO_GLYPH)
+        self.assertFalse(any(ch in off for ch in dso_chars))
+        self.assertTrue(any(ch in on for ch in dso_chars))
+
+
+class QuadrantGrid(unittest.TestCase):
+    """?quadrant= crops a request to one lettered cell of the same grid every
+    time -- no server-side state, so the grid math itself has to be exact
+    and deterministic."""
+
+    def test_cells_tile_the_full_window_exactly(self):
+        cells = sky.quadrant_grid(180.0, 360.0, 0.0, 70.0)
+        self.assertEqual([c["letter"] for c in cells],
+                         list(sky.LETTERS[:len(cells)]))
+        total_az = sum(c["az_span"] for c in cells if c["alt_lo"] == cells[0]["alt_lo"])
+        self.assertAlmostEqual(total_az, 360.0, places=6)
+        alt_los = sorted({round(c["alt_lo"], 6) for c in cells})
+        alt_his = sorted({round(c["alt_hi"], 6) for c in cells})
+        self.assertAlmostEqual(min(alt_los), 0.0, places=6)
+        self.assertAlmostEqual(max(alt_his), 70.0, places=6)
+
+    def test_render_linear_crops_to_the_requested_cell(self):
+        t = dt.datetime(2026, 7, 30, 22, 0)
+        _art, base_st = sky.render_linear(t, 47.3769, 8.5417, color=False)
+        cell = base_st["quad_cells"][0]
+        _art, crop_st = sky.render_linear(t, 47.3769, 8.5417, color=False,
+                                          quadrant=cell["letter"])
+        self.assertEqual(crop_st["quad_applied"], cell["letter"])
+        self.assertAlmostEqual(crop_st["span"], cell["az_span"], places=6)
+        self.assertEqual(crop_st["quad_cells"], [])   # cropped: no overlay on itself
+
+    def test_unknown_letter_falls_back_to_the_full_view(self):
+        t = dt.datetime(2026, 7, 30, 22, 0)
+        _art, st = sky.render_linear(t, 47.3769, 8.5417, color=False, quadrant="ZZ")
+        self.assertIsNone(st["quad_applied"])
+        self.assertEqual(st["quad_error"], "ZZ")
+        self.assertTrue(st["quad_cells"])   # still shows the base grid to pick from
+
+
 if __name__ == "__main__":
     unittest.main()

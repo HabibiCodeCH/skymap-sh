@@ -224,8 +224,39 @@ def glyph_for(mag):
             return g
     return "·"
 
+# ------------------------------------------------------------- deep sky
+# deepsky.json: Revised NGC (public domain, see build_deepsky.py),
+# galaxies/clusters/nebulae to mag 11. One glyph+colour per category, kept
+# off the star glyphs and moon-phase glyphs above so nothing collides.
+DSO_GLYPH = {
+    "gal": ("◍", "\033[38;5;183m"),   # galaxy -- pale purple
+    "clu": ("⁂", "\033[38;5;221m"),   # open/globular cluster -- gold
+    "neb": ("✳", "\033[38;5;211m"),   # nebula -- pink
+    "pln": ("◈", "\033[38;5;51m"),    # planetary nebula -- cyan
+}
+DSO_LEGEND = ("deep sky:  " +
+              "  ".join(f"{g} {n}" for g, n in
+                        (("◍", "galaxy"), ("⁂", "cluster"), ("✳", "nebula"),
+                         ("◈", "planetary nebula"))))
+
+def deepsky_visible(dso_limit, jd, lat, lst):
+    """Deep-sky objects above the horizon and brighter than dso_limit.
+    dso_limit=None means the layer is off (the default -- most of these
+    need binoculars, so they only show up when asked for)."""
+    if dso_limit is None:
+        return []
+    out = []
+    for o in _load("deepsky.json"):
+        if o["m"] > dso_limit:
+            continue
+        ra, de = precess(o["ra"], o["de"], jd)
+        a, z = altaz(ra, de, lat, lst)
+        if a > 0:
+            out.append((o, a, z))
+    return out
+
 def render(when_utc, lat, lon, height=34, color=True, show_lines=True, mag_limit=4.2,
-          width=None):
+          width=None, dso_limit=None):
     if width is not None:
         height = max(30, min(110, int(width))) // 2   # disc is always W = 2*H
     W, H = height * 2, height
@@ -304,6 +335,13 @@ def render(when_utc, lat, lon, height=34, color=True, show_lines=True, mag_limit
         visible.append((s, a, z))
         x, y = project(a, z)
         place(x, y, glyph_for(s["m"]), star_colour(s.get("ci")), over=s["m"] < 2.0)
+
+    # --- deep sky
+    dso = deepsky_visible(dso_limit, jd, lat, lst)
+    for o, a, z in dso:
+        x, y = project(a, z)
+        gl, col = DSO_GLYPH[o["t"]]
+        place(x, y, gl, col)
 
     # --- bodies
     bodies, jd_ = [], jd
@@ -822,10 +860,37 @@ def pick_constellations(cpos, cons, jd, lat, lst, alt_max, sectors=6, extra=2,
     return chosen
 
 
+LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+
+def quadrant_grid(centre, span, alt_lo, alt_hi, target_n=6):
+    """Split an az/alt window into cells sized to be roughly square in sky
+    degrees, labelled A, B, C... in reading order (left to right, top to
+    bottom). Backs ?quadrant=: a request crops itself to one cell instead of
+    the whole window, computed fresh from the same rule every time rather
+    than any server-side state -- ?quadrant=A means the same patch of sky
+    whichever request asks for it."""
+    alt_rng = alt_hi - alt_lo
+    size = math.sqrt(span * alt_rng / target_n)
+    cols = max(1, min(6, round(span / size)))
+    rows = max(1, min(4, round(alt_rng / size)))
+    az_w, alt_h = span / cols, alt_rng / rows
+    cells = []
+    i = 0
+    for row in range(rows):
+        for col in range(cols):
+            az_lo = centre - span / 2 + col * az_w
+            a_hi = alt_hi - row * alt_h
+            cells.append(dict(letter=LETTERS[i], az_centre=(az_lo + az_w / 2) % 360,
+                              az_span=az_w, alt_lo=a_hi - alt_h, alt_hi=a_hi))
+            i += 1
+    return cells
+
+
 def render_linear(when_utc, lat, lon, W=176, H=22, color=True, show_lines=True,
                   mag_limit=4.0, line_limit=None, tle=None, alt_max=70, facing=None, span=None,
                   alt_lo=None, alt_hi=None, target=None, overlay=None,
-                  bodies=None, inset=True, width=None, height=None):
+                  bodies=None, inset=True, width=None, height=None, dso_limit=None,
+                  quadrant=None):
     """Horizon panorama. facing=None gives the full 360 deg sweep; facing='SW'
     gives a window centred there, which is narrow enough to be undistorted."""
     req_span = span                    # the else-branch below clobbers `span`
@@ -855,6 +920,25 @@ def render_linear(when_utc, lat, lon, W=176, H=22, color=True, show_lines=True,
     alt_lo = 0.0 if alt_lo is None else float(alt_lo)
     alt_hi = float(alt_max) if alt_hi is None else float(alt_hi)
     alt_rng = alt_hi - alt_lo
+
+    quad_cells, quad_error, quad_applied = [], None, None
+    if target is None:
+        quad_cells = quadrant_grid(centre, span, alt_lo, alt_hi)
+        if quadrant is not None:
+            letter = str(quadrant).upper()
+            cell = next((c for c in quad_cells if c["letter"] == letter), None)
+            if cell is None:
+                quad_error = letter
+            else:
+                quad_applied = letter
+                W = 118
+                centre, span = cell["az_centre"], cell["az_span"]
+                alt_lo, alt_hi = cell["alt_lo"], cell["alt_hi"]
+                alt_rng = alt_hi - alt_lo
+                H = max(8, int(round(W * alt_rng / (2 * span))))
+                clamped = ""
+                quad_cells = []          # cropped -- no overlay grid on itself
+
     if target is not None:                       # frame chosen by the object itself
         W = 118
         span = float(req_span or 60.0)
@@ -934,6 +1018,27 @@ def render_linear(when_utc, lat, lon, W=176, H=22, color=True, show_lines=True,
             if grid[r][c] == " ":
                 grid[r][c], tint[r][c], soft[r][c] = "·", "\033[38;5;234m", True
 
+    if quad_cells:                      # dotted cell boundaries, letters follow later
+        QC = "\033[38;5;240m"
+        az_bounds = sorted({round(c["az_centre"] - c["az_span"] / 2, 4) for c in quad_cells}
+                           | {round(c["az_centre"] + c["az_span"] / 2, 4) for c in quad_cells})
+        alt_bounds = sorted({round(c["alt_lo"], 4) for c in quad_cells}
+                            | {round(c["alt_hi"], 4) for c in quad_cells})
+        for az in az_bounds:
+            c = col_of(az)
+            if c is None:
+                continue
+            for r in range(H):
+                if grid[r][c] == " ":
+                    grid[r][c], tint[r][c], soft[r][c] = "┊", QC, True
+        for a in alt_bounds:
+            r = row_of(a)
+            if r is None:
+                continue
+            for c in range(0, W, 2):
+                if grid[r][c] == " ":
+                    grid[r][c], tint[r][c], soft[r][c] = "┈", QC, True
+
     chosen = []
     if show_lines:
         # Asterisms only. The full IAU figure for Ursa Major is a 25-star bear
@@ -1009,6 +1114,13 @@ def render_linear(when_utc, lat, lon, W=176, H=22, color=True, show_lines=True,
         else:
             place(z, a, glyph_for(s["m"]), star_colour(s.get("ci")), over=s["m"] < 2.0)
 
+    for o, a, z in deepsky_visible(dso_limit, jd, lat, lst):
+        gl, col = DSO_GLYPH[o["t"]]
+        if a > alt_hi:
+            inset_items.append((a, z, gl, col, None))
+        else:
+            place(z, a, gl, col)
+
     mo, su = moon(jd), sun(jd)
     cands = [planet(n, jd) for n in
              ("Mercury","Venus","Mars","Jupiter","Saturn","Uranus","Neptune")] + [mo, su]
@@ -1074,6 +1186,10 @@ def render_linear(when_utc, lat, lon, W=176, H=22, color=True, show_lines=True,
                     grid[r0+dr][c0], tint[r0+dr][c0], soft[r0+dr][c0] = "│", TC, False
         text(target["az"], target["alt"], target["name"].upper(), TC)
 
+    QL = "\033[1;38;5;226m"
+    for cell in quad_cells:
+        text(cell["az_centre"], (cell["alt_lo"] + cell["alt_hi"]) / 2, cell["letter"], QL)
+
     for item in chosen:                       # names last, so they win the space
         if line_limit is not None and not item.get("visible", False):
             continue                           # animate frames: fully faded out
@@ -1112,12 +1228,13 @@ def render_linear(when_utc, lat, lon, W=176, H=22, color=True, show_lines=True,
         # North -- centre itself now flips between N and S with hemisphere.
         ticks[W - 1] = "S" if centre == 0 else "N"
     out.append(paint(" " * LM + "".join(ticks).rstrip(), C.CARD, color))
-    if facing is None and target is None and inset:
+    if facing is None and target is None and quad_applied is None and inset:
         out.append("")
         out.extend(_zenith_inset(inset_items, alt_max, color, LM))
     st = dict(visible=visible, up=up, moon=mo, sun=su, lst=lst, jd=jd,
               track=track, iss_err=iss_err, top3=top3, span=span, clamped=clamped,
-              cons=[c["con"]["name"] for c in chosen])
+              cons=[c["con"]["name"] for c in chosen],
+              quad_cells=quad_cells, quad_applied=quad_applied, quad_error=quad_error)
     return "\n".join(out), st
 
 

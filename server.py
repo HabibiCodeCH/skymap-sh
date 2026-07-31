@@ -363,6 +363,8 @@ def _build(request: Req, place: str | None):
                              # ?iss= is no longer required, kept as a no-op
         night=bool(q.get("night")),
         width=width,
+        dso=bool(q.get("dso")),
+        quadrant=q.get("quadrant") or None,
     )
 
 
@@ -379,7 +381,7 @@ UNKNOWN = """\
 
 def _cache_key(r, daytime):
     q = (round(r.place.lat, 1), round(r.place.lon, 1), r.view, r.facing, r.span,
-         (r.find or "").lower(), bool(r.tle), r.night, r.width)
+         (r.find or "").lower(), bool(r.tle), r.night, r.width, r.dso, r.quadrant)
     bucket = DAY_BUCKET if daytime else NIGHT_BUCKET
     stamp = int(r.when_utc.timestamp() // bucket)
     return (q, stamp)
@@ -657,6 +659,7 @@ def healthz():
     return PlainTextResponse(
         f"ok stars={len(sky._load('stars.json'))} "
         f"asterisms={len(sky._load('asterisms.json'))} "
+        f"deepsky={len(sky._load('deepsky.json'))} "
         f"tle={'%.1fh' % (tle.age(p)/3600) if p else 'none'} "
         f"cache={len(_cache)}/{CACHE_MAX} "
         f"hitrate={100*_hits/total:.1f}% ({_hits}/{total}) "

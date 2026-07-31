@@ -15,6 +15,8 @@ any licence you like, including a closed commercial service.
 | `asterisms.json` | 28 asterism line lists | **Hand-authored** in `build_asterisms.py` as ordered Bayer designations ("eta UMa", "zeta UMa", …), resolved against BSC5 | Yours. Which stars form the Plough is a published astronomical fact, not a creative work, and no third-party line file was consulted. |
 | `demo.tle` | Synthetic ISS-like orbit | Generated here | Yours. Replace with CelesTrak at runtime. |
 | `sky.py` | All code, including the Meeus solar/lunar series and JPL's approximate planetary elements | Written here; the algorithms are published formulae | Yours. Formulae are not copyrightable; the specific expression here is original. |
+| `deepsky.json` | 739 galaxies, clusters, nebulae and planetary nebulae to mag 11 — RA, Dec, magnitude, type, Messier number where one exists | Revised NGC (Sulentic & Tifft, 1973), an ADC-distributed re-verification of Dreyer's 1888 NGC. Object/Messier identification is a published fact; the small hand-authored common-name table in `build_deepsky.py` follows the same reasoning as `asterisms.json` | **Public domain**, same ADC "unrestricted, courtesy citation" provenance as BSC5. Deliberately NGC-only, not OpenNGC — OpenNGC is CC BY-SA 4.0 and also covers the IC catalogue, but bundling it would put this file's licence at odds with the rest of the repo. Coordinates precessed here from B1975 to J2000; a handful of well-known IC-numbered targets (Heart, Soul, Pelican, Cocoon nebulae) aren't in here as a result. |
+| `build_deepsky.py` | Parses the Revised NGC fixed-width catalogue into `deepsky.json` | **Hand-written** here | Yours. |
 
 ## What was removed, and why
 
@@ -56,9 +58,10 @@ a day is both correct and polite, since TLEs are only issued a few times daily.
 Not legally required, but it costs a footer line and it is the right thing:
 
 > Star positions from the Yale Bright Star Catalogue (Hoffleit & Warren 1991).
-> Planetary positions from JPL approximate elements; Sun and Moon from Meeus.
-> Satellite elements from CelesTrak. City data from SimpleMaps World Cities
-> (CC BY 4.0).
+> Deep-sky objects from the Revised NGC (Sulentic & Tifft, 1973), after
+> Dreyer's New General Catalogue (1888). Planetary positions from JPL
+> approximate elements; Sun and Moon from Meeus. Satellite elements from
+> CelesTrak. City data from SimpleMaps World Cities (CC BY 4.0).
 
 The city data is the one item that legally requires the credit rather than
 merely deserving it.
