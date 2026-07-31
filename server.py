@@ -570,10 +570,16 @@ def _respond(request: Req, place: str | None):
         # the bare root same as an explicit place does), so these depend on
         # r.place rather than the raw `place` URL segment, which is None on
         # the root even though there's a real location to animate/share.
-        extra = f'<a href="{png_href}" target="_blank" rel="noopener">Share as a PNG</a>'
-        # The GIF button starts hidden and only renders on its own click
-        # (skymapRenderGif) -- it appears once animate starts, but doesn't
-        # do any actual Pillow work until someone asks for it.
+        # Share as a PNG (always there) + Share as a GIF (hidden until
+        # animate starts, see skymapAnimate) sit next to the chart itself,
+        # not in the button row above it -- gif-btn/gif-status are found by
+        # id from the JS now rather than by parentElement.querySelector, so
+        # they can live in a different part of the page than animate-btn.
+        extra = (f'<a href="{png_href}" target="_blank" rel="noopener">Share as a PNG</a>'
+                f'<button id="gif-btn" class="animate-btn gif-btn" '
+                f'data-gif-url="{api._animate_gif_url(r)}" '
+                'onclick="skymapRenderGif(this)" hidden>Share as a GIF</button>'
+                '<span id="gif-status" class="gif-status"></span>')
         # Carries the exact moment on screen (r.when_local, whether that
         # came from ?t= or just defaulted to now) into the live-preview
         # fetch -- otherwise the animation would start from real "now"
@@ -586,9 +592,6 @@ def _respond(request: Req, place: str | None):
             f'<button id="animate-btn" class="animate-btn" '
             f'data-live-url="/{r.place.slug}?animate=24&t={live_t}" '
             'onclick="skymapAnimate(this)">▶ animate</button>'
-            f'<button class="animate-btn gif-btn" data-gif-url="{api._animate_gif_url(r)}" '
-            'onclick="skymapRenderGif(this)" hidden>Share as a GIF</button>'
-            '<span class="gif-status"></span>'
             '</div>')
         if q.get("animate") is not None:
             # A shared .../?t=...&animate=24 link opened as a page (rather

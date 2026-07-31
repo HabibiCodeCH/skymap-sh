@@ -1259,7 +1259,7 @@ function skymapAnimate(btn){{
   // clicked -- see skymapRenderGif -- since that's real Pillow work, not
   // free to do for every single viewer.
   var liveUrl=btn.getAttribute('data-live-url');
-  var gifBtn=btn.parentElement.querySelector('.gif-btn');
+  var gifBtn=document.getElementById('gif-btn');
   var pre=document.getElementById('chart-pre');
   btn.disabled=true;btn.textContent='animating…';
   if(gifBtn){{gifBtn.hidden=false;skymapPollGifCapacity(gifBtn);}}
@@ -1296,7 +1296,7 @@ function skymapPollGifCapacity(gifBtn){{
   // still enforces the real cap itself, this is only ever a UX hint. Skips
   // a tick entirely while this button's own render is in flight, so it
   // doesn't fight skymapRenderGif's use of the same status line.
-  var status=gifBtn.parentElement.querySelector('.gif-status');
+  var status=document.getElementById('gif-status');
   function poll(){{
     if(gifBtn.dataset.rendering==='1')return;
     fetch('/gif-capacity').then(function(r){{return r.json();}}).then(function(d){{
@@ -1312,7 +1312,7 @@ function skymapPollGifCapacity(gifBtn){{
 
 function skymapRenderGif(btn){{
   var gifUrl=btn.getAttribute('data-gif-url');
-  var status=btn.parentElement.querySelector('.gif-status');
+  var status=document.getElementById('gif-status');
   var fact=SPACE_FACTS[Math.floor(Math.random()*SPACE_FACTS.length)];
   var frame=0;
   btn.dataset.rendering='1';
