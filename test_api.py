@@ -162,6 +162,37 @@ class FindOnThePngExport(unittest.TestCase):
         self.assertTrue(art)
 
 
+class PngUrlCarriesEveryRenderingParameter(unittest.TestCase):
+    """find= wasn't the only one missing -- t=, view=disc and nolines= all
+    changed what /horizon.png actually rendered without ever reaching the
+    "Share as a PNG" link either. Same bug, three more instances of it."""
+
+    def test_explicit_time_travels_with_the_link(self):
+        r = api.Request(place="Zurich", when=dt.datetime(2026, 8, 12, 18, 0))
+        self.assertIn("t=2026-08-12T18:00", api._png_url(r))
+
+    def test_default_now_does_not_freeze_the_link_to_a_timestamp(self):
+        # No explicit ?t= means "whatever's current" -- the link must stay
+        # bare so it keeps tracking the real time on every fetch, not get
+        # pinned to the moment it happened to be generated.
+        r = api.Request(place="Zurich")
+        self.assertNotIn("t=", api._png_url(r))
+
+    def test_disc_view_travels_with_the_link(self):
+        r = api.Request(place="Zurich", view="disc")
+        self.assertIn("view=disc", api._png_url(r))
+
+    def test_nolines_travels_with_the_link(self):
+        r = api.Request(place="Zurich", lines=False)
+        self.assertIn("nolines=1", api._png_url(r))
+
+    def test_default_view_and_lines_add_nothing_to_the_link(self):
+        r = api.Request(place="Zurich")
+        url = api._png_url(r)
+        self.assertNotIn("view=", url)
+        self.assertNotIn("nolines", url)
+
+
 class NightOverrideDuringDaylight(unittest.TestCase):
     """?night=1 forces the star chart even while the Sun is up. The Moon
     used to be silently dropped from render_linear's bodies set whenever it

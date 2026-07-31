@@ -311,6 +311,12 @@ class Request:
         self.width = max(60, min(220, int(width))) if width else None
         now = now or dt.datetime.now(dt.timezone.utc).replace(tzinfo=None)
         when = quantise_time(when, now)
+        # Distinct from when_local/when_utc themselves (which always hold a
+        # real moment, "now" by default) -- this is what _png_url uses to
+        # decide whether a picked ?t= needs to travel with the "Share as a
+        # PNG" link at all, or whether the link should keep tracking
+        # whatever's actually current.
+        self.when_explicit = when is not None
         if when:                                     # local wall clock at that place
             self.when_local = when
             self.when_utc = when - dt.timedelta(hours=self.place.offset(now))
@@ -333,6 +339,7 @@ class Request:
         r2.when_utc = when_utc
         r2.when_local = when_utc + dt.timedelta(hours=self.place.offset(when_utc))
         r2.tz = self.place.offset(when_utc)
+        r2.when_explicit = True
         return r2
 
 
@@ -560,10 +567,16 @@ def _horizon_head(r, mode):
 
 
 def _png_url(r):
-    """The horizon.png link matching this exact view -- facing/span/night/w
-    all change which chart /{place}/horizon.png renders, so they have to
-    travel with the link or it'd show the default full sweep instead of
-    whatever's actually on screen."""
+    """The horizon.png link matching this exact view -- every parameter that
+    changes which chart /{place}/horizon.png renders has to travel with the
+    link, or it'd silently show something other than whatever's actually on
+    screen (this is exactly the bug ?find= and ?t= both had: the page showed
+    one thing, "Share as a PNG" quietly linked to another).
+
+    ?t= only travels when it was actually picked (r.when_explicit) -- the
+    default link keeps tracking whatever's current instead of freezing to
+    the moment it was generated, same reasoning _animate_gif_url's docstring
+    gives for always including it (animate has no "current" to track)."""
     q = []
     if r.facing: q.append(f"facing={r.facing}")
     if r.span: q.append(f"span={r.span:g}")
@@ -572,6 +585,9 @@ def _png_url(r):
     if r.dso: q.append("dso=1")
     if r.quadrant: q.append(f"quadrant={r.quadrant}")
     if r.find: q.append(f"find={quote(r.find)}")
+    if r.view == "disc": q.append("view=disc")
+    if not r.lines: q.append("nolines=1")
+    if r.when_explicit: q.append(f"t={r.when_local:%Y-%m-%dT%H:%M}")
     qs = ("?" + "&".join(q)) if q else ""
     return f"{{base_url}}/{r.place.slug}/horizon.png{qs}"
 
