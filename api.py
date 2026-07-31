@@ -232,7 +232,16 @@ def lookup_place(spec):
             # a text chart, and it turns 648 million reachable cache keys into
             # 6.5 million — so coordinates stop being a cache-busting surface.
             lat, lon = round(lat, 1), round(lon, 1)
-            return Place(f"{lat:.2f},{lon:.2f}", lat, lon)
+            # Same nearest-city lookup resolve_place's fallback branch uses --
+            # bare coordinates get a real IANA timezone and a "near X" hint
+            # whether they arrived by typing lat,lon directly or by IP
+            # fallback. Without this, re-navigating through a coordinate
+            # place's own slug (e.g. the animate button's live-preview URL)
+            # silently lost the hint on the second request.
+            near = _nearest_city(lat, lon)
+            zone = near[2] if near else None
+            return Place(f"{lat:.2f},{lon:.2f}", lat, lon, zone,
+                        label(near) if near else None)
         return None
     hits = city_matches(spec)
     if hits:
