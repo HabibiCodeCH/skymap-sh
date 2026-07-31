@@ -80,9 +80,11 @@ to hold the entire Messier catalogue plus several hundred more, without the
 deep tail of galaxies that need a telescope. NGC-only, so a few well-known
 IC-numbered targets (the Heart, Soul, Pelican and Cocoon nebulae) aren't in
 there. Four glyphs: `◍` galaxy, `⁂` open/globular cluster, `✳` nebula, `◈`
-planetary nebula. Only on the horizon and disc views — `--dso` has no effect
-on `--find` or the daytime Sun's-path view, since there is nothing to overlay
-there.
+planetary nebula. About 30 of the well-known ones (Andromeda Galaxy, Orion
+Nebula, Whirlpool Galaxy, the Double Cluster…) are labelled by name, the same
+way stars and planets are. Only on the horizon and disc views — `--dso` has
+no effect on `--find` or the daytime Sun's-path view, since there is nothing
+to overlay there.
 
 ## Zoom into a quadrant
 
@@ -90,6 +92,11 @@ there.
 |---|---|
 | `--quadrant=A` / `?quadrant=A` | crops the chart to that lettered cell |
 | nothing | the whole view, with cell letters marked on it |
+
+`--quadrant=` turns on the deep-sky layer automatically (as if `--dso` were
+also given) -- one cell of the sky is a small enough patch that stars alone
+often leave it looking near-empty, and the whole point of zooming in is to
+reveal more.
 
 The horizon view is split into a fixed 4x3 grid — `A B C D`, `E F G H`,
 `I J K L` — always 12 cells, whatever the current span. The letters are
