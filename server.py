@@ -589,7 +589,8 @@ def _respond(request: Req, place: str | None):
                 'onclick="skymapRenderGif(this)" hidden>Share as a GIF</button>'
                 '<span id="gif-status" class="gif-status"></span>'
                 '</div>'
-                f'<a href="{png_href}" target="_blank" rel="noopener">Share as a PNG</a>')
+                f'<a class="animate-btn" href="{png_href}" target="_blank" '
+                'rel="noopener">Share as a PNG</a>')
         # Carries the exact moment on screen (r.when_local, whether that
         # came from ?t= or just defaulted to now) into the live-preview
         # fetch -- otherwise the animation would start from real "now"
