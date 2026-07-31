@@ -22,7 +22,7 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ReadWritePaths=/srv/sky
-MemoryMax=512M
+MemoryMax=1024M
 
 [Install]
 WantedBy=multi-user.target

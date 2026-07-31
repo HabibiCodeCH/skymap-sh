@@ -98,10 +98,21 @@ def frames_to_gif(frame_texts, frame_ms):
     """List of ANSI frame strings -> GIF bytes. One shared palette (quantised
     from the first frame) across every frame, so colours don't flicker or
     drift as the GIF plays -- per-frame adaptive palettes would each pick
-    slightly different shades for the same xterm colour."""
-    images = [frame_to_image(t) for t in frame_texts]
-    base = images[0].convert("P", palette=Image.ADAPTIVE, colors=256)
-    quantized = [im.quantize(palette=base) for im in images]
+    slightly different shades for the same xterm colour.
+
+    Quantises each frame right after rendering it and drops the full-size
+    RGB copy before rendering the next -- building the whole RGB list first
+    and only then quantising it (the previous approach) held every frame
+    twice at once, peaking at ~440 MB for a 96-frame render. That alone was
+    enough to OOM a process capped at 512 MB."""
+    first = frame_to_image(frame_texts[0])
+    base = first.convert("P", palette=Image.ADAPTIVE, colors=256)
+    quantized = [first.quantize(palette=base)]
+    del first
+    for t in frame_texts[1:]:
+        im = frame_to_image(t)
+        quantized.append(im.quantize(palette=base))
+        del im
     buf = io.BytesIO()
     quantized[0].save(buf, format="GIF", save_all=True,
                       append_images=quantized[1:], duration=frame_ms, loop=0)

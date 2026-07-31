@@ -9,7 +9,7 @@ skymap.sh — one URL, four consumers.
 
 Run:  uvicorn server:app --host 0.0.0.0 --port 8000
 """
-import asyncio, datetime as dt, html, json, os, re, secrets, time
+import asyncio, datetime as dt, html, json, os, re, secrets, threading, time
 from collections import OrderedDict
 from fastapi import FastAPI, Request as Req
 from fastapi.responses import (PlainTextResponse, HTMLResponse, JSONResponse,
@@ -414,25 +414,37 @@ ANIMATE_DAWN_LAG_FRAMES = 3        # stars last longer past dawn instead of
                                     # effect (~4 frames later), not a literal
                                     # frame count; see compose_frame's
                                     # dawn_lag_minutes
-ANIMATE_MAX_CONCURRENT = 8
+ANIMATE_MAX_CONCURRENT = 250       # the text stream costs ~1.4ms of CPU and
+                                    # no image buffers per frame (measured),
+                                    # so this is cheap -- unlike the GIF
+                                    # render below, which is the actual
+                                    # expensive path and gets its own,
+                                    # much tighter cap
 _animate_active = 0
+GIF_RENDER_MAX_CONCURRENT = 4      # each render peaks ~180MB (measured, see
+                                    # gif.frames_to_gif); at sky.service's
+                                    # MemoryMax=1024M that's real headroom,
+                                    # not a number to raise casually
+_gif_render_active = 0
+_gif_render_lock = threading.Lock()    # animate_gif_inline runs in
+                                        # Starlette's threadpool, not the
+                                        # asyncio event loop -- a plain int
+                                        # counter isn't safe against real
+                                        # concurrent threads without this
 GIF_RENDER_WIDTH = api.DEFAULT_HORIZON_WIDTH   # same as the live default, so
                                     # the export stays this size regardless of
                                     # whatever ?w= the live terminal used --
                                     # height comes along for free, computed
                                     # the same way compose_frame always does
 
-# Frozen per-run share links (see _animate's gif_id below): once a ?animate=
-# stream finishes, its exact frames are rendered to a GIF and cached here
-# under a short id, so "Share: <url>" at the end of a run is a permanent,
-# pasteable link -- not a live/regenerating one. Plain files on local disk,
-# swept for anything past GIF_TTL_DAYS whenever a new one is saved -- good
-# enough at this volume, no separate cron/scheduler needed.
+# Frozen share links: whoever actually renders a GIF (see animate_gif_inline)
+# gets a permanent, pasteable /animate/<id>.gif URL, not a live/regenerating
+# one. Plain files on local disk, swept for anything past GIF_TTL_DAYS
+# whenever a new one is saved -- good enough at this volume, no separate
+# cron/scheduler needed.
 GIF_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "gif_cache")
 GIF_TTL_DAYS = 7
 os.makedirs(GIF_DIR, exist_ok=True)
-_gif_bg_tasks = set()          # keeps background render tasks referenced so
-                                # they aren't garbage-collected mid-render
 
 
 def _sweep_gif_cache():
@@ -454,13 +466,17 @@ def _render_and_save_gif(gif_id, frames):
     return data
 
 
-async def _animate(base_r, hours, gif_id=None, base_url=None):
+async def _animate(base_r, hours, base_url):
+    """Live text preview only -- never renders a GIF. Every ?animate view
+    used to also silently render and save a GIF in the background, which
+    meant the expensive Pillow work happened on every view whether or not
+    anyone wanted to share it. Now it only happens for whoever actually
+    asks, via /{place}/animate.gif -- see animate_gif_inline."""
     global _animate_active
     steps = int(hours * 60 / ANIMATE_STEP_MIN)
     start = base_r.when_utc
     dusk_lead_minutes = ANIMATE_DUSK_LEAD_FRAMES * ANIMATE_STEP_MIN
     dawn_lag_minutes = ANIMATE_DAWN_LAG_FRAMES * ANIMATE_STEP_MIN
-    gif_frames = []
     _animate_active += 1
     try:
         for i in range(steps):
@@ -470,30 +486,9 @@ async def _animate(base_r, hours, gif_id=None, base_url=None):
                                                dusk_lead_minutes=dusk_lead_minutes,
                                                dawn_lag_minutes=dawn_lag_minutes)
             yield f"\033[2J\033[H{body}\n".encode()
-            if gif_id:
-                # Rendered separately, forced to GIF_RENDER_WIDTH regardless
-                # of whatever ?w= the live terminal above is using -- same
-                # place/time/frames either way, just a guaranteed consistent
-                # export size for social sharing.
-                gif_r = base_r.at(t)
-                gif_r.width = GIF_RENDER_WIDTH
-                gif_body, _ = api.compose_frame(gif_r,
-                                                dusk_lead_minutes=dusk_lead_minutes,
-                                                dawn_lag_minutes=dawn_lag_minutes)
-                gif_frames.append(gif_body)
             await asyncio.sleep(ANIMATE_FRAME_DELAY)
-        if gif_id and gif_frames:
-            # Share link prints the instant the animation itself is done --
-            # rendering the GIF (Pillow drawing every frame, then encoding)
-            # takes real time, so it happens in a background thread after
-            # the stream has already told you where to find it, instead of
-            # making you sit through that render before seeing the URL.
-            yield (f"\n{api.SUN_COL}Share as a GIF (link up for {GIF_TTL_DAYS} days): "
-                  f"{base_url}/animate/{gif_id}.gif\033[0m\n").encode()
-            task = asyncio.create_task(
-                asyncio.to_thread(_render_and_save_gif, gif_id, gif_frames))
-            _gif_bg_tasks.add(task)
-            task.add_done_callback(_gif_bg_tasks.discard)
+        yield (f"\n{api.SUN_COL}Want a shareable GIF of this? Run:\n"
+              f"  curl {base_url}/{base_r.place.slug}/animate.gif\033[0m\n").encode()
     finally:
         _animate_active -= 1
 
@@ -522,16 +517,8 @@ def _respond(request: Req, place: str | None):
             hours = 24.0
         hours = max(1.0, min(24.0, hours))
         r = _build(request, place)
-        # nogif=1: the "animate" button's live preview fetches this purely
-        # to render frames client-side, and separately calls
-        # /{place}/animate.gif for the actual shareable file -- rendering
-        # and saving a second, unused GIF here would just be wasted work.
-        if q.get("nogif"):
-            gif_id = base_url = None
-        else:
-            gif_id = secrets.token_urlsafe(6)
-            base_url = str(request.base_url).rstrip("/")
-        return StreamingResponse(_animate(r, hours, gif_id=gif_id, base_url=base_url),
+        base_url = str(request.base_url).rstrip("/")
+        return StreamingResponse(_animate(r, hours, base_url),
                                  media_type="text/plain",
                                  headers={"Cache-Control": "no-store"})
     r = _build(request, place)
@@ -556,9 +543,17 @@ def _respond(request: Req, place: str | None):
         # r.place rather than the raw `place` URL segment, which is None on
         # the root even though there's a real location to animate/share.
         extra = f'<a href="{png_href}" target="_blank" rel="noopener">Share as a PNG</a>'
-        animate_btn = (f'<button class="animate-btn" data-gif-url="{api._animate_gif_url(r)}" '
-                      f'data-live-url="/{r.place.slug}?animate=24&amp;nogif=1" '
-                      f'onclick="skymapAnimate(this)">▶ animate</button>')
+        # The GIF button starts hidden and only renders on its own click
+        # (skymapRenderGif) -- it appears once animate starts, but doesn't
+        # do any actual Pillow work until someone asks for it.
+        animate_btn = (
+            '<div class="animate-controls">'
+            f'<button class="animate-btn" data-live-url="/{r.place.slug}?animate=24" '
+            'onclick="skymapAnimate(this)">▶ animate</button>'
+            f'<button class="animate-btn gif-btn" data-gif-url="{api._animate_gif_url(r)}" '
+            'onclick="skymapRenderGif(this)" hidden>Share as a GIF</button>'
+            '<span class="gif-status"></span>'
+            '</div>')
         body = api.PAGE.format(title=f"skymap.sh — {r.place.name}",
                                path=f"/{r.place.slug}" if place else "",
                                explore=api.EXPLORE, animate_btn=animate_btn,
@@ -678,37 +673,55 @@ def horizon_png(request: Req, place: str):
 @app.get("/{place}/animate.gif")
 def animate_gif_inline(request: Req, place: str):
     # Synchronous (Starlette runs sync routes in a thread pool, so this
-    # doesn't block the single worker's event loop) -- for the "animate"
-    # button on the static page, which wants the finished GIF back in one
-    # response rather than the CLI's live-streamed-then-rendered flow.
-    # Still saved under a share id, same as the CLI path, so the page's JS
-    # can point "Share as a GIF" at a permanent /animate/<id>.gif link.
+    # doesn't block the single worker's event loop). The only place a GIF
+    # actually gets rendered -- neither the CLI's ?animate stream nor the
+    # web button's live preview does this automatically any more, only on
+    # request, since it's real Pillow work (draw + quantise + encode 96
+    # frames, ~180MB peak, ~6s) rather than the cheap text stream.
+    global _gif_render_active
     if api.lookup_place(place) is None:
         return PlainTextResponse("", status_code=404)
-    q = request.query_params
-    # Same default as the CLI's bare ?animate= (24h) -- the GIF should
-    # always match what was actually watched/requested, not quietly run a
-    # shorter clip of its own. The button's live preview also runs 24h now,
-    # and the ~6s render time comfortably finishes within that ~14.4s watch.
+    ua = (request.headers.get("user-agent") or "").lower()
+    terminal = any(t in ua for t in TERMINALS)
+    with _gif_render_lock:
+        if _gif_render_active >= GIF_RENDER_MAX_CONCURRENT:
+            msg = "Too many GIFs rendering right now -- try again in a few seconds.\n"
+            return PlainTextResponse(msg, status_code=503,
+                                     headers={"Cache-Control": "no-store"})
+        _gif_render_active += 1
     try:
-        hours = float(q.get("animate")) if q.get("animate") else 24.0
-    except ValueError:
-        hours = 24.0
-    hours = max(1.0, min(24.0, hours))
-    base_r = _build(request, place)
-    steps = int(hours * 60 / ANIMATE_STEP_MIN)
-    dusk_lead_minutes = ANIMATE_DUSK_LEAD_FRAMES * ANIMATE_STEP_MIN
-    dawn_lag_minutes = ANIMATE_DAWN_LAG_FRAMES * ANIMATE_STEP_MIN
-    frames = []
-    for i in range(steps):
-        t = base_r.when_utc + dt.timedelta(minutes=ANIMATE_STEP_MIN * i)
-        gif_r = base_r.at(t)
-        gif_r.width = GIF_RENDER_WIDTH
-        body, _sun_alt = api.compose_frame(gif_r, dusk_lead_minutes=dusk_lead_minutes,
-                                           dawn_lag_minutes=dawn_lag_minutes)
-        frames.append(body)
-    gif_id = secrets.token_urlsafe(6)
-    data = _render_and_save_gif(gif_id, frames)
+        q = request.query_params
+        # Same default as the CLI's bare ?animate= (24h) -- the GIF should
+        # always match what was actually watched/requested, not quietly run
+        # a shorter clip of its own.
+        try:
+            hours = float(q.get("animate")) if q.get("animate") else 24.0
+        except ValueError:
+            hours = 24.0
+        hours = max(1.0, min(24.0, hours))
+        base_r = _build(request, place)
+        steps = int(hours * 60 / ANIMATE_STEP_MIN)
+        dusk_lead_minutes = ANIMATE_DUSK_LEAD_FRAMES * ANIMATE_STEP_MIN
+        dawn_lag_minutes = ANIMATE_DAWN_LAG_FRAMES * ANIMATE_STEP_MIN
+        frames = []
+        for i in range(steps):
+            t = base_r.when_utc + dt.timedelta(minutes=ANIMATE_STEP_MIN * i)
+            gif_r = base_r.at(t)
+            gif_r.width = GIF_RENDER_WIDTH
+            body, _sun_alt = api.compose_frame(gif_r, dusk_lead_minutes=dusk_lead_minutes,
+                                               dawn_lag_minutes=dawn_lag_minutes)
+            frames.append(body)
+        gif_id = secrets.token_urlsafe(6)
+        data = _render_and_save_gif(gif_id, frames)
+    finally:
+        with _gif_render_lock:
+            _gif_render_active -= 1
+    if terminal:
+        base_url = str(request.base_url).rstrip("/")
+        return PlainTextResponse(
+            f"Share as a GIF (link up for {GIF_TTL_DAYS} days): "
+            f"{base_url}/animate/{gif_id}.gif\n",
+            headers={"Cache-Control": "no-store"})
     return Response(data, media_type="image/gif",
                     headers={"Cache-Control": "no-store", "X-Gif-Id": gif_id,
                              "Access-Control-Expose-Headers": "X-Gif-Id"})

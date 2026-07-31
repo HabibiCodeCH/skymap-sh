@@ -1032,11 +1032,14 @@ PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
  .chart-side{{display:flex;flex-direction:column;gap:8px;flex-shrink:0;padding-top:2px}}
  .chart-side a{{color:#ffd700;font-size:12px;text-decoration:none;white-space:nowrap}}
  .chart-side a:hover{{text-decoration:underline}}
+ .animate-controls{{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:0 0 10px}}
  .animate-btn{{background:#0d1117;border:1px solid #30363d;color:#ffd700;
               padding:6px 12px;border-radius:4px;font:inherit;font-size:12px;
-              cursor:pointer;margin:0 0 10px;display:inline-block}}
+              cursor:pointer;display:inline-block}}
  .animate-btn:hover{{border-color:#ffd700}}
  .animate-btn:disabled{{opacity:.6;cursor:default}}
+ .animate-btn[hidden]{{display:none}}
+ .gif-status{{color:#6e7681;font-size:12px;white-space:nowrap}}
 </style></head><body><div class="w">
 <pre class="cta">curl skymap.sh{path}</pre>
 <p class="t"><b>skymap.sh</b> — this page is what that prints.
@@ -1077,22 +1080,40 @@ function ansiToHtml(text){{
   if(open)out+='</span>';
   return out;
 }}
+var SPACE_FACTS=[
+  "A day on Venus is longer than its year.",
+  "Neutron stars can spin over 600 times a second.",
+  "Saturn is less dense than water -- it would float.",
+  "A teaspoon of neutron star weighs about a billion tons.",
+  "The Sun holds over 99.8% of the Solar System's mass.",
+  "Sunlight takes about 8 minutes to reach Earth.",
+  "There are more stars in the universe than grains of sand on Earth.",
+  "Jupiter has at least 95 known moons.",
+  "There's no wind on the Moon, so footprints there can last millions of years.",
+  "A year on Mercury is just 88 Earth days.",
+  "The Milky Way and Andromeda will collide in about 4.5 billion years.",
+  "Space is silent -- sound needs a medium like air to travel.",
+  "The largest known star could hold over a billion Suns.",
+  "Uranus rotates almost on its side, at 98 degrees.",
+  "The Moon drifts about 3.8cm farther from Earth every year.",
+  "About a million Earths could fit inside the Sun.",
+  "The ISS orbits Earth roughly every 90 minutes.",
+  "Olympus Mons on Mars is nearly triple the height of Everest."
+];
+var SPIN_FRAMES=['⠋','⠙','⠹','⠸','⠼','⠴','⠦','⠧','⠇','⠏'];
+
 function skymapAnimate(btn){{
   // Live preview plays right in the chart itself from the same streaming
-  // ?animate= text the CLI uses (nogif=1 so it skips its own now-unused
-  // GIF render). Nothing ever swaps the chart for the GIF -- the GIF is
-  // deliberately a different (larger, social-sized) render, so showing it
-  // inline just replaced a correctly-sized live view with an oversized
-  // image. Once both the live loop and the parallel GIF render finish,
-  // the sidebar link quietly becomes "Share as a GIF".
-  var gifUrl=btn.getAttribute('data-gif-url');
+  // ?animate= text the CLI uses. The "Share as a GIF" button appears the
+  // moment the preview starts, but rendering only actually happens if it's
+  // clicked -- see skymapRenderGif -- since that's real Pillow work, not
+  // free to do for every single viewer.
   var liveUrl=btn.getAttribute('data-live-url');
+  var gifBtn=btn.parentElement.querySelector('.gif-btn');
   var pre=document.getElementById('chart-pre');
   btn.disabled=true;btn.textContent='animating…';
-  var gifPromise=fetch(gifUrl).then(function(r){{
-    return r.headers.get('X-Gif-Id');
-  }});
-  var livePromise=fetch(liveUrl).then(function(resp){{
+  if(gifBtn)gifBtn.hidden=false;
+  fetch(liveUrl).then(function(resp){{
     var reader=resp.body.getReader();
     var decoder=new TextDecoder();
     var buf='';
@@ -1112,15 +1133,34 @@ function skymapAnimate(btn){{
       }});
     }}
     return pump();
-  }});
-  livePromise.then(function(){{return gifPromise;}}).then(function(gifId){{
-    if(gifId){{
-      document.getElementById('chart-side').innerHTML=
-        '<a href="/animate/'+gifId+'.gif" target="_blank" rel="noopener">Share as a GIF</a>';
-    }}
+  }}).then(function(){{
     btn.disabled=false;btn.textContent='▶ animate';
   }}).catch(function(){{
     btn.disabled=false;btn.textContent='animate failed — try again';
+  }});
+}}
+
+function skymapRenderGif(btn){{
+  var gifUrl=btn.getAttribute('data-gif-url');
+  var status=btn.parentElement.querySelector('.gif-status');
+  var fact=SPACE_FACTS[Math.floor(Math.random()*SPACE_FACTS.length)];
+  var frame=0;
+  btn.disabled=true;
+  var spin=setInterval(function(){{
+    if(status)status.textContent=SPIN_FRAMES[frame++%SPIN_FRAMES.length]+' '+fact;
+  }},120);
+  fetch(gifUrl).then(function(r){{
+    if(!r.ok)throw new Error('render failed');
+    return r.headers.get('X-Gif-Id');
+  }}).then(function(gifId){{
+    clearInterval(spin);
+    if(status)status.textContent='';
+    btn.disabled=false;
+    if(gifId)window.open('/animate/'+gifId+'.gif','_blank','noopener');
+  }}).catch(function(){{
+    clearInterval(spin);
+    if(status)status.textContent='render failed — try again';
+    btn.disabled=false;
   }});
 }}
 </script>
