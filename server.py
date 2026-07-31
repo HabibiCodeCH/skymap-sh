@@ -520,7 +520,13 @@ def _respond(request: Req, place: str | None):
             return JSONResponse({"error": "unknown_place", "query": place,
                                  "suggestions": near}, status_code=404)
         return PlainTextResponse(msg, status_code=404)
-    if q.get("animate") is not None:
+    if q.get("animate") is not None and mode != "html":
+        # A browser tab, on the other hand, falls through to the normal page
+        # render below -- ?animate= there is handled by the "autoplay" bit
+        # in the animate_btn markup, which starts the same live-preview JS
+        # fetch the button itself uses. Serving this raw text/plain ANSI
+        # stream straight into a browser used to print literal escape codes
+        # onto the page instead of an animation.
         if _animate_active >= ANIMATE_MAX_CONCURRENT:
             _stat["animate_rejected"] += 1
             return PlainTextResponse(
@@ -562,14 +568,31 @@ def _respond(request: Req, place: str | None):
         # The GIF button starts hidden and only renders on its own click
         # (skymapRenderGif) -- it appears once animate starts, but doesn't
         # do any actual Pillow work until someone asks for it.
+        # Carries the exact moment on screen (r.when_local, whether that
+        # came from ?t= or just defaulted to now) into the live-preview
+        # fetch -- otherwise the animation would start from real "now"
+        # while the static frame above it shows whatever time was asked
+        # for, which is confusing on any ?t= link and outright broken on a
+        # future one.
+        live_t = r.when_local.strftime("%Y-%m-%dT%H:%M")
         animate_btn = (
             '<div class="animate-controls">'
-            f'<button class="animate-btn" data-live-url="/{r.place.slug}?animate=24" '
+            f'<button id="animate-btn" class="animate-btn" '
+            f'data-live-url="/{r.place.slug}?animate=24&t={live_t}" '
             'onclick="skymapAnimate(this)">▶ animate</button>'
             f'<button class="animate-btn gif-btn" data-gif-url="{api._animate_gif_url(r)}" '
             'onclick="skymapRenderGif(this)" hidden>Share as a GIF</button>'
             '<span class="gif-status"></span>'
             '</div>')
+        if q.get("animate") is not None:
+            # A shared .../?t=...&animate=24 link opened as a page (rather
+            # than fetched by the button's own JS) lands here -- start the
+            # same live preview automatically instead of leaving the user
+            # looking at a static frame with an unclicked button.
+            animate_btn += (
+                '<script>document.addEventListener("DOMContentLoaded",'
+                'function(){var b=document.getElementById("animate-btn");'
+                'if(b)skymapAnimate(b);});</script>')
         body = api.PAGE.format(title=f"skymap.sh — {r.place.name}",
                                path=f"/{r.place.slug}" if place else "",
                                explore=api.EXPLORE, animate_btn=animate_btn,
