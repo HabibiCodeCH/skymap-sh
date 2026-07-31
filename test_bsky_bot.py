@@ -4,7 +4,9 @@ the parts that don't need a live Bluesky login.
 
 Run:  python3 test_bsky_bot.py
 """
+import tempfile
 import unittest
+from pathlib import Path
 
 from atproto import models
 
@@ -54,6 +56,27 @@ class ExtractPlace(unittest.TestCase):
             ),
         ]
         self.assertEqual(bsky_bot.extract_place(text, facets), "Zurich see example.com")
+
+
+class StatePersistence(unittest.TestCase):
+    def setUp(self):
+        self._orig_state_file = bsky_bot.STATE_FILE
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmpdir.cleanup)
+        self.addCleanup(setattr, bsky_bot, "STATE_FILE", self._orig_state_file)
+        bsky_bot.STATE_FILE = Path(self._tmpdir.name) / "state.json"
+
+    def test_missing_file_returns_epoch_and_empty_stats(self):
+        last_seen, stats = bsky_bot.load_state()
+        self.assertEqual(last_seen, bsky_bot.EPOCH)
+        self.assertEqual(dict(stats), {})
+
+    def test_round_trips_last_seen_and_stats(self):
+        bsky_bot.save_state("2026-08-01T00:00:00.000Z", {"replies": 3, "errors": 1})
+        last_seen, stats = bsky_bot.load_state()
+        self.assertEqual(last_seen, "2026-08-01T00:00:00.000Z")
+        self.assertEqual(stats["replies"], 3)
+        self.assertEqual(stats["errors"], 1)
 
 
 class SkyPng(unittest.TestCase):

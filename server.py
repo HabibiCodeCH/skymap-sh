@@ -71,6 +71,21 @@ HOURLY_MAX_QUERY_DAYS = 3650
 _hour_key = None
 _hour_stat = Counter()
 
+# bsky_bot.py runs as its own process (a systemd unit, not a uvicorn worker),
+# so it can't share _stat directly -- it persists its own tallies to this file
+# on every poll, and /stats just reads it. Missing/malformed is normal (the
+# bot may not be deployed, or hasn't written yet) and shows nothing, not an
+# error.
+BSKY_STATE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bsky_bot_state.json")
+
+
+def _read_bsky_stats():
+    try:
+        with open(BSKY_STATE_FILE) as f:
+            return json.load(f).get("stats") or {}
+    except (OSError, json.JSONDecodeError):
+        return {}
+
 
 def _flush_hour(hour_key, hstat):
     if not hstat:
@@ -171,7 +186,18 @@ def stats_text(n=15):
         L.append("non-200")
         for k in errs:
             L.append(f"  {k[7:]:12} {_stat[k]:>8,}")
-    L.append("")
+    bsky = _read_bsky_stats()
+    if bsky:
+        L.append("bluesky bot")
+        L.append(f"  {'mentions':12} {bsky.get('mentions', 0):>8,}")
+        L.append(f"  {'replies':12} {bsky.get('replies', 0):>8,}")
+        if bsky.get("unknown_place"):
+            L.append(f"  {'unknown':12} {bsky['unknown_place']:>8,}")
+        if bsky.get("usage_hint"):
+            L.append(f"  {'usage hint':12} {bsky['usage_hint']:>8,}")
+        if bsky.get("errors"):
+            L.append(f"  {'errors':12} {bsky['errors']:>8,}")
+        L.append("")
     L.append(f"top places ({len(_places):,} distinct)")
     for name, c in _places.most_common(n):
         L.append(f"  {name[:28]:28} {c:>8,}")
@@ -196,6 +222,7 @@ def stats_json(n=50):
         places_distinct=len(_places), finds_distinct=len(_finds),
         top_places=dict(_places.most_common(n)),
         top_finds=dict(_finds.most_common(n)),
+        bsky=_read_bsky_stats(),
     )
 
 

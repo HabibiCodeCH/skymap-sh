@@ -26,6 +26,7 @@ import logging
 import os
 import sys
 import time
+from collections import Counter
 from pathlib import Path
 
 from atproto import Client, models
@@ -75,15 +76,20 @@ def sky_png(place_query):
     return gif.frame_to_png(art), r.place.name
 
 
-def load_last_seen():
+def load_state():
+    """(last_seen, stats) -- stats is a Counter of tallies only (mentions,
+    replies, unknown_place, usage_hint, errors), the same "what happened, not
+    who did it" shape server.py's own /stats already uses. Read by server.py
+    too, so /stats can show the bot alongside the rest of the site."""
     try:
-        return json.loads(STATE_FILE.read_text())["last_seen"]
-    except (FileNotFoundError, KeyError, json.JSONDecodeError):
-        return EPOCH
+        data = json.loads(STATE_FILE.read_text())
+    except (FileNotFoundError, json.JSONDecodeError):
+        data = {}
+    return data.get("last_seen", EPOCH), Counter(data.get("stats") or {})
 
 
-def save_last_seen(when):
-    STATE_FILE.write_text(json.dumps({"last_seen": when}))
+def save_state(last_seen, stats):
+    STATE_FILE.write_text(json.dumps({"last_seen": last_seen, "stats": dict(stats)}))
 
 
 def reply_to(client, notif, text, png=None, alt=None):
@@ -100,19 +106,23 @@ def reply_to(client, notif, text, png=None, alt=None):
     )
 
 
-def handle_mention(client, notif):
+def handle_mention(client, notif, stats):
+    stats["mentions"] += 1
     place_query = extract_place(notif.record.text, notif.record.facets)
     if not place_query:
         reply_to(client, notif, f'Tell me a place: "@{HANDLE} Tokyo"')
+        stats["usage_hint"] += 1
         return
     png, name = sky_png(place_query)
     if png is None:
         reply_to(client, notif, f'Don\'t know "{place_query}". Try a city name or lat,lon.')
+        stats["unknown_place"] += 1
         return
     reply_to(client, notif, f"The sky above {name} right now.", png=png, alt=f"Star chart for {name}")
+    stats["replies"] += 1
 
 
-def poll_once(client, last_seen):
+def poll_once(client, last_seen, stats):
     resp = client.app.bsky.notification.list_notifications()
     mentions = sorted(
         (n for n in resp.notifications if n.reason == "mention" and n.indexed_at > last_seen),
@@ -121,9 +131,10 @@ def poll_once(client, last_seen):
     newest = last_seen
     for notif in mentions:
         try:
-            handle_mention(client, notif)
+            handle_mention(client, notif, stats)
         except Exception:
             log.exception("failed to handle mention %s", notif.uri)
+            stats["errors"] += 1
         newest = max(newest, notif.indexed_at)
     if mentions:
         client.app.bsky.notification.update_seen({"seen_at": dt.datetime.now(dt.timezone.utc).isoformat()})
@@ -136,11 +147,11 @@ def main():
     client = Client()
     client.login(HANDLE, APP_PASSWORD)
     log.info("logged in as %s, polling every %ss", HANDLE, POLL_SECONDS)
-    last_seen = load_last_seen()
+    last_seen, stats = load_state()
     while True:
         try:
-            last_seen = poll_once(client, last_seen)
-            save_last_seen(last_seen)
+            last_seen = poll_once(client, last_seen, stats)
+            save_state(last_seen, stats)
         except Exception:
             log.exception("poll failed")
         time.sleep(POLL_SECONDS)

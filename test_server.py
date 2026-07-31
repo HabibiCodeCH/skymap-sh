@@ -3,7 +3,10 @@
 
 Run:  python3 test_server.py
 """
+import json
+import os
 import re
+import tempfile
 import unittest
 
 from starlette.testclient import TestClient
@@ -102,6 +105,44 @@ class StatsPagesInBrowser(unittest.TestCase):
         resp = self.client.get("/stats/hourly", headers=TERMINAL)
         self.assertEqual(resp.status_code, 200)
         self.assertTrue(resp.headers["content-type"].startswith("text/plain"))
+
+
+class BskyBotStatsOnStatsPage(unittest.TestCase):
+    """bsky_bot.py runs as a separate process and hands off its tallies to
+    /stats purely through the shared state file -- no shared memory, no HTTP
+    call between them. This checks server.py's side of that handoff."""
+
+    def setUp(self):
+        client_cm = TestClient(server.app)
+        self.client = client_cm.__enter__()
+        self.addCleanup(client_cm.__exit__, None, None, None)
+        self._orig = server.BSKY_STATE_FILE
+        self.addCleanup(setattr, server, "BSKY_STATE_FILE", self._orig)
+        fd, self._path = tempfile.mkstemp(suffix=".json")
+        os.close(fd)
+        self.addCleanup(lambda: os.path.exists(self._path) and os.remove(self._path))
+        server.BSKY_STATE_FILE = self._path
+
+    def _write_bsky_stats(self, stats):
+        with open(self._path, "w") as f:
+            json.dump({"last_seen": "2026-08-01T00:00:00.000Z", "stats": stats}, f)
+
+    def test_missing_state_file_omits_the_section(self):
+        os.remove(self._path)
+        resp = self.client.get("/stats", headers=TERMINAL)
+        self.assertNotIn("bluesky bot", resp.text)
+
+    def test_present_stats_show_up_on_the_page(self):
+        self._write_bsky_stats({"mentions": 5, "replies": 4, "unknown_place": 1})
+        resp = self.client.get("/stats", headers=TERMINAL)
+        self.assertIn("bluesky bot", resp.text)
+        self.assertIn("mentions", resp.text)
+        self.assertIn("5", resp.text)
+
+    def test_present_stats_show_up_in_json(self):
+        self._write_bsky_stats({"mentions": 2, "replies": 2})
+        resp = self.client.get("/stats?format=json", headers=TERMINAL)
+        self.assertEqual(resp.json()["bsky"], {"mentions": 2, "replies": 2})
 
 
 if __name__ == "__main__":
