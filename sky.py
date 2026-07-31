@@ -845,7 +845,12 @@ def render_linear(when_utc, lat, lon, W=176, H=22, color=True, show_lines=True,
         if centre is None:
             centre = float(facing)
     else:
-        span, centre, clamped = 360.0, 180.0, ""
+        # South is the "interesting" direction for a Northern Hemisphere
+        # observer -- the ecliptic (Sun, Moon, planets) arcs highest there.
+        # South of the equator that same peak is toward the North instead,
+        # so the default sweep centres on whichever hemisphere's own zenith
+        # crossing this is, rather than always defaulting to South.
+        span, centre, clamped = 360.0, (0.0 if lat < 0 else 180.0), ""
 
     alt_lo = 0.0 if alt_lo is None else float(alt_lo)
     alt_hi = float(alt_max) if alt_hi is None else float(alt_hi)
@@ -1103,7 +1108,9 @@ def render_linear(when_utc, lat, lon, W=176, H=22, color=True, show_lines=True,
             for k, ch in enumerate(nm):
                 ticks[st + k] = ch
     if span >= 359:
-        ticks[W - 1] = "N"
+        # The wrap-around point is whatever's opposite centre, not always
+        # North -- centre itself now flips between N and S with hemisphere.
+        ticks[W - 1] = "S" if centre == 0 else "N"
     out.append(paint(" " * LM + "".join(ticks).rstrip(), C.CARD, color))
     if facing is None and target is None and inset:
         out.append("")

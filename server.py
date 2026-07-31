@@ -56,12 +56,70 @@ _places = Counter()
 _finds = Counter()
 _TOP_KEEP = 2000            # trim the long tail so the tables cannot grow forever
 
+# --- hourly history -----------------------------------------------------------
+# _stat/_places/_finds above are the whole point of the "no IPs, no
+# timestamps" design -- but they're purely in-memory, so a restart (deploy,
+# crash, systemd bounce) silently zeroes them with no record anything
+# happened. This appends one line per COMPLETED hour to a local file --
+# still just tallies (requests/hits/misses/day/night), not raw events -- so
+# a restart loses at most the current partial hour, not the whole history.
+HOURLY_LOG = os.path.join(os.path.dirname(os.path.abspath(__file__)), "stats_hourly.jsonl")
+# Never trimmed -- one line per hour is tiny (a year is ~8,760 lines), so the
+# file just keeps the whole history. This only caps how far back ?days= can
+# ask the /stats/hourly view to look, not how much is actually kept on disk.
+HOURLY_MAX_QUERY_DAYS = 3650
+_hour_key = None
+_hour_stat = Counter()
+
+
+def _flush_hour(hour_key, hstat):
+    if not hstat:
+        return
+    row = dict(hour=hour_key, requests=hstat["requests"], hit=hstat["hit"],
+              miss=hstat["miss"], day=hstat["day"], night=hstat["night"])
+    try:
+        with open(HOURLY_LOG, "a") as f:
+            f.write(json.dumps(row) + "\n")
+    except OSError:
+        pass
+
+
+def _roll_hour():
+    global _hour_key, _hour_stat
+    now_key = dt.datetime.utcnow().strftime("%Y-%m-%dT%H:00")
+    if _hour_key is None:
+        _hour_key = now_key
+    elif now_key != _hour_key:
+        _flush_hour(_hour_key, _hour_stat)
+        _hour_key, _hour_stat = now_key, Counter()
+
+
+def _read_hourly_history(days=7):
+    cutoff = dt.datetime.utcnow() - dt.timedelta(days=days)
+    rows = []
+    try:
+        with open(HOURLY_LOG) as f:
+            for line in f:
+                try:
+                    row = json.loads(line)
+                    if dt.datetime.fromisoformat(row["hour"]) >= cutoff:
+                        rows.append(row)
+                except (json.JSONDecodeError, KeyError, ValueError):
+                    continue
+    except OSError:
+        pass
+    return rows
+
 
 def _tally(r, daytime, hit, mode, status, data):
+    _roll_hour()
     _stat["requests"] += 1
     _stat["hit" if hit else "miss"] += 1
     _stat["day" if daytime else "night"] += 1
     _stat[f"mode:{mode}"] += 1
+    _hour_stat["requests"] += 1
+    _hour_stat["hit" if hit else "miss"] += 1
+    _hour_stat["day" if daytime else "night"] += 1
     if status != 200:
         _stat[f"status:{status}"] += 1
     _stat["view:find" if r.find else
@@ -129,6 +187,37 @@ def stats_json(n=50):
         top_places=dict(_places.most_common(n)),
         top_finds=dict(_finds.most_common(n)),
     )
+
+
+def stats_hourly_text(days=7):
+    _roll_hour()
+    rows = _read_hourly_history(days=days)
+    if _hour_stat:
+        rows = rows + [dict(hour=_hour_key, requests=_hour_stat["requests"],
+                            hit=_hour_stat["hit"], miss=_hour_stat["miss"],
+                            day=_hour_stat["day"], night=_hour_stat["night"])]
+    if not rows:
+        return "skymap.sh — hourly stats\n\nno data yet (first hour still in progress)\n"
+    L = [f"skymap.sh — hourly stats, last {days}d ({len(rows)} hour(s) on record)", "",
+        f"{'hour (UTC)':17} {'requests':>9} {'hit%':>6} {'day':>6} {'night':>6}"]
+    for row in rows:
+        req = row["requests"] or 1
+        hitpct = 100 * row["hit"] / req
+        current = "  (in progress)" if row["hour"] == _hour_key and row is rows[-1] else ""
+        L.append(f"{row['hour']:17} {row['requests']:>9,} {hitpct:>5.1f}% "
+                f"{row['day']:>6,} {row['night']:>6,}{current}")
+    return "\n".join(L) + "\n"
+
+
+def stats_hourly_json(days=7):
+    _roll_hour()
+    rows = _read_hourly_history(days=days)
+    if _hour_stat:
+        rows = rows + [dict(hour=_hour_key, requests=_hour_stat["requests"],
+                            hit=_hour_stat["hit"], miss=_hour_stat["miss"],
+                            day=_hour_stat["day"], night=_hour_stat["night"],
+                            in_progress=True)]
+    return dict(hours=rows)
 
 # --- per-IP rate limit -------------------------------------------------------
 # The sky does not change in a second, but `watch -n 1 curl skymap.sh` does not know
@@ -532,6 +621,18 @@ def stats(request: Req):
     if request.query_params.get("format") == "json":
         return JSONResponse(stats_json(), headers={"Cache-Control": "no-store"})
     return PlainTextResponse(stats_text(), headers={"Cache-Control": "no-store"})
+
+
+@app.get("/stats/hourly", response_class=PlainTextResponse)
+def stats_hourly(request: Req):
+    q = request.query_params
+    try:
+        days = max(1, min(HOURLY_MAX_QUERY_DAYS, int(q.get("days", 7))))
+    except ValueError:
+        days = 7
+    if q.get("format") == "json":
+        return JSONResponse(stats_hourly_json(days), headers={"Cache-Control": "no-store"})
+    return PlainTextResponse(stats_hourly_text(days), headers={"Cache-Control": "no-store"})
 
 
 @app.get("/robots.txt", response_class=PlainTextResponse)

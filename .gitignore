@@ -5,6 +5,7 @@ _to_delete/
 iss.tle
 tle.log
 gif_cache/
+stats_hourly.jsonl
 .DS_Store
 PROJECT_STATE.md
 NOTES.md

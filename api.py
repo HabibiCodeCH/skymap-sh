@@ -10,7 +10,7 @@ import datetime as dt, html, json, math, re, unicodedata
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import sky
-from sky import (C, paint, julian, gmst_hours, altaz, compass, moon_glyph,
+from sky import (C, paint, julian, gmst_hours, altaz, angsep, compass, moon_glyph,
                  phase_name, resolve_target, visibility, next_visible,
                  solar_elongation, find_text, sky_read, render, render_linear,
                  sun, moon, planet, sun_arc, sun_events, dark_enough)
@@ -469,6 +469,48 @@ def _sun_path_mode(r):
         else "the Sun's path"
 
 
+def _fade_mag_limit(sun_alt):
+    """Shared by compose_frame() (animation) and the static views, so a
+    snapshot at a given moment always shows exactly what an animation
+    frame at that same moment would -- no hard cut at sunset/sunrise, just
+    this one continuous function of the Sun's altitude. Biased, not
+    linear: stars stay suppressed through the brighter part of twilight
+    and catch up fast near full dark -- late to appear at dusk, early to
+    vanish at dawn, symmetrically, since this is a pure function of
+    altitude with no notion of which direction time runs."""
+    if sun_alt >= 0:
+        return -5.0
+    if sun_alt <= -18:
+        return 4.0
+    t = ((0 - sun_alt) / 18.0) ** 1.6
+    return -5.0 + t * 9.0
+
+
+# How close the Moon has to be to the Sun, in the sky, before it's shown
+# regardless of phase brightness -- a new moon reflects ~0% of the Sun's
+# light, so the normal dark_enough() check (built for reflected moonlight)
+# never fires near an eclipse. This is a separate, real reason to be
+# visible: it's right there next to (or over) the Sun. A few degrees of
+# margin around exact conjunction, generous enough to cover the hour or
+# so either side of an eclipse, without lighting up for a merely-ordinary
+# new moon that isn't anywhere near the Sun's apparent path.
+ECLIPSE_MATE_DEG = 8.0
+
+
+def _near_sun(jd):
+    su, mo = sun(jd), moon(jd)
+    return angsep(su["dec"], su["ra"] * 15, mo["dec"], mo["ra"] * 15) <= ECLIPSE_MATE_DEG
+
+
+def _fade_visible_bodies(sun_alt, jd):
+    visible = {n for n in ("Mercury", "Venus", "Mars", "Jupiter",
+                           "Saturn", "Uranus", "Neptune")
+              if dark_enough(sun_alt, planet(n, jd)["mag"])}
+    if dark_enough(sun_alt, -12.7) or _near_sun(jd):    # Moon's rough peak
+        visible.add("Moon")                             # brightness, or an
+    return visible                                       # eclipse mate
+
+
 def _horizon_head(r, mode):
     p = r.place
     hemi = 'N' if p.lat >= 0 else 'S'
@@ -504,15 +546,27 @@ def _animate_gif_url(r):
 
 def _compose_sky(r):
     p, c = r.place, r.color
+    jd = julian(r.when_utc)
+    lst = (gmst_hours(jd) + p.lon / 15.0) % 24
+    su = sun(jd)
+    sun_alt, _ = altaz(su["ra"], su["dec"], p.lat, lst)
+    mag_limit = _fade_mag_limit(sun_alt)
     if r.view == "disc" and not r.facing:
         art, st = render(r.when_utc, p.lat, p.lon, height=34, color=c,
-                         show_lines=r.lines, width=r.width)
+                         show_lines=r.lines, width=r.width, mag_limit=mag_limit)
         mode = "looking up, north at top"
     else:
         art, st = render_linear(r.when_utc, p.lat, p.lon, color=c, show_lines=r.lines,
                                 tle=r.tle, facing=r.facing, span=r.span,
                                 width=r.width if r.facing else _effective_width(r),
-                                height=None if r.facing else _horizon_height(r))
+                                height=None if r.facing else _horizon_height(r),
+                                mag_limit=mag_limit, line_limit=mag_limit,
+                                # "Sun" must stay in the set even though it's
+                                # never bright enough to be "visible" here --
+                                # render_linear only computes alt/az for
+                                # bodies that survive this filter, and
+                                # sky_read() below needs st["sun"]["alt"].
+                                bodies=_fade_visible_bodies(sun_alt, jd) | {"Sun"})
         mode = (f"facing {r.facing.upper()}, {int(round(st['span']))}° wide"
                 f"{' (' + st['clamped'] + ')' if st['clamped'] else ''}, true shape"
                 if r.facing else "horizon panorama, 0-70° + zenith inset")
@@ -562,6 +616,11 @@ def _compose_sky(r):
 # ---------------------------------------------------------------- daytime
 SUN_COL = "\033[38;5;220m"
 DAY_BUCKET = 10                     # minutes; the Sun moves ~2.5° in that time
+# Shared by every day-arc chart (static day view, its PNG mirror, and the
+# animation) so the vertical scale never jumps between them -- it used to
+# be 30 here and 70 in compose_frame, which meant clicking "animate" (which
+# replaces the static chart in place) visibly snapped the y-axis taller.
+DAY_ALT_HI_FLOOR = 70.0
 
 def is_daytime(r):
     jd = julian(r.when_utc)
@@ -587,7 +646,7 @@ def _compose_day(r):
     ev = sun_events(day0, p.lat, p.lon)
     arc = sun_arc(day0, p.lat, p.lon, step_min=DAY_BUCKET)
     top = max((a for _t, a in ((x[0], x[1]) for x in arc)), default=10)
-    alt_hi = max(30.0, min(90.0, top + 8))
+    alt_hi = max(DAY_ALT_HI_FLOOR, min(90.0, top + 8))
 
     jd_now = julian(r.when_utc)
     mo_now = moon(jd_now)
@@ -598,9 +657,14 @@ def _compose_day(r):
     lst_now = (gmst_hours(jd_now) + p.lon / 15.0) % 24
     su_now = sun(jd_now)
     sa_now, sz_now = altaz(su_now["ra"], su_now["dec"], p.lat, lst_now)
-    show = {"Moon"} if mo_now["illum"] > 0.4 else set()
+    # ...or right next to the Sun, an eclipse mate -- a new moon reflects
+    # ~0% sunlight, so the illum>0.4 rule alone would never show it then.
+    show = {"Moon"} if mo_now["illum"] > 0.4 or _near_sun(jd_now) else set()
+    # mag_limit is always -5.0 here in practice (this branch only runs while
+    # sun_alt >= 0, is_daytime()'s gate), but computed via the same shared
+    # formula _compose_sky uses rather than a second hardcoded copy of it.
     art, st = render_linear(r.when_utc, p.lat, p.lon, color=c, show_lines=False,
-                            mag_limit=-5.0, alt_lo=0.0, alt_hi=alt_hi,
+                            mag_limit=_fade_mag_limit(sa_now), alt_lo=0.0, alt_hi=alt_hi,
                             overlay=(arc, SUN_COL, "SUN", (sa_now, sz_now)),
                             bodies=show, inset=False, width=_effective_width(r),
                             height=_horizon_height(r))
@@ -742,30 +806,21 @@ def compose_frame(r, dusk_lead_minutes=0, dawn_lag_minutes=0):
     else:
         fade_alt = sun_alt
 
-    if fade_alt >= 0:
-        mag_limit = -5.0
-    elif fade_alt <= -18:
-        mag_limit = 4.0
-    else:
-        # biased, not linear: stars stay suppressed through the brighter part
-        # of twilight and catch up fast near full dark -- late to appear at
-        # dusk, early to vanish at dawn, symmetrically, since this is a pure
-        # function of altitude with no notion of which direction time runs.
-        t = ((0 - fade_alt) / 18.0) ** 1.6
-        mag_limit = -5.0 + t * 9.0
-
-    visible_bodies = {n for n in ("Mercury", "Venus", "Mars", "Jupiter",
-                                  "Saturn", "Uranus", "Neptune")
-                      if dark_enough(fade_alt, planet(n, jd)["mag"])}
-    if dark_enough(fade_alt, -12.7):     # Moon's rough peak brightness
-        visible_bodies.add("Moon")
+    mag_limit = _fade_mag_limit(fade_alt)
+    # Moon/planets use the real sun_alt, not fade_alt -- the dusk/dawn lead
+    # was tuned by eye for the star field fading in a few frames early, a
+    # subtle effect. Applying that same shift to the Moon meant it could
+    # appear up to ~75 minutes before actual sunset, in plain daylight --
+    # a much more jarring error for one big, clearly labelled object than
+    # for background stars.
+    visible_bodies = _fade_visible_bodies(sun_alt, jd)
 
     off = p.offset(r.when_utc)
     day0_local = r.when_local.replace(hour=0, minute=0, second=0, microsecond=0)
     day0 = day0_local - dt.timedelta(hours=off)
     arc = sun_arc(day0, p.lat, p.lon, step_min=DAY_BUCKET)
     top = max((a for _t, a in ((x[0], x[1]) for x in arc)), default=45)
-    alt_hi = max(70.0, min(90.0, top + 8))
+    alt_hi = max(DAY_ALT_HI_FLOOR, min(90.0, top + 8))
 
     # Below the horizon the Sun overlay disappears entirely, trail included --
     # otherwise the trail (coloured once, for the whole arc, by the *current*
@@ -803,29 +858,41 @@ def compose_chart_only(r):
         day0 = day0_local - dt.timedelta(hours=off)
         arc = sun_arc(day0, p.lat, p.lon, step_min=DAY_BUCKET)
         top = max((a for _t, a in ((x[0], x[1]) for x in arc)), default=10)
-        alt_hi = max(30.0, min(90.0, top + 8))
+        alt_hi = max(DAY_ALT_HI_FLOOR, min(90.0, top + 8))
         jd_now = julian(r.when_utc)
         lst_now = (gmst_hours(jd_now) + p.lon / 15.0) % 24
         su_now = sun(jd_now)
         sa_now, sz_now = altaz(su_now["ra"], su_now["dec"], p.lat, lst_now)
         mo_now = moon(jd_now)
-        show = {"Moon"} if mo_now["illum"] > 0.4 else set()
+        show = {"Moon"} if mo_now["illum"] > 0.4 or _near_sun(jd_now) else set()
         art, _st = render_linear(r.when_utc, p.lat, p.lon, color=c, show_lines=False,
-                                 mag_limit=-5.0, alt_lo=0.0, alt_hi=alt_hi,
+                                 mag_limit=_fade_mag_limit(sa_now), alt_lo=0.0, alt_hi=alt_hi,
                                  overlay=(arc, SUN_COL, "SUN", (sa_now, sz_now)),
                                  bodies=show, inset=False, width=_effective_width(r),
                                  height=_horizon_height(r))
         head = _horizon_head(r, _sun_path_mode(r))
         return paint(head, C.HEAD, c) + "\n\n" + art
     if r.view == "disc" and not r.facing:
+        jd = julian(r.when_utc)
+        lst = (gmst_hours(jd) + p.lon / 15.0) % 24
+        su = sun(jd)
+        sun_alt, _ = altaz(su["ra"], su["dec"], p.lat, lst)
         art, _st = render(r.when_utc, p.lat, p.lon, height=34, color=c,
-                          show_lines=r.lines, width=r.width)
+                          show_lines=r.lines, width=r.width,
+                          mag_limit=_fade_mag_limit(sun_alt))
         head = _horizon_head(r, "looking up, north at top")
         return paint(head, C.HEAD, c) + "\n\n" + art
+    jd = julian(r.when_utc)
+    lst = (gmst_hours(jd) + p.lon / 15.0) % 24
+    su = sun(jd)
+    sun_alt, _ = altaz(su["ra"], su["dec"], p.lat, lst)
+    mag_limit = _fade_mag_limit(sun_alt)
     art, st = render_linear(r.when_utc, p.lat, p.lon, color=c, show_lines=r.lines,
                             tle=r.tle, facing=r.facing, span=r.span,
                             width=r.width if r.facing else _effective_width(r),
                             height=None if r.facing else _horizon_height(r),
+                            mag_limit=mag_limit, line_limit=mag_limit,
+                            bodies=_fade_visible_bodies(sun_alt, jd) | {"Sun"},
                             inset=False)
     mode = (f"facing {r.facing.upper()}, {int(round(st['span']))}° wide"
             f"{' (' + st['clamped'] + ')' if st['clamped'] else ''}, true shape"
