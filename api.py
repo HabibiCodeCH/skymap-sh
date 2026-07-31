@@ -1189,6 +1189,7 @@ PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
  .animate-btn:hover{{border-color:#ffd700;text-decoration:none}}
  .animate-btn:disabled{{opacity:.6;cursor:default}}
  .animate-btn[hidden]{{display:none}}
+ .gif-group{{display:flex;flex-direction:column;gap:4px;align-items:flex-start}}
  .gif-status{{color:#6e7681;font-size:12px;white-space:nowrap}}
 </style></head><body><div class="w">
 <pre class="cta">curl skymap.sh{path}</pre>
@@ -1272,13 +1273,15 @@ function skymapPollGifCapacity(gifBtn){{
   // Greys the button out before a click would just 503, rather than only
   // finding out after. A stale read is harmless -- the render endpoint
   // still enforces the real cap itself, this is only ever a UX hint. Skips
-  // a tick entirely while this button's own render is in flight, so it
-  // doesn't fight skymapRenderGif's use of the same status line.
+  // a tick entirely while this button's own render is in flight, or once
+  // it's done and showing the "View GIF" link (dataset.ready) -- otherwise
+  // this loop would overwrite that link with '' the next time it ticks,
+  // since it doesn't otherwise know the status line is in use for that now.
   var status=document.getElementById('gif-status');
   function poll(){{
-    if(gifBtn.dataset.rendering==='1')return;
+    if(gifBtn.dataset.rendering==='1'||gifBtn.dataset.ready==='1')return;
     fetch('/gif-capacity').then(function(r){{return r.json();}}).then(function(d){{
-      if(gifBtn.dataset.rendering==='1')return;
+      if(gifBtn.dataset.rendering==='1'||gifBtn.dataset.ready==='1')return;
       gifBtn.disabled=!d.available;
       if(status)status.textContent=d.available?'':
         'Too many GIFs rendering right now — please wait a few seconds';
@@ -1291,7 +1294,10 @@ function skymapPollGifCapacity(gifBtn){{
 function skymapRenderGif(btn){{
   // Rendering is fast enough now (on-demand, not pre-built for every
   // viewer) that a plain status line is enough -- no spinner or facts
-  // needed to fill the wait.
+  // needed to fill the wait. window.open() here used to silently get
+  // popup-blocked: it ran inside the fetch's .then(), well after the click
+  // that triggered it, so browsers no longer treated it as user-initiated.
+  // A real <a> the visitor clicks themselves never has that problem.
   var gifUrl=btn.getAttribute('data-gif-url');
   var status=document.getElementById('gif-status');
   btn.dataset.rendering='1';
@@ -1301,10 +1307,14 @@ function skymapRenderGif(btn){{
     if(!r.ok)throw new Error('render failed');
     return r.headers.get('X-Gif-Id');
   }}).then(function(gifId){{
-    if(status)status.textContent='';
     btn.dataset.rendering='0';
     btn.disabled=false;
-    if(gifId)window.open('/animate/'+gifId+'.gif','_blank','noopener');
+    if(gifId&&status){{
+      btn.dataset.ready='1';
+      status.innerHTML='<a href="/animate/'+gifId+'.gif" target="_blank" rel="noopener">View GIF</a>';
+    }}else if(status){{
+      status.textContent='render failed — try again';
+    }}
   }}).catch(function(){{
     if(status)status.textContent='render failed — try again';
     btn.dataset.rendering='0';

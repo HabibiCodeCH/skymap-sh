@@ -580,10 +580,15 @@ def _respond(request: Req, place: str | None):
         # the chart, not down beside it -- gif-btn/gif-status are found by
         # id from the JS now rather than by parentElement.querySelector, so
         # they can live in a different part of the page than animate-btn.
-        extra = (f'<button id="gif-btn" class="animate-btn gif-btn" '
+        # gif-status sits in its own column under the button (.gif-group),
+        # so the "View GIF" link that appears there once rendering finishes
+        # reads as belonging to that button, not floating next to Share as a PNG.
+        extra = ('<div class="gif-group">'
+                f'<button id="gif-btn" class="animate-btn gif-btn" '
                 f'data-gif-url="{api._animate_gif_url(r)}" '
                 'onclick="skymapRenderGif(this)" hidden>Share as a GIF</button>'
                 '<span id="gif-status" class="gif-status"></span>'
+                '</div>'
                 f'<a href="{png_href}" target="_blank" rel="noopener">Share as a PNG</a>')
         # Carries the exact moment on screen (r.when_local, whether that
         # came from ?t= or just defaulted to now) into the live-preview
