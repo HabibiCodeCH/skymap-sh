@@ -573,6 +573,21 @@ def _png_url(r):
     return f"{{base_url}}/{r.place.slug}/horizon.png{qs}"
 
 
+def _quadrant_view_url(r):
+    """Re-requests this same view with the quadrant grid turned on (bare
+    ?quadrant, no letter chosen yet) -- facing/span/night/w carried over the
+    same way _png_url does it, so the button doesn't silently reset the view
+    the visitor is already looking at. Relative: same-origin navigation, no
+    base_url substitution needed."""
+    q = []
+    if r.facing: q.append(f"facing={r.facing}")
+    if r.span: q.append(f"span={r.span:g}")
+    if r.night: q.append("night=1")
+    if r.width: q.append(f"w={int(r.width)}")
+    q.append("quadrant")
+    return f"/{r.place.slug}?" + "&".join(q)
+
+
 def _animate_gif_url(r):
     """Relative -- fetched same-origin by the page's own JS, so no base_url
     substitution needed. No query params: compose_frame (shared by the CLI's
@@ -1162,7 +1177,7 @@ PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
 <pre class="cta">curl skymap.sh{path}</pre>
 <p class="t"><b>skymap.sh</b>
 <a href="/demo">demo</a> · <a href="/help">help</a> · <a href="/legend">legend</a></p>
-{explore}{animate_btn}<div class="chart-row"><pre id="chart-pre">{body}</pre><div class="chart-side" id="chart-side">{extra}</div></div>
+{explore}{animate_btn}{quadrant_btn}<div class="chart-row"><pre id="chart-pre">{body}</pre><div class="chart-side" id="chart-side">{extra}</div></div>
 <p class="t" style="margin-top:18px">Created by <a href="https://x.com/habibicode">@habibicode</a>
 · <a href="https://github.com/HabibiCodeCH/skymap-sh">see the repo</a></p>
 <script>
