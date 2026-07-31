@@ -62,6 +62,30 @@ def _xterm_rgb(n):
     return tuple(int(h[i:i + 2], 16) for i in (0, 2, 4))
 
 
+# frame_to_image used to call draw.text() once per same-colour run, which for
+# a starfield means once per 1-2 characters (colour changes almost every
+# dot) -- profiled at 44,221 calls to render a 96-frame GIF, 87% of it spent
+# in FreeType rasterisation, even though only ~150 distinct (character,
+# colour) pairs actually occur. Every one of those calls was re-rasterising
+# a glyph this process had already drawn. Cached here instead: render each
+# (char, colour) once into a small RGBA tile, then paste the cached tile for
+# every repeat -- a plain compositing op, not a font call. Module-level and
+# never evicted: the xterm palette is bounded to 256 colours and the
+# character set (digits, chart symbols, city names) is small enough that
+# even a few thousand entries is a few MB, not worth the complexity of a
+# cache limit.
+_glyph_cache = {}
+
+
+def _glyph(ch, color):
+    tile = _glyph_cache.get((ch, color))
+    if tile is None:
+        tile = Image.new("RGBA", (int(_CELL_W) + 1, _CELL_H), (0, 0, 0, 0))
+        ImageDraw.Draw(tile).text((0, 0), ch, font=_font, fill=color)
+        _glyph_cache[(ch, color)] = tile
+    return tile
+
+
 def frame_to_image(text):
     """One ANSI frame -> one RGB image, cell-aligned to a monospace grid,
     with a one-line watermark footer below the chart content."""
@@ -69,21 +93,25 @@ def frame_to_image(text):
     cols = max((len(ANSI.sub("", l)) for l in lines), default=1)
     content_h = _CELL_H * len(lines)
     img = Image.new("RGB", (int(_CELL_W * cols) + 2, content_h + _WM_STRIP_H), BG)
-    draw = ImageDraw.Draw(img)
     for row, line in enumerate(lines):
         col, pos, fg = 0, 0, FG_DEFAULT
         for m in ANSI.finditer(line):
             chunk = line[pos:m.start()]
-            if chunk:
-                draw.text((col * _CELL_W, row * _CELL_H), chunk, font=_font, fill=fg)
-                col += len(chunk)
+            for ch in chunk:
+                if ch != " ":
+                    tile = _glyph(ch, fg)
+                    img.paste(tile, (int(col * _CELL_W), row * _CELL_H), tile)
+                col += 1
             pos = m.end()
             fg = _xterm_rgb(m.group(1)) if m.group(1) else FG_DEFAULT
         chunk = line[pos:]
-        if chunk:
-            draw.text((col * _CELL_W, row * _CELL_H), chunk, font=_font, fill=fg)
+        for ch in chunk:
+            if ch != " ":
+                tile = _glyph(ch, fg)
+                img.paste(tile, (int(col * _CELL_W), row * _CELL_H), tile)
+            col += 1
     wm_y = content_h + (_WM_STRIP_H - WATERMARK_SIZE) // 2
-    draw.text((4, wm_y), WATERMARK_TEXT, font=_wm_font, fill=WATERMARK_COLOR)
+    ImageDraw.Draw(img).text((4, wm_y), WATERMARK_TEXT, font=_wm_font, fill=WATERMARK_COLOR)
     return img
 
 
