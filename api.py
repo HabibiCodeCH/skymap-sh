@@ -573,10 +573,11 @@ def _png_url(r):
     return f"{{base_url}}/{r.place.slug}/horizon.png{qs}"
 
 
-def _quadrant_view_url(r):
-    """Re-requests this same view with the quadrant grid turned on (bare
-    ?quadrant, no letter chosen yet) -- facing/span/night/w carried over the
-    same way _png_url does it, so the button doesn't silently reset the view
+def _quadrant_toggle_url(r):
+    """Toggle URL for the quadrant grid button: adds a bare ?quadrant (no
+    letter chosen yet) when it's not currently on, or drops it (and the dso
+    it auto-enabled) when it is. facing/span/night/w carried over either
+    way, same as _png_url, so toggling doesn't reset the rest of the view
     the visitor is already looking at. Relative: same-origin navigation, no
     base_url substitution needed."""
     q = []
@@ -584,8 +585,10 @@ def _quadrant_view_url(r):
     if r.span: q.append(f"span={r.span:g}")
     if r.night: q.append("night=1")
     if r.width: q.append(f"w={int(r.width)}")
-    q.append("quadrant")
-    return f"/{r.place.slug}?" + "&".join(q)
+    if not r.quadrant_requested:
+        q.append("quadrant")
+    qs = ("?" + "&".join(q)) if q else ""
+    return f"/{r.place.slug}{qs}"
 
 
 def _animate_gif_url(r):
@@ -617,12 +620,16 @@ def _compose_sky(r):
                                 width=r.width if r.facing else _effective_width(r),
                                 height=None if r.facing else _horizon_height(r),
                                 mag_limit=mag_limit, line_limit=mag_limit,
-                                # "Sun" must stay in the set even though it's
-                                # never bright enough to be "visible" here --
-                                # render_linear only computes alt/az for
-                                # bodies that survive this filter, and
-                                # sky_read() below needs st["sun"]["alt"].
-                                bodies=_fade_visible_bodies(sun_alt, jd) | {"Sun"},
+                                # "Sun" and "Moon" must stay in the set even
+                                # when neither is bright enough to be
+                                # "visible" here -- render_linear only
+                                # computes alt/az for bodies that survive
+                                # this filter, and sky_read() below needs
+                                # st["sun"]["alt"] and st["moon"]["alt"]
+                                # unconditionally. Missing "Moon" here is
+                                # what let ?night=1 during actual daylight
+                                # crash with a KeyError.
+                                bodies=_fade_visible_bodies(sun_alt, jd) | {"Sun", "Moon"},
                                 dso_limit=dso_limit, quadrant=r.quadrant,
                                 quadrants=r.quadrant_requested)
         quad_bit = f", quadrant {st['quad_applied']}" if st.get("quad_applied") else ""
@@ -971,7 +978,12 @@ def compose_chart_only(r):
                             width=r.width if r.facing else _effective_width(r),
                             height=None if r.facing else _horizon_height(r),
                             mag_limit=mag_limit, line_limit=mag_limit,
-                            bodies=_fade_visible_bodies(sun_alt, jd) | {"Sun"},
+                            # Same "Sun"+"Moon" forcing as _compose_sky above,
+                            # for consistency -- this path doesn't call
+                            # sky_read() so it can't hit the KeyError, but
+                            # without "Moon" here the PNG export would still
+                            # silently drop the Moon glyph the main view kept.
+                            bodies=_fade_visible_bodies(sun_alt, jd) | {"Sun", "Moon"},
                             dso_limit=DSO_LIMIT if r.dso else None, quadrant=r.quadrant,
                             quadrants=r.quadrant_requested, inset=False)
     mode = (f"facing {r.facing.upper()}, {int(round(st['span']))}° wide"

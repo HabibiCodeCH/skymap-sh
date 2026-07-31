@@ -599,8 +599,17 @@ def _respond(request: Req, place: str | None):
                 '<script>document.addEventListener("DOMContentLoaded",'
                 'function(){var b=document.getElementById("animate-btn");'
                 'if(b)skymapAnimate(b);});</script>')
-        quadrant_btn = (f'<a class="animate-btn" href="{api._quadrant_view_url(r)}">'
-                       f'⊞ see quadrants</a>')
+        # Quadrants only affect the night chart (_compose_sky) -- during the
+        # Sun's-arc day view there's no facing/span window to crop, so the
+        # button would do nothing. Same day/night gate _compose_sky itself
+        # uses, not just `daytime` alone, since --night/?night=1 overrides it.
+        if not r.night and daytime:
+            quadrant_btn = ('<button class="animate-btn" disabled '
+                            'title="Only available on the night chart">⊞ show quadrants</button>')
+        else:
+            label = "hide quadrants" if r.quadrant_requested else "show quadrants"
+            quadrant_btn = (f'<a class="animate-btn" href="{api._quadrant_toggle_url(r)}">'
+                           f'⊞ {label}</a>')
         body = api.PAGE.format(title=f"skymap.sh — {r.place.name}",
                                path=f"/{r.place.slug}" if place else "",
                                explore=api.EXPLORE, animate_btn=animate_btn,

@@ -131,5 +131,23 @@ class DsoAndQuadrantRequests(unittest.TestCase):
         self.assertIn("quadrant=C", url)
 
 
+class NightOverrideDuringDaylight(unittest.TestCase):
+    """?night=1 forces the star chart even while the Sun is up. The Moon
+    used to be silently dropped from render_linear's bodies set whenever it
+    wasn't bright enough to matter -- fine for what gets drawn, but
+    sky_read() reads moon["alt"] unconditionally, so this crashed with a
+    KeyError every time someone used --night in broad daylight."""
+
+    def test_does_not_crash_and_reports_moon_altitude(self):
+        r = api.Request(place="Zurich", when=dt.datetime(2026, 7, 30, 13, 0), night=True)
+        res = api.compose(r)
+        self.assertEqual(res.status, 200)
+        self.assertIn("alt", res.data["moon"])
+
+    def test_chart_only_path_does_not_crash_either(self):
+        r = api.Request(place="Zurich", when=dt.datetime(2026, 7, 30, 13, 0), night=True)
+        api.compose_chart_only(r)   # raises on failure; nothing to assert
+
+
 if __name__ == "__main__":
     unittest.main()
