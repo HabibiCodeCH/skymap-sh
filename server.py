@@ -630,7 +630,14 @@ def healthz():
 def stats(request: Req):
     if request.query_params.get("format") == "json":
         return JSONResponse(stats_json(), headers={"Cache-Control": "no-store"})
-    return PlainTextResponse(stats_text(), headers={"Cache-Control": "no-store"})
+    headers = {"Cache-Control": "no-store"}
+    mode, _colour = _wants(request)
+    if mode == "html":
+        body = api.PAGE.format(title="skymap.sh — stats", path="/stats",
+                               explore=api.EXPLORE, body=html.escape(stats_text()),
+                               extra="", animate_btn="")
+        return HTMLResponse(body, headers=headers)
+    return PlainTextResponse(stats_text(), headers=headers)
 
 
 @app.get("/stats/hourly", response_class=PlainTextResponse)
