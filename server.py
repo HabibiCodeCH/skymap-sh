@@ -610,9 +610,13 @@ def _respond(request: Req, place: str | None):
             label = "hide quadrants" if r.quadrant_requested else "show quadrants"
             quadrant_btn = (f'<a class="animate-btn" href="{api._quadrant_toggle_url(r)}">'
                            f'⊞ {label}</a>')
+        # Pre-filled with the place actually being viewed -- otherwise
+        # picking a date/time without retyping the city loses it: the JS
+        # reads an empty #place and falls back to the home/IP-located page.
+        explore = api.EXPLORE.format(place=html.escape(r.place.name))
         body = api.PAGE.format(title=f"skymap.sh — {r.place.name}",
                                path=f"/{r.place.slug}" if place else "",
-                               explore=api.EXPLORE, animate_btn=animate_btn,
+                               explore=explore, animate_btn=animate_btn,
                                quadrant_btn=quadrant_btn,
                                body=api.ansi_to_html(page_text), extra=extra)
         return HTMLResponse(body, status_code=res.status, headers=headers)
@@ -643,7 +647,7 @@ def help_(request: Req):
     headers = {"Cache-Control": "public, max-age=3600"}
     if mode == "html":
         body = api.PAGE.format(title="skymap.sh — usage", path="/help",
-                               explore=api.EXPLORE, body=html.escape(api.HELP),
+                               explore=api.EXPLORE.format(place=""), body=html.escape(api.HELP),
                                extra="", animate_btn="", quadrant_btn="")
         return HTMLResponse(body, headers=headers)
     return PlainTextResponse(api.HELP, headers=headers)
@@ -674,7 +678,7 @@ def legend(request: Req):
     headers = {"Cache-Control": "public, max-age=3600"}
     if mode == "html":
         body = api.PAGE.format(title="skymap.sh — legend", path="/legend",
-                               explore=api.EXPLORE,
+                               explore=api.EXPLORE.format(place=""),
                                body=api.ansi_to_html(api.legend_text(True)),
                                extra="", animate_btn="", quadrant_btn="")
         return HTMLResponse(body, headers=headers)

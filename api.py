@@ -1350,7 +1350,7 @@ if(f)q.push('find='+encodeURIComponent(f));
 if(t)q.push('t='+t);
 location.href='/'+(p?encodeURIComponent(p):'')+(q.length?'?'+q.join('&'):'');
 return false;">
-<input id="place" type="text" placeholder="city or lat,lon" autocomplete="off">
+<input id="place" type="text" placeholder="city or lat,lon" autocomplete="off" value="{place}">
 <input id="find" type="text" placeholder="find (Venus, Big Dipper...)" autocomplete="off">
 <input id="whenDate" type="date" title="local date at that place (default: today)">
 <input id="whenTime" type="time" title="local time at that place (default: now)">
