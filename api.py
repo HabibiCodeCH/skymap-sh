@@ -288,6 +288,13 @@ class Request:
         # are already guarded against elsewhere in this class.
         raw_quadrant = (quadrant or "").strip().upper()
         self.quadrant = raw_quadrant if re.fullmatch(r"[A-Z]", raw_quadrant) else None
+        # Whether the grid overlay itself should be drawn at all -- distinct
+        # from self.quadrant (which stays None until a real letter validates)
+        # so a bare ?quadrant (asking to see the grid, no letter chosen yet)
+        # still turns the overlay on. Without this, every plain view (the
+        # home page, a bare `curl skymap.sh/Tokyo`) drew the lettered grid
+        # unconditionally, whether anyone asked for it or not.
+        self.quadrant_requested = quadrant is not None
         # A quadrant crop with nothing but stars is often near-empty -- the
         # whole point of zooming in is to reveal more, so asking for a
         # quadrant turns the deep-sky layer on too, even before a specific
@@ -321,6 +328,7 @@ class Request:
         r2.find, r2.iss, r2.lines, r2.color = None, False, self.lines, self.color
         r2.night, r2.tle, r2.width = self.night, None, self.width
         r2.dso, r2.quadrant = self.dso, self.quadrant
+        r2.quadrant_requested = self.quadrant_requested
         r2.when_utc = when_utc
         r2.when_local = when_utc + dt.timedelta(hours=self.place.offset(when_utc))
         r2.tz = self.place.offset(when_utc)
@@ -600,7 +608,8 @@ def _compose_sky(r):
                                 # bodies that survive this filter, and
                                 # sky_read() below needs st["sun"]["alt"].
                                 bodies=_fade_visible_bodies(sun_alt, jd) | {"Sun"},
-                                dso_limit=dso_limit, quadrant=r.quadrant, quadrants=True)
+                                dso_limit=dso_limit, quadrant=r.quadrant,
+                                quadrants=r.quadrant_requested)
         quad_bit = f", quadrant {st['quad_applied']}" if st.get("quad_applied") else ""
         # a quadrant crop replaces the zenith inset (there's no room, and no
         # need -- the crop already narrows the view), so the header must stop
@@ -949,7 +958,7 @@ def compose_chart_only(r):
                             mag_limit=mag_limit, line_limit=mag_limit,
                             bodies=_fade_visible_bodies(sun_alt, jd) | {"Sun"},
                             dso_limit=DSO_LIMIT if r.dso else None, quadrant=r.quadrant,
-                            quadrants=True, inset=False)
+                            quadrants=r.quadrant_requested, inset=False)
     mode = (f"facing {r.facing.upper()}, {int(round(st['span']))}° wide"
             f"{' (' + st['clamped'] + ')' if st['clamped'] else ''}, true shape"
             if r.facing else "horizon panorama")
