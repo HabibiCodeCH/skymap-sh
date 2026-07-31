@@ -516,9 +516,12 @@ async def _animate(base_r, hours, base_url, is_ui=False):
             # it, copy-pasting this exact command renders from the real
             # current moment instead of whatever the preview just played
             # from, silently (no error, just the wrong GIF).
+            # Quoted: zsh (the default shell on macOS) treats a bare ? as a
+            # glob character and errors with "no matches found" on an
+            # unquoted URL like this one.
             live_t = base_r.when_local.strftime("%Y-%m-%dT%H:%M")
             yield (f"\n{api.SUN_COL}Want a shareable GIF of this? Run:\n"
-                  f"  curl {base_url}/{base_r.place.slug}/animate.gif?t={live_t}"
+                  f"  curl '{base_url}/{base_r.place.slug}/animate.gif?t={live_t}'"
                   f"\033[0m\n").encode()
     finally:
         _animate_active -= 1

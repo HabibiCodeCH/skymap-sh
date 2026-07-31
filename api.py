@@ -794,8 +794,10 @@ def _compose_day(r):
                      f"({mo['illum']*100:.0f}% lit).")
     if first:
         tl = first + dt.timedelta(hours=off)
+        # Quoted: zsh (the default shell on macOS) treats a bare ? as a glob
+        # character and errors with "no matches found" on an unquoted URL.
         lines.append(f"See tonight's chart now:  "
-                     f"curl skymap.sh/{p.slug}?t={tl:%Y-%m-%dT%H:%M}")
+                     f"curl 'skymap.sh/{p.slug}?t={tl:%Y-%m-%dT%H:%M}'")
 
     import textwrap
     body = []

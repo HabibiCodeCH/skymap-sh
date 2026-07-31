@@ -7,9 +7,9 @@ curl skymap.sh                      located by IP
 curl skymap.sh/Zurich               any of 40,803 cities
 curl 'skymap.sh/San Francisco, US'  country code, country, or US state
 curl skymap.sh/47.38,8.54           any coordinates
-curl skymap.sh/Zurich?find=Venus    frame one object, told in fists
+curl 'skymap.sh/Zurich?find=Venus'  frame one object, told in fists
 curl 'skymap.sh/Zurich?format=json' the same facts, structured
-curl skymap.sh/Zurich?animate       24h sky, streamed live, frame by frame
+curl 'skymap.sh/Zurich?animate'     24h sky, streamed live, frame by frame
 ```
 
 Stars to magnitude 4–5, asterisms people actually recognise, planets, the Moon
@@ -78,9 +78,10 @@ twilight, no hard cut at sunset. When the stream finishes it prints a
 shareable GIF link, already rendered and cached:
 
 ```
-curl skymap.sh/Tokyo?animate
+curl 'skymap.sh/Tokyo?animate'
 ...
-Share as a GIF (link up for 7 days): https://skymap.sh/animate/AB12cd.gif
+Want a shareable GIF of this? Run:
+  curl 'skymap.sh/Tokyo/animate.gif?t=2026-08-12T18:00'
 ```
 
 Every place also has a static PNG of its current chart at `/<place>/horizon.png`,
