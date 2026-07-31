@@ -9,6 +9,7 @@ curl 'skymap.sh/San Francisco, US'  country code, country, or US state
 curl skymap.sh/47.38,8.54           any coordinates
 curl skymap.sh/Zurich?find=Venus    frame one object, told in fists
 curl 'skymap.sh/Zurich?format=json' the same facts, structured
+curl skymap.sh/Zurich?animate       24h sky, streamed live, frame by frame
 ```
 
 Stars to magnitude 4–5, asterisms people actually recognise, planets, the Moon
@@ -38,6 +39,7 @@ python3 cli.py Zurich 2026-08-12T23:00 --json    # marks a real ISS pass automat
 | `sky.py` | the engine: ephemerides, projections, renderers |
 | `api.py` | request → assembled text + structured data. One implementation for CLI and HTTP |
 | `server.py` | FastAPI: content negotiation, geo fallback, rate limit |
+| `gif.py` | renders ANSI frames to the shareable GIF/PNG (Pillow + bundled JetBrains Mono) |
 | `cli.py` | terminal entry point |
 | `tle.py` | fetches and validates the ISS element set; run from cron |
 | `build_asterisms.py` | regenerates `asterisms.json` from Bayer designations |
@@ -61,6 +63,24 @@ Negotiated on `User-Agent` and `Accept`:
 | `Accept: text/plain` | text, no escape codes |
 | a browser | the same output in a page |
 | `?format=json` | structured data |
+
+## Animate, then share it
+
+`?animate` streams the next 24h of sky, one frame every 15 simulated
+minutes, live in the terminal — stars and planets fade in and out with real
+twilight, no hard cut at sunset. When the stream finishes it prints a
+shareable GIF link, already rendered and cached:
+
+```
+curl skymap.sh/Tokyo?animate
+...
+Share as a GIF (link up for 7 days): https://skymap.sh/animate/AB12cd.gif
+```
+
+Every place also has a static PNG of its current chart at `/<place>/horizon.png`,
+and the web page (a browser visiting `skymap.sh/<place>`) has an "animate"
+button that plays the same live sequence in the page before its own GIF
+link appears next to it.
 
 ## Deploying
 
