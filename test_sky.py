@@ -188,5 +188,50 @@ class QuadrantGrid(unittest.TestCase):
         self.assertTrue(st["quad_cells"])   # still shows the base grid to pick from
 
 
+class MoonPhaseGlyph(unittest.TestCase):
+    """moon_glyph() picks a shape from the Moon's real elongation from the
+    Sun -- the phase math itself, not just the character lookup."""
+
+    def test_glyph_at_each_canonical_age_northern(self):
+        expect = {0: "○", 45: "◔", 90: "◑", 135: "◕", 180: "●",
+                  225: "◕", 270: "◐", 315: "◔"}
+        for age, glyph in expect.items():
+            self.assertEqual(sky.moon_glyph(age), glyph, f"age={age}")
+
+    def test_quarter_moons_flip_for_the_southern_hemisphere(self):
+        # The two true half-circle glyphs are the one pair that can be
+        # mirrored exactly -- crescent/gibbous have no matching mirrored
+        # quadrant character in Unicode, so those stay symmetric either way.
+        self.assertEqual(sky.moon_glyph(90, lat=-30), "◐")
+        self.assertEqual(sky.moon_glyph(270, lat=-30), "◑")
+
+    def test_new_and_full_are_unaffected_by_hemisphere(self):
+        self.assertEqual(sky.moon_glyph(0, lat=-30), "○")
+        self.assertEqual(sky.moon_glyph(180, lat=-30), "●")
+
+    def test_waxing_and_waning_quarters_are_now_visually_distinct(self):
+        self.assertNotEqual(sky.moon_glyph(90), sky.moon_glyph(270))
+
+    def test_real_first_and_last_quarter_dates_are_correctly_identified(self):
+        # 2026-02-24 20:00 UTC is a real first-quarter moon (~90 deg
+        # elongation) -- a live check against the actual ephemeris, not
+        # just the glyph lookup table in isolation.
+        jd = sky.julian(dt.datetime(2026, 2, 24, 20, 0))
+        age = sky.moon(jd)["age"]
+        self.assertAlmostEqual(age, 90, delta=5)
+        self.assertEqual(sky.phase_name(age), "first quarter")
+
+    def test_default_horizon_chart_draws_the_real_phase_not_a_fixed_circle(self):
+        # Regression test: render_linear() used to hardcode a full circle
+        # for the Moon regardless of its actual phase -- moon_glyph() was
+        # only ever reached by the disc view and the text summary, not by
+        # the default panorama chart everyone actually sees.
+        # (Not asserting "●" is absent -- that's also the bright-star glyph,
+        # so it could legitimately appear from a bright star sharing the sky.)
+        t = dt.datetime(2026, 2, 24, 20, 0)
+        art, _st = sky.render_linear(t, 47.3769, 8.5417, color=False)
+        self.assertIn("◑", art)
+
+
 if __name__ == "__main__":
     unittest.main()

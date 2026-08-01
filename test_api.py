@@ -261,13 +261,20 @@ class CatalogText(unittest.TestCase):
     def test_solar_system_bodies_use_the_same_glyphs_as_the_chart(self):
         # Same glyphs sky.py's render()/render_linear() actually draw on the
         # chart -- so this list can't drift into showing symbols nothing on
-        # screen matches.
+        # screen matches. Moon's glyph is the real current phase, not a
+        # fixed circle, so it's checked separately below.
         text = api.catalog_text(color=False)
         i = text.index("SOLAR SYSTEM")
         section = text[i:text.index("CONSTELLATIONS")]
         self.assertIn("☀ Sun", section)
-        self.assertIn("● Moon", section)
         self.assertIn("◆ Mercury", section)
+
+    def test_moon_shows_its_real_current_phase(self):
+        import sky
+        text = api.catalog_text(color=False)
+        age = sky.moon(sky.julian(dt.datetime.utcnow()))["age"]
+        self.assertIn(f"Moon ({sky.phase_name(age)})", text)
+        self.assertIn(sky.moon_glyph(age), text[text.index("SOLAR SYSTEM"):text.index("Moon")])
 
     def test_named_stars_show_a_brightness_glyph_and_full_constellation_name(self):
         text = api.catalog_text(color=False)
@@ -288,6 +295,16 @@ class CatalogHtml(unittest.TestCase):
     def test_a_star_links_to_a_bare_find_in_a_new_tab(self):
         h = api.catalog_html()
         self.assertIn('href="/?find=Sirius" target="_blank" rel="noopener"', h)
+
+    def test_moon_link_uses_the_plain_name_not_the_phase_annotated_display(self):
+        # Displayed as "Moon (waning gibbous)" or similar, but resolve_target
+        # only matches the bare word "moon" -- the phase text in parens
+        # would never resolve if it leaked into the href.
+        import sky
+        h = api.catalog_html()
+        self.assertIn('href="/?find=Moon" target="_blank" rel="noopener"', h)
+        age = sky.moon(sky.julian(dt.datetime.utcnow()))["age"]
+        self.assertIn(f"Moon ({sky.phase_name(age)})", h)
 
     def test_a_multi_word_name_is_url_encoded(self):
         h = api.catalog_html()
@@ -323,6 +340,17 @@ class CatalogHtml(unittest.TestCase):
         self.assertIn("NAMED STARS (327)", h)
         self.assertIn("DEEP SKY (112)", text)
         self.assertIn("DEEP SKY (112)", h)
+
+
+class LegendMatchesTheRealGlyphs(unittest.TestCase):
+    def test_moon_phase_row_is_generated_not_hand_typed(self):
+        # Regression test: this line used to be a separately hand-typed
+        # literal string that could (and did) drift out of sync once
+        # moon_glyph()'s own output changed.
+        import sky
+        text = api.legend_text(color=False)
+        expected = " ".join(sky.moon_glyph(a) for a in range(0, 360, 45))
+        self.assertIn(expected, text)
 
 
 if __name__ == "__main__":

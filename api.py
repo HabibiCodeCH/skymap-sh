@@ -665,7 +665,7 @@ def _compose_sky(r):
                 f"horizon panorama, 0-70° + zenith inset{quad_bit}")
 
     head = _horizon_head(r, mode)
-    prose = sky_read(st, p.name, r.when_local, f"UTC{r.tz:+g}")
+    prose = sky_read(st, p.name, r.when_local, f"UTC{r.tz:+g}", p.lat)
 
     out = ["", paint(head, C.HEAD, c), "", art, ""]
     out += [paint("  " + l, C.LABEL, c) for l in prose.split("\n")[1:]]
@@ -1145,7 +1145,13 @@ def legend_text(color=True):
         "",
         head("SOLAR SYSTEM"),
         f"  {P('☀', SUN_C)}  Sun        {P('◆', C.PLANET)}  planet",
-        f"  {P('○ ◔ ◐ ◕ ● ◕ ◐ ◔', C.MOON)}  Moon, by phase (new, first quarter, full, last quarter, new)",
+        # Built from moon_glyph() itself, not typed out separately, so this
+        # can't silently drift from what the chart actually draws. Left to
+        # right: new -> waxing -> full -> waning -> new -- the words for each
+        # step aren't spelled out here since phase_name() already gives the
+        # exact one for whatever the chart is showing right now.
+        f"  {P(' '.join(sky.moon_glyph(a) for a in range(0, 360, 45)), C.MOON)}"
+        "  Moon, by phase (new -> full -> new)",
         "",
         head("DEEP SKY  --  ?dso=1"),
         f"  {P(gal_gl, gal_c)}  galaxy      {P(clu_gl, clu_c)}  open/globular cluster"
@@ -1204,8 +1210,16 @@ def _catalog_data():
     # Messier number, else a hand-picked common name) -- a bare NGC number
     # there just means no traditional name exists, so those aren't "named".
     named_dso = sorted((o for o in dso if o["n"] != o["id"]), key=lambda o: o["m"])
-    solar_system = [("Sun", "☀", _SUN_C), ("Moon", "●", C.MOON)]
-    solar_system += [(nm, "◆", PLANET_COLORS[nm]) for nm in
+    # Real current phase, not a fixed glyph -- this page reflects "right now"
+    # for the Moon specifically, same as the chart itself does since the
+    # render_linear()/moon_glyph() fix. Everything else here is a static
+    # reference list, but the Moon's phase is too central to its identity to
+    # leave generic.
+    moon_age = sky.moon(sky.julian(dt.datetime.utcnow()))["age"]
+    moon_display = f"Moon ({sky.phase_name(moon_age)})"
+    solar_system = [("Sun", "Sun", "☀", _SUN_C),
+                    ("Moon", moon_display, sky.moon_glyph(moon_age), C.MOON)]
+    solar_system += [(nm, nm, "◆", PLANET_COLORS[nm]) for nm in
                      ("Mercury", "Venus", "Mars", "Jupiter", "Saturn", "Uranus", "Neptune")]
 
     return dict(solar_system=solar_system, asterisms=sorted(a["name"] for a in asterisms),
@@ -1230,8 +1244,8 @@ def catalog_text(color=True):
         "  curl 'skymap.sh/Zurich?find=Vega'", "",
         head(f"SOLAR SYSTEM ({len(d['solar_system'])})"),
     ]
-    for nm, glyph, glyph_c in d["solar_system"]:
-        L.append(f"  {P(glyph, glyph_c)} {nm}")
+    for _nm, display, glyph, glyph_c in d["solar_system"]:
+        L.append(f"  {P(glyph, glyph_c)} {display}")
     L.append("")
     L.append(head(f"CONSTELLATIONS ({len(d['asterisms'])})"))
     L += _columns(d["asterisms"], 18, 5)
@@ -1302,8 +1316,8 @@ def catalog_html():
         "Everything below opens the current sky with that object framed, in a new tab.", "",
         head(f"SOLAR SYSTEM ({len(d['solar_system'])})"),
     ]
-    for nm, glyph, glyph_c in d["solar_system"]:
-        L.append(f"  {col(glyph, glyph_c)} {link_col(nm, glyph_c)}")
+    for nm, display, glyph, glyph_c in d["solar_system"]:
+        L.append(f"  {col(glyph, glyph_c)} {link_col(display, glyph_c, href_name=nm)}")
     L.append("")
     L.append(head(f"CONSTELLATIONS ({len(d['asterisms'])})"))
     for i in range(0, len(d["asterisms"]), 5):

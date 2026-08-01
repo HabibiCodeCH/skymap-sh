@@ -137,8 +137,26 @@ def phase_name(age):
     best = min(PHASES, key=lambda p: min(abs(age - p[0]), 360 - abs(age - p[0])))
     return best[1]
 
-def moon_glyph(age):
-    return "○◔◐◕●◕◐◔"[int(((age % 360) / 45) + 0.5) % 8]
+def moon_glyph(age, lat=0.0):
+    """Phase glyph for the given elongation (0-360 deg from the Sun).
+
+    The two true quarter moons (age ~90 waxing, ~270 waning) get the real
+    left/right-lit Unicode circle halves -- U+25D0/25D1 are the one pair
+    that actually mirrors correctly, so waxing and waning no longer look
+    identical there. For a northern-hemisphere observer waxing is lit on
+    the right, waning on the left; southern-hemisphere observers see the
+    opposite, so lat flips which glyph goes where.
+
+    Crescent and gibbous stay symmetric either side of full (same glyph
+    waxing and waning) -- Unicode's geometric-shapes block only defines an
+    upper-right quadrant and its complement, not a matching mirrored pair,
+    so there's no single character to flip there without a lopsided
+    approximation."""
+    i = int(((age % 360) / 45) + 0.5) % 8
+    glyphs = ["○", "◔", "◑", "◕", "●", "◕", "◐", "◔"]   # i=2 waxing, i=6 waning
+    if lat < 0:
+        glyphs[2], glyphs[6] = glyphs[6], glyphs[2]
+    return glyphs[i]
 
 
 # ---------------------------------------------------------------- planets
@@ -390,7 +408,7 @@ def render(when_utc, lat, lon, height=34, color=True, show_lines=True, mag_limit
             up.append(b)
             x, y = project(a, z)
             if b["name"] == "Moon":
-                place(x, y, moon_glyph(b["age"]), C.MOON, over=True)
+                place(x, y, moon_glyph(b["age"], lat), C.MOON, over=True)
             elif b["name"] == "Sun":
                 place(x, y, "☀", "\033[38;5;227m", over=True)
             else:
@@ -450,7 +468,7 @@ def render(when_utc, lat, lon, height=34, color=True, show_lines=True, mag_limit
 
 
 # ---------------------------------------------------------------- text read
-def sky_read(st, place, when_local, tzname):
+def sky_read(st, place, when_local, tzname, lat=0.0):
     mo, su = st["moon"], st["sun"]
     L = []
     L.append(f"{place} · {when_local:%a %d %b %Y %H:%M} {tzname}")
@@ -466,7 +484,7 @@ def sky_read(st, place, when_local, tzname):
         sky = "full dark"
     L.append(f"{sky}. Sun {su['alt']:+.0f}° altitude.")
     mvis = "up" if mo["alt"] > 0 else "below the horizon"
-    L.append(f"Moon {moon_glyph(mo['age'])} {phase_name(mo['age'])}, "
+    L.append(f"Moon {moon_glyph(mo['age'], lat)} {phase_name(mo['age'])}, "
              f"{mo['illum']*100:.0f}% lit, {mvis}"
              + (f" at {mo['alt']:.0f}° in the {compass(mo['az'])}." if mo["alt"] > 0 else "."))
     pl = [b for b in st["up"] if b["name"] not in ("Sun", "Moon")]
@@ -784,7 +802,7 @@ def find_text(t, visible, lat):
         L.append(f"Nearest bright marker: {nm}, {d:.0f}\u00b0 away \u2014 {t['name']} is "
                  f"{rel}.")
     if t.get("kind") == "moon":
-        L.append(f"Phase {moon_glyph(t['age'])} {phase_name(t['age'])}, "
+        L.append(f"Phase {moon_glyph(t['age'], lat)} {phase_name(t['age'])}, "
                  f"{t['illum']*100:.0f}% lit.")
     import textwrap
     out = []
@@ -1225,7 +1243,10 @@ def render_linear(when_utc, lat, lon, W=176, H=22, color=True, show_lines=True,
     for b in sorted(up, key=lambda x: -x["alt"]):
         if b["name"] == "Sun":
             place(b["az"], b["alt"], "☀", "\033[38;5;227m", over=True); continue
-        gl, colr = ("●", C.MOON) if b["name"] == "Moon" else ("◆", C.PLANET)
+        # The default horizon/panorama chart used to hardcode a full circle
+        # for the Moon here regardless of its actual phase -- moon_glyph()
+        # was only ever reached by the disc view and the text summary.
+        gl, colr = (moon_glyph(b["age"], lat), C.MOON) if b["name"] == "Moon" else ("◆", C.PLANET)
         if b["alt"] > alt_hi:
             inset_items.append((b["alt"], b["az"], gl, colr, b["name"])); continue
         place(b["az"], b["alt"], gl, colr, over=True)
