@@ -842,6 +842,19 @@ def legend(request: Req):
     return PlainTextResponse(api.legend_text(colour), headers=headers)
 
 
+@app.get("/catalog", response_class=PlainTextResponse)
+def catalog(request: Req):
+    mode, colour = _wants(request)
+    headers = {"Cache-Control": "public, max-age=3600"}
+    if mode == "html":
+        body = api.PAGE.format(title="skymap.sh — catalog", path="/catalog",
+                               explore=api.EXPLORE.format(place=""),
+                               body=api.ansi_to_html(api.catalog_text(True)),
+                               extra="", animate_btn="", quadrant_btn="")
+        return HTMLResponse(body, headers=headers)
+    return PlainTextResponse(api.catalog_text(colour), headers=headers)
+
+
 @app.get("/healthz", response_class=PlainTextResponse)
 def healthz():
     p = app.state.tle

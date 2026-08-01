@@ -1167,6 +1167,65 @@ def legend_text(color=True):
     return "\n".join(L)
 
 
+def _columns(items, col_width, per_row):
+    L = []
+    for i in range(0, len(items), per_row):
+        row = items[i:i + per_row]
+        L.append("  " + "".join(f"{s:{col_width}}" for s in row).rstrip())
+    return L
+
+
+def catalog_text(color=True):
+    """Every object findable by name via ?find= -- pulled live from the same
+    catalogues resolve_target() reads, so this can't list something that
+    isn't actually findable, or miss one that is."""
+    def P(s, c):
+        return paint(s, c, color)
+
+    def head(s):
+        return paint(s, C.HEAD, color)
+
+    stars = sky._load("stars.json")
+    asterisms = sky._load("asterisms.json")
+    dso = sky._load("deepsky.json")
+
+    named_stars = sorted((s for s in stars if s.get("n")), key=lambda s: s["m"])
+    # o["n"] is already the best label build_deepsky.py could give it (a
+    # Messier number, else a hand-picked common name) -- a bare NGC number
+    # there just means no traditional name exists, so those aren't "named".
+    named_dso = sorted((o for o in dso if o["n"] != o["id"]), key=lambda o: o["m"])
+    solar_system = ["Sun", "Moon", "Mercury", "Venus", "Mars", "Jupiter",
+                    "Saturn", "Uranus", "Neptune"]
+
+    L = [
+        "skymap.sh -- object catalog", "",
+        "Everything below is findable by name, e.g.:",
+        "  curl 'skymap.sh/Zurich?find=Vega'", "",
+        head(f"SOLAR SYSTEM ({len(solar_system)})"),
+    ]
+    L += _columns(solar_system, 12, 6)
+    L.append("")
+    L.append(head(f"CONSTELLATIONS ({len(asterisms)})"))
+    L += _columns(sorted(a["name"] for a in asterisms), 18, 5)
+    L.append("")
+    L.append(head(f"NAMED STARS ({len(named_stars)}) -- brightest first"))
+    for s in named_stars:
+        starcol = sky.star_colour(s.get("ci"))
+        name = f"{s['n']:22}"
+        L.append(f"  {P(name, starcol)} mag {s['m']:>5.2f}  {s['c']}")
+    L.append("")
+    L.append(head(f"DEEP SKY ({len(named_dso)}) -- ?dso=1, brightest first"))
+    for o in named_dso:
+        glyph, glyph_c = sky.DSO_GLYPH[o["t"]]
+        label = o["n"]
+        if o.get("cn") and o["cn"] != label:
+            label = f"{label} ({o['cn']})"
+        label = f"{label:34}"
+        L.append(f"  {P(glyph, glyph_c)} {P(label, C.HEAD)} mag {o['m']:>5.2f}  {sky.DSO_NAMES[o['t']]}")
+    L.append("")
+    return "\n".join(L)
+
+
 # ---------------------------------------------------------------- ansi -> html
 ANSI = re.compile(r"\033\[(?:38;5;(\d+)|0)m")
 
@@ -1255,7 +1314,7 @@ PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
 </style></head><body><div class="w">
 <pre class="cta">curl skymap.sh{path}</pre>
 <p class="t"><b>skymap.sh</b>
-<a href="/demo">demo</a> · <a href="/help">help</a> · <a href="/legend">legend</a></p>
+<a href="/demo">demo</a> · <a href="/help">help</a> · <a href="/legend">legend</a> · <a href="/catalog">catalog</a></p>
 {explore}<div class="toolbar"><div class="toolbar-left">{animate_btn}{quadrant_btn}</div><div class="toolbar-right">{extra}</div></div><pre id="chart-pre">{body}</pre>
 <p class="t" style="margin-top:18px">Created by <a href="https://x.com/habibicode">@habibicode</a>
 · <a href="https://github.com/HabibiCodeCH/skymap-sh">see the repo</a></p>

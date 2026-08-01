@@ -289,6 +289,29 @@ class StatsPersistence(unittest.TestCase):
         server._load_stats_state()
 
 
+class CatalogPage(unittest.TestCase):
+    def setUp(self):
+        client_cm = TestClient(server.app)
+        self.client = client_cm.__enter__()
+        self.addCleanup(client_cm.__exit__, None, None, None)
+
+    def test_renders_in_terminal_mode(self):
+        resp = self.client.get("/catalog", headers=TERMINAL)
+        self.assertEqual(resp.status_code, 200)
+        self.assertTrue(resp.headers["content-type"].startswith("text/plain"))
+        self.assertIn("Sirius", resp.text)
+
+    def test_renders_in_a_browser(self):
+        resp = self.client.get("/catalog", headers=BROWSER)
+        self.assertEqual(resp.status_code, 200)
+        self.assertTrue(resp.headers["content-type"].startswith("text/html"))
+        self.assertIn("Sirius", resp.text)
+
+    def test_nav_links_to_the_catalog_page(self):
+        resp = self.client.get("/legend", headers=BROWSER)
+        self.assertIn('href="/catalog"', resp.text)
+
+
 class Favicon(unittest.TestCase):
     """Browsers request /favicon.ico and /apple-touch-icon.png on every visit
     regardless of whether the site has one -- unhandled, those were the

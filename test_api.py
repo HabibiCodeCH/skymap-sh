@@ -211,5 +211,53 @@ class NightOverrideDuringDaylight(unittest.TestCase):
         api.compose_chart_only(r)   # raises on failure; nothing to assert
 
 
+class CatalogText(unittest.TestCase):
+    """catalog_text() lists every object findable by name via ?find= -- it
+    must actually match what resolve_target() accepts, or the page would
+    promise names that fail to find."""
+
+    def setUp(self):
+        self.jd = api.julian(dt.datetime(2026, 7, 30, 23, 0))
+
+    def test_section_counts_match_the_underlying_catalogues(self):
+        text = api.catalog_text(color=False)
+        stars = api.sky._load("stars.json")
+        asterisms = api.sky._load("asterisms.json")
+        dso = api.sky._load("deepsky.json")
+        n_stars = sum(1 for s in stars if s.get("n"))
+        n_dso = sum(1 for o in dso if o["n"] != o["id"])
+        self.assertIn(f"NAMED STARS ({n_stars})", text)
+        self.assertIn(f"CONSTELLATIONS ({len(asterisms)})", text)
+        self.assertIn(f"DEEP SKY ({n_dso})", text)
+
+    def test_a_named_star_is_actually_findable(self):
+        text = api.catalog_text(color=False)
+        self.assertIn("Sirius", text)
+        self.assertIsNotNone(api.resolve_target("Sirius", self.jd, 47.4, 0.0))
+
+    def test_an_asterism_is_actually_findable(self):
+        text = api.catalog_text(color=False)
+        self.assertIn("Big Dipper", text)
+        self.assertIsNotNone(api.resolve_target("Big Dipper", self.jd, 47.4, 0.0))
+
+    def test_a_common_named_dso_shows_its_messier_and_common_name(self):
+        text = api.catalog_text(color=False)
+        self.assertIn("M31 (Andromeda Galaxy)", text)
+        self.assertIsNotNone(api.resolve_target("M31", self.jd, 47.4, 0.0))
+        self.assertIsNotNone(api.resolve_target("Andromeda Galaxy", self.jd, 47.4, 0.0))
+
+    def test_bare_ngc_numbered_objects_are_excluded(self):
+        # Those have no traditional name -- just a catalogue number -- so
+        # they don't belong on a page of *named* objects.
+        text = api.catalog_text(color=False)
+        dso_section = text[text.index("DEEP SKY"):]
+        self.assertNotIn("NGC", dso_section)
+
+    def test_solar_system_bodies_are_listed(self):
+        text = api.catalog_text(color=False)
+        for body in ("Sun", "Moon", "Venus", "Jupiter"):
+            self.assertIn(body, text)
+
+
 if __name__ == "__main__":
     unittest.main()
