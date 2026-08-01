@@ -282,6 +282,61 @@ class ReferrerTracking(unittest.TestCase):
         self.assertEqual(data["referrers_distinct"], 1)
 
 
+class HourlyReferrers(unittest.TestCase):
+    """/stats/hourly gets a per-hour top-domains breakdown alongside the
+    existing requests/hit/day/night counts, so a spike from one platform is
+    visible on the hourly trend, not just in the all-time /stats totals."""
+
+    def setUp(self):
+        self._orig_hour_stat = server._hour_stat.copy()
+        self.addCleanup(self._restore)
+
+    def _restore(self):
+        server._hour_stat.clear()
+        server._hour_stat.update(self._orig_hour_stat)
+
+    def test_top_hour_referrers_sorts_and_caps(self):
+        hstat = server.Counter()
+        hstat.update({"ref:a.com": 3, "ref:b.com": 9, "ref:c.com": 1,
+                      "ref:d.com": 5, "ref:e.com": 2, "ref:f.com": 7,
+                      "requests": 27})
+        top = server._top_hour_referrers(hstat, n=3)
+        self.assertEqual(list(top.items()), [("b.com", 9), ("f.com", 7), ("d.com", 5)])
+
+    def test_flush_hour_writes_top_referrers_to_the_log(self):
+        orig_log = server.HOURLY_LOG
+        self.addCleanup(setattr, server, "HOURLY_LOG", orig_log)
+        fd, path = tempfile.mkstemp(suffix=".jsonl")
+        os.close(fd); os.remove(path)
+        self.addCleanup(lambda: os.path.exists(path) and os.remove(path))
+        server.HOURLY_LOG = path
+
+        hstat = server.Counter()
+        hstat.update({"requests": 5, "hit": 4, "miss": 1, "day": 0, "night": 5,
+                      "ref:twitter.com": 2})
+        server._flush_hour("2026-08-01T10:00", hstat)
+
+        rows = server._read_hourly_history(days=1)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["top_referrers"], {"twitter.com": 2})
+
+    def test_current_hour_shows_up_in_text_and_json(self):
+        server._hour_stat.clear()
+        server._hour_stat.update({"requests": 1, "hit": 1, "miss": 0, "day": 0,
+                                  "night": 1, "ref:bsky.app": 4})
+        text = server.stats_hourly_text()
+        self.assertIn("bsky.app (4)", text)
+
+        data = server.stats_hourly_json()
+        self.assertEqual(data["hours"][-1]["top_referrers"], {"bsky.app": 4})
+
+    def test_hour_with_no_referrers_leaves_the_column_blank(self):
+        server._hour_stat.clear()
+        server._hour_stat.update({"requests": 1, "hit": 1, "miss": 0, "day": 0, "night": 1})
+        data = server.stats_hourly_json()
+        self.assertEqual(data["hours"][-1]["top_referrers"], {})
+
+
 class StatsPersistence(unittest.TestCase):
     """_stat/_places/_finds are otherwise purely in-memory -- a restart
     (deploy, crash, systemd bounce) would silently zero them. This checks

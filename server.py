@@ -122,6 +122,15 @@ def _read_bsky_stats():
         return {}
 
 
+HOURLY_TOP_REFERRERS = 5    # per-hour breakdown, not the all-time list -- kept
+                            # small so a forever-growing log stays cheap to read
+
+
+def _top_hour_referrers(hstat, n=HOURLY_TOP_REFERRERS):
+    refs = {k[4:]: v for k, v in hstat.items() if k.startswith("ref:")}
+    return dict(sorted(refs.items(), key=lambda kv: -kv[1])[:n])
+
+
 def _flush_hour(hour_key, hstat):
     # Cumulative snapshot goes out regardless of whether this particular
     # hour had any traffic -- the totals it's saving span the process's
@@ -131,6 +140,9 @@ def _flush_hour(hour_key, hstat):
         return
     row = dict(hour=hour_key, requests=hstat["requests"], hit=hstat["hit"],
               miss=hstat["miss"], day=hstat["day"], night=hstat["night"])
+    top_ref = _top_hour_referrers(hstat)
+    if top_ref:
+        row["top_referrers"] = top_ref
     try:
         with open(HOURLY_LOG, "a") as f:
             f.write(json.dumps(row) + "\n")
@@ -221,6 +233,7 @@ def _tally(r, daytime, hit, mode, status, data, colour=True, referrer=None):
         _finds[r.find.strip().title()[:40]] += 1
     if referrer:
         _referrers[referrer] += 1
+        _hour_stat[f"ref:{referrer}"] += 1
     if len(_places) > _TOP_KEEP:
         for k, _v in _places.most_common()[_TOP_KEEP:]:
             del _places[k]
@@ -321,23 +334,37 @@ def stats_json(n=50):
     )
 
 
+def _hour_top_referrer_str(row):
+    """The single busiest domain that hour, e.g. 'twitter.com (42)' -- the
+    full per-hour breakdown (up to HOURLY_TOP_REFERRERS domains) is only
+    in the JSON view; the text table has room for one column, not a list."""
+    top_ref = row.get("top_referrers") or {}
+    if not top_ref:
+        return ""
+    name, c = next(iter(top_ref.items()))
+    return f"{name[:18]} ({c})"
+
+
 def stats_hourly_text(days=7):
     _roll_hour()
     rows = _read_hourly_history(days=days)
     if _hour_stat:
         rows = rows + [dict(hour=_hour_key, requests=_hour_stat["requests"],
                             hit=_hour_stat["hit"], miss=_hour_stat["miss"],
-                            day=_hour_stat["day"], night=_hour_stat["night"])]
+                            day=_hour_stat["day"], night=_hour_stat["night"],
+                            top_referrers=_top_hour_referrers(_hour_stat))]
     if not rows:
         return "skymap.sh — hourly stats\n\nno data yet (first hour still in progress)\n"
     L = [f"skymap.sh — hourly stats, last {days}d ({len(rows)} hour(s) on record)", "",
-        f"{'hour (UTC)':17} {'requests':>9} {'hit%':>6} {'day':>6} {'night':>6}"]
+        f"{'hour (UTC)':17} {'requests':>9} {'hit%':>6} {'day':>6} {'night':>6}  "
+        f"{'top referrer':24}"]
     for row in rows:
         req = row["requests"] or 1
         hitpct = 100 * row["hit"] / req
         current = "  (in progress)" if row["hour"] == _hour_key and row is rows[-1] else ""
         L.append(f"{row['hour']:17} {row['requests']:>9,} {hitpct:>5.1f}% "
-                f"{row['day']:>6,} {row['night']:>6,}{current}")
+                f"{row['day']:>6,} {row['night']:>6,}  "
+                f"{_hour_top_referrer_str(row):24}{current}")
     return "\n".join(L) + "\n"
 
 
@@ -348,6 +375,7 @@ def stats_hourly_json(days=7):
         rows = rows + [dict(hour=_hour_key, requests=_hour_stat["requests"],
                             hit=_hour_stat["hit"], miss=_hour_stat["miss"],
                             day=_hour_stat["day"], night=_hour_stat["night"],
+                            top_referrers=_top_hour_referrers(_hour_stat),
                             in_progress=True)]
     return dict(hours=rows)
 
