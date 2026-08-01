@@ -11,7 +11,7 @@ Run:  uvicorn server:app --host 0.0.0.0 --port 8000
 """
 import asyncio, datetime as dt, html, json, os, re, secrets, threading, time
 from collections import OrderedDict
-from urllib.parse import quote
+from urllib.parse import quote, urlparse
 from fastapi import FastAPI, Request as Req
 from fastapi.responses import (PlainTextResponse, HTMLResponse, JSONResponse,
                                StreamingResponse, FileResponse, Response)
@@ -55,6 +55,7 @@ STARTED = time.time()
 _stat = Counter()
 _places = Counter()
 _finds = Counter()
+_referrers = Counter()
 _TOP_KEEP = 2000            # trim the long tail so the tables cannot grow forever
 
 # --- persisting the live counters ----------------------------------------------
@@ -72,7 +73,8 @@ def _save_stats_state():
         tmp = f"{STATS_STATE_FILE}.tmp"
         with open(tmp, "w") as f:
             json.dump(dict(started=STARTED, stat=dict(_stat),
-                          places=dict(_places), finds=dict(_finds)), f)
+                          places=dict(_places), finds=dict(_finds),
+                          referrers=dict(_referrers)), f)
         os.replace(tmp, STATS_STATE_FILE)   # atomic -- a crash mid-write
     except OSError:                          # can't leave a corrupt file
         pass
@@ -89,6 +91,7 @@ def _load_stats_state():
     _stat.update(data.get("stat", {}))
     _places.update(data.get("places", {}))
     _finds.update(data.get("finds", {}))
+    _referrers.update(data.get("referrers", {}))
 
 
 # --- hourly history -----------------------------------------------------------
@@ -162,7 +165,26 @@ def _read_hourly_history(days=7):
     return rows
 
 
-def _tally(r, daytime, hit, mode, status, data, colour=True):
+def _referrer_domain(request: Req):
+    """Bare domain from the Referer header, or None for direct/CLI traffic.
+    Self-referrals (a link from skymap.sh back to skymap.sh) aren't an
+    origin worth counting, so those are dropped too."""
+    ref = request.headers.get("referer")
+    if not ref:
+        return None
+    try:
+        host = urlparse(ref).netloc.lower()
+    except ValueError:
+        return None
+    host = host.split(":")[0]
+    if host.startswith("www."):
+        host = host[4:]
+    if not host or host == (request.headers.get("host") or "").split(":")[0].lower():
+        return None
+    return host
+
+
+def _tally(r, daytime, hit, mode, status, data, colour=True, referrer=None):
     _roll_hour()
     _stat["requests"] += 1
     _stat["hit" if hit else "miss"] += 1
@@ -197,12 +219,17 @@ def _tally(r, daytime, hit, mode, status, data, colour=True):
     _places[r.place.name] += 1
     if r.find:
         _finds[r.find.strip().title()[:40]] += 1
+    if referrer:
+        _referrers[referrer] += 1
     if len(_places) > _TOP_KEEP:
         for k, _v in _places.most_common()[_TOP_KEEP:]:
             del _places[k]
     if len(_finds) > _TOP_KEEP:
         for k, _v in _finds.most_common()[_TOP_KEEP:]:
             del _finds[k]
+    if len(_referrers) > _TOP_KEEP:
+        for k, _v in _referrers.most_common()[_TOP_KEEP:]:
+            del _referrers[k]
 
 
 def stats_text(n=50):
@@ -266,6 +293,11 @@ def stats_text(n=50):
         L.append(f"top finds ({len(_finds):,} distinct)")
         for name, c in _finds.most_common(n):
             L.append(f"  {name[:28]:28} {c:>8,}")
+    if _referrers:
+        L.append("")
+        L.append(f"top referrers ({len(_referrers):,} distinct)")
+        for name, c in _referrers.most_common(n):
+            L.append(f"  {name[:28]:28} {c:>8,}")
     return "\n".join(L) + "\n"
 
 
@@ -283,6 +315,8 @@ def stats_json(n=50):
         places_distinct=len(_places), finds_distinct=len(_finds),
         top_places=dict(_places.most_common(n)),
         top_finds=dict(_finds.most_common(n)),
+        referrers_distinct=len(_referrers),
+        top_referrers=dict(_referrers.most_common(n)),
         bsky=_read_bsky_stats(),
     )
 
@@ -662,7 +696,8 @@ def _respond(request: Req, place: str | None):
                                  headers={"Cache-Control": "no-store"})
     r = _build(request, place)
     res, daytime, hit = _cached(r)
-    _tally(r, daytime, hit, mode, res.status, res.data, colour)
+    _tally(r, daytime, hit, mode, res.status, res.data, colour,
+           referrer=_referrer_domain(request))
     edge = DAY_EDGE if daytime else NIGHT_EDGE
     headers = {"Cache-Control": f"public, max-age={edge // 4}, s-maxage={edge}, "
                                 f"stale-while-revalidate=600",

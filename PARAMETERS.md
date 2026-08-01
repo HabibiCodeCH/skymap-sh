@@ -172,7 +172,7 @@ at all.
 | `/legend` | every character and colour a chart can draw, explained |
 | `/demo` | six-plus real renders, side by side |
 | `/healthz` | `ok stars=2887 asterisms=28 deepsky=739 tle=… cache=… hitrate=…` |
-| `/stats` | what people ask for — top cities, top finds, views, cache hit rate |
+| `/stats` | what people ask for — top cities, top finds, top referrers, views, cache hit rate |
 | `/stats?format=json` | the same, structured |
 | `/robots.txt` | allow all |
 | unknown place | 404 with near misses |

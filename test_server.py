@@ -230,6 +230,58 @@ class TopPlacesFormatting(unittest.TestCase):
         self.assertNotIn("City50", shown)
 
 
+class ReferrerTracking(unittest.TestCase):
+    """Referer header -> bare domain in /stats, so a share on Twitter or
+    Bluesky is visible without pulling in IPs, user agents, or full URLs."""
+
+    def setUp(self):
+        client_cm = TestClient(server.app)
+        self.client = client_cm.__enter__()
+        self.addCleanup(client_cm.__exit__, None, None, None)
+        self._orig_referrers = server._referrers.copy()
+        self.addCleanup(self._restore)
+
+    def _restore(self):
+        server._referrers.clear()
+        server._referrers.update(self._orig_referrers)
+
+    def test_referer_header_shows_up_as_bare_domain(self):
+        server._referrers.clear()
+        self.client.get("/Zurich", headers={**TERMINAL, "referer": "https://twitter.com/some/status"})
+        resp = self.client.get("/stats", headers=TERMINAL)
+        self.assertIn("top referrers", resp.text)
+        self.assertIn("twitter.com", resp.text)
+
+    def test_www_prefix_is_stripped(self):
+        server._referrers.clear()
+        self.client.get("/Zurich", headers={**TERMINAL, "referer": "https://www.google.com/search?q=skymap"})
+        resp = self.client.get("/stats", headers=TERMINAL)
+        self.assertIn("google.com", resp.text)
+        self.assertNotIn("www.google.com", resp.text)
+
+    def test_no_referer_header_is_not_counted(self):
+        server._referrers.clear()
+        self.client.get("/Zurich", headers=TERMINAL)
+        resp = self.client.get("/stats", headers=TERMINAL)
+        self.assertNotIn("top referrers", resp.text)
+
+    def test_self_referral_is_not_counted(self):
+        server._referrers.clear()
+        # TestClient's default Host is "testserver" -- match it, since the
+        # self-referral check compares the Referer's host against whatever
+        # Host header the request actually carried.
+        self.client.get("/Zurich", headers={**TERMINAL, "referer": "http://testserver/"})
+        self.assertEqual(len(server._referrers), 0)
+
+    def test_json_mode_exposes_top_referrers(self):
+        server._referrers.clear()
+        self.client.get("/Zurich", headers={**TERMINAL, "referer": "https://bsky.app/profile/x"})
+        resp = self.client.get("/stats?format=json")
+        data = resp.json()
+        self.assertEqual(data["top_referrers"].get("bsky.app"), 1)
+        self.assertEqual(data["referrers_distinct"], 1)
+
+
 class StatsPersistence(unittest.TestCase):
     """_stat/_places/_finds are otherwise purely in-memory -- a restart
     (deploy, crash, systemd bounce) would silently zero them. This checks
@@ -247,6 +299,7 @@ class StatsPersistence(unittest.TestCase):
         self._orig_stat = server._stat.copy()
         self._orig_places = server._places.copy()
         self._orig_finds = server._finds.copy()
+        self._orig_referrers = server._referrers.copy()
         self._orig_started = server.STARTED
         self.addCleanup(self._restore)
 
@@ -254,6 +307,7 @@ class StatsPersistence(unittest.TestCase):
         server._stat.clear(); server._stat.update(self._orig_stat)
         server._places.clear(); server._places.update(self._orig_places)
         server._finds.clear(); server._finds.update(self._orig_finds)
+        server._referrers.clear(); server._referrers.update(self._orig_referrers)
         server.STARTED = self._orig_started
 
     def test_save_then_load_restores_counters(self):
@@ -263,12 +317,15 @@ class StatsPersistence(unittest.TestCase):
         server._places.update({"Zurich": 5})
         server._finds.clear()
         server._finds.update({"Venus": 3})
+        server._referrers.clear()
+        server._referrers.update({"twitter.com": 7})
         server.STARTED = 12345.0
         server._save_stats_state()
 
         server._stat.clear()
         server._places.clear()
         server._finds.clear()
+        server._referrers.clear()
         server.STARTED = time.time()
         server._load_stats_state()
 
@@ -276,6 +333,7 @@ class StatsPersistence(unittest.TestCase):
         self.assertEqual(server._stat["hit"], 30)
         self.assertEqual(server._places["Zurich"], 5)
         self.assertEqual(server._finds["Venus"], 3)
+        self.assertEqual(server._referrers["twitter.com"], 7)
         self.assertEqual(server.STARTED, 12345.0)
 
     def test_missing_state_file_is_a_silent_noop(self):
