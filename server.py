@@ -162,7 +162,7 @@ def _read_hourly_history(days=7):
     return rows
 
 
-def _tally(r, daytime, hit, mode, status, data):
+def _tally(r, daytime, hit, mode, status, data, colour=True):
     _roll_hour()
     _stat["requests"] += 1
     _stat["hit" if hit else "miss"] += 1
@@ -179,6 +179,21 @@ def _tally(r, daytime, hit, mode, status, data):
     # "asked for it": how often a visitor's chart actually included a real pass.
     if data.get("iss_pass"):
         _stat["iss"] += 1
+    # Every remaining request-shaping parameter, so /stats reflects the full
+    # surface rather than just the ones that happened to get counters as they
+    # shipped -- dso/quadrant landed with none at all until this pass.
+    if r.dso:
+        _stat["param:dso"] += 1
+    if r.quadrant_requested:
+        _stat["param:quadrant"] += 1
+    if r.night:
+        _stat["param:night"] += 1
+    if not r.lines:
+        _stat["param:nolines"] += 1
+    if r.width:
+        _stat["param:w"] += 1
+    if not colour:
+        _stat["param:plain"] += 1
     _places[r.place.name] += 1
     if r.find:
         _finds[r.find.strip().title()[:40]] += 1
@@ -213,6 +228,12 @@ def stats_text(n=50):
     if _stat["iss"]:
         L.append(f"  {'iss':12} {_stat['iss']:>8,}")
     L.append("")
+    params = sorted(k for k in _stat if k.startswith("param:"))
+    if params:
+        L.append("parameters")
+        for k in params:
+            L.append(f"  {k[6:]:12} {_stat[k]:>8,}")
+        L.append("")
     L.append("output")
     for k in sorted(k for k in _stat if k.startswith("mode:")):
         L.append(f"  {k[5:]:12} {_stat[k]:>8,}")
@@ -258,6 +279,7 @@ def stats_json(n=50):
         views={k[5:]: v for k, v in _stat.items() if k.startswith("view:")},
         modes={k[5:]: v for k, v in _stat.items() if k.startswith("mode:")},
         errors={k[7:]: v for k, v in _stat.items() if k.startswith("status:")},
+        params={k[6:]: v for k, v in _stat.items() if k.startswith("param:")},
         places_distinct=len(_places), finds_distinct=len(_finds),
         top_places=dict(_places.most_common(n)),
         top_finds=dict(_finds.most_common(n)),
@@ -640,7 +662,7 @@ def _respond(request: Req, place: str | None):
                                  headers={"Cache-Control": "no-store"})
     r = _build(request, place)
     res, daytime, hit = _cached(r)
-    _tally(r, daytime, hit, mode, res.status, res.data)
+    _tally(r, daytime, hit, mode, res.status, res.data, colour)
     edge = DAY_EDGE if daytime else NIGHT_EDGE
     headers = {"Cache-Control": f"public, max-age={edge // 4}, s-maxage={edge}, "
                                 f"stale-while-revalidate=600",

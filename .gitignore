@@ -6,6 +6,7 @@ iss.tle
 tle.log
 gif_cache/
 stats_hourly.jsonl
+stats_state.json
 .DS_Store
 PROJECT_STATE.md
 NOTES.md

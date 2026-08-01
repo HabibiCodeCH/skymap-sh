@@ -7,6 +7,7 @@ import json
 import os
 import re
 import tempfile
+import time
 import unittest
 
 from starlette.testclient import TestClient
@@ -143,6 +144,149 @@ class BskyBotStatsOnStatsPage(unittest.TestCase):
         self._write_bsky_stats({"mentions": 2, "replies": 2})
         resp = self.client.get("/stats?format=json", headers=TERMINAL)
         self.assertEqual(resp.json()["bsky"], {"mentions": 2, "replies": 2})
+
+
+class ParamCounters(unittest.TestCase):
+    """Every request-shaping query parameter should show up in /stats, not
+    just the handful that had counters from day one -- dso and quadrant
+    shipped with none at all until this pass."""
+
+    def setUp(self):
+        client_cm = TestClient(server.app)
+        self.client = client_cm.__enter__()
+        self.addCleanup(client_cm.__exit__, None, None, None)
+        # _stat is a module-level Counter shared across every test in the
+        # process -- snapshot and restore so this test's assertions aren't
+        # polluted by (or don't pollute) any other test's requests.
+        self._orig_stat = server._stat.copy()
+        server._stat.clear()
+        self.addCleanup(lambda: (server._stat.clear(), server._stat.update(self._orig_stat)))
+
+    def test_dso_and_quadrant_params_are_tallied(self):
+        self.client.get("/Zurich?dso=1", headers=TERMINAL)
+        self.client.get("/Zurich?quadrant=B", headers=TERMINAL)
+        resp = self.client.get("/stats?format=json", headers=TERMINAL)
+        params = resp.json()["params"]
+        self.assertEqual(params.get("dso"), 2)  # quadrant=B also switches dso on
+        self.assertEqual(params.get("quadrant"), 1)
+
+    def test_bare_quadrant_counts_as_quadrant_requested(self):
+        self.client.get("/Zurich?quadrant", headers=TERMINAL)
+        resp = self.client.get("/stats?format=json", headers=TERMINAL)
+        self.assertEqual(resp.json()["params"].get("quadrant"), 1)
+
+    def test_night_nolines_and_width_params_are_tallied(self):
+        self.client.get("/Zurich?night=1", headers=TERMINAL)
+        self.client.get("/Zurich?nolines=1", headers=TERMINAL)
+        self.client.get("/Zurich?w=100", headers=TERMINAL)
+        resp = self.client.get("/stats?format=json", headers=TERMINAL)
+        params = resp.json()["params"]
+        self.assertEqual(params.get("night"), 1)
+        self.assertEqual(params.get("nolines"), 1)
+        self.assertEqual(params.get("w"), 1)
+
+    def test_plain_text_request_is_tallied(self):
+        # ?plain= is what actually turns colour off for a terminal client --
+        # curl gets ANSI colour by default even with Accept: text/plain.
+        self.client.get("/Zurich?plain=1", headers=TERMINAL)
+        resp = self.client.get("/stats?format=json", headers=TERMINAL)
+        self.assertEqual(resp.json()["params"].get("plain"), 1)
+
+    def test_params_section_appears_on_the_text_page(self):
+        self.client.get("/Zurich?dso=1", headers=TERMINAL)
+        resp = self.client.get("/stats", headers=TERMINAL)
+        self.assertIn("parameters", resp.text)
+        self.assertIn("dso", resp.text)
+
+
+class TopPlacesFormatting(unittest.TestCase):
+    """The blank line above 'top places' must appear whether or not there's
+    any bluesky-bot data yet -- it used to only be appended inside the
+    `if bsky:` branch, so it silently vanished before the bot existed."""
+
+    def setUp(self):
+        client_cm = TestClient(server.app)
+        self.client = client_cm.__enter__()
+        self.addCleanup(client_cm.__exit__, None, None, None)
+        self._orig_bsky = server.BSKY_STATE_FILE
+        self.addCleanup(setattr, server, "BSKY_STATE_FILE", self._orig_bsky)
+        server.BSKY_STATE_FILE = os.path.join(tempfile.mkdtemp(), "no_such_file.json")
+
+    def test_blank_line_precedes_top_places_without_bsky_data(self):
+        resp = self.client.get("/stats", headers=TERMINAL)
+        self.assertNotIn("bluesky bot", resp.text)
+        m = re.search(r"\n\ntop places", resp.text)
+        self.assertIsNotNone(m)
+
+    def test_default_shows_up_to_50_places(self):
+        server._places.clear()
+        self.addCleanup(server._places.clear)
+        for i in range(60):
+            server._places[f"City{i}"] = 60 - i
+        resp = self.client.get("/stats", headers=TERMINAL)
+        shown = resp.text.split("top places")[1]
+        self.assertIn("City0", shown)
+        self.assertIn("City49", shown)
+        self.assertNotIn("City50", shown)
+
+
+class StatsPersistence(unittest.TestCase):
+    """_stat/_places/_finds are otherwise purely in-memory -- a restart
+    (deploy, crash, systemd bounce) would silently zero them. This checks
+    the save/load round-trip that keeps them alive across a restart."""
+
+    def setUp(self):
+        self._orig_file = server.STATS_STATE_FILE
+        self.addCleanup(setattr, server, "STATS_STATE_FILE", self._orig_file)
+        fd, path = tempfile.mkstemp(suffix=".json")
+        os.close(fd)
+        os.remove(path)  # _save_stats_state must create it, not require it pre-exist
+        self.addCleanup(lambda: os.path.exists(path) and os.remove(path))
+        server.STATS_STATE_FILE = path
+
+        self._orig_stat = server._stat.copy()
+        self._orig_places = server._places.copy()
+        self._orig_finds = server._finds.copy()
+        self._orig_started = server.STARTED
+        self.addCleanup(self._restore)
+
+    def _restore(self):
+        server._stat.clear(); server._stat.update(self._orig_stat)
+        server._places.clear(); server._places.update(self._orig_places)
+        server._finds.clear(); server._finds.update(self._orig_finds)
+        server.STARTED = self._orig_started
+
+    def test_save_then_load_restores_counters(self):
+        server._stat.clear()
+        server._stat.update({"requests": 42, "hit": 30})
+        server._places.clear()
+        server._places.update({"Zurich": 5})
+        server._finds.clear()
+        server._finds.update({"Venus": 3})
+        server.STARTED = 12345.0
+        server._save_stats_state()
+
+        server._stat.clear()
+        server._places.clear()
+        server._finds.clear()
+        server.STARTED = time.time()
+        server._load_stats_state()
+
+        self.assertEqual(server._stat["requests"], 42)
+        self.assertEqual(server._stat["hit"], 30)
+        self.assertEqual(server._places["Zurich"], 5)
+        self.assertEqual(server._finds["Venus"], 3)
+        self.assertEqual(server.STARTED, 12345.0)
+
+    def test_missing_state_file_is_a_silent_noop(self):
+        # No file was ever saved -- startup must not crash just because this
+        # is the very first run.
+        server._load_stats_state()
+
+    def test_corrupt_state_file_is_a_silent_noop(self):
+        with open(server.STATS_STATE_FILE, "w") as f:
+            f.write("not json")
+        server._load_stats_state()
 
 
 class Favicon(unittest.TestCase):
