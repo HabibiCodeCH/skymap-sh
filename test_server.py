@@ -311,6 +311,39 @@ class CatalogPage(unittest.TestCase):
         resp = self.client.get("/legend", headers=BROWSER)
         self.assertIn('href="/catalog"', resp.text)
 
+    def test_catalog_is_the_first_nav_link_after_home(self):
+        resp = self.client.get("/legend", headers=BROWSER)
+        nav = resp.text[resp.text.index('<b>skymap.sh</b>'):]
+        self.assertLess(nav.index('href="/"'), nav.index('href="/catalog"'))
+        self.assertLess(nav.index('href="/catalog"'), nav.index('href="/demo"'))
+
+
+class HomeNavLink(unittest.TestCase):
+    """Every page, including the home page itself, links to home -- a
+    consistent nav position beats hiding the link on the one page where it
+    would point at the current page."""
+
+    def setUp(self):
+        client_cm = TestClient(server.app)
+        self.client = client_cm.__enter__()
+        self.addCleanup(client_cm.__exit__, None, None, None)
+
+    def test_home_page_still_shows_the_home_link(self):
+        resp = self.client.get("/", headers=BROWSER)
+        self.assertIn('href="/"', resp.text)
+
+    def test_a_place_page_links_home(self):
+        resp = self.client.get("/Zurich", headers=BROWSER)
+        self.assertIn('href="/"', resp.text)
+
+    def test_catalog_links_home(self):
+        resp = self.client.get("/catalog", headers=BROWSER)
+        self.assertIn('href="/"', resp.text)
+
+    def test_legend_links_home(self):
+        resp = self.client.get("/legend", headers=BROWSER)
+        self.assertIn('href="/"', resp.text)
+
 
 class Favicon(unittest.TestCase):
     """Browsers request /favicon.ico and /apple-touch-icon.png on every visit

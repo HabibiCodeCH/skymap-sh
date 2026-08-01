@@ -258,6 +258,72 @@ class CatalogText(unittest.TestCase):
         for body in ("Sun", "Moon", "Venus", "Jupiter"):
             self.assertIn(body, text)
 
+    def test_solar_system_bodies_use_the_same_glyphs_as_the_chart(self):
+        # Same glyphs sky.py's render()/render_linear() actually draw on the
+        # chart -- so this list can't drift into showing symbols nothing on
+        # screen matches.
+        text = api.catalog_text(color=False)
+        i = text.index("SOLAR SYSTEM")
+        section = text[i:text.index("CONSTELLATIONS")]
+        self.assertIn("☀ Sun", section)
+        self.assertIn("● Moon", section)
+        self.assertIn("◆ Mercury", section)
+
+    def test_named_stars_show_a_brightness_glyph_and_full_constellation_name(self):
+        text = api.catalog_text(color=False)
+        # Sirius is mag -1.46, well under sky.glyph_for's 0.8 cutoff for the
+        # brightest dot -- and CMa's full name should show, not the abbreviation.
+        self.assertIn("● Sirius", text)
+        self.assertIn("Canis Major", text)
+        self.assertNotIn(" CMa\n", text)
+
+
+class CatalogHtml(unittest.TestCase):
+    """catalog_html() is the browser-only twin of catalog_text() -- every
+    object is a link to /?find=<name> opened in a new tab, so browsing the
+    catalog never navigates away from the chart on screen. A bare place
+    (no city in the path) resolves through the visitor's own geo-IP fallback
+    in the new tab, same as curl skymap.sh with no place given."""
+
+    def test_a_star_links_to_a_bare_find_in_a_new_tab(self):
+        h = api.catalog_html()
+        self.assertIn('href="/?find=Sirius" target="_blank" rel="noopener"', h)
+
+    def test_a_multi_word_name_is_url_encoded(self):
+        h = api.catalog_html()
+        self.assertIn("find=Big%20Dipper", h)
+
+    def test_a_dso_links_with_dso_and_quadrant_turned_on(self):
+        h = api.catalog_html()
+        # Displayed as "M31 (Andromeda Galaxy)" but the href must use the
+        # canonical short id, not the whole parenthesised label.
+        self.assertIn("href=\"/?find=M31&amp;dso=1&amp;quadrant\"", h)
+        self.assertIn(">M31 (Andromeda Galaxy)<", h)
+
+    def test_a_non_dso_link_does_not_carry_dso_or_quadrant(self):
+        h = api.catalog_html()
+        sirius_link = h[h.index('href="/?find=Sirius"'):][:120]
+        self.assertNotIn("dso=1", sirius_link)
+        self.assertNotIn("quadrant", sirius_link)
+
+    def test_planets_get_distinct_colours_not_one_shared_colour(self):
+        h = api.catalog_html()
+        mercury = h[h.index("Mercury") - 60:h.index("Mercury")]
+        venus = h[h.index("Venus") - 60:h.index("Venus")]
+        self.assertNotEqual(
+            mercury[mercury.index("color:"):mercury.index("color:") + 20],
+            venus[venus.index("color:"):venus.index("color:") + 20])
+
+    def test_lists_the_same_objects_as_the_terminal_version(self):
+        # Both are built from _catalog_data() -- this pins that they can't
+        # drift into showing different objects for the two audiences.
+        text = api.catalog_text(color=False)
+        h = api.catalog_html()
+        self.assertIn("NAMED STARS (327)", text)
+        self.assertIn("NAMED STARS (327)", h)
+        self.assertIn("DEEP SKY (112)", text)
+        self.assertIn("DEEP SKY (112)", h)
+
 
 if __name__ == "__main__":
     unittest.main()

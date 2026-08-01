@@ -242,6 +242,36 @@ DSO_NAMES = {"gal": "galaxy", "clu": "cluster", "neb": "nebula", "pln": "planeta
 DSO_LEGEND = ("deep sky:  " +
               "  ".join(f"{DSO_GLYPH[k][0]} {DSO_NAMES[k]}" for k in DSO_NAMES))
 
+# The 88 IAU constellation abbreviations -- stars.json's "c" field -- mapped
+# to their full names. Fixed since 1930, same "published astronomical fact"
+# reasoning as COMMON_NAMES in build_deepsky.py.
+CONSTELLATION_NAMES = {
+    "And": "Andromeda", "Ant": "Antlia", "Aps": "Apus", "Aqr": "Aquarius",
+    "Aql": "Aquila", "Ara": "Ara", "Ari": "Aries", "Aur": "Auriga",
+    "Boo": "Bootes", "Cae": "Caelum", "Cam": "Camelopardalis", "Cnc": "Cancer",
+    "CVn": "Canes Venatici", "CMa": "Canis Major", "CMi": "Canis Minor",
+    "Cap": "Capricornus", "Car": "Carina", "Cas": "Cassiopeia",
+    "Cen": "Centaurus", "Cep": "Cepheus", "Cet": "Cetus", "Cha": "Chamaeleon",
+    "Cir": "Circinus", "Col": "Columba", "Com": "Coma Berenices",
+    "CrA": "Corona Australis", "CrB": "Corona Borealis", "Crv": "Corvus",
+    "Crt": "Crater", "Cru": "Crux", "Cyg": "Cygnus", "Del": "Delphinus",
+    "Dor": "Dorado", "Dra": "Draco", "Equ": "Equuleus", "Eri": "Eridanus",
+    "For": "Fornax", "Gem": "Gemini", "Gru": "Grus", "Her": "Hercules",
+    "Hor": "Horologium", "Hya": "Hydra", "Hyi": "Hydrus", "Ind": "Indus",
+    "Lac": "Lacerta", "Leo": "Leo", "LMi": "Leo Minor", "Lep": "Lepus",
+    "Lib": "Libra", "Lup": "Lupus", "Lyn": "Lynx", "Lyr": "Lyra",
+    "Men": "Mensa", "Mic": "Microscopium", "Mon": "Monoceros", "Mus": "Musca",
+    "Nor": "Norma", "Oct": "Octans", "Oph": "Ophiuchus", "Ori": "Orion",
+    "Pav": "Pavo", "Peg": "Pegasus", "Per": "Perseus", "Phe": "Phoenix",
+    "Pic": "Pictor", "Psc": "Pisces", "PsA": "Piscis Austrinus",
+    "Pup": "Puppis", "Pyx": "Pyxis", "Ret": "Reticulum", "Sge": "Sagitta",
+    "Sgr": "Sagittarius", "Sco": "Scorpius", "Scl": "Sculptor", "Sct": "Scutum",
+    "Ser": "Serpens", "Sex": "Sextans", "Tau": "Taurus", "Tel": "Telescopium",
+    "Tri": "Triangulum", "TrA": "Triangulum Australe", "Tuc": "Tucana",
+    "UMa": "Ursa Major", "UMi": "Ursa Minor", "Vel": "Vela", "Vir": "Virgo",
+    "Vol": "Volans", "Vul": "Vulpecula",
+}
+
 def deepsky_visible(dso_limit, jd, lat, lst):
     """Deep-sky objects above the horizon and brighter than dso_limit.
     dso_limit=None means the layer is off (the default -- most of these

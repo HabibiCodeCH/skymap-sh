@@ -144,7 +144,7 @@ PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
 </style></head><body><div class="wrap">
 <pre class="cta">curl skymap.sh/demo</pre>
 <p class="t"><b>skymap.sh</b>
-<a href="/">home</a> · <a href="/demo">demo</a> · <a href="/help">help</a> · <a href="/legend">legend</a> · <a href="/catalog">catalog</a></p>
+<a href="/">home</a> · <a href="/catalog">catalog</a> · <a href="/demo">demo</a> · <a href="/help">help</a> · <a href="/legend">legend</a></p>
 <p class="t">{nav_row}</p>
 {sections}
 </div></body></html>"""

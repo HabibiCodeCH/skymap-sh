@@ -740,7 +740,7 @@ def _respond(request: Req, place: str | None):
         # reads an empty #place and falls back to the home/IP-located page.
         explore = api.EXPLORE.format(place=html.escape(r.place.name))
         body = api.PAGE.format(title=f"skymap.sh — {r.place.name}",
-                               path=f"/{r.place.slug}" if place else "",
+                               header=api.header_html(f"/{r.place.slug}" if place else ""),
                                explore=explore, animate_btn=animate_btn,
                                quadrant_btn=quadrant_btn,
                                body=api.ansi_to_html(page_text), extra=extra)
@@ -771,7 +771,7 @@ def help_(request: Req):
     mode, _colour = _wants(request)
     headers = {"Cache-Control": "public, max-age=3600"}
     if mode == "html":
-        body = api.PAGE.format(title="skymap.sh — usage", path="/help",
+        body = api.PAGE.format(title="skymap.sh — usage", header=api.header_html("/help"),
                                explore=api.EXPLORE.format(place=""), body=html.escape(api.HELP),
                                extra="", animate_btn="", quadrant_btn="")
         return HTMLResponse(body, headers=headers)
@@ -834,7 +834,7 @@ def legend(request: Req):
     mode, colour = _wants(request)
     headers = {"Cache-Control": "public, max-age=3600"}
     if mode == "html":
-        body = api.PAGE.format(title="skymap.sh — legend", path="/legend",
+        body = api.PAGE.format(title="skymap.sh — legend", header=api.header_html("/legend"),
                                explore=api.EXPLORE.format(place=""),
                                body=api.ansi_to_html(api.legend_text(True)),
                                extra="", animate_btn="", quadrant_btn="")
@@ -847,9 +847,9 @@ def catalog(request: Req):
     mode, colour = _wants(request)
     headers = {"Cache-Control": "public, max-age=3600"}
     if mode == "html":
-        body = api.PAGE.format(title="skymap.sh — catalog", path="/catalog",
+        body = api.PAGE.format(title="skymap.sh — catalog", header=api.header_html("/catalog"),
                                explore=api.EXPLORE.format(place=""),
-                               body=api.ansi_to_html(api.catalog_text(True)),
+                               body=api.catalog_html(),
                                extra="", animate_btn="", quadrant_btn="")
         return HTMLResponse(body, headers=headers)
     return PlainTextResponse(api.catalog_text(colour), headers=headers)
@@ -877,7 +877,7 @@ def stats(request: Req):
     headers = {"Cache-Control": "no-store"}
     mode, _colour = _wants(request)
     if mode == "html":
-        body = api.PAGE.format(title="skymap.sh — stats", path="/stats",
+        body = api.PAGE.format(title="skymap.sh — stats", header=api.header_html("/stats"),
                                explore=api.EXPLORE, body=html.escape(stats_text()),
                                extra="", animate_btn="", quadrant_btn="")
         return HTMLResponse(body, headers=headers)
@@ -896,7 +896,7 @@ def stats_hourly(request: Req):
     headers = {"Cache-Control": "no-store"}
     mode, _colour = _wants(request)
     if mode == "html":
-        body = api.PAGE.format(title="skymap.sh — stats", path="/stats/hourly",
+        body = api.PAGE.format(title="skymap.sh — stats", header=api.header_html("/stats/hourly"),
                                explore=api.EXPLORE, body=html.escape(stats_hourly_text(days)),
                                extra="", animate_btn="", quadrant_btn="")
         return HTMLResponse(body, headers=headers)
