@@ -171,5 +171,34 @@ class Favicon(unittest.TestCase):
         self.assertIn('href="/apple-touch-icon.png"', resp.text)
 
 
+class SeoRoutes(unittest.TestCase):
+    def setUp(self):
+        client_cm = TestClient(server.app)
+        self.client = client_cm.__enter__()
+        self.addCleanup(client_cm.__exit__, None, None, None)
+
+    def test_robots_points_at_the_sitemap(self):
+        resp = self.client.get("/robots.txt")
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn("Sitemap: https://skymap.sh/sitemap.xml", resp.text)
+
+    def test_sitemap_is_valid_looking_xml_with_absolute_urls(self):
+        resp = self.client.get("/sitemap.xml")
+        self.assertEqual(resp.status_code, 200)
+        self.assertTrue(resp.headers["content-type"].startswith("application/xml"))
+        self.assertIn("<urlset", resp.text)
+        self.assertIn("https://skymap.sh/demo", resp.text)
+        # A multi-word city must be percent-encoded, not a literal space --
+        # a raw space in <loc> is invalid XML/sitemap syntax.
+        self.assertIn("New%20York", resp.text)
+        self.assertNotIn("New York<", resp.text)
+
+    def test_llms_txt_serves_plain_text(self):
+        resp = self.client.get("/llms.txt")
+        self.assertEqual(resp.status_code, 200)
+        self.assertTrue(resp.headers["content-type"].startswith("text/plain"))
+        self.assertIn("skymap.sh", resp.text)
+
+
 if __name__ == "__main__":
     unittest.main()

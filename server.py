@@ -11,6 +11,7 @@ Run:  uvicorn server:app --host 0.0.0.0 --port 8000
 """
 import asyncio, datetime as dt, html, json, os, re, secrets, threading, time
 from collections import OrderedDict
+from urllib.parse import quote
 from fastapi import FastAPI, Request as Req
 from fastapi.responses import (PlainTextResponse, HTMLResponse, JSONResponse,
                                StreamingResponse, FileResponse, Response)
@@ -56,13 +57,44 @@ _places = Counter()
 _finds = Counter()
 _TOP_KEEP = 2000            # trim the long tail so the tables cannot grow forever
 
+# --- persisting the live counters ----------------------------------------------
+# _stat/_places/_finds are otherwise purely in-memory, so a restart (deploy,
+# crash, systemd bounce) would silently zero them. Snapshotted to disk on
+# every hour boundary (piggybacking _flush_hour's existing cadence, not a
+# separate timer) and on a graceful shutdown, then restored once at startup
+# -- STARTED comes back too, so "X requests over Y h" keeps counting from
+# the real first-ever start rather than resetting every deploy.
+STATS_STATE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "stats_state.json")
+
+
+def _save_stats_state():
+    try:
+        tmp = f"{STATS_STATE_FILE}.tmp"
+        with open(tmp, "w") as f:
+            json.dump(dict(started=STARTED, stat=dict(_stat),
+                          places=dict(_places), finds=dict(_finds)), f)
+        os.replace(tmp, STATS_STATE_FILE)   # atomic -- a crash mid-write
+    except OSError:                          # can't leave a corrupt file
+        pass
+
+
+def _load_stats_state():
+    global STARTED
+    try:
+        with open(STATS_STATE_FILE) as f:
+            data = json.load(f)
+    except (OSError, json.JSONDecodeError, ValueError):
+        return
+    STARTED = data.get("started", STARTED)
+    _stat.update(data.get("stat", {}))
+    _places.update(data.get("places", {}))
+    _finds.update(data.get("finds", {}))
+
+
 # --- hourly history -----------------------------------------------------------
-# _stat/_places/_finds above are the whole point of the "no IPs, no
-# timestamps" design -- but they're purely in-memory, so a restart (deploy,
-# crash, systemd bounce) silently zeroes them with no record anything
-# happened. This appends one line per COMPLETED hour to a local file --
-# still just tallies (requests/hits/misses/day/night), not raw events -- so
-# a restart loses at most the current partial hour, not the whole history.
+# A second, complementary view of the same underlying data: one line per
+# COMPLETED hour, so /stats/hourly can chart a trend even though the live
+# counters above are just a running total with no time axis of their own.
 HOURLY_LOG = os.path.join(os.path.dirname(os.path.abspath(__file__)), "stats_hourly.jsonl")
 # Never trimmed -- one line per hour is tiny (a year is ~8,760 lines), so the
 # file just keeps the whole history. This only caps how far back ?days= can
@@ -88,6 +120,10 @@ def _read_bsky_stats():
 
 
 def _flush_hour(hour_key, hstat):
+    # Cumulative snapshot goes out regardless of whether this particular
+    # hour had any traffic -- the totals it's saving span the process's
+    # whole history, not just the hour that just ended.
+    _save_stats_state()
     if not hstat:
         return
     row = dict(hour=hour_key, requests=hstat["requests"], hit=hstat["hit"],
@@ -154,7 +190,7 @@ def _tally(r, daytime, hit, mode, status, data):
             del _finds[k]
 
 
-def stats_text(n=15):
+def stats_text(n=50):
     up = time.time() - STARTED
     req = _stat["requests"] or 1
     L = [f"skymap.sh — {req:,} requests over {up/3600:.1f} h "
@@ -197,7 +233,10 @@ def stats_text(n=15):
             L.append(f"  {'usage hint':12} {bsky['usage_hint']:>8,}")
         if bsky.get("errors"):
             L.append(f"  {'errors':12} {bsky['errors']:>8,}")
-        L.append("")
+    # Unconditional -- was only appended inside `if bsky:` above, so the
+    # blank line before "top places" silently vanished whenever there was
+    # no bluesky data yet, unlike every other section here.
+    L.append("")
     L.append(f"top places ({len(_places):,} distinct)")
     for name, c in _places.most_common(n):
         L.append(f"  {name[:28]:28} {c:>8,}")
@@ -310,6 +349,7 @@ THROTTLED = """\
 def _warm():
     """Parse the catalogues once, and check the element set we shipped with."""
     sky._load("stars.json"); sky._load("asterisms.json")
+    _load_stats_state()
     p = tle.current()
     app.state.tle = p
     if p:
@@ -321,6 +361,14 @@ def _warm():
             app.state.tle = None
     else:
         print("[startup] no TLE on disk; run tle.py — ISS disabled")
+
+
+@app.on_event("shutdown")
+def _save_on_exit():
+    # `systemctl restart` (a normal deploy) sends SIGTERM first, so this is
+    # the common case that actually matters -- the hourly-boundary save
+    # covers crashes/kills that skip shutdown handling entirely.
+    _save_stats_state()
 
 
 def _wants(request: Req):
@@ -822,7 +870,62 @@ def stats_hourly(request: Req):
 
 @app.get("/robots.txt", response_class=PlainTextResponse)
 def robots():
-    return PlainTextResponse("User-agent: *\nAllow: /\n")
+    # /animate and /stats aren't content -- each is either a one-shot,
+    # ID-scoped render or a live counter, so indexing them just burns crawl
+    # budget a search engine would rather spend on real pages.
+    return PlainTextResponse(
+        "User-agent: *\n"
+        "Allow: /\n"
+        "Disallow: /animate/\n"
+        "Disallow: /stats\n"
+        "Sitemap: https://skymap.sh/sitemap.xml\n"
+    )
+
+
+# A handful of stable pages plus the same example cities already linked from
+# the home page's own "Examples:" row (api.EXPLORE) -- not the 40,803-city
+# catalogue, which would be noise no crawler should spend budget on and
+# would go stale immediately anyway (every page is a live render).
+SITEMAP_PLACES = ("Nairobi", "Tokyo", "London", "New York", "Buenos Aires", "Sydney")
+SITEMAP_STATIC = ("/", "/demo", "/help", "/legend")
+
+
+@app.get("/sitemap.xml", response_class=Response)
+def sitemap():
+    urls = [f"https://skymap.sh{p}" for p in SITEMAP_STATIC]
+    urls += [f"https://skymap.sh/{quote(p)}" for p in SITEMAP_PLACES]
+    body = ('<?xml version="1.0" encoding="UTF-8"?>\n'
+            '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n' +
+            "".join(f"<url><loc>{u}</loc></url>\n" for u in urls) +
+            "</urlset>\n")
+    return Response(body, media_type="application/xml",
+                    headers={"Cache-Control": "public, max-age=86400"})
+
+
+@app.get("/llms.txt", response_class=PlainTextResponse)
+def llms_txt():
+    return PlainTextResponse(
+        "# skymap.sh\n\n"
+        "> The night sky above any place on Earth, as plain text. No signup, "
+        "no API key, no JavaScript required to read it.\n\n"
+        "## Usage\n\n"
+        "- `curl skymap.sh` -- the visitor's own sky, located by IP\n"
+        "- `curl skymap.sh/Zurich` -- any of 40,803 cities, or `lat,lon` coordinates\n"
+        "- `curl 'skymap.sh/Zurich?find=Venus'` -- locate one object, direction "
+        "and altitude given in fists held at arm's length\n"
+        "- `curl 'skymap.sh/Zurich?format=json'` -- the same facts as structured data\n"
+        "- `curl 'skymap.sh/Zurich?animate'` -- the next 24h streamed live, one "
+        "frame every 15 simulated minutes\n\n"
+        "## Reference\n\n"
+        "- /help -- every parameter, with real sample output\n"
+        "- /legend -- every character and colour used on the chart\n"
+        "- /demo -- a worked example with commentary\n\n"
+        "## Data\n\n"
+        "Stars to magnitude 4-5 (Yale Bright Star Catalogue), 28 hand-authored "
+        "asterisms, the 7 planets, Sun and Moon with phase, the next visible ISS "
+        "pass, and (behind ?dso=1) 739 galaxies, nebulae and clusters from the "
+        "Revised NGC. Everything shipped is public domain.\n"
+    )
 
 
 GIF_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,32}$")
