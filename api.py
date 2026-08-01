@@ -1207,6 +1207,8 @@ PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>{title}</title>
 <meta name="description" content="The night sky above you, as plain text. curl skymap.sh">
+<link rel="icon" href="/favicon.ico" sizes="any">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
 <style>
  body{{margin:0;background:#04060a;color:#c9d1d9;
       font-family:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;

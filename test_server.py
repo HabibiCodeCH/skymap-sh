@@ -145,5 +145,31 @@ class BskyBotStatsOnStatsPage(unittest.TestCase):
         self.assertEqual(resp.json()["bsky"], {"mentions": 2, "replies": 2})
 
 
+class Favicon(unittest.TestCase):
+    """Browsers request /favicon.ico and /apple-touch-icon.png on every visit
+    regardless of whether the site has one -- unhandled, those were the
+    single biggest chunk of /stats' non-200 count (see the log audit)."""
+
+    def setUp(self):
+        client_cm = TestClient(server.app)
+        self.client = client_cm.__enter__()
+        self.addCleanup(client_cm.__exit__, None, None, None)
+
+    def test_favicon_ico_serves(self):
+        resp = self.client.get("/favicon.ico")
+        self.assertEqual(resp.status_code, 200)
+        self.assertTrue(resp.headers["content-type"].startswith("image/"))
+
+    def test_apple_touch_icon_serves(self):
+        resp = self.client.get("/apple-touch-icon.png")
+        self.assertEqual(resp.status_code, 200)
+        self.assertTrue(resp.headers["content-type"].startswith("image/"))
+
+    def test_page_links_to_the_favicon(self):
+        resp = self.client.get("/Zurich", headers=BROWSER)
+        self.assertIn('href="/favicon.ico"', resp.text)
+        self.assertIn('href="/apple-touch-icon.png"', resp.text)
+
+
 if __name__ == "__main__":
     unittest.main()

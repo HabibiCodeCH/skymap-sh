@@ -708,6 +708,25 @@ def help_(request: Req):
     return PlainTextResponse(api.HELP, headers=headers)
 
 
+@app.get("/favicon.ico")
+def favicon_ico():
+    path = f"{api.sky.BASE}/favicon.ico"
+    if not os.path.isfile(path):
+        return PlainTextResponse("", status_code=404)
+    return FileResponse(path, media_type="image/x-icon",
+                        headers={"Cache-Control": "public, max-age=86400"})
+
+
+@app.get("/apple-touch-icon.png")
+@app.get("/apple-touch-icon-precomposed.png")
+def apple_touch_icon():
+    path = f"{api.sky.BASE}/apple-touch-icon.png"
+    if not os.path.isfile(path):
+        return PlainTextResponse("", status_code=404)
+    return FileResponse(path, media_type="image/png",
+                        headers={"Cache-Control": "public, max-age=86400"})
+
+
 @app.get("/demo", response_class=HTMLResponse)
 def demo():
     # Static, pre-rendered by build_sky_html.py -- already a complete page,
