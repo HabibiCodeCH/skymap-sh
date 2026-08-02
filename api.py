@@ -2210,17 +2210,86 @@ var deviceQ = new THREE.Quaternion();
 var _orientEvent = 'ondeviceorientationabsolute' in window
   ? 'deviceorientationabsolute' : 'deviceorientation';
 
+// Real phones report a few tenths of a degree of jitter on every axis even
+// held perfectly still (measured on a real device: ~0.4 degrees peak to
+// peak) -- sensor/OS noise, not anything this page's math can avoid by
+// computing more carefully. A dead zone freezes the displayed angle while
+// the raw value wanders within a small band, and snaps instantly (no
+// easing, no catch-up lag) the moment it moves further than that -- unlike
+// the two smoothing attempts tried before this, which gradually eased
+// toward every new reading and so always lagged real movement by some
+// amount. Diffs wrap correctly at the 360/0 boundary for alpha.
+var DEADZONE_DEG = 0.6;
+var _dispAlpha = null, _dispBeta = null, _dispGamma = null;
+
+function angDiff(a, b) {{
+  return Math.abs(((a - b + 180) % 360 + 360) % 360 - 180);
+}}
+
+function deadzone(raw, disp) {{
+  return (disp === null || angDiff(raw, disp) >= DEADZONE_DEG) ? raw : disp;
+}}
+
+// webkitCompassHeading is the only true-north reference iOS offers, but
+// it's magnetometer-derived: its tilt compensation degrades badly as the
+// phone approaches vertical -- which is exactly how this app gets held,
+// pointing at the sky. `alpha` on the same event is gyro-fused: smooth and
+// steady moment to moment, but its zero point is arbitrary (it's whatever
+// the phone decided at page load, which is why the very first version of
+// this view needed a manual "recentre" and never showed true north).
+//
+// So use both for what each is actually good at, the standard
+// complementary-filter split: render from alpha, and let the compass only
+// teach us the constant offset between alpha's arbitrary zero and true
+// north -- applied slowly, not trusted frame by frame. A brief compass
+// glitch then barely moves the view; only sustained disagreement pulls the
+// heading back. The gain drops near vertical, where the compass is known
+// to be unreliable, so the gyro carries the heading through exactly the
+// poses that used to make it jump.
+var OFFSET_GAIN_GOOD = 0.05;    // phone well off vertical: trust the compass
+var OFFSET_GAIN_POOR = 0.002;   // near vertical: coast on the gyro instead
+var COMPASS_TRUST_BETA = 70;    // degrees from flat where that switch happens
+var _offCos = null, _offSin = null;
+
+function feedCompassOffset(offsetDeg, beta) {{
+  var r = offsetDeg * Math.PI / 180;
+  var c = Math.cos(r), s = Math.sin(r);
+  // First reading snaps, so north is right immediately rather than
+  // easing in from wherever the phone happened to start.
+  if (_offCos === null) {{ _offCos = c; _offSin = s; return; }}
+  var g = Math.abs(beta) < COMPASS_TRUST_BETA ? OFFSET_GAIN_GOOD : OFFSET_GAIN_POOR;
+  // Averaged as a unit vector, not raw degrees, so 359 -> 0 wraps cleanly.
+  _offCos += (c - _offCos) * g;
+  _offSin += (s - _offSin) * g;
+}}
+
+function compassOffsetDeg() {{
+  return _offCos === null ? 0 : Math.atan2(_offSin, _offCos) * 180 / Math.PI;
+}}
+
 function applyOrientation(e) {{
+  if (e.beta === null || e.gamma === null) return;
   var alphaDeg;
-  if (typeof e.webkitCompassHeading === 'number' && !isNaN(e.webkitCompassHeading)) {{
+  var hasCompass = typeof e.webkitCompassHeading === 'number' && !isNaN(e.webkitCompassHeading);
+  if (hasCompass && e.alpha !== null) {{
+    // (360 - heading) converts the compass's clockwise-from-north reading
+    // into the same counterclockwise-from-north convention alpha uses, so
+    // the two are directly comparable and their difference is the offset.
+    feedCompassOffset((360 - e.webkitCompassHeading) % 360 - e.alpha, e.beta);
+    alphaDeg = ((e.alpha + compassOffsetDeg()) % 360 + 360) % 360;
+  }} else if (hasCompass) {{
     alphaDeg = (360 - e.webkitCompassHeading) % 360;
   }} else if (e.alpha !== null) {{
+    // deviceorientationabsolute (Android and friends) already gives a
+    // north-referenced, fused alpha -- nothing to correct.
     alphaDeg = e.alpha;
   }} else {{
     return;
   }}
-  if (e.beta === null || e.gamma === null) return;
-  var alpha = alphaDeg * Math.PI / 180, beta = e.beta * Math.PI / 180, gamma = e.gamma * Math.PI / 180;
+  _dispAlpha = deadzone(alphaDeg, _dispAlpha);
+  _dispBeta = deadzone(e.beta, _dispBeta);
+  _dispGamma = deadzone(e.gamma, _dispGamma);
+  var alpha = _dispAlpha * Math.PI / 180, beta = _dispBeta * Math.PI / 180, gamma = _dispGamma * Math.PI / 180;
   euler.set(beta, alpha, -gamma, 'YXZ');
   deviceQ.setFromEuler(euler);
   deviceQ.multiply(q1);
@@ -2235,12 +2304,16 @@ function applyOrientation(e) {{
   camera.quaternion.copy(deviceQ);
   if (DEBUG) {{
     debugEl.textContent =
-      'raw alpha: ' + (e.alpha === null ? 'null' : e.alpha.toFixed(1)) + '\\n' +
+      'raw alpha: ' + (e.alpha === null ? 'null' : e.alpha.toFixed(1)) +
+        '  ->  filtered: ' + _dispAlpha.toFixed(1) + '\\n' +
       'webkitCompassHeading: ' + (typeof e.webkitCompassHeading === 'number' ? e.webkitCompassHeading.toFixed(1) : 'n/a') + '\\n' +
-      'raw beta: ' + (e.beta === null ? 'null' : e.beta.toFixed(1)) + '\\n' +
-      'raw gamma: ' + (e.gamma === null ? 'null' : e.gamma.toFixed(1)) + '\\n' +
+      'raw beta: ' + (e.beta === null ? 'null' : e.beta.toFixed(1)) +
+        '  ->  filtered: ' + _dispBeta.toFixed(1) + '\\n' +
+      'raw gamma: ' + (e.gamma === null ? 'null' : e.gamma.toFixed(1)) +
+        '  ->  filtered: ' + _dispGamma.toFixed(1) + '\\n' +
+      'north offset: ' + compassOffsetDeg().toFixed(1) +
+        '  (compass ' + (Math.abs(e.beta) < COMPASS_TRUST_BETA ? 'TRUSTED' : 'coasting') + ')\\n' +
       'event type: ' + _orientEvent + ' / absolute: ' + e.absolute + '\\n' +
-      'used alphaDeg: ' + alphaDeg.toFixed(1) + '\\n' +
       'fps: ' + _fps;
   }}
 }}

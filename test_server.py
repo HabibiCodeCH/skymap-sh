@@ -612,6 +612,39 @@ class SpherePage(unittest.TestCase):
         self.assertNotIn("screenAngle", resp.text)
         self.assertNotIn("screen.orientation", resp.text)
 
+    def test_heading_renders_from_fused_alpha_not_the_raw_compass(self):
+        # The regression this exists to prevent: an earlier "fix the
+        # compass to point at true north" change started rendering
+        # straight off webkitCompassHeading. That reads true north, but
+        # it's the raw magnetometer -- its tilt compensation falls apart
+        # as the phone approaches vertical, which is exactly how this app
+        # is held, so the view jumped tens of degrees whenever the phone
+        # came up toward the horizon. alpha on the same event is
+        # gyro-fused and smooth but has an arbitrary zero.
+        #
+        # So the compass must only ever feed the north OFFSET (slowly,
+        # and barely at all near vertical), never the rendered heading
+        # frame by frame.
+        resp = self.client.get("/Zurich/sphere", headers=BROWSER)
+        self.assertIn("feedCompassOffset(", resp.text)
+        self.assertIn("compassOffsetDeg()", resp.text)
+        self.assertIn("var COMPASS_TRUST_BETA = 70;", resp.text)
+        # The rendered angle is alpha plus the slow offset. If this ever
+        # goes back to assigning webkitCompassHeading straight into the
+        # rendered angle whenever it exists, the jumping comes back.
+        self.assertIn("alphaDeg = ((e.alpha + compassOffsetDeg()) % 360 + 360) % 360;",
+                      resp.text)
+
+    def test_orientation_deadzone_present(self):
+        # A real device measured ~0.4 degree peak-to-peak jitter on alpha/
+        # beta/gamma even held perfectly still -- sensor/OS noise, not
+        # something this page's math can avoid computing more carefully.
+        # DEADZONE_DEG must stay comfortably above that measured noise
+        # floor, or the tremor comes back.
+        resp = self.client.get("/Zurich/sphere", headers=BROWSER)
+        self.assertIn("var DEADZONE_DEG = 0.6;", resp.text)
+        self.assertIn("function deadzone(", resp.text)
+
     def test_sphere_page_404s_for_unknown_place(self):
         resp = self.client.get("/Nowhereville/sphere", headers=BROWSER)
         self.assertEqual(resp.status_code, 404)
