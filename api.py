@@ -1714,6 +1714,12 @@ SPHERE_PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
       display:flex;justify-content:space-between;pointer-events:none;z-index:1000}}
  #hud a{{color:#87d7ff;pointer-events:auto;text-decoration:none}}
  #heading{{color:#8b949e;letter-spacing:.02em}}
+ /* ?debug=1 only -- raw sensor values, not for real visitors. Diagnosing
+    live orientation issues needs to see what the phone's sensors are
+    actually reporting, not just the computed result. */
+ #debug-hud{{position:fixed;top:34px;left:0;right:0;padding:6px 14px;
+            color:#7ee787;font-size:11px;font-family:monospace;white-space:pre;
+            background:rgba(0,0,0,.6);pointer-events:none;z-index:1000;display:none}}
  /* The existing light grey/blue HUD text is tuned for a black night sky --
     unreadable against the daytime dome's light blue. Rather than picking a
     second set of colours (which wouldn't generalise to a future twilight
@@ -1781,6 +1787,7 @@ SPHERE_PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
  .found-label span{{color:#ff87ff;font-weight:700}}
 </style></head><body>
 <div id="hud"><a href="/">&larr; {place_name}{home_suffix}</a><span id="heading"></span><span id="mode-label"></span></div>
+<div id="debug-hud"></div>
 <div id="overlay"><button id="enable">&#9678; Look around you</button>
 <p id="status">{place_name} &mdash; the current sky, in 3D. On a phone this follows the way
 you're holding it; anywhere else, drag to look around.</p>
@@ -1817,6 +1824,13 @@ var overlay = document.getElementById('overlay');
 var enableBtn = document.getElementById('enable');
 var modeLabel = document.getElementById('mode-label');
 var headingEl = document.getElementById('heading');
+
+// ?debug=1 -- raw sensor readout for diagnosing live orientation issues
+// without needing a cabled Web Inspector session, see #debug-hud above.
+var DEBUG = new URLSearchParams(window.location.search).get('debug') === '1';
+var debugEl = document.getElementById('debug-hud');
+if (DEBUG) debugEl.style.display = 'block';
+var _fps = 0, _fpsFrames = 0, _fpsLast = 0;
 
 // Same 16-point bucketing as sky.py's compass() -- kept in sync by hand
 // since there's no shared source between Python and this page's JS.
@@ -2219,6 +2233,16 @@ function applyOrientation(e) {{
   // could cross iOS's internal orientation threshold and suddenly rotate
   // the whole scene 90 degrees for no visible reason.
   camera.quaternion.copy(deviceQ);
+  if (DEBUG) {{
+    debugEl.textContent =
+      'raw alpha: ' + (e.alpha === null ? 'null' : e.alpha.toFixed(1)) + '\n' +
+      'webkitCompassHeading: ' + (typeof e.webkitCompassHeading === 'number' ? e.webkitCompassHeading.toFixed(1) : 'n/a') + '\n' +
+      'raw beta: ' + (e.beta === null ? 'null' : e.beta.toFixed(1)) + '\n' +
+      'raw gamma: ' + (e.gamma === null ? 'null' : e.gamma.toFixed(1)) + '\n' +
+      'event type: ' + _orientEvent + ' / absolute: ' + e.absolute + '\n' +
+      'used alphaDeg: ' + alphaDeg.toFixed(1) + '\n' +
+      'fps: ' + _fps;
+  }}
 }}
 
 function onOrientation(e) {{
@@ -2532,6 +2556,15 @@ function updateHeading() {{
 
 function animate() {{
   requestAnimationFrame(animate);
+  if (DEBUG) {{
+    _fpsFrames++;
+    var _now = performance.now();
+    if (_now - _fpsLast >= 1000) {{
+      _fps = Math.round(_fpsFrames * 1000 / (_now - _fpsLast));
+      _fpsFrames = 0;
+      _fpsLast = _now;
+    }}
+  }}
   if (mode === 'gyro' && lastEvent) {{
     applyOrientation(lastEvent);
   }} else if (mode === 'drag') {{
