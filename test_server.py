@@ -574,6 +574,19 @@ class SpherePage(unittest.TestCase):
         self.assertIn("webkitCompassHeading", resp.text)
         self.assertNotIn("yawOffset", resp.text)
 
+    def test_no_screen_orientation_compensation(self):
+        # Regression guard: this page never changes layout for landscape,
+        # it's always read the same way regardless of how the phone is
+        # tilted -- but iOS still tracks portrait/landscape internally off
+        # the phone's raw angle, and normal use (tilting well off-vertical
+        # to look up, or turning around) could cross that internal
+        # threshold and snap the whole scene 90 degrees for no visible
+        # reason. screenAngle()/screen.orientation.angle must not feed
+        # into the camera rotation at all.
+        resp = self.client.get("/Zurich/sphere", headers=BROWSER)
+        self.assertNotIn("screenAngle", resp.text)
+        self.assertNotIn("screen.orientation", resp.text)
+
     def test_sphere_page_404s_for_unknown_place(self):
         resp = self.client.get("/Nowhereville/sphere", headers=BROWSER)
         self.assertEqual(resp.status_code, 404)

@@ -2181,9 +2181,7 @@ var lastEvent = null;
 // math three.js's own DeviceOrientationControls example uses) -- this is
 // "look around from where you're standing", not an orbit-around-an-object
 // control, so OrbitControls doesn't fit and isn't imported.
-var zee = new THREE.Vector3(0, 0, 1);
 var euler = new THREE.Euler();
-var q0 = new THREE.Quaternion();
 var q1 = new THREE.Quaternion(-Math.sqrt(0.5), 0, 0, Math.sqrt(0.5));
 var deviceQ = new THREE.Quaternion();
 // True compass heading, not wherever the phone happened to be facing when
@@ -2197,13 +2195,6 @@ var deviceQ = new THREE.Quaternion();
 // not always promise.
 var _orientEvent = 'ondeviceorientationabsolute' in window
   ? 'deviceorientationabsolute' : 'deviceorientation';
-
-function screenAngle() {{
-  if (screen.orientation && typeof screen.orientation.angle === 'number')
-    return screen.orientation.angle * Math.PI / 180;
-  if (typeof window.orientation === 'number') return window.orientation * Math.PI / 180;
-  return 0;
-}}
 
 function applyOrientation(e) {{
   var alphaDeg;
@@ -2219,7 +2210,14 @@ function applyOrientation(e) {{
   euler.set(beta, alpha, -gamma, 'YXZ');
   deviceQ.setFromEuler(euler);
   deviceQ.multiply(q1);
-  deviceQ.multiply(q0.setFromAxisAngle(zee, -screenAngle()));
+  // No screen-orientation (portrait/landscape) compensation -- this page
+  // never actually changes layout for landscape, it's always meant to be
+  // read the same way regardless of how the phone is currently tilted.
+  // iOS still tracks portrait/landscape internally off the phone's raw
+  // angle though, and that compensation used to be applied here too -- so
+  // normal use (tilting well off-vertical to look up, or turning around)
+  // could cross iOS's internal orientation threshold and suddenly rotate
+  // the whole scene 90 degrees for no visible reason.
   camera.quaternion.copy(deviceQ);
 }}
 
