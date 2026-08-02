@@ -935,6 +935,24 @@ def apple_touch_icon():
                         headers={"Cache-Control": "public, max-age=86400"})
 
 
+@app.get("/vendor/three/three.module.js")
+def three_module_js():
+    # Self-hosted instead of pulled from unpkg.com at request time -- one
+    # less third party in the request path of every /sphere page load.
+    # Pinned to the exact version vendored in, so this never needs to
+    # change until a deliberate upgrade replaces the file on disk.
+    path = f"{api.sky.BASE}/vendor/three/three.module.js"
+    return FileResponse(path, media_type="text/javascript",
+                        headers={"Cache-Control": "public, max-age=31536000, immutable"})
+
+
+@app.get("/vendor/three/CSS2DRenderer.js")
+def css2drenderer_js():
+    path = f"{api.sky.BASE}/vendor/three/CSS2DRenderer.js"
+    return FileResponse(path, media_type="text/javascript",
+                        headers={"Cache-Control": "public, max-age=31536000, immutable"})
+
+
 @app.get("/demo", response_class=HTMLResponse)
 def demo():
     _stat["page:demo"] += 1

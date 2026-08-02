@@ -1806,10 +1806,10 @@ you're holding it; anywhere else, drag to look around.</p>
 <div class="tick tick-left"></div>
 <div class="tick tick-right"></div>
 </div>
-<script type="importmap">{{"imports":{{"three":"https://unpkg.com/three@0.160.0/build/three.module.js"}}}}</script>
+<script type="importmap">{{"imports":{{"three":"/vendor/three/three.module.js"}}}}</script>
 <script type="module">
 import * as THREE from "three";
-import {{ CSS2DRenderer, CSS2DObject }} from "https://unpkg.com/three@0.160.0/examples/jsm/renderers/CSS2DRenderer.js";
+import {{ CSS2DRenderer, CSS2DObject }} from "/vendor/three/CSS2DRenderer.js";
 
 var PLACE = "{place_slug}";
 var statusEl = document.getElementById('status');
@@ -2186,18 +2186,17 @@ var euler = new THREE.Euler();
 var q0 = new THREE.Quaternion();
 var q1 = new THREE.Quaternion(-Math.sqrt(0.5), 0, 0, Math.sqrt(0.5));
 var deviceQ = new THREE.Quaternion();
-// Azimuth (compass heading, device alpha) drifts and miscalibrates
-// differently on every phone, so it's recentred: wherever you're actually
-// facing the moment you tap "look around" becomes dead ahead, 0 degrees.
-// Altitude is NOT recentred the same way -- it comes straight from
-// gravity via the accelerometer, which doesn't have that drift problem, and
-// forcing it to 0 at an arbitrary starting tilt would make the tilt
-// readout (and the horizon line/star positions) lie about true altitude.
-var yawOffset = 0;
-var yawOffsetSet = false;
-var _rawForward = new THREE.Vector3();
-var _yAxis = new THREE.Vector3(0, 1, 0);
-var _yawCorrection = new THREE.Quaternion();
+// True compass heading, not wherever the phone happened to be facing when
+// the page loaded. Two wrinkles: iOS never puts a real compass value in
+// plain `alpha` (the standard leaves it unreferenced there -- Safari's own
+// fix is the non-standard webkitCompassHeading field, clockwise from true
+// north, so it's converted back to the standard's counterclockwise-from-
+// north convention below). Everywhere else, deviceorientationabsolute
+// (used in preference to deviceorientation when the browser supports it)
+// guarantees alpha is north-referenced, which plain deviceorientation does
+// not always promise.
+var _orientEvent = 'ondeviceorientationabsolute' in window
+  ? 'deviceorientationabsolute' : 'deviceorientation';
 
 function screenAngle() {{
   if (screen.orientation && typeof screen.orientation.angle === 'number')
@@ -2207,26 +2206,21 @@ function screenAngle() {{
 }}
 
 function applyOrientation(e) {{
-  if (e.alpha === null || e.beta === null || e.gamma === null) return;
-  var alpha = e.alpha * Math.PI / 180, beta = e.beta * Math.PI / 180, gamma = e.gamma * Math.PI / 180;
+  var alphaDeg;
+  if (typeof e.webkitCompassHeading === 'number' && !isNaN(e.webkitCompassHeading)) {{
+    alphaDeg = (360 - e.webkitCompassHeading) % 360;
+  }} else if (e.alpha !== null) {{
+    alphaDeg = e.alpha;
+  }} else {{
+    return;
+  }}
+  if (e.beta === null || e.gamma === null) return;
+  var alpha = alphaDeg * Math.PI / 180, beta = e.beta * Math.PI / 180, gamma = e.gamma * Math.PI / 180;
   euler.set(beta, alpha, -gamma, 'YXZ');
   deviceQ.setFromEuler(euler);
   deviceQ.multiply(q1);
   deviceQ.multiply(q0.setFromAxisAngle(zee, -screenAngle()));
-  if (!yawOffsetSet) {{
-    _rawForward.set(0, 0, -1).applyQuaternion(deviceQ);
-    // Deliberately the same atan2(-x,-z) as before the toVec handedness
-    // fix below -- this recovers the device's own raw alpha for a pure
-    // Y-axis calibration rotation, which is independent of which world-
-    // space azimuth convention toVec renders with.
-    yawOffset = Math.atan2(-_rawForward.x, -_rawForward.z);
-    yawOffsetSet = true;
-  }}
-  // A world-space (extrinsic) rotation about the vertical axis only ever
-  // shifts azimuth -- it can't tilt anything, so altitude stays exactly
-  // what gravity actually measured.
   camera.quaternion.copy(deviceQ);
-  camera.quaternion.premultiply(_yawCorrection.setFromAxisAngle(_yAxis, -yawOffset));
 }}
 
 function onOrientation(e) {{
@@ -2238,7 +2232,7 @@ function onOrientation(e) {{
 function startGyro() {{
   mode = 'gyro';
   modeLabel.textContent = 'gyroscope';
-  window.addEventListener('deviceorientation', onOrientation);
+  window.addEventListener(_orientEvent, onOrientation);
   gyroTimer = setTimeout(function() {{ if (!gotOrientation) startDrag(); }}, 1500);
   overlay.hidden = true;
 }}
@@ -2248,7 +2242,7 @@ function startDrag() {{
   if (mode === 'drag') return;
   mode = 'drag';
   modeLabel.textContent = 'drag';
-  window.removeEventListener('deviceorientation', onOrientation);
+  window.removeEventListener(_orientEvent, onOrientation);
   overlay.hidden = true;
   var el = renderer.domElement;
   el.addEventListener('pointerdown', function(ev) {{ dragging = true; lastX = ev.clientX; lastY = ev.clientY; }});

@@ -552,6 +552,17 @@ class SpherePage(unittest.TestCase):
         self.assertIn('var PLACE = "Zurich";', resp.text)
         self.assertIn("/sphere.json", resp.text)
 
+    def test_compass_uses_true_north_not_wherever_the_page_loaded_facing(self):
+        # Regression guard: this used to zero the compass to "wherever
+        # you're facing when you tap look around", which quietly worked
+        # only for anyone who happened to test facing true north. Fixed
+        # to read the phone's own compass instead (webkitCompassHeading on
+        # iOS, deviceorientationabsolute elsewhere) -- there must be no
+        # start-direction recentring left in the served page.
+        resp = self.client.get("/Zurich/sphere", headers=BROWSER)
+        self.assertIn("webkitCompassHeading", resp.text)
+        self.assertNotIn("yawOffset", resp.text)
+
     def test_sphere_page_404s_for_unknown_place(self):
         resp = self.client.get("/Nowhereville/sphere", headers=BROWSER)
         self.assertEqual(resp.status_code, 404)
