@@ -635,15 +635,15 @@ class SpherePage(unittest.TestCase):
         self.assertIn("alphaDeg = ((e.alpha + compassOffsetDeg()) % 360 + 360) % 360;",
                       resp.text)
 
-    def test_orientation_deadzone_present(self):
-        # A real device measured ~0.4 degree peak-to-peak jitter on alpha/
-        # beta/gamma even held perfectly still -- sensor/OS noise, not
-        # something this page's math can avoid computing more carefully.
-        # DEADZONE_DEG must stay comfortably above that measured noise
-        # floor, or the tremor comes back.
+    def test_no_per_angle_dead_zone(self):
+        # A dead zone was tried while the magnetometer still drove the
+        # view, to damp its jitter. Rendering from the gyro-fused alpha
+        # removed that jitter at the source, leaving the dead zone with
+        # only its own artefact: it quantises slow pans into visible
+        # steps, which reads on a real phone as the view snapping.
         resp = self.client.get("/Zurich/sphere", headers=BROWSER)
-        self.assertIn("var DEADZONE_DEG = 0.6;", resp.text)
-        self.assertIn("function deadzone(", resp.text)
+        self.assertNotIn("DEADZONE_DEG", resp.text)
+        self.assertNotIn("function deadzone(", resp.text)
 
     def test_sphere_page_404s_for_unknown_place(self):
         resp = self.client.get("/Nowhereville/sphere", headers=BROWSER)

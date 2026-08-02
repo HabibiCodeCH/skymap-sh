@@ -2210,26 +2210,12 @@ var deviceQ = new THREE.Quaternion();
 var _orientEvent = 'ondeviceorientationabsolute' in window
   ? 'deviceorientationabsolute' : 'deviceorientation';
 
-// Real phones report a few tenths of a degree of jitter on every axis even
-// held perfectly still (measured on a real device: ~0.4 degrees peak to
-// peak) -- sensor/OS noise, not anything this page's math can avoid by
-// computing more carefully. A dead zone freezes the displayed angle while
-// the raw value wanders within a small band, and snaps instantly (no
-// easing, no catch-up lag) the moment it moves further than that -- unlike
-// the two smoothing attempts tried before this, which gradually eased
-// toward every new reading and so always lagged real movement by some
-// amount. Diffs wrap correctly at the 360/0 boundary for alpha.
-var DEADZONE_DEG = 0.6;
-var _dispAlpha = null, _dispBeta = null, _dispGamma = null;
-
-function angDiff(a, b) {{
-  return Math.abs(((a - b + 180) % 360 + 360) % 360 - 180);
-}}
-
-function deadzone(raw, disp) {{
-  return (disp === null || angDiff(raw, disp) >= DEADZONE_DEG) ? raw : disp;
-}}
-
+// No jitter filtering here on purpose. An earlier version dead-zoned each
+// angle, but the jitter it was built for was the magnetometer's, back when
+// the magnetometer drove the view directly -- alpha is gyro-fused and
+// steady enough on its own. All a dead zone adds now is its own artefact:
+// slow pans quantise into visible steps instead of moving smoothly.
+//
 // webkitCompassHeading is the only true-north reference iOS offers, but
 // it's magnetometer-derived: its tilt compensation degrades badly as the
 // phone approaches vertical -- which is exactly how this app gets held,
@@ -2286,10 +2272,7 @@ function applyOrientation(e) {{
   }} else {{
     return;
   }}
-  _dispAlpha = deadzone(alphaDeg, _dispAlpha);
-  _dispBeta = deadzone(e.beta, _dispBeta);
-  _dispGamma = deadzone(e.gamma, _dispGamma);
-  var alpha = _dispAlpha * Math.PI / 180, beta = _dispBeta * Math.PI / 180, gamma = _dispGamma * Math.PI / 180;
+  var alpha = alphaDeg * Math.PI / 180, beta = e.beta * Math.PI / 180, gamma = e.gamma * Math.PI / 180;
   euler.set(beta, alpha, -gamma, 'YXZ');
   deviceQ.setFromEuler(euler);
   deviceQ.multiply(q1);
@@ -2305,12 +2288,10 @@ function applyOrientation(e) {{
   if (DEBUG) {{
     debugEl.textContent =
       'raw alpha: ' + (e.alpha === null ? 'null' : e.alpha.toFixed(1)) +
-        '  ->  filtered: ' + _dispAlpha.toFixed(1) + '\\n' +
+        '  ->  rendered: ' + alphaDeg.toFixed(1) + '\\n' +
       'webkitCompassHeading: ' + (typeof e.webkitCompassHeading === 'number' ? e.webkitCompassHeading.toFixed(1) : 'n/a') + '\\n' +
-      'raw beta: ' + (e.beta === null ? 'null' : e.beta.toFixed(1)) +
-        '  ->  filtered: ' + _dispBeta.toFixed(1) + '\\n' +
-      'raw gamma: ' + (e.gamma === null ? 'null' : e.gamma.toFixed(1)) +
-        '  ->  filtered: ' + _dispGamma.toFixed(1) + '\\n' +
+      'raw beta: ' + (e.beta === null ? 'null' : e.beta.toFixed(1)) + '\\n' +
+      'raw gamma: ' + (e.gamma === null ? 'null' : e.gamma.toFixed(1)) + '\\n' +
       'north offset: ' + compassOffsetDeg().toFixed(1) +
         '  (compass ' + (Math.abs(e.beta) < COMPASS_TRUST_BETA ? 'TRUSTED' : 'coasting') + ')\\n' +
       'event type: ' + _orientEvent + ' / absolute: ' + e.absolute + '\\n' +
