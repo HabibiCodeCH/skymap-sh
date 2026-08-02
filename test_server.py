@@ -3,6 +3,7 @@
 
 Run:  python3 test_server.py
 """
+import datetime as dt
 import json
 import os
 import re
@@ -331,11 +332,50 @@ class HourlyReferrers(unittest.TestCase):
         hstat = server.Counter()
         hstat.update({"requests": 5, "hit": 4, "miss": 1, "day": 0, "night": 5,
                       "ref:twitter.com": 2})
-        server._flush_hour("2026-08-01T10:00", hstat)
+        # Relative to now, not a fixed date: _read_hourly_history() only
+        # returns rows inside its `days` window, so a hardcoded timestamp
+        # passes until the real clock walks past it and then fails every
+        # run after that, for no reason to do with the code under test.
+        hour = (dt.datetime.utcnow() - dt.timedelta(hours=2)).strftime("%Y-%m-%dT%H:00")
+        server._flush_hour(hour, hstat)
 
         rows = server._read_hourly_history(days=1)
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["top_referrers"], {"twitter.com": 2})
+
+    def test_referrer_grid_shows_each_domain_over_time(self):
+        # The table's "top referrer" column only names each hour's winner,
+        # so a domain that is second every hour is invisible, and no
+        # domain's trend can be read at all. The grid puts hours down and
+        # domains across so a column is one domain over time.
+        rows = [
+            dict(hour="2026-08-02T09:00", requests=40, hit=8, miss=32, day=30,
+                 night=10, top_referrers={"news.ycombinator.com": 21, "bsky.app": 9}),
+            dict(hour="2026-08-02T10:00", requests=55, hit=20, miss=35, day=40,
+                 night=15, top_referrers={"news.ycombinator.com": 30, "reddit.com": 12}),
+        ]
+        out = "\n".join(server._referrer_grid(rows))
+        for domain in ("news.ycombinator", "bsky.app", "reddit.com"):
+            self.assertIn(domain, out)
+        self.assertIn("21", out)
+        self.assertIn("30", out)
+        # bsky.app is absent from the 10:00 hour. That must not render as
+        # 0: the log only keeps each hour's top few, so "not recorded" and
+        # "no visits" are different claims and 0 would assert the stronger
+        # one. Hence a dash.
+        self.assertIn("-", out)
+        self.assertIn("51", out)   # news.ycombinator.com total, 21 + 30
+
+    def test_referrer_grid_is_empty_without_referrer_data(self):
+        rows = [dict(hour="2026-08-02T09:00", requests=4, hit=1, miss=3,
+                     day=4, night=0)]
+        self.assertEqual(server._referrer_grid(rows), [])
+
+    def test_hourly_page_includes_the_referrer_grid(self):
+        server._hour_stat.clear()
+        server._hour_stat.update({"requests": 3, "hit": 1, "miss": 2, "day": 1,
+                                  "night": 2, "ref:bsky.app": 3})
+        self.assertIn("visits per referrer per hour", server.stats_hourly_text())
 
     def test_current_hour_shows_up_in_text_and_json(self):
         server._hour_stat.clear()

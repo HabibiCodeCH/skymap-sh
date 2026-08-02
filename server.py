@@ -421,6 +421,47 @@ def _hour_top_referrer_str(row):
     return f"{name[:18]} ({c})"
 
 
+def _referrer_grid(rows):
+    """Hours down the side, domains across the top, so one domain's traffic
+    reads as a column over time -- the "top referrer" column in the table
+    above only ever names each hour's winner, which hides everything else
+    and can't show a trend.
+
+    Only as complete as the log: _flush_hour stores each hour's top
+    HOURLY_TOP_REFERRERS domains and drops the rest, so an hour where a
+    domain placed below that cutoff genuinely has no number to show. Those
+    read as `-` rather than 0, since "not recorded" and "no visits" aren't
+    the same claim."""
+    totals = Counter()
+    for row in rows:
+        for name, c in (row.get("top_referrers") or {}).items():
+            totals[name] += c
+    if not totals:
+        return []
+    cols = [name for name, _c in totals.most_common(HOURLY_TOP_REFERRERS)]
+    widths = [max(len(name[:16]), 6) for name in cols]
+    L = ["", f"visits per referrer per hour "
+             f"({len(totals):,} domain(s) seen, {len(cols)} shown)", ""]
+    head = f"{'hour (UTC)':17}"
+    for name, w in zip(cols, widths):
+        head += f" {name[:16]:>{w}}"
+    L.append(head)
+    for row in rows:
+        ref = row.get("top_referrers") or {}
+        line = f"{row['hour']:17}"
+        for name, w in zip(cols, widths):
+            v = ref.get(name)
+            line += f" {(format(v, ',') if v else '-'):>{w}}"
+        L.append(line)
+    L += ["", f"totals over the window:"]
+    for name, c in totals.most_common(HOURLY_TOP_REFERRERS):
+        L.append(f"  {name[:28]:28} {c:>8,}")
+    L.append("")
+    L.append(f"`-` means that domain wasn't in that hour's top "
+             f"{HOURLY_TOP_REFERRERS}, which is all the log keeps.")
+    return L
+
+
 def stats_hourly_text(days=7):
     _roll_hour()
     rows = _read_hourly_history(days=days)
@@ -441,6 +482,7 @@ def stats_hourly_text(days=7):
         L.append(f"{row['hour']:17} {row['requests']:>9,} {hitpct:>5.1f}% "
                 f"{row['day']:>6,} {row['night']:>6,}  "
                 f"{_hour_top_referrer_str(row):24}{current}")
+    L += _referrer_grid(rows)
     return "\n".join(L) + "\n"
 
 
