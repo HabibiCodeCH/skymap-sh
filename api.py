@@ -2539,10 +2539,17 @@ function animate() {{
   }} else if (mode === 'drag') {{
     camera.quaternion.setFromEuler(new THREE.Euler(pitch, yaw, 0, 'YXZ'));
   }}
-  if (mode && ++_frame % 4 === 0) updateHeading();
+  // Both run at ~15fps instead of every frame: updateHeading() is just a
+  // text readout, no need for 60fps; declutterLabels() only adjusts each
+  // label's overlap-avoidance nudge (the label itself still tracks the
+  // camera every frame via labelRenderer.render() below), and its sort +
+  // per-pair overlap check over every labeled object was real, continuous
+  // GC pressure that added up over a long session.
+  var throttleTick = mode && ++_frame % 4 === 0;
+  if (throttleTick) updateHeading();
   updateFindArrow();
   renderer.render(scene, camera);
-  declutterLabels();
+  if (throttleTick) declutterLabels();
   labelRenderer.render(scene, camera);
 }}
 animate();

@@ -552,6 +552,17 @@ class SpherePage(unittest.TestCase):
         self.assertIn('var PLACE = "Zurich";', resp.text)
         self.assertIn("/sphere.json", resp.text)
 
+    def test_label_declutter_is_throttled_not_run_every_frame(self):
+        # Regression guard: declutterLabels() sorts every labeled object
+        # and does a pairwise overlap check against everything already
+        # placed -- real, continuous GC pressure if it runs unthrottled at
+        # 60fps for a whole session. It only needs to run as often as the
+        # HUD heading readout (updateHeading(), already throttled to every
+        # 4th frame) since it just nudges labels to avoid overlapping, not
+        # their actual per-frame position.
+        resp = self.client.get("/Zurich/sphere", headers=BROWSER)
+        self.assertIn("if (throttleTick) declutterLabels();", resp.text)
+
     def test_compass_uses_true_north_not_wherever_the_page_loaded_facing(self):
         # Regression guard: this used to zero the compass to "wherever
         # you're facing when you tap look around", which quietly worked
