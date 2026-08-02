@@ -446,13 +446,21 @@ def _referrer_grid(rows):
     for name, w in zip(cols, widths):
         head += f" {name[:16]:>{w}}"
     L.append(head)
-    for row in rows:
-        ref = row.get("top_referrers") or {}
+    # Only hours that actually recorded a referrer. Referrer tracking is
+    # newer than the hourly log, and most traffic is direct or CLI anyway,
+    # so printing every hour buries the handful that carry data under a
+    # wall of dashes.
+    shown = [r for r in rows if r.get("top_referrers")]
+    for row in shown:
+        ref = row["top_referrers"]
         line = f"{row['hour']:17}"
         for name, w in zip(cols, widths):
             v = ref.get(name)
             line += f" {(format(v, ',') if v else '-'):>{w}}"
         L.append(line)
+    skipped = len(rows) - len(shown)
+    if skipped:
+        L.append(f"({skipped:,} hour(s) with no referred visits not shown)")
     L += ["", f"totals over the window:"]
     for name, c in totals.most_common(HOURLY_TOP_REFERRERS):
         L.append(f"  {name[:28]:28} {c:>8,}")

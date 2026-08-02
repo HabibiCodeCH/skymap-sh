@@ -366,6 +366,19 @@ class HourlyReferrers(unittest.TestCase):
         self.assertIn("-", out)
         self.assertIn("51", out)   # news.ycombinator.com total, 21 + 30
 
+    def test_referrer_grid_skips_hours_with_no_referred_visits(self):
+        # Referrer tracking is newer than the hourly log and most traffic
+        # is direct or CLI, so in practice most hours carry nothing. Those
+        # rows are all dashes and bury the few that have data.
+        rows = [dict(hour=f"2026-08-02T{h:02d}:00", requests=4, hit=1, miss=3,
+                     day=4, night=0) for h in range(20)]
+        rows.append(dict(hour="2026-08-02T21:00", requests=9, hit=2, miss=7,
+                         day=5, night=4, top_referrers={"reddit.com": 6}))
+        out = "\n".join(server._referrer_grid(rows))
+        self.assertIn("2026-08-02T21:00", out)
+        self.assertNotIn("2026-08-02T05:00", out)
+        self.assertIn("20 hour(s) with no referred visits not shown", out)
+
     def test_referrer_grid_is_empty_without_referrer_data(self):
         rows = [dict(hour="2026-08-02T09:00", requests=4, hit=1, miss=3,
                      day=4, night=0)]
