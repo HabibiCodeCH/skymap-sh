@@ -436,7 +436,7 @@ def _compose_find(r):
         w, a2, z2 = next_visible_cached(tgt, p.lat, p.lon, r.when_utc)
         if w is None:
             el = solar_elongation(tgt, jd, p.lat, lst)
-            lines = [f"\n  {tgt['name']} is not visible from {p.name} — {why}."]
+            lines = [f"\n  {tgt['name']} is not visible from {p.name}: {why}."]
             lines.append(f"  It is only {el:.0f}° from the Sun: too deep in the glare, "
                          f"and it stays that way for weeks.\n" if el < 20 else
                          f"  No window in the next 40 days from this latitude.\n")
@@ -446,7 +446,7 @@ def _compose_find(r):
         wl = w + dt.timedelta(hours=p.offset(w))
         same = wl.date() == r.when_local.date()
         when_txt = f"{wl:%H:%M} tonight" if same else f"{wl:%a %d %b} at {wl:%H:%M}"
-        note = (f"Not visible right now — {why}.",
+        note = (f"Not visible right now, {why}.",
                 f"Next chance: {when_txt}, {a2:.0f}° up in the {compass(z2)}. "
                 f"Chart drawn for that moment.")
         data.update(next_visible=dict(when_utc=w.isoformat() + "Z",
@@ -465,7 +465,7 @@ def _compose_find(r):
     guide = find_text(tgt, st["visible"], p.lat)
 
     out = ["", paint(f"  {p.name}   {shown_local:%d %b %Y %H:%M}   finding "
-                     f"{tgt['name']} — {int(sp)}° window", C.HEAD, c), ""]
+                     f"{tgt['name']}, {int(sp)}° window", C.HEAD, c), ""]
     if note:
         out += [paint("  " + note[0], C.MUTE, c),
                 paint("  " + note[1], "\033[38;5;213m", c)]
@@ -719,6 +719,110 @@ def _compose_sky(r):
     return Result("\n".join(out), data)
 
 
+# xterm-256 -> #rrggbb, matching PAGE's own client-side xtermHex() exactly --
+# so the 3D view can be handed a ready-to-draw colour per object instead of
+# duplicating this table in JS. Every colour sky.py's ASCII renderer uses is
+# one of these codes (see star_colour, sky.C, DSO_GLYPH).
+_XTERM_BASE16 = ["000000", "800000", "008000", "808000", "000080", "800080",
+                "008080", "c0c0c0", "808080", "ff0000", "00ff00", "ffff00",
+                "0000ff", "ff00ff", "00ffff", "ffffff"]
+_XTERM_LEVELS = [0, 95, 135, 175, 215, 255]
+_ANSI_256 = re.compile(r"\033\[38;5;(\d+)m")
+
+def _xterm_hex(n):
+    if n < 16:
+        return "#" + _XTERM_BASE16[n]
+    if n < 232:
+        n -= 16
+        r, g, b = _XTERM_LEVELS[n // 36], _XTERM_LEVELS[(n // 6) % 6], _XTERM_LEVELS[n % 6]
+        return f"#{r:02x}{g:02x}{b:02x}"
+    v = 8 + (n - 232) * 10
+    return f"#{v:02x}{v:02x}{v:02x}"
+
+def _ansi_hex(ansi):
+    m = _ANSI_256.search(ansi)
+    return _xterm_hex(int(m.group(1))) if m else "#ffffff"
+
+# The Sun's glyph colour is inlined in render() rather than a named C.
+# constant (sky.py's render(), the "-- bodies --" block) -- kept in sync here
+# by hand since there's nothing to import.
+_SUN_ANSI = "\033[38;5;227m"
+
+
+
+# A fixed naked-eye cutoff, not _fade_mag_limit(sun_alt) -- the sphere shows
+# the FULL celestial sphere, not just the local dome, so there's no single
+# "is it day or night" to fade against: the far side is always night for
+# someone even when it's daytime here. Same default render() itself uses.
+SPHERE_MAG_LIMIT = 4.2
+
+def _compose_sphere(r):
+    """The current sky as data, not ASCII -- everything /{place}/sphere's 3D
+    view needs to place stars, constellation lines, deep-sky objects and
+    bodies on a full sphere around the viewer (not just the visible dome --
+    above_horizon=False below includes what's below the horizon too, the
+    far side of the sky). No text/ANSI form of this exists, so (unlike every
+    other _compose_*) this returns a plain dict, not a Result. Each object
+    carries the same glyph and colour sky.py's ASCII renderer would draw for
+    it, so the 3D view is a faithful re-skin, not a reinvention."""
+    p = r.place
+    jd = julian(r.when_utc)
+    lst = (gmst_hours(jd) + p.lon / 15.0) % 24
+    su = sun(jd)
+    sun_alt, _ = altaz(su["ra"], su["dec"], p.lat, lst)
+    dso_limit = DSO_LIMIT if r.dso else None
+
+    # How long until it's actually dark, for the daytime "come back later"
+    # message -- same dusk computation _compose_day already uses for its
+    # own "first stars about ..., fully dark ..." line, not a second copy
+    # of the twilight math.
+    hours_to_dark = None
+    if sun_alt > 0:
+        off = p.offset(r.when_utc)
+        day0 = r.when_local.replace(hour=0, minute=0, second=0, microsecond=0) - dt.timedelta(hours=off)
+        ev = sun_events(day0, p.lat, p.lon)
+        dark = ev.get("dusk_astro") or ev.get("dusk_nautical")
+        if dark and dark > r.when_utc:
+            hours_to_dark = round((dark - r.when_utc).total_seconds() / 3600, 1)
+
+    bodies = [planet(nm, jd) for nm in
+              ("Mercury", "Venus", "Mars", "Jupiter", "Saturn", "Uranus", "Neptune")]
+    mo = moon(jd)
+    bodies += [mo, su]
+    for b in bodies:
+        a, z = altaz(b["ra"], b["dec"], p.lat, lst)
+        b["alt"], b["az"] = a, z   # every body, not just ones above the
+                                    # horizon -- full sphere, same as stars/dso
+
+    bodies_json = _bodies_json(dict(up=bodies))
+    for item in bodies_json:
+        if item["name"] == "Moon":
+            item["glyph"], item["color"] = sky.moon_glyph(mo["age"]), _ansi_hex(sky.C.MOON)
+        elif item["name"] == "Sun":
+            item["glyph"], item["color"] = "☀", _ansi_hex(_SUN_ANSI)
+        else:
+            item["glyph"], item["color"] = "◆", _ansi_hex(sky.C.PLANET)
+
+    return dict(
+        place=p.name, lat=p.lat, lon=p.lon, tz_offset=r.tz,
+        when_utc=r.when_utc.isoformat() + "Z", when_local=r.when_local.isoformat(),
+        sun_alt=round(sun_alt, 1), mag_limit=SPHERE_MAG_LIMIT, dso=r.dso,
+        hours_to_dark=hours_to_dark,
+        stars=[dict(hr=s["hr"], name=s.get("n"), bayer=s.get("b"), con=s.get("c"),
+                    mag=s["m"], ci=s.get("ci"), alt=round(a, 1), az=round(z, 1),
+                    glyph=sky.glyph_for(s["m"]), color=_ansi_hex(sky.star_colour(s.get("ci"))))
+               for s, a, z in sky.stars_visible(SPHERE_MAG_LIMIT, jd, p.lat, lst, above_horizon=False)],
+        asterisms=sky.asterism_lines_visible(jd, p.lat, lst, above_horizon=False),
+        deepsky=[dict(id=o["id"], name=o.get("n"), common_name=o.get("cn"),
+                     type=o["t"], mag=o["m"], alt=round(a, 1), az=round(z, 1),
+                     glyph=sky.DSO_GLYPH[o["t"]][0], color=_ansi_hex(sky.DSO_GLYPH[o["t"]][1]))
+                for o, a, z in sky.deepsky_visible(dso_limit, jd, p.lat, lst, above_horizon=False)],
+        bodies=bodies_json,
+        moon=dict(phase=phase_name(mo["age"]), illum=round(mo["illum"] * 100),
+                  alt=round(mo["alt"], 1), az=round(mo["az"], 1), compass=compass(mo["az"])),
+    )
+
+
 # ---------------------------------------------------------------- daytime
 SUN_COL = "\033[38;5;220m"
 DAY_BUCKET = 10                     # minutes; the Sun moves ~2.5° in that time
@@ -736,7 +840,7 @@ def is_daytime(r):
 
 
 def _hm(t, off):
-    return (t + dt.timedelta(hours=off)).strftime("%H:%M") if t else "—"
+    return (t + dt.timedelta(hours=off)).strftime("%H:%M") if t else "--"
 
 
 def _compose_day(r):
@@ -983,7 +1087,7 @@ def _find_chart_only(r):
                              target=tgt, mag_limit=5.0, width=r.width)
     shown_local = shown_utc + dt.timedelta(hours=p.offset(shown_utc))
     head = (f"  {p.name}   {shown_local:%d %b %Y %H:%M}   "
-            f"finding {tgt['name']} — {int(sp)}° window")
+            f"finding {tgt['name']}, {int(sp)}° window")
     return paint(head, C.HEAD, c) + "\n\n" + art
 
 
@@ -1067,7 +1171,7 @@ def compose(r):
 
 # ---------------------------------------------------------------- help
 HELP = """\
-skymap.sh — the night sky above you, as text
+skymap.sh: the night sky above you, as text
 
   curl skymap.sh                      your sky now, located by IP
   curl skymap.sh/Zurich               a named city
@@ -1167,6 +1271,65 @@ def legend_text(color=True):
     return "\n".join(L)
 
 
+def _columns(items, col_width, per_row):
+    L = []
+    for i in range(0, len(items), per_row):
+        row = items[i:i + per_row]
+        L.append("  " + "".join(f"{s:{col_width}}" for s in row).rstrip())
+    return L
+
+
+def catalog_text(color=True):
+    """Every object findable by name via ?find= -- pulled live from the same
+    catalogues resolve_target() reads, so this can't list something that
+    isn't actually findable, or miss one that is."""
+    def P(s, c):
+        return paint(s, c, color)
+
+    def head(s):
+        return paint(s, C.HEAD, color)
+
+    stars = sky._load("stars.json")
+    asterisms = sky._load("asterisms.json")
+    dso = sky._load("deepsky.json")
+
+    named_stars = sorted((s for s in stars if s.get("n")), key=lambda s: s["m"])
+    # o["n"] is already the best label build_deepsky.py could give it (a
+    # Messier number, else a hand-picked common name) -- a bare NGC number
+    # there just means no traditional name exists, so those aren't "named".
+    named_dso = sorted((o for o in dso if o["n"] != o["id"]), key=lambda o: o["m"])
+    solar_system = ["Sun", "Moon", "Mercury", "Venus", "Mars", "Jupiter",
+                    "Saturn", "Uranus", "Neptune"]
+
+    L = [
+        "skymap.sh -- object catalog", "",
+        "Everything below is findable by name, e.g.:",
+        "  curl 'skymap.sh/Zurich?find=Vega'", "",
+        head(f"SOLAR SYSTEM ({len(solar_system)})"),
+    ]
+    L += _columns(solar_system, 12, 6)
+    L.append("")
+    L.append(head(f"CONSTELLATIONS ({len(asterisms)})"))
+    L += _columns(sorted(a["name"] for a in asterisms), 18, 5)
+    L.append("")
+    L.append(head(f"NAMED STARS ({len(named_stars)}) -- brightest first"))
+    for s in named_stars:
+        starcol = sky.star_colour(s.get("ci"))
+        name = f"{s['n']:22}"
+        L.append(f"  {P(name, starcol)} mag {s['m']:>5.2f}  {s['c']}")
+    L.append("")
+    L.append(head(f"DEEP SKY ({len(named_dso)}) -- ?dso=1, brightest first"))
+    for o in named_dso:
+        glyph, glyph_c = sky.DSO_GLYPH[o["t"]]
+        label = o["n"]
+        if o.get("cn") and o["cn"] != label:
+            label = f"{label} ({o['cn']})"
+        label = f"{label:34}"
+        L.append(f"  {P(glyph, glyph_c)} {P(label, C.HEAD)} mag {o['m']:>5.2f}  {sky.DSO_NAMES[o['t']]}")
+    L.append("")
+    return "\n".join(L)
+
+
 # ---------------------------------------------------------------- ansi -> html
 ANSI = re.compile(r"\033\[(?:38;5;(\d+)|0)m")
 
@@ -1252,11 +1415,13 @@ PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
  .animate-btn[hidden]{{display:none}}
  .gif-group{{display:flex;flex-direction:column;gap:4px;align-items:flex-start}}
  .gif-status{{color:#6e7681;font-size:12px;white-space:nowrap}}
+ .mobile-only{{display:none}}
+ @media (pointer:coarse) and (max-width:900px){{.mobile-only{{display:inline-block}}}}
 </style></head><body><div class="w">
 <pre class="cta">curl skymap.sh{path}</pre>
 <p class="t"><b>skymap.sh</b>
-<a href="/demo">demo</a> · <a href="/help">help</a> · <a href="/legend">legend</a></p>
-{explore}<div class="toolbar"><div class="toolbar-left">{animate_btn}{quadrant_btn}</div><div class="toolbar-right">{extra}</div></div><pre id="chart-pre">{body}</pre>
+<a href="/demo">demo</a> · <a href="/help">help</a> · <a href="/legend">legend</a> · <a href="/catalog">catalog</a></p>
+{explore}<div class="toolbar"><div class="toolbar-left">{animate_btn}{quadrant_btn}</div><div class="toolbar-right">{sphere_btn}{extra}</div></div><pre id="chart-pre">{body}</pre>
 <p class="t" style="margin-top:18px">Created by <a href="https://x.com/habibicode">@habibicode</a>
 · <a href="https://github.com/HabibiCodeCH/skymap-sh">see the repo</a></p>
 <script>
@@ -1326,7 +1491,7 @@ function skymapAnimate(btn){{
   }}).then(function(){{
     btn.disabled=false;btn.textContent='▶ animate';
   }}).catch(function(){{
-    btn.disabled=false;btn.textContent='animate failed — try again';
+    btn.disabled=false;btn.textContent='animate failed, try again';
   }});
 }}
 
@@ -1345,7 +1510,7 @@ function skymapPollGifCapacity(gifBtn){{
       if(gifBtn.dataset.rendering==='1'||gifBtn.dataset.ready==='1')return;
       gifBtn.disabled=!d.available;
       if(status)status.textContent=d.available?'':
-        'Too many GIFs rendering right now — please wait a few seconds';
+        'Too many GIFs rendering right now, please wait a few seconds';
     }}).catch(function(){{}});
   }}
   poll();
@@ -1374,10 +1539,10 @@ function skymapRenderGif(btn){{
       btn.dataset.ready='1';
       status.innerHTML='<a href="/animate/'+gifId+'.gif" target="_blank" rel="noopener">View GIF</a>';
     }}else if(status){{
-      status.textContent='render failed — try again';
+      status.textContent='render failed, try again';
     }}
   }}).catch(function(){{
-    if(status)status.textContent='render failed — try again';
+    if(status)status.textContent='render failed, try again';
     btn.dataset.rendering='0';
     btn.disabled=false;
   }});
@@ -1416,3 +1581,865 @@ return false;">
 </p>
 </div>
 """
+
+
+# Mobile-only, additive 3D view of the current sky -- reached from PAGE's
+# {{sphere_btn}} link, never linked from curl/terminal output. The only
+# external script tag anywhere in this codebase: hand-rolling perspective-
+# correct WebGL for a rotating starfield is a much bigger surface than one
+# pinned CDN import, scoped to this one opt-in page.
+SPHERE_PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>{title}</title>
+<meta name="description" content="The night sky above you, in 3D -- look around by tilting your phone.">
+<link rel="icon" href="/favicon.ico" sizes="any">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<style>
+ html,body{{margin:0;height:100%;background:#000;overflow:hidden;
+           font-family:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
+           -webkit-font-smoothing:antialiased}}
+ canvas{{display:block}}
+ #hud{{position:fixed;top:0;left:0;right:0;padding:10px 14px;color:#6e7681;font-size:12px;
+      display:flex;justify-content:space-between;pointer-events:none;z-index:1000}}
+ #hud a{{color:#87d7ff;pointer-events:auto;text-decoration:none}}
+ #heading{{color:#8b949e;letter-spacing:.02em}}
+ /* The existing light grey/blue HUD text is tuned for a black night sky --
+    unreadable against the daytime dome's light blue. Rather than picking a
+    second set of colours (which wouldn't generalise to a future twilight
+    gradient in between), a translucent dark bar behind the HUD row keeps
+    the same text readable against any background -- shown only in
+    daytime, since the night view doesn't need it. */
+ body.daytime #hud{{background:rgba(4,6,10,.55)}}
+ #overlay{{position:fixed;inset:0;background:rgba(4,6,10,.92);display:flex;
+          flex-direction:column;align-items:center;justify-content:center;
+          gap:14px;z-index:1001;text-align:center;padding:0 24px}}
+ #overlay[hidden]{{display:none}}
+ #enable{{background:#238636;border:0;color:#fff;padding:14px 22px;border-radius:8px;
+         font:inherit;font-size:15px;cursor:pointer}}
+ #enable:hover{{background:#2ea043}}
+ #status{{color:#8b949e;font-size:12.5px;max-width:340px;line-height:1.5;margin:0}}
+ #place-form{{display:flex;gap:6px}}
+ #place-form[hidden]{{display:none}}
+ #place-input{{background:#0d1117;border:1px solid #30363d;color:#c9d1d9;
+              padding:8px 10px;border-radius:4px;font:inherit;font-size:16px;width:170px}}
+ #place-form button{{background:#238636;border:0;color:#fff;padding:8px 14px;
+                     border-radius:4px;font:inherit;font-size:13px;cursor:pointer}}
+ .sky-label{{color:#c9d1d9;font-size:11px;font-family:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
+            white-space:nowrap;pointer-events:none}}
+ .sky-label span{{display:inline-block;text-shadow:0 0 4px #000,0 0 4px #000}}
+ /* The glow-shadow above exists for contrast against a black night sky --
+    against the daytime dome's light blue it just looks like a smudge, so
+    daytime plain-colours every label instead (higher specificity than
+    .con-label/.dso-label/.body-label's own colours, so this wins outright). */
+ body.daytime .sky-label span{{color:#2b2b2b;text-shadow:none}}
+ .con-label span{{color:#8fa3c9;font-size:12px;letter-spacing:.03em}}
+ .dso-label span{{color:#8fe6ae}}
+ .body-label span{{color:#ffd77a;font-weight:600}}
+ #toolbar{{position:fixed;left:0;right:0;bottom:0;z-index:1000;padding:10px 12px;
+         display:flex;gap:8px;flex-wrap:wrap;align-items:center;
+         background:linear-gradient(rgba(4,6,10,0),rgba(4,6,10,.85) 65%)}}
+ .toggle-btn{{background:#0d1117;border:1px solid #30363d;color:#6e7681;
+             padding:6px 12px;border-radius:4px;font:inherit;font-size:12px;
+             cursor:pointer}}
+ .toggle-btn.on{{color:#7ee787;border-color:#2b5f3d}}
+ .toggle-btn:disabled{{opacity:.6;cursor:default}}
+ #find-form{{display:flex;gap:6px;align-items:center}}
+ /* font-size:16px, not the usual 12px -- iOS Safari auto-zooms the page on
+    focusing any input smaller than that. Fixing the cause beats trying to
+    zoom back out again after the fact, which is jumpy and not reliable
+    across browsers. */
+ #find-input{{background:#0d1117;border:1px solid #30363d;color:#c9d1d9;
+             padding:6px 10px;border-radius:4px;font:inherit;font-size:16px;width:190px}}
+ #find-form button{{background:#238636;border:0;color:#fff;padding:6px 12px;
+                    border-radius:4px;font:inherit;font-size:12px;cursor:pointer}}
+ #find-cancel{{background:#7a1f1f !important}}
+ #find-msg{{position:fixed;left:0;right:0;top:38px;text-align:center;color:#ffd700;
+           font-size:12px;padding:0 12px;pointer-events:none;z-index:1000;margin:0}}
+ #find-arrow{{position:fixed;color:#ffd700;font-size:22px;font-weight:700;
+             letter-spacing:-2px;pointer-events:none;z-index:1000;display:none;
+             text-shadow:0 0 6px #000}}
+ /* Four ticks that close in from outside toward the centre as you get
+    closer -- becomes a solid cross right at the edge of "found", at which
+    point a permanent purple circle + bold name takes over instead (see
+    .found-label below) and the reticle stops appearing entirely. */
+ #find-reticle{{position:fixed;left:0;top:0;width:0;height:0;pointer-events:none;
+               z-index:1000;display:none}}
+ #find-reticle .tick{{position:absolute;background:#ff87ff;box-shadow:0 0 4px #000}}
+ #find-reticle .tick-top,#find-reticle .tick-bottom{{width:2px;height:14px;left:-1px}}
+ #find-reticle .tick-left,#find-reticle .tick-right{{height:2px;width:14px;top:-1px}}
+ .found-label span{{color:#ff87ff;font-weight:700}}
+</style></head><body>
+<div id="hud"><a href="/">&larr; {place_name}{home_suffix}</a><span id="heading"></span><span id="mode-label"></span></div>
+<div id="overlay"><button id="enable">&#9678; Look around you</button>
+<p id="status">{place_name} &mdash; the current sky, in 3D. On a phone this follows the way
+you're holding it; anywhere else, drag to look around.</p>
+</div>
+<div id="toolbar">
+<form id="place-form" autocomplete="off" hidden>
+<input id="place-input" type="text" placeholder="city or lat,lon">
+<button type="submit">Go</button>
+</form>
+<button id="labels-toggle" class="toggle-btn on">Labels</button>
+<button id="dso-toggle" class="toggle-btn">Deep sky</button>
+<form id="find-form" autocomplete="off">
+<input id="find-input" type="text" placeholder="Find (Venus, Vega...)">
+<button type="submit">Find</button>
+<button type="button" id="find-cancel" hidden>Cancel</button>
+</form>
+</div>
+<p id="find-msg"></p>
+<div id="find-arrow">&gt;&gt;&gt;</div>
+<div id="find-reticle">
+<div class="tick tick-top"></div>
+<div class="tick tick-bottom"></div>
+<div class="tick tick-left"></div>
+<div class="tick tick-right"></div>
+</div>
+<script type="importmap">{{"imports":{{"three":"https://unpkg.com/three@0.160.0/build/three.module.js"}}}}</script>
+<script type="module">
+import * as THREE from "three";
+import {{ CSS2DRenderer, CSS2DObject }} from "https://unpkg.com/three@0.160.0/examples/jsm/renderers/CSS2DRenderer.js";
+
+var PLACE = "{place_slug}";
+var statusEl = document.getElementById('status');
+var overlay = document.getElementById('overlay');
+var enableBtn = document.getElementById('enable');
+var modeLabel = document.getElementById('mode-label');
+var headingEl = document.getElementById('heading');
+
+// Same 16-point bucketing as sky.py's compass() -- kept in sync by hand
+// since there's no shared source between Python and this page's JS.
+var COMPASS16 = ["N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE",
+                 "S", "SSW", "SW", "WSW", "W", "WNW", "NW", "NNW"];
+function compass16(az) {{
+  return COMPASS16[Math.floor(((az % 360) + 360) % 360 / 22.5 + 0.5) % 16];
+}}
+
+var scene = new THREE.Scene();
+var camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.1, 200);
+var renderer = new THREE.WebGLRenderer({{antialias: true}});
+renderer.setPixelRatio(window.devicePixelRatio || 1);
+renderer.setSize(window.innerWidth, window.innerHeight);
+document.body.appendChild(renderer.domElement);
+
+// Text labels are real DOM elements positioned by CSS2DRenderer from each
+// object's 3D position every frame -- crisp at any zoom, and (unlike the
+// ASCII chart, where a label eats character cells other glyphs need) free
+// to put on every named object without anything fighting for space.
+var labelRenderer = new CSS2DRenderer();
+labelRenderer.setSize(window.innerWidth, window.innerHeight);
+labelRenderer.domElement.style.position = 'absolute';
+labelRenderer.domElement.style.top = '0';
+labelRenderer.domElement.style.left = '0';
+labelRenderer.domElement.style.pointerEvents = 'none';
+document.body.appendChild(labelRenderer.domElement);
+
+// Every label the declutter pass below knows about -- priority 0 (bodies)
+// gets first pick of its preferred spot, priority 3 (stars, by far the most
+// numerous) yields to everything placed before it.
+var LABELS = [];
+
+function addLabel(text, pos, cls, priority) {{
+  var el = document.createElement('div');
+  el.className = 'sky-label' + (cls ? ' ' + cls : '');
+  var inner = document.createElement('span');
+  inner.textContent = text;
+  el.appendChild(inner);
+  var obj = new CSS2DObject(el);
+  obj.position.copy(pos);
+  scene.add(obj);
+  // Estimated pixel width from character count (monospace-ish font) --
+  // avoids a layout-forcing getBoundingClientRect() read on every label,
+  // every frame, just to find out how wide its own text box is.
+  var fontPx = cls === 'con-label' ? 12 : 11;
+  var entry = {{obj: obj, inner: inner, cls: cls, priority: priority || 3,
+               w: text.length * fontPx * 0.62 + 16, h: fontPx + 8}};
+  LABELS.push(entry);
+  return entry;
+}}
+
+function removeLabel(entry) {{
+  scene.remove(entry.obj);
+  var idx = LABELS.indexOf(entry);
+  if (idx !== -1) LABELS.splice(idx, 1);
+}}
+
+function boxOverlap(a, b) {{
+  var x = Math.max(0, Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x));
+  var y = Math.max(0, Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y));
+  return x * y;
+}}
+
+// A handful of candidate spots around the label's true position (right,
+// left, further below, further above, ...), tried in order and scored by
+// how much they'd overlap what's already been placed this frame -- not a
+// full solver, just enough to pull most collisions apart cheaply.
+function candidateOffsets(w, h) {{
+  return [[8, -6], [-w - 8, -6], [8, h + 6], [8, -(h + 12)],
+         [8, 2 * h + 10], [-w - 8, h + 6], [-w - 8, -(h + 12)], [8, -(2 * h + 16)]];
+}}
+
+var _camSpace = new THREE.Vector3();
+var _projected = new THREE.Vector3();
+
+function declutterLabels() {{
+  camera.updateMatrixWorld(true);
+  var placed = [];
+  var ordered = LABELS.slice().sort(function(a, b) {{ return a.priority - b.priority; }});
+  ordered.forEach(function(L) {{
+    _camSpace.copy(L.obj.position).applyMatrix4(camera.matrixWorldInverse);
+    if (_camSpace.z > 0) return;   // behind the camera -- CSS2DRenderer already hides it
+    _projected.copy(L.obj.position).project(camera);
+    var sx = (_projected.x * 0.5 + 0.5) * window.innerWidth;
+    var sy = (1 - (_projected.y * 0.5 + 0.5)) * window.innerHeight;
+    var cands = candidateOffsets(L.w, L.h);
+    var chosen = cands[0], bestOverlap = Infinity;
+    for (var i = 0; i < cands.length; i++) {{
+      var box = {{x: sx + cands[i][0], y: sy + cands[i][1], w: L.w, h: L.h}};
+      var overlap = 0;
+      for (var j = 0; j < placed.length && overlap === 0; j++) {{
+        overlap += boxOverlap(box, placed[j]);
+      }}
+      if (overlap < bestOverlap) {{ bestOverlap = overlap; chosen = cands[i]; }}
+      if (overlap === 0) break;
+    }}
+    placed.push({{x: sx + chosen[0], y: sy + chosen[1], w: L.w, h: L.h}});
+    L.inner.style.transform = 'translate(' + chosen[0] + 'px,' + chosen[1] + 'px)';
+  }});
+}}
+
+window.addEventListener('resize', function() {{
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  labelRenderer.setSize(window.innerWidth, window.innerHeight);
+}});
+
+// NOT sky.py's project() convention ("east appears left") -- that's built
+// for a flat chart you look UP at from a fixed vantage, where the mirroring
+// is intentional. This is a first-person view where you physically turn
+// your own body, so it needs ordinary compass/map handedness instead: face
+// north and east is on your right, like reality. alt/az in degrees, camera
+// default (no rotation) looks toward -Z, i.e. north.
+var RADIUS = 50;
+function toVec(alt, az) {{
+  var a = alt * Math.PI / 180, z = az * Math.PI / 180;
+  var x = Math.sin(z) * Math.cos(a);
+  var y = Math.sin(a);
+  var zc = -Math.cos(z) * Math.cos(a);
+  return new THREE.Vector3(x, y, zc).multiplyScalar(RADIUS);
+}}
+
+// The horizon itself, alt=0 all the way round -- doesn't depend on the
+// fetch, so it's there immediately, marking where "up" (this observer's
+// own visible sky) meets "down" (the full sphere's far side, added below).
+(function() {{
+  var pts = [];
+  for (var i = 0; i <= 360; i += 2) pts.push(toVec(0, i));
+  var hg = new THREE.BufferGeometry().setFromPoints(pts);
+  var hm = new THREE.LineBasicMaterial({{color: 0x7ee787}});
+  scene.add(new THREE.LineLoop(hg, hm));
+}})();
+
+// Each star/DSO/body carries the exact glyph + colour sky.py's ASCII
+// renderer draws it with (server-computed in _compose_sphere, from the same
+// glyph_for/star_colour/DSO_GLYPH functions render() itself calls) -- this
+// draws that glyph onto a small canvas as a sprite texture, in solid white,
+// so PointsMaterial's per-vertex vertexColors (stars, which vary star to
+// star) or a flat material colour (DSOs/bodies, one colour per group) can
+// tint it correctly. One texture per distinct glyph, cached and reused.
+var _glyphTex = {{}};
+function glyphTexture(ch) {{
+  if (_glyphTex[ch]) return _glyphTex[ch];
+  var px = 64;
+  var canvas = document.createElement('canvas');
+  canvas.width = canvas.height = px;
+  var ctx = canvas.getContext('2d');
+  ctx.font = Math.round(px * 0.82) + 'px "SF Mono", Menlo, monospace';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillStyle = '#ffffff';
+  ctx.fillText(ch, px / 2, px / 2 + px * 0.04);
+  var tex = new THREE.CanvasTexture(canvas);
+  _glyphTex[ch] = tex;
+  return tex;
+}}
+
+function groupBy(items, keyFn) {{
+  var m = {{}};
+  items.forEach(function(it) {{ (m[keyFn(it)] = m[keyFn(it)] || []).push(it); }});
+  return m;
+}}
+
+// One glyph = one star size on the ASCII chart too (glyph_for: brighter
+// stars get a bigger dot) -- carried over here as pixel size per glyph.
+var STAR_GLYPH_SIZE = {{'●': 13, '•': 9, '·': 5}};
+
+function starPoints(items) {{
+  var g = new THREE.BufferGeometry();
+  var pos = new Float32Array(items.length * 3);
+  var col = new Float32Array(items.length * 3);
+  var c = new THREE.Color();
+  items.forEach(function(it, i) {{
+    var v = toVec(it.alt, it.az);
+    pos[i * 3] = v.x; pos[i * 3 + 1] = v.y; pos[i * 3 + 2] = v.z;
+    c.set(it.color);
+    col[i * 3] = c.r; col[i * 3 + 1] = c.g; col[i * 3 + 2] = c.b;
+  }});
+  g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  g.setAttribute('color', new THREE.BufferAttribute(col, 3));
+  var glyph = items[0].glyph;
+  var m = new THREE.PointsMaterial({{
+    size: STAR_GLYPH_SIZE[glyph] || 9, map: glyphTexture(glyph), vertexColors: true,
+    transparent: true, depthWrite: false, sizeAttenuation: false}});
+  return new THREE.Points(g, m);
+}}
+
+function flatColourPoints(items, size) {{
+  var v = items.map(function(it) {{ return toVec(it.alt, it.az); }});
+  var g = new THREE.BufferGeometry().setFromPoints(v);
+  var m = new THREE.PointsMaterial({{
+    size: size, map: glyphTexture(items[0].glyph), color: items[0].color,
+    transparent: true, depthWrite: false, sizeAttenuation: false}});
+  return new THREE.Points(g, m);
+}}
+
+// Forwards the page's own query string (e.g. ?t=... for a specific
+// moment) straight through to the data fetch -- otherwise a shared/
+// deep-linked /sphere?t=... URL would silently render "now" instead.
+// Deep-sky objects come either bundled in the initial fetch (?dso=1 was
+// already in the URL) or from the DSO toggle's own on-demand refetch --
+// either way they land here, tracked in dsoGroupObjs so the toggle can
+// show/hide them (and their labels) instantly afterwards without touching
+// the network again.
+var dsoGroupObjs = [];
+function addDeepSky(deepsky) {{
+  var dsoGroups = groupBy(deepsky, function(o) {{ return o.type; }});
+  Object.keys(dsoGroups).forEach(function(k) {{
+    var pts = flatColourPoints(dsoGroups[k], 12);
+    scene.add(pts);
+    dsoGroupObjs.push(pts);
+  }});
+  // Same as render()'s ASCII chart: only the ~26 objects with a
+  // hand-curated common name get a label, not all 739 -- most of the
+  // catalogue only has an NGC id, and labelling every single one would be
+  // both unreadable clutter and a real per-frame cost (each label runs
+  // through declutterLabels()'s overlap checks every frame).
+  deepsky.forEach(function(o) {{
+    if (o.common_name) addLabel(o.common_name, toVec(o.alt, o.az), 'dso-label', 2);
+  }});
+}}
+
+var labelsOn = true;
+var dsoOn = false;
+var dsoLoaded = false;
+
+function updateLabelVisibility() {{
+  LABELS.forEach(function(L) {{
+    // CSS2DRenderer recomputes element.style.display from object.visible
+    // every frame (see its renderObject()) -- setting style.display
+    // directly here would just get silently overwritten on the next
+    // labelRenderer.render() call, which is why the toggle looked like it
+    // did nothing.
+    L.obj.visible = labelsOn && (L.cls !== 'dso-label' || dsoOn);
+  }});
+}}
+
+// Kept around so the find box can resolve a search directly against
+// what's already loaded (see findInLoadedData below) instead of always
+// asking the server.
+var lastData = null;
+
+// Daytime here doesn't mean daytime everywhere -- sun_alt is this observer's
+// own local sky, so only the above-horizon half (the sky dome) gets tinted;
+// the far side (full-sphere mode) is night for someone regardless and stays
+// black. Real stars/planets/DSOs aren't actually visible against a bright
+// sky, so they're dulled to grey rather than removed entirely -- the Sun
+// and Moon are the two things genuinely visible in daylight, so they alone
+// keep their real colour.
+var DAY_DULL_COLOR = '#888888';
+function dullForDaylight(data) {{
+  if (data.sun_alt <= 0) return;
+  data.stars.forEach(function(s) {{ s.color = DAY_DULL_COLOR; }});
+  data.deepsky.forEach(function(o) {{ o.color = DAY_DULL_COLOR; }});
+  data.bodies.forEach(function(b) {{
+    if (b.name !== 'Sun' && b.name !== 'Moon') b.color = DAY_DULL_COLOR;
+  }});
+}}
+
+var skyDome = null;
+function updateSkyDome(sunAlt) {{
+  document.body.classList.toggle('daytime', sunAlt > 0);
+  if (skyDome) {{
+    scene.remove(skyDome);
+    skyDome.geometry.dispose();
+    skyDome.material.dispose();
+    skyDome = null;
+  }}
+  if (sunAlt <= 0) return;   // night (or the far side) -- plain black backdrop
+  // Upper hemisphere only (thetaStart=0 at the +Y pole, thetaLength=PI/2
+  // down to the horizon) -- covers exactly the alt>0 half toVec() places
+  // objects in. Bigger than RADIUS and depthTest/depthWrite off so it
+  // always paints as a backdrop, never occluding or fighting with the
+  // actual stars/points drawn at RADIUS.
+  var geo = new THREE.SphereGeometry(RADIUS + 10, 32, 16, 0, Math.PI * 2, 0, Math.PI / 2);
+  var mat = new THREE.MeshBasicMaterial({{
+    color: 0x8ecbff, side: THREE.BackSide, depthTest: false, depthWrite: false}});
+  skyDome = new THREE.Mesh(geo, mat);
+  skyDome.renderOrder = -1;
+  scene.add(skyDome);
+}}
+
+fetch('/' + PLACE + '/sphere.json' + window.location.search).then(function(r) {{
+  if (!r.ok) throw new Error('sphere.json ' + r.status);
+  return r.json();
+}}).then(function(data) {{
+  lastData = data;
+  dullForDaylight(data);
+  updateSkyDome(data.sun_alt);
+  var starGroups = groupBy(data.stars, function(s) {{ return s.glyph; }});
+  Object.keys(starGroups).forEach(function(k) {{ scene.add(starPoints(starGroups[k])); }});
+  // Every named star gets a label -- the ASCII chart caps this at the 9
+  // brightest since a label there eats character cells other stars need;
+  // nothing here competes for space, so there's no reason to cap it.
+  data.stars.forEach(function(s) {{
+    if (s.name) addLabel(s.name, toVec(s.alt, s.az), 'star-label', 3);
+  }});
+
+  if (data.deepsky.length) {{
+    addDeepSky(data.deepsky);
+    dsoLoaded = true; dsoOn = true;
+    var dsoBtn = document.getElementById('dso-toggle');
+    if (dsoBtn) dsoBtn.classList.add('on');
+  }}
+
+  // Bodies are few (0-9) and each can have its own glyph (Moon's phase
+  // glyph varies night to night) -- one Points per body rather than
+  // grouping, simplicity costs nothing at this count.
+  data.bodies.forEach(function(b) {{
+    scene.add(flatColourPoints([b], b.name === 'Moon' ? 26 : 18));
+    addLabel(b.name, toVec(b.alt, b.az), 'body-label', 0);
+  }});
+
+  var linePts = [];
+  data.asterisms.forEach(function(con) {{
+    var conPts = [];
+    con.segments.forEach(function(seg) {{
+      var p1 = toVec(seg[0][0], seg[0][1]), p2 = toVec(seg[1][0], seg[1][1]);
+      linePts.push(p1, p2);
+      conPts.push(p1, p2);
+    }});
+    // Labelled at the centroid of its own lines, re-projected onto the same
+    // dome radius -- there's no single "right" spot the way a star has one,
+    // but the middle of the shape reads better than any single endpoint.
+    var centroid = new THREE.Vector3();
+    conPts.forEach(function(p) {{ centroid.add(p); }});
+    centroid.divideScalar(conPts.length).normalize().multiplyScalar(RADIUS);
+    addLabel(con.name, centroid, 'con-label', 1);
+  }});
+  if (linePts.length) {{
+    var lg = new THREE.BufferGeometry().setFromPoints(linePts);
+    var lm = new THREE.LineBasicMaterial({{color: 0x3b4a6b}});
+    scene.add(new THREE.LineSegments(lg, lm));
+  }}
+  // data.stars.length is the full-sphere total (above AND below the
+  // horizon, since full-sphere mode keeps both) -- "stars up" specifically
+  // means above the horizon, so it's counted separately here rather than
+  // just using the raw total, which would overstate what's actually visible.
+  var starsUp = data.stars.filter(function(s) {{ return s.alt > 0; }}).length;
+  if (data.sun_alt > 0) {{
+    var when = data.hours_to_dark == null ? "the sky won't get fully dark today"
+      : 'dark skies in about ' + (data.hours_to_dark < 1
+          ? Math.round(data.hours_to_dark * 60) + ' min'
+          : (Math.round(data.hours_to_dark * 10) / 10) + 'h');
+    statusEl.textContent = data.place + ': ' + starsUp + ' stars visible (or would ' +
+      'be, without the Sun in the way), ' + when + '. Look around you.';
+  }} else {{
+    statusEl.textContent = data.place + ': ' + starsUp + ' stars up. Look around you.';
+  }}
+}}).catch(function(err) {{
+  statusEl.textContent = "Couldn't load the sky (" + err.message + "), tap to retry.";
+}});
+
+var mode = null;
+var gotOrientation = false;
+var gyroTimer = null;
+var lastEvent = null;
+
+// Standard device-orientation-to-camera-quaternion conversion (the same
+// math three.js's own DeviceOrientationControls example uses) -- this is
+// "look around from where you're standing", not an orbit-around-an-object
+// control, so OrbitControls doesn't fit and isn't imported.
+var zee = new THREE.Vector3(0, 0, 1);
+var euler = new THREE.Euler();
+var q0 = new THREE.Quaternion();
+var q1 = new THREE.Quaternion(-Math.sqrt(0.5), 0, 0, Math.sqrt(0.5));
+var deviceQ = new THREE.Quaternion();
+// Azimuth (compass heading, device alpha) drifts and miscalibrates
+// differently on every phone, so it's recentred: wherever you're actually
+// facing the moment you tap "look around" becomes dead ahead, 0 degrees.
+// Altitude is NOT recentred the same way -- it comes straight from
+// gravity via the accelerometer, which doesn't have that drift problem, and
+// forcing it to 0 at an arbitrary starting tilt would make the tilt
+// readout (and the horizon line/star positions) lie about true altitude.
+var yawOffset = 0;
+var yawOffsetSet = false;
+var _rawForward = new THREE.Vector3();
+var _yAxis = new THREE.Vector3(0, 1, 0);
+var _yawCorrection = new THREE.Quaternion();
+
+function screenAngle() {{
+  if (screen.orientation && typeof screen.orientation.angle === 'number')
+    return screen.orientation.angle * Math.PI / 180;
+  if (typeof window.orientation === 'number') return window.orientation * Math.PI / 180;
+  return 0;
+}}
+
+function applyOrientation(e) {{
+  if (e.alpha === null || e.beta === null || e.gamma === null) return;
+  var alpha = e.alpha * Math.PI / 180, beta = e.beta * Math.PI / 180, gamma = e.gamma * Math.PI / 180;
+  euler.set(beta, alpha, -gamma, 'YXZ');
+  deviceQ.setFromEuler(euler);
+  deviceQ.multiply(q1);
+  deviceQ.multiply(q0.setFromAxisAngle(zee, -screenAngle()));
+  if (!yawOffsetSet) {{
+    _rawForward.set(0, 0, -1).applyQuaternion(deviceQ);
+    // Deliberately the same atan2(-x,-z) as before the toVec handedness
+    // fix below -- this recovers the device's own raw alpha for a pure
+    // Y-axis calibration rotation, which is independent of which world-
+    // space azimuth convention toVec renders with.
+    yawOffset = Math.atan2(-_rawForward.x, -_rawForward.z);
+    yawOffsetSet = true;
+  }}
+  // A world-space (extrinsic) rotation about the vertical axis only ever
+  // shifts azimuth -- it can't tilt anything, so altitude stays exactly
+  // what gravity actually measured.
+  camera.quaternion.copy(deviceQ);
+  camera.quaternion.premultiply(_yawCorrection.setFromAxisAngle(_yAxis, -yawOffset));
+}}
+
+function onOrientation(e) {{
+  gotOrientation = true;
+  if (gyroTimer) {{ clearTimeout(gyroTimer); gyroTimer = null; }}
+  lastEvent = e;
+}}
+
+function startGyro() {{
+  mode = 'gyro';
+  modeLabel.textContent = 'gyroscope';
+  window.addEventListener('deviceorientation', onOrientation);
+  gyroTimer = setTimeout(function() {{ if (!gotOrientation) startDrag(); }}, 1500);
+  overlay.hidden = true;
+}}
+
+var yaw = 0, pitch = 0, dragging = false, lastX = 0, lastY = 0;
+function startDrag() {{
+  if (mode === 'drag') return;
+  mode = 'drag';
+  modeLabel.textContent = 'drag';
+  window.removeEventListener('deviceorientation', onOrientation);
+  overlay.hidden = true;
+  var el = renderer.domElement;
+  el.addEventListener('pointerdown', function(ev) {{ dragging = true; lastX = ev.clientX; lastY = ev.clientY; }});
+  window.addEventListener('pointerup', function() {{ dragging = false; }});
+  window.addEventListener('pointermove', function(ev) {{
+    if (!dragging) return;
+    yaw -= (ev.clientX - lastX) * 0.005;
+    pitch -= (ev.clientY - lastY) * 0.005;
+    pitch = Math.max(-1.5, Math.min(1.5, pitch));
+    lastX = ev.clientX; lastY = ev.clientY;
+  }});
+}}
+
+// Now that mobile lands here directly (the text page's own place search
+// is effectively unreachable -- visiting it just redirects straight back),
+// this is the only way left to jump to a different place from a phone.
+document.getElementById('place-form').addEventListener('submit', function(ev) {{
+  ev.preventDefault();
+  var val = document.getElementById('place-input').value.trim();
+  if (!val) return;
+  location.href = '/' + encodeURIComponent(val) + '/sphere';
+}});
+
+// iOS Safari's DeviceOrientationEvent.requestPermission() only works when
+// called directly inside a real user gesture on THIS document -- a tap
+// elsewhere (e.g. the place-search "Go" button, which navigates here) does
+// not count once the page has reloaded, so iOS genuinely cannot skip this
+// tap. Nothing else needs it: Android grants motion access silently, and
+// the drag fallback needs no permission at all -- both start immediately
+// on load instead of waiting for a click that serves no purpose there.
+if (typeof DeviceOrientationEvent !== 'undefined' &&
+    typeof DeviceOrientationEvent.requestPermission === 'function') {{
+  enableBtn.addEventListener('click', function() {{
+    DeviceOrientationEvent.requestPermission().then(function(state) {{
+      if (state === 'granted') startGyro(); else startDrag();
+    }}).catch(function() {{ startDrag(); }});
+  }});
+}} else if (typeof DeviceOrientationEvent !== 'undefined') {{
+  startGyro();
+}} else {{
+  startDrag();
+}}
+
+document.getElementById('labels-toggle').addEventListener('click', function() {{
+  labelsOn = !labelsOn;
+  this.classList.toggle('on', labelsOn);
+  updateLabelVisibility();
+}});
+
+document.getElementById('dso-toggle').addEventListener('click', function() {{
+  var btn = this;
+  if (!dsoLoaded) {{
+    // Off by default (most deep-sky objects need binoculars) -- fetched
+    // fresh, once, only when actually asked for; cached in dsoGroupObjs
+    // afterwards so toggling again is instant, no repeat network call.
+    btn.disabled = true; btn.textContent = 'Deep sky…';
+    var qs = window.location.search
+      ? window.location.search + '&dso=1' : '?dso=1';
+    fetch('/' + PLACE + '/sphere.json' + qs).then(function(r) {{ return r.json(); }})
+      .then(function(data) {{
+        dullForDaylight(data);
+        addDeepSky(data.deepsky);
+        if (lastData) lastData.deepsky = data.deepsky;
+        dsoLoaded = true; dsoOn = true;
+        btn.disabled = false; btn.textContent = 'Deep sky';
+        btn.classList.add('on');
+        updateLabelVisibility();
+      }}).catch(function() {{
+        btn.disabled = false; btn.textContent = 'Deep sky (failed, retry)';
+      }});
+    return;
+  }}
+  dsoOn = !dsoOn;
+  btn.classList.toggle('on', dsoOn);
+  dsoGroupObjs.forEach(function(o) {{ o.visible = dsoOn; }});
+  updateLabelVisibility();
+}});
+
+// The arrow/crosshair guide. Resolved two ways: first against whatever's
+// already loaded (stars/deepsky/bodies/asterisms) -- which, in full-sphere
+// mode, already includes everything regardless of altitude sign or how
+// bright the sky background is right now, so Venus (lost in solar glare)
+// or a below-horizon star are just as findable as anything overhead. Only
+// falls back to the server's /{{place}}?find=...&format=json (api.py's
+// _compose_find, unchanged) for names not already loaded -- a fainter
+// named star below the sphere's magnitude cutoff, or a deep-sky object
+// before the DSO toggle has ever been switched on.
+var findTarget = null;
+var CROSSHAIR_THRESHOLD_DEG = 10;   // roughly "on screen" -- switch from arrow to reticle
+var CENTERED_THRESHOLD_DEG = 3;     // a real tolerance, not pixel-perfect aim
+var FIND_COLOR_ARROW = '#ffd700';
+var FIND_COLOR_RETICLE = '#ff87ff';
+var FIND_COLOR_FOUND = '#7ee787';
+var findMsg = document.getElementById('find-msg');
+var findArrow = document.getElementById('find-arrow');
+var findCancelBtn = document.getElementById('find-cancel');
+var findReticle = document.getElementById('find-reticle');
+var reticleTicks = {{
+  top: findReticle.querySelector('.tick-top'),
+  bottom: findReticle.querySelector('.tick-bottom'),
+  left: findReticle.querySelector('.tick-left'),
+  right: findReticle.querySelector('.tick-right')
+}};
+
+function findInLoadedData(name) {{
+  if (!lastData) return null;
+  var q = name.trim().toLowerCase();
+  var b = lastData.bodies.find(function(x) {{ return x.name.toLowerCase() === q; }});
+  if (b) return {{alt: b.alt, az: b.az, name: b.name}};
+  var s = lastData.stars.find(function(x) {{ return x.name && x.name.toLowerCase() === q; }});
+  if (s) return {{alt: s.alt, az: s.az, name: s.name}};
+  var o = lastData.deepsky.find(function(x) {{
+    return (x.common_name && x.common_name.toLowerCase() === q) ||
+          (x.name && x.name.toLowerCase() === q) || x.id.toLowerCase() === q;
+  }});
+  if (o) return {{alt: o.alt, az: o.az, name: o.common_name || o.name}};
+  var con = lastData.asterisms.find(function(x) {{ return x.name.toLowerCase() === q; }});
+  if (con) {{
+    var pts = [];
+    con.segments.forEach(function(seg) {{ pts.push(toVec(seg[0][0], seg[0][1]), toVec(seg[1][0], seg[1][1])); }});
+    var c = new THREE.Vector3();
+    pts.forEach(function(p) {{ c.add(p); }});
+    c.divideScalar(pts.length).normalize();
+    var alt = Math.asin(c.y) * 180 / Math.PI;
+    var az = (Math.atan2(c.x, -c.z) * 180 / Math.PI + 360) % 360;
+    return {{alt: alt, az: az, name: con.name}};
+  }}
+  return null;
+}}
+
+document.getElementById('find-form').addEventListener('submit', function(ev) {{
+  ev.preventDefault();
+  var input = document.getElementById('find-input');
+  var name = input.value.trim();
+  if (!name) return;
+  input.blur();   // dismiss the keyboard
+  findTarget = null;
+  findArrow.style.display = 'none';
+  findReticle.style.display = 'none';
+  findMsg.textContent = '';
+  var local = findInLoadedData(name);
+  if (local) {{
+    findTarget = local;
+    findCancelBtn.hidden = false;
+    return;
+  }}
+  findMsg.textContent = 'Looking for ' + name + '…';
+  findMsg.style.color = FIND_COLOR_ARROW;
+  findCancelBtn.hidden = false;
+  var qs = 'find=' + encodeURIComponent(name) + '&format=json';
+  var t = new URLSearchParams(window.location.search).get('t');
+  if (t) qs += '&t=' + encodeURIComponent(t);
+  fetch('/' + PLACE + '?' + qs).then(function(r) {{ return r.json(); }})
+    .then(function(d) {{
+      if (d.error) {{
+        findMsg.textContent = "Don't know \\"" + name + '"';
+        findCancelBtn.hidden = true;
+        return;
+      }}
+      if (d.alt != null && d.az != null) {{
+        // A real position exists -- point at it regardless of d.visible,
+        // which is really "could a human eye pick this out right now"
+        // (glare, twilight brightness), not "does it have a location".
+        findTarget = {{alt: d.alt, az: d.az, name: d.target}};
+        return;
+      }}
+      if (d.next_visible) {{
+        findMsg.textContent = d.target + ' is not up right now, next visible ' +
+          d.next_visible.when_local.replace('T', ' ') + ', ' + d.next_visible.compass + '.';
+        findCancelBtn.hidden = true;
+        return;
+      }}
+      // No position at all was computed (e.g. Venus buried in the Sun's
+      // glare with no window in the next 40 days) -- nothing to point at.
+      findMsg.textContent = d.target + ' is not visible from ' + d.place + ': ' +
+        (d.solar_elongation != null && d.solar_elongation < 20
+          ? 'only ' + Math.round(d.solar_elongation) + '° from the Sun, too deep in the glare for weeks.'
+          : 'no window in the next 40 days from here.');
+      findCancelBtn.hidden = true;
+    }}).catch(function() {{
+      findMsg.textContent = 'Search failed, try again.';
+      findCancelBtn.hidden = true;
+    }});
+}});
+
+findCancelBtn.addEventListener('click', function() {{
+  findTarget = null;
+  findArrow.style.display = 'none';
+  findReticle.style.display = 'none';
+  findMsg.textContent = '';
+  findCancelBtn.hidden = true;
+}});
+
+function updateFindArrow() {{
+  if (!findTarget) {{ findArrow.style.display = 'none'; findReticle.style.display = 'none'; return; }}
+  camera.updateMatrixWorld(true);   // animate() hasn't rendered yet this frame
+  var v = toVec(findTarget.alt, findTarget.az);
+  _forward.set(0, 0, -1).applyQuaternion(camera.quaternion);
+  var angularDist = _forward.angleTo(v) * 180 / Math.PI;
+
+  if (angularDist < CENTERED_THRESHOLD_DEG) {{
+    // Found -- not pixel-perfect aim, just within a real tolerance. Drop a
+    // marker on the object itself (an ordinary scene object, so it tracks
+    // the real star/planet like everything else already does) and stop
+    // running any of this per-frame guidance from here on -- findTarget =
+    // null makes every future call a no-op above. The purple highlight is
+    // transient -- five seconds is enough to register it, then the label
+    // clears and the marker itself fades to a plain white dot, a quieter
+    // trace rather than permanent purple clutter.
+    var foundPoint = flatColourPoints(
+      [{{alt: findTarget.alt, az: findTarget.az, glyph: '●', color: '#ff87ff'}}], 16);
+    scene.add(foundPoint);
+    var foundLabel = addLabel(findTarget.name, v, 'found-label', 0);
+    var foundName = findTarget.name;
+    setTimeout(function() {{
+      foundPoint.material.color.set('#ffffff');
+      removeLabel(foundLabel);
+      if (findMsg.textContent === '✓ Found: ' + foundName + '!') findMsg.textContent = '';
+    }}, 5000);
+    findMsg.textContent = '✓ Found: ' + findTarget.name + '!';
+    findMsg.style.color = FIND_COLOR_FOUND;
+    findArrow.style.display = 'none';
+    findReticle.style.display = 'none';
+    findCancelBtn.hidden = true;
+    findTarget = null;
+    return;
+  }}
+
+  _camSpace.copy(v).applyMatrix4(camera.matrixWorldInverse);
+  var behind = _camSpace.z > 0;
+  _projected.copy(v).project(camera);
+  var cx = window.innerWidth / 2, cy = window.innerHeight / 2;
+  var sx = (_projected.x * 0.5 + 0.5) * window.innerWidth;
+  var sy = (1 - (_projected.y * 0.5 + 0.5)) * window.innerHeight;
+
+  if (!behind && angularDist < CROSSHAIR_THRESHOLD_DEG) {{
+    // On screen but not centred yet -- four ticks closing in from outside
+    // toward the object as angularDist shrinks, forming a solid cross
+    // right at the edge of the tolerance above. The arrow disappears the
+    // moment this reticle appears, not after.
+    findArrow.style.display = 'none';
+    findReticle.style.left = sx + 'px';
+    findReticle.style.top = sy + 'px';
+    findReticle.style.display = 'block';
+    var t = (angularDist - CENTERED_THRESHOLD_DEG) / (CROSSHAIR_THRESHOLD_DEG - CENTERED_THRESHOLD_DEG);
+    var gap = 3 + t * 34;
+    reticleTicks.top.style.transform = 'translate(-1px,' + (-gap - 14) + 'px)';
+    reticleTicks.bottom.style.transform = 'translate(-1px,' + gap + 'px)';
+    reticleTicks.left.style.transform = 'translate(' + (-gap - 14) + 'px,-1px)';
+    reticleTicks.right.style.transform = 'translate(' + gap + 'px,-1px)';
+    findMsg.textContent = 'Almost there, ' + findTarget.name;
+    findMsg.style.color = FIND_COLOR_RETICLE;
+    return;
+  }}
+
+  findReticle.style.display = 'none';
+  // When it's behind the camera, the raw screen projection points the
+  // wrong way (perspective divide by a negative w flips it) -- flipping
+  // both axes is the standard correction, close enough for "which way to
+  // turn" even though a single 2D arrow can't fully capture a behind-you
+  // direction.
+  var dx = behind ? -(sx - cx) : (sx - cx);
+  var dy = behind ? -(sy - cy) : (sy - cy);
+  var angle = Math.atan2(dy, dx);
+  var r = Math.min(cx, cy) - 40;
+  findArrow.style.left = (cx + Math.cos(angle) * r) + 'px';
+  findArrow.style.top = (cy + Math.sin(angle) * r) + 'px';
+  // ">>>" points right by default (angle 0), so -- unlike the old ▲ glyph,
+  // which needed a +90 degree correction to go from "points up" to
+  // "points along angle" -- this rotates directly by the raw angle.
+  findArrow.style.transform = 'translate(-50%,-50%) rotate(' + (angle * 180 / Math.PI) + 'deg)';
+  findArrow.style.display = 'block';
+  findMsg.textContent = 'Looking for ' + findTarget.name + '…';
+  findMsg.style.color = FIND_COLOR_ARROW;
+}}
+
+// Inverse of toVec() -- camera forward direction back to alt/az degrees,
+// for the HUD heading/tilt readout. y = sin(alt); x,z give az via atan2
+// (dividing both by cos(alt) before atan2 would be a no-op on the angle).
+var _forward = new THREE.Vector3();
+var _frame = 0;
+function updateHeading() {{
+  _forward.set(0, 0, -1).applyQuaternion(camera.quaternion);
+  var alt = Math.asin(Math.max(-1, Math.min(1, _forward.y))) * 180 / Math.PI;
+  var az = (Math.atan2(_forward.x, -_forward.z) * 180 / Math.PI + 360) % 360;
+  headingEl.textContent = Math.round(az) + '° ' + compass16(az) +
+    ' · ' + (alt >= 0 ? '+' : '') + Math.round(alt) + '°';
+}}
+
+function animate() {{
+  requestAnimationFrame(animate);
+  if (mode === 'gyro' && lastEvent) {{
+    applyOrientation(lastEvent);
+  }} else if (mode === 'drag') {{
+    camera.quaternion.setFromEuler(new THREE.Euler(pitch, yaw, 0, 'YXZ'));
+  }}
+  if (mode && ++_frame % 4 === 0) updateHeading();
+  updateFindArrow();
+  renderer.render(scene, camera);
+  declutterLabels();
+  labelRenderer.render(scene, camera);
+}}
+animate();
+</script>
+</body></html>"""

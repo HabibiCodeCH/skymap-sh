@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-skymap.sh — one URL, four consumers.
+skymap.sh: one URL, four consumers.
 
     curl skymap.sh/Zurich                    -> ANSI text
     curl -H 'Accept: text/plain' ...      -> text, no escape codes
@@ -14,7 +14,8 @@ from collections import OrderedDict
 from urllib.parse import quote
 from fastapi import FastAPI, Request as Req
 from fastapi.responses import (PlainTextResponse, HTMLResponse, JSONResponse,
-                               StreamingResponse, FileResponse, Response)
+                               StreamingResponse, FileResponse, Response,
+                               RedirectResponse)
 
 import api, gif, sky, tle
 
@@ -23,6 +24,31 @@ app = FastAPI(title="skymap.sh", docs_url=None, redoc_url=None)
 # Clients that want the terminal rendering even though they send Accept: */*
 TERMINALS = ("curl", "wget", "httpie", "http/", "powershell", "libcurl", "lwp",
              "python-requests", "fetch")
+
+# Phone browsers only -- iPadOS Safari's UA is indistinguishable from desktop
+# Safari by design, so it isn't and can't be matched here; it lands on the
+# text page like a laptop would. The plain-text/ASCII view has no real value
+# on a phone screen the way the 3D sphere does, so a real phone gets sent
+# straight there instead of the text page it can't do much with.
+MOBILE_UA = ("iphone", "ipod", "android", "windows phone", "blackberry")
+
+def _is_mobile(request):
+    ua = (request.headers.get("user-agent") or "").lower()
+    if any(t in ua for t in TERMINALS):
+        return False
+    return any(t in ua for t in MOBILE_UA)
+
+def _sphere_os(request):
+    """Coarse OS bucket for the sphere-views-by-OS stats block. "ipad" is
+    checked even though iPadOS Safari's real UA doesn't contain it (spoofed
+    as desktop Safari by design, same limitation as _is_mobile) -- harmless
+    to check, and catches the rare browser/webview that does send it."""
+    ua = (request.headers.get("user-agent") or "").lower()
+    if "iphone" in ua or "ipod" in ua or "ipad" in ua:
+        return "ios"
+    if "android" in ua:
+        return "android"
+    return "other"
 # --- response cache ----------------------------------------------------------
 # Rendering is 5.5 ms; serving a cached render is a dict lookup. Requests are
 # bucketed in time, so 30 people (or one loop) asking within the same bucket all
@@ -55,6 +81,10 @@ STARTED = time.time()
 _stat = Counter()
 _places = Counter()
 _finds = Counter()
+# Separate from _places -- that one only counts the text/ASCII route (via
+# _tally(), which sphere_page() never calls), so which cities people want
+# to actually look around in would otherwise be invisible.
+_sphere_places = Counter()
 _TOP_KEEP = 2000            # trim the long tail so the tables cannot grow forever
 
 # --- persisting the live counters ----------------------------------------------
@@ -72,7 +102,8 @@ def _save_stats_state():
         tmp = f"{STATS_STATE_FILE}.tmp"
         with open(tmp, "w") as f:
             json.dump(dict(started=STARTED, stat=dict(_stat),
-                          places=dict(_places), finds=dict(_finds)), f)
+                          places=dict(_places), finds=dict(_finds),
+                          sphere_places=dict(_sphere_places)), f)
         os.replace(tmp, STATS_STATE_FILE)   # atomic -- a crash mid-write
     except OSError:                          # can't leave a corrupt file
         pass
@@ -89,6 +120,7 @@ def _load_stats_state():
     _stat.update(data.get("stat", {}))
     _places.update(data.get("places", {}))
     _finds.update(data.get("finds", {}))
+    _sphere_places.update(data.get("sphere_places", {}))
 
 
 # --- hourly history -----------------------------------------------------------
@@ -208,7 +240,7 @@ def _tally(r, daytime, hit, mode, status, data, colour=True):
 def stats_text(n=50):
     up = time.time() - STARTED
     req = _stat["requests"] or 1
-    L = [f"skymap.sh — {req:,} requests over {up/3600:.1f} h "
+    L = [f"skymap.sh: {req:,} requests over {up/3600:.1f} h "
          f"({req/max(up,1)*60:.1f}/min)", ""]
     L.append(f"cache      {_stat['hit']:,} hit / {_stat['miss']:,} miss "
              f"({100*_stat['hit']/req:.1f}% hit)")
@@ -227,7 +259,15 @@ def stats_text(n=50):
         L.append(f"  {k[5:]:12} {_stat[k]:>8,}")
     if _stat["iss"]:
         L.append(f"  {'iss':12} {_stat['iss']:>8,}")
+    if _stat["sphere"]:
+        L.append(f"  {'sphere':12} {_stat['sphere']:>8,}  (see /stats/sphere)")
     L.append("")
+    pages = sorted(k for k in _stat if k.startswith("page:"))
+    if pages:
+        L.append("pages")
+        for k in pages:
+            L.append(f"  {k[5:]:12} {_stat[k]:>8,}")
+        L.append("")
     params = sorted(k for k in _stat if k.startswith("param:"))
     if params:
         L.append("parameters")
@@ -276,7 +316,9 @@ def stats_json(n=50):
         night=_stat["night"], day=_stat["day"], iss=_stat["iss"],
         animate=_stat["animate"], animate_rejected=_stat["animate_rejected"],
         gif=_stat["gif"], gif_rejected=_stat["gif_rejected"], png=_stat["png"],
+        sphere=_stat["sphere"],
         views={k[5:]: v for k, v in _stat.items() if k.startswith("view:")},
+        pages={k[5:]: v for k, v in _stat.items() if k.startswith("page:")},
         modes={k[5:]: v for k, v in _stat.items() if k.startswith("mode:")},
         errors={k[7:]: v for k, v in _stat.items() if k.startswith("status:")},
         params={k[6:]: v for k, v in _stat.items() if k.startswith("param:")},
@@ -284,6 +326,32 @@ def stats_json(n=50):
         top_places=dict(_places.most_common(n)),
         top_finds=dict(_finds.most_common(n)),
         bsky=_read_bsky_stats(),
+    )
+
+
+def stats_sphere_text(n=50):
+    L = [f"skymap.sh: sphere stats ({_stat['sphere']:,} views, "
+        f"{_stat['sphere_json']:,} data fetches, {_stat['mobile_redirect']:,} "
+        f"mobile auto-redirects)", ""]
+    sphere_os = sorted(k for k in _stat if k.startswith("sphere_os:"))
+    if sphere_os:
+        L.append("views by OS")
+        for k in sphere_os:
+            L.append(f"  {k[10:]:12} {_stat[k]:>8,}")
+        L.append("")
+    L.append(f"top sphere places ({len(_sphere_places):,} distinct)")
+    for name, c in _sphere_places.most_common(n):
+        L.append(f"  {name[:28]:28} {c:>8,}")
+    return "\n".join(L) + "\n"
+
+
+def stats_sphere_json(n=50):
+    return dict(
+        sphere=_stat["sphere"], sphere_json=_stat["sphere_json"],
+        mobile_redirect=_stat["mobile_redirect"],
+        by_os={k[10:]: v for k, v in _stat.items() if k.startswith("sphere_os:")},
+        places_distinct=len(_sphere_places),
+        top_places=dict(_sphere_places.most_common(n)),
     )
 
 
@@ -295,8 +363,8 @@ def stats_hourly_text(days=7):
                             hit=_hour_stat["hit"], miss=_hour_stat["miss"],
                             day=_hour_stat["day"], night=_hour_stat["night"])]
     if not rows:
-        return "skymap.sh — hourly stats\n\nno data yet (first hour still in progress)\n"
-    L = [f"skymap.sh — hourly stats, last {days}d ({len(rows)} hour(s) on record)", "",
+        return "skymap.sh: hourly stats\n\nno data yet (first hour still in progress)\n"
+    L = [f"skymap.sh: hourly stats, last {days}d ({len(rows)} hour(s) on record)", "",
         f"{'hour (UTC)':17} {'requests':>9} {'hit%':>6} {'day':>6} {'night':>6}"]
     for row in rows:
         req = row["requests"] or 1
@@ -358,7 +426,7 @@ THROTTLED = """\
   Slow down a moment.
 
   You are asking faster than {rate} requests a minute, which is faster than the
-  sky changes — positions here are recomputed every 5 minutes, so a tighter loop
+  sky changes: positions here are recomputed every 5 minutes, so a tighter loop
   returns you the same picture and costs us both.
 
   If you want it live on screen:   watch -n 300 curl -s skymap.sh/{place}
@@ -382,7 +450,7 @@ def _warm():
             print(f"[startup] TLE unusable ({e}); ISS disabled")
             app.state.tle = None
     else:
-        print("[startup] no TLE on disk; run tle.py — ISS disabled")
+        print("[startup] no TLE on disk; run tle.py, ISS disabled")
 
 
 @app.on_event("shutdown")
@@ -739,10 +807,15 @@ def _respond(request: Req, place: str | None):
         # picking a date/time without retyping the city loses it: the JS
         # reads an empty #place and falls back to the home/IP-located page.
         explore = api.EXPLORE.format(place=html.escape(r.place.name))
-        body = api.PAGE.format(title=f"skymap.sh — {r.place.name}",
+        # Shown for everyone -- CSS (.mobile-only, a pointer:coarse media
+        # query) decides who actually sees it, since there's no reliable
+        # server-side "does this phone have a gyroscope" signal the way
+        # TERMINALS lets curl/wget be told apart from a browser.
+        sphere_btn = f'<a class="animate-btn mobile-only" href="/{r.place.slug}/sphere">◎ View in 3D</a>'
+        body = api.PAGE.format(title=f"skymap.sh: {r.place.name}",
                                path=f"/{r.place.slug}" if place else "",
                                explore=explore, animate_btn=animate_btn,
-                               quadrant_btn=quadrant_btn,
+                               quadrant_btn=quadrant_btn, sphere_btn=sphere_btn,
                                body=api.ansi_to_html(page_text), extra=extra)
         return HTMLResponse(body, status_code=res.status, headers=headers)
     text = page_text if colour else api.strip_ansi(page_text)
@@ -751,7 +824,8 @@ def _respond(request: Req, place: str | None):
 
 @app.middleware("http")
 async def ratelimit(request: Req, call_next):
-    if request.url.path in ("/healthz", "/robots.txt", "/stats"):
+    if request.url.path in ("/healthz", "/robots.txt", "/stats", "/stats/sphere",
+                            "/stats/hourly"):
         return await call_next(request)
     ok, retry = take_token(client_ip(request))
     if not ok:
@@ -768,12 +842,13 @@ async def ratelimit(request: Req, call_next):
 @app.get("/help", response_class=PlainTextResponse)
 @app.get("/usage", response_class=PlainTextResponse)
 def help_(request: Req):
+    _stat["page:help"] += 1
     mode, _colour = _wants(request)
     headers = {"Cache-Control": "public, max-age=3600"}
     if mode == "html":
-        body = api.PAGE.format(title="skymap.sh — usage", path="/help",
+        body = api.PAGE.format(title="skymap.sh: usage", path="/help",
                                explore=api.EXPLORE.format(place=""), body=html.escape(api.HELP),
-                               extra="", animate_btn="", quadrant_btn="")
+                               extra="", animate_btn="", quadrant_btn="", sphere_btn="")
         return HTMLResponse(body, headers=headers)
     return PlainTextResponse(api.HELP, headers=headers)
 
@@ -799,6 +874,7 @@ def apple_touch_icon():
 
 @app.get("/demo", response_class=HTMLResponse)
 def demo():
+    _stat["page:demo"] += 1
     # Static, pre-rendered by build_sky_html.py -- already a complete page,
     # not run through api.PAGE, so just served as-is.
     with open(f"{api.sky.BASE}/sky_demo.html") as f:
@@ -831,15 +907,31 @@ def gif_capacity():
 
 @app.get("/legend", response_class=PlainTextResponse)
 def legend(request: Req):
+    _stat["page:legend"] += 1
     mode, colour = _wants(request)
     headers = {"Cache-Control": "public, max-age=3600"}
     if mode == "html":
-        body = api.PAGE.format(title="skymap.sh — legend", path="/legend",
+        body = api.PAGE.format(title="skymap.sh: legend", path="/legend",
                                explore=api.EXPLORE.format(place=""),
                                body=api.ansi_to_html(api.legend_text(True)),
-                               extra="", animate_btn="", quadrant_btn="")
+                               extra="", animate_btn="", quadrant_btn="", sphere_btn="")
         return HTMLResponse(body, headers=headers)
     return PlainTextResponse(api.legend_text(colour), headers=headers)
+
+
+@app.get("/catalog", response_class=PlainTextResponse)
+def catalog(request: Req):
+    _stat["page:catalog"] += 1
+    mode, colour = _wants(request)
+    headers = {"Cache-Control": "public, max-age=3600"}
+    if mode == "html":
+        body = api.PAGE.format(title="skymap.sh: catalog", path="/catalog",
+                               explore=api.EXPLORE.format(place=""),
+                               body=api.ansi_to_html(api.catalog_text(True)),
+                               extra="", animate_btn="", quadrant_btn="",
+                               sphere_btn="")
+        return HTMLResponse(body, headers=headers)
+    return PlainTextResponse(api.catalog_text(colour), headers=headers)
 
 
 @app.get("/healthz", response_class=PlainTextResponse)
@@ -864,11 +956,25 @@ def stats(request: Req):
     headers = {"Cache-Control": "no-store"}
     mode, _colour = _wants(request)
     if mode == "html":
-        body = api.PAGE.format(title="skymap.sh — stats", path="/stats",
+        body = api.PAGE.format(title="skymap.sh: stats", path="/stats",
                                explore=api.EXPLORE, body=html.escape(stats_text()),
-                               extra="", animate_btn="", quadrant_btn="")
+                               extra="", animate_btn="", quadrant_btn="", sphere_btn="")
         return HTMLResponse(body, headers=headers)
     return PlainTextResponse(stats_text(), headers=headers)
+
+
+@app.get("/stats/sphere", response_class=PlainTextResponse)
+def stats_sphere(request: Req):
+    if request.query_params.get("format") == "json":
+        return JSONResponse(stats_sphere_json(), headers={"Cache-Control": "no-store"})
+    headers = {"Cache-Control": "no-store"}
+    mode, _colour = _wants(request)
+    if mode == "html":
+        body = api.PAGE.format(title="skymap.sh: sphere stats", path="/stats/sphere",
+                               explore=api.EXPLORE, body=html.escape(stats_sphere_text()),
+                               extra="", animate_btn="", quadrant_btn="", sphere_btn="")
+        return HTMLResponse(body, headers=headers)
+    return PlainTextResponse(stats_sphere_text(), headers=headers)
 
 
 @app.get("/stats/hourly", response_class=PlainTextResponse)
@@ -883,9 +989,9 @@ def stats_hourly(request: Req):
     headers = {"Cache-Control": "no-store"}
     mode, _colour = _wants(request)
     if mode == "html":
-        body = api.PAGE.format(title="skymap.sh — stats", path="/stats/hourly",
+        body = api.PAGE.format(title="skymap.sh: stats", path="/stats/hourly",
                                explore=api.EXPLORE, body=html.escape(stats_hourly_text(days)),
-                               extra="", animate_btn="", quadrant_btn="")
+                               extra="", animate_btn="", quadrant_btn="", sphere_btn="")
         return HTMLResponse(body, headers=headers)
     return PlainTextResponse(stats_hourly_text(days), headers=headers)
 
@@ -967,6 +1073,42 @@ def animate_gif(gif_id: str):
                         headers={"Cache-Control": "public, max-age=31536000, immutable"})
 
 
+@app.get("/{place}/sphere.json")
+def sphere_json(request: Req, place: str):
+    # Data for the mobile 3D view -- always JSON regardless of UA, unlike
+    # the main route's ?format=json, since this is only ever fetched by
+    # SPHERE_PAGE's own script, never something a curl/terminal user asks for.
+    if api.lookup_place(place) is None:
+        return JSONResponse({"error": "unknown_place"}, status_code=404)
+    r = _build(request, place)
+    data = api._compose_sphere(r)
+    _stat["sphere_json"] += 1
+    edge = DAY_EDGE if not r.night and api.is_daytime(r) else NIGHT_EDGE
+    return JSONResponse(data, headers={
+        "Cache-Control": f"public, max-age={edge // 4}, s-maxage={edge}"})
+
+
+@app.get("/{place}/sphere", response_class=HTMLResponse)
+def sphere_page(request: Req, place: str):
+    p = api.lookup_place(place)
+    if p is None:
+        return PlainTextResponse("Not found.\n", status_code=404)
+    _stat["sphere"] += 1
+    _stat[f"sphere_os:{_sphere_os(request)}"] += 1
+    _sphere_places[p.name] += 1
+    if len(_sphere_places) > _TOP_KEEP:
+        for k, _v in _sphere_places.most_common()[_TOP_KEEP:]:
+            del _sphere_places[k]
+    # Same resolution the mobile home-redirect itself uses (IP geo fallback,
+    # no explicit place) -- if it lands on this same place, this genuinely
+    # is the visitor's own sky, not somewhere they navigated to.
+    home = _build(request, None).place.slug == p.slug
+    body = api.SPHERE_PAGE.format(title=f"skymap.sh: {p.name} in 3D",
+                                  place_slug=p.slug, place_name=html.escape(p.name),
+                                  home_suffix=" (my sky)" if home else "")
+    return HTMLResponse(body, headers={"Cache-Control": "public, max-age=300"})
+
+
 @app.get("/{place}/horizon.png")
 def horizon_png(request: Req, place: str):
     # Header + chart, no prose/footer/zenith inset, and no ?animate=
@@ -1042,8 +1184,26 @@ def animate_gif_inline(request: Req, place: str):
                              "Access-Control-Expose-Headers": "X-Gif-Id"})
 
 
+def _mobile_sphere_redirect(request, place):
+    """A phone landing on skymap.sh -- root or any named place -- goes
+    straight to that place's 3D sphere instead of the text view, which has
+    no real value on a phone screen. Query string carries over (?t=, mainly,
+    which the sphere page's own JS already forwards to its data fetch)."""
+    if not _is_mobile(request):
+        return None
+    if place and api.lookup_place(place) is None:
+        return None   # let the normal 404 flow handle an unknown place
+    r = _build(request, place)
+    _stat["mobile_redirect"] += 1
+    qs = f"?{request.url.query}" if request.url.query else ""
+    return RedirectResponse(f"/{r.place.slug}/sphere{qs}", status_code=302)
+
+
 @app.get("/")
 def root(request: Req):
+    redirect = _mobile_sphere_redirect(request, None)
+    if redirect:
+        return redirect
     return _respond(request, None)
 
 
@@ -1051,4 +1211,7 @@ def root(request: Req):
 def place(request: Req, place: str):
     if place.startswith(("favicon", ".well-known")):
         return PlainTextResponse("", status_code=404)
+    redirect = _mobile_sphere_redirect(request, place)
+    if redirect:
+        return redirect
     return _respond(request, place)

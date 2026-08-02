@@ -108,6 +108,87 @@ class DeepSkyOverlay(unittest.TestCase):
         self.assertTrue(any(ch in on for ch in dso_chars))
 
 
+class StarsVisible(unittest.TestCase):
+    """stars_visible() is the same star filter render() uses internally,
+    pulled out as its own function so the mobile 3D sphere view can get
+    positions without drawing ASCII -- these tests guard against the
+    extraction drifting from what render() actually draws."""
+
+    def test_respects_the_magnitude_cutoff(self):
+        jd = sky.julian(dt.datetime(2026, 7, 30, 22, 0))
+        lst = (sky.gmst_hours(jd) + 8.5417 / 15.0) % 24
+        visible = sky.stars_visible(2.0, jd, 47.3769, lst)
+        self.assertTrue(visible)
+        self.assertTrue(all(s["m"] <= 2.0 for s, _a, _z in visible))
+        self.assertTrue(all(a > 0 for _s, a, _z in visible))
+
+    def test_matches_render_disc_star_count(self):
+        when = dt.datetime(2026, 7, 30, 22, 0)
+        lat, lon, mag_limit = 47.3769, 8.5417, 4.2
+        _art, st = sky.render(when, lat, lon, mag_limit=mag_limit)
+        jd = sky.julian(when)
+        lst = (sky.gmst_hours(jd) + lon / 15.0) % 24
+        visible = sky.stars_visible(mag_limit, jd, lat, lst)
+        self.assertEqual({s["hr"] for s, _a, _z in visible},
+                         {s["hr"] for s, _a, _z in st["visible"]})
+
+    def test_above_horizon_false_includes_stars_below_the_horizon(self):
+        # The 3D sphere view's "full sphere" mode -- the far side of the sky
+        # is night for someone even when it's day here, so it isn't dropped.
+        jd = sky.julian(dt.datetime(2026, 7, 30, 22, 0))
+        lst = (sky.gmst_hours(jd) + 8.5417 / 15.0) % 24
+        visible = sky.stars_visible(4.2, jd, 47.3769, lst, above_horizon=False)
+        self.assertTrue(any(a < 0 for _s, a, _z in visible))
+        # Nothing brighter than the cutoff got dropped along the way either.
+        above_only = sky.stars_visible(4.2, jd, 47.3769, lst, above_horizon=True)
+        self.assertTrue({s["hr"] for s, _a, _z in above_only} <=
+                        {s["hr"] for s, _a, _z in visible})
+
+
+class AsterismLinesVisible(unittest.TestCase):
+    """asterism_lines_visible() is the geometry half of render()'s
+    constellation-lines block, without the ASCII-projection parts that only
+    matter when drawing glyphs into a flat grid."""
+
+    def test_segments_are_alt_az_pairs(self):
+        jd = sky.julian(dt.datetime(2026, 7, 30, 22, 0))
+        lst = (sky.gmst_hours(jd) + 8.5417 / 15.0) % 24
+        lines = sky.asterism_lines_visible(jd, 47.3769, lst)
+        self.assertTrue(lines)
+        for con in lines:
+            self.assertIn("name", con)
+            self.assertTrue(con["segments"])
+            for seg in con["segments"]:
+                self.assertEqual(len(seg), 2)
+                for alt, az in seg:
+                    self.assertIsInstance(alt, float)
+                    self.assertIsInstance(az, float)
+                    self.assertGreater(alt, 0)
+
+    def test_mostly_below_horizon_asterisms_are_omitted(self):
+        # The Southern Cross never clears the horizon from Zurich's
+        # latitude -- render()'s own "mostly below/grazing" gate must drop
+        # it here exactly as it does for the ASCII chart.
+        jd = sky.julian(dt.datetime(2026, 7, 30, 22, 0))
+        lst = (sky.gmst_hours(jd) + 8.5417 / 15.0) % 24
+        lines = sky.asterism_lines_visible(jd, 47.3769, lst)
+        names = {con["name"] for con in lines}
+        self.assertNotIn("Southern Cross", names)
+
+    def test_above_horizon_false_includes_the_southern_cross_too(self):
+        # Full-sphere mode -- the same "mostly below the horizon" gate that
+        # rightly hides it from the ASCII chart shouldn't apply here.
+        jd = sky.julian(dt.datetime(2026, 7, 30, 22, 0))
+        lst = (sky.gmst_hours(jd) + 8.5417 / 15.0) % 24
+        lines = sky.asterism_lines_visible(jd, 47.3769, lst, above_horizon=False)
+        names = {con["name"] for con in lines}
+        self.assertIn("Southern Cross", names)
+        # And its points are allowed to sit below the horizon now.
+        cross = next(c for c in lines if c["name"] == "Southern Cross")
+        alts = [pt[0] for seg in cross["segments"] for pt in seg]
+        self.assertTrue(any(a < 0 for a in alts))
+
+
 class FindResolvesDeepSkyObjects(unittest.TestCase):
     """resolve_target() used to only know planets/Sun/Moon/stars/asterisms --
     ?find=M31 or ?find=Andromeda+Galaxy fell through to "Don't know" even

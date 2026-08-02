@@ -76,14 +76,14 @@ says `(min)` in the header when it clamps.
 | nothing | stars and planets only (the default) |
 
 739 objects from the Revised NGC (public domain, unlike most modern NGC/IC
-compilations — see `LICENSES.md`), pre-filtered to magnitude 11: faint enough
+compilations, see `LICENSES.md`), pre-filtered to magnitude 11: faint enough
 to hold the entire Messier catalogue plus several hundred more, without the
 deep tail of galaxies that need a telescope. NGC-only, so a few well-known
 IC-numbered targets (the Heart, Soul, Pelican and Cocoon nebulae) aren't in
 there. Four glyphs: `◍` galaxy, `⁂` open/globular cluster, `✳` nebula, `◈`
 planetary nebula. About 30 of the well-known ones (Andromeda Galaxy, Orion
 Nebula, Whirlpool Galaxy, the Double Cluster…) are labelled by name, the same
-way stars and planets are. Only on the horizon and disc views — `--dso` has
+way stars and planets are. Only on the horizon and disc views: `--dso` has
 no effect on `--find` or the daytime Sun's-path view, since there is nothing
 to overlay there.
 
@@ -100,17 +100,17 @@ automatically too, as if `--dso` were also given -- one cell of the sky is a
 small enough patch that stars alone often leave it looking near-empty, and
 the whole point of zooming in is to reveal more.
 
-The horizon view is split into a fixed 4x3 grid — `A B C D`, `E F G H`,
-`I J K L` — always 12 cells, whatever the current span. The letters are
+The horizon view is split into a fixed 4x3 grid (`A B C D`, `E F G H`,
+`I J K L`), always 12 cells, whatever the current span. The letters are
 computed fresh from `facing`/`span` every time, not stored anywhere, so
 `?quadrant=A` means the same patch of sky on every request as long as the rest
 of the URL matches. There's no persistent session: to zoom in, rerun the same
 command with `--quadrant=` (or `?quadrant=`) added; a crop doesn't draw its own
 sub-grid, so there's no further zoom past one cell. An unrecognised letter is
-reported and ignored, falling back to the full view. Horizon view only — `disc`
+reported and ignored, falling back to the full view. Horizon view only: `disc`
 and `--find` ignore it.
 
-While the Sun is up you get `the Sun's path today` whatever else you asked for —
+While the Sun is up you get `the Sun's path today` whatever else you asked for:
 its arc, with rise, transit and set, and the marker on where it is right now.
 `facing`, `span` and `view` are ignored during daylight and it says so, because
 the Sun's path is a whole-sky view. `--night` / `?night=1` forces the star chart
@@ -120,17 +120,17 @@ anyway.
 
 | you type | you get |
 |---|---|
-| `--find=Venus` | `finding Venus — 60° window`, crosshair on it, directions in fists |
+| `--find=Venus` | `finding Venus, 60° window`, crosshair on it, directions in fists |
 | `--find=Mars` | `Not visible right now …  Next chance: 03:50` and the chart for then |
-| `--find=Mercury` | `Mercury is not visible from Zürich` and why — 19° from the Sun |
-| `--find="Big Dipper"` | `finding Big Dipper — 60° window` |
+| `--find=Mercury` | `Mercury is not visible from Zürich` and why: 19° from the Sun |
+| `--find="Big Dipper"` | `finding Big Dipper, 60° window` |
 | `--find=Vega` | any of 327 named stars |
 | `--find=Moon` | Sun and Moon too |
-| `--find=M31` | `finding Andromeda Galaxy — 60° window`, same as any of 739 deep-sky objects |
+| `--find=M31` | `finding Andromeda Galaxy, 60° window`, same as any of 739 deep-sky objects |
 | `--find=wombat` | `Don't know 'wombat'.` and what it does accept |
 
 Accepts: 7 planets, Sun, Moon, 327 named stars, 28 asterisms, 739 deep-sky
-objects (by Messier number, NGC id, or one of 28 common names — Andromeda
+objects (by Messier number, NGC id, or one of 28 common names: Andromeda
 Galaxy, Ring Nebula, Double Cluster and the like). `?span=` widens the window
 here too.
 
@@ -144,7 +144,7 @@ here too.
 | browser | the same text in a page |
 | `-H 'Accept: text/plain'` | plain text |
 
-The ISS is marked automatically whenever a real pass is up — no flag needed.
+The ISS is marked automatically whenever a real pass is up, no flag needed.
 That needs `python3 tle.py` to have run first, to fetch the current orbit from
 CelesTrak. Without a fetched element set the ISS is quietly left off.
 
@@ -161,7 +161,7 @@ JSON keys, day view: `view daytime sun events max_alt polar_day polar_night
 first_stars dark_from visible_tonight moon prose`
 
 JSON keys, find view: `target kind visible reason alt az compass mag
-next_visible shown_utc guide` — plus `solar_elongation` when there is no window
+next_visible shown_utc guide`, plus `solar_elongation` when there is no window
 at all.
 
 ## Web only
@@ -172,8 +172,10 @@ at all.
 | `/legend` | every character and colour a chart can draw, explained |
 | `/demo` | six-plus real renders, side by side |
 | `/healthz` | `ok stars=2887 asterisms=28 deepsky=739 tle=… cache=… hitrate=…` |
-| `/stats` | what people ask for — top cities, top finds, views, cache hit rate |
+| `/stats` | what people ask for: top cities, top finds, views, cache hit rate |
 | `/stats?format=json` | the same, structured |
+| `/{place}/sphere` | mobile-only 3D sky sphere, look around by tilting the phone |
+| `/{place}/sphere.json` | the same sky as stars/asterisms/deep-sky/bodies with resolved alt/az, for the 3D view |
 | `/robots.txt` | allow all |
 | unknown place | 404 with near misses |
 | more than 30 requests a minute | 429 explaining the sky updates every 5 minutes |

@@ -16,6 +16,21 @@ import server
 
 BROWSER = {"accept": "text/html", "user-agent": "Mozilla/5.0"}
 TERMINAL = {"user-agent": "curl/8.0"}
+MOBILE = {"accept": "text/html",
+         "user-agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) "
+                       "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"}
+
+
+def setUpModule():
+    # Every test class's TestClient resolves to the same fake IP, and
+    # _buckets is one shared module-level dict -- cumulative requests across
+    # this whole file (120+ tests) can exceed the real per-IP rate limit
+    # within the file's own run time, failing unrelated later tests with a
+    # 429 that has nothing to do with what they're actually testing. Rate
+    # limiting is a production concern, not something test correctness
+    # should depend on, so it's effectively disabled for this process only.
+    server.RATE = 1_000_000
+    server.BURST = 1_000_000
 
 
 class AnimateBrowserVsTerminal(unittest.TestCase):
@@ -287,6 +302,250 @@ class StatsPersistence(unittest.TestCase):
         with open(server.STATS_STATE_FILE, "w") as f:
             f.write("not json")
         server._load_stats_state()
+
+
+class CatalogPage(unittest.TestCase):
+    def setUp(self):
+        client_cm = TestClient(server.app)
+        self.client = client_cm.__enter__()
+        self.addCleanup(client_cm.__exit__, None, None, None)
+
+    def test_renders_in_terminal_mode(self):
+        resp = self.client.get("/catalog", headers=TERMINAL)
+        self.assertEqual(resp.status_code, 200)
+        self.assertTrue(resp.headers["content-type"].startswith("text/plain"))
+        self.assertIn("Sirius", resp.text)
+
+    def test_renders_in_a_browser(self):
+        resp = self.client.get("/catalog", headers=BROWSER)
+        self.assertEqual(resp.status_code, 200)
+        self.assertTrue(resp.headers["content-type"].startswith("text/html"))
+        self.assertIn("Sirius", resp.text)
+
+    def test_nav_links_to_the_catalog_page(self):
+        resp = self.client.get("/legend", headers=BROWSER)
+        self.assertIn('href="/catalog"', resp.text)
+
+
+class StaticPageViewCounters(unittest.TestCase):
+    """/help, /legend, /catalog and /demo previously had no view counter at
+    all -- unlike the place-chart route (tallied via _tally()), nothing
+    incremented for these, so they were invisible in /stats."""
+
+    def setUp(self):
+        client_cm = TestClient(server.app)
+        self.client = client_cm.__enter__()
+        self.addCleanup(client_cm.__exit__, None, None, None)
+
+    def test_each_static_page_increments_its_own_counter(self):
+        self.client.get("/help", headers=TERMINAL)
+        self.client.get("/legend", headers=TERMINAL)
+        self.client.get("/catalog", headers=TERMINAL)
+        self.client.get("/demo")
+        pages = self.client.get("/stats?format=json").json()["pages"]
+        for name in ("help", "legend", "catalog", "demo"):
+            self.assertGreaterEqual(pages.get(name, 0), 1)
+
+
+class SphereButtonGating(unittest.TestCase):
+    """The "View in 3D" link is mobile-only, but there's no reliable
+    server-side "is this a phone" signal (unlike TERMINALS, UA sniffing for
+    phones misfires constantly -- iPadOS Safari's UA is indistinguishable
+    from desktop Safari by design). So gating is CSS-only (a pointer:coarse
+    media query): every browser gets the same markup, and these tests guard
+    against that regressing into server-side UA branching."""
+
+    def setUp(self):
+        client_cm = TestClient(server.app)
+        self.client = client_cm.__enter__()
+        self.addCleanup(client_cm.__exit__, None, None, None)
+
+    def test_sphere_button_markup_is_identical_regardless_of_user_agent(self):
+        # Real phones now redirect straight to /sphere before ever reaching
+        # this page (see MobileRedirectsToSphere) -- what's left to guard is
+        # every UA that DOES land here: desktop, and anything indistinguishable
+        # from desktop (iPadOS Safari, by design). Both must get byte-identical
+        # markup, gated by CSS (pointer:coarse) rather than server UA branching.
+        desktop = self.client.get("/Zurich", headers=BROWSER)
+        other = self.client.get("/Zurich", headers={
+            "accept": "text/html",
+            "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"})
+        desktop_btn = re.search(r'<a class="animate-btn mobile-only"[^>]*>.*?</a>', desktop.text)
+        other_btn = re.search(r'<a class="animate-btn mobile-only"[^>]*>.*?</a>', other.text)
+        self.assertIsNotNone(desktop_btn)
+        self.assertEqual(desktop_btn.group(0), other_btn.group(0))
+
+    def test_mobile_ua_no_longer_reaches_this_page_at_all(self):
+        # This client follows redirects, so a 200 here is the *sphere* page,
+        # not the text one -- confirmed by its content, not just the status.
+        resp = self.client.get("/Zurich", headers=MOBILE)
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn("Look around you", resp.text)
+        self.assertNotIn("mobile-only", resp.text)
+
+    def test_terminal_response_unchanged_by_sphere_feature(self):
+        resp = self.client.get("/Zurich", headers=TERMINAL)
+        self.assertTrue(resp.headers["content-type"].startswith("text/plain"))
+        self.assertNotIn("mobile-only", resp.text)
+        self.assertNotIn("View in 3D", resp.text)
+
+
+class SpherePage(unittest.TestCase):
+    def setUp(self):
+        client_cm = TestClient(server.app)
+        self.client = client_cm.__enter__()
+        self.addCleanup(client_cm.__exit__, None, None, None)
+
+    def test_sphere_page_returns_html_with_three_js_and_json_fetch(self):
+        resp = self.client.get("/Zurich/sphere", headers=BROWSER)
+        self.assertEqual(resp.status_code, 200)
+        self.assertTrue(resp.headers["content-type"].startswith("text/html"))
+        self.assertIn("three.module.js", resp.text)
+        # The page's own JS builds the fetch URL as '/' + PLACE + '/sphere.json'
+        # rather than a literal string -- check the pieces it's assembled from.
+        self.assertIn('var PLACE = "Zurich";', resp.text)
+        self.assertIn("/sphere.json", resp.text)
+
+    def test_sphere_page_404s_for_unknown_place(self):
+        resp = self.client.get("/Nowhereville/sphere", headers=BROWSER)
+        self.assertEqual(resp.status_code, 404)
+
+    def test_sphere_json_is_always_json_even_for_curl(self):
+        resp = self.client.get("/Zurich/sphere.json?t=2026-01-15T20:00", headers=TERMINAL)
+        self.assertEqual(resp.status_code, 200)
+        self.assertTrue(resp.headers["content-type"].startswith("application/json"))
+
+    def test_sphere_json_404s_for_unknown_place(self):
+        resp = self.client.get("/Nowhereville/sphere.json", headers=TERMINAL)
+        self.assertEqual(resp.status_code, 404)
+
+    def test_sphere_json_has_expected_top_level_keys(self):
+        resp = self.client.get("/Zurich/sphere.json?t=2026-01-15T20:00", headers=TERMINAL)
+        data = resp.json()
+        for key in ("stars", "asterisms", "deepsky", "bodies", "moon",
+                   "sun_alt", "mag_limit"):
+            self.assertIn(key, data)
+
+    def test_sphere_json_stars_have_resolved_altaz_within_bounds(self):
+        # Pinned to a real Zurich nighttime moment -- a bare "now" would make
+        # this flaky (during daylight the fading mag_limit can legitimately
+        # drop to zero stars).
+        resp = self.client.get("/Zurich/sphere.json?t=2026-01-15T20:00", headers=TERMINAL)
+        data = resp.json()
+        self.assertTrue(data["stars"])
+        for s in data["stars"]:
+            self.assertIsInstance(s["alt"], float)
+            self.assertIsInstance(s["az"], float)
+            self.assertGreaterEqual(s["alt"], -90)
+            self.assertLessEqual(s["alt"], 90)
+            self.assertLessEqual(s["mag"], data["mag_limit"])
+
+    def test_sphere_json_is_a_full_sphere_not_just_the_visible_dome(self):
+        # The 3D view shows the whole celestial sphere, not just what's above
+        # this observer's own horizon -- the far side is night for someone
+        # even when it's day here, so below-horizon stars must be present.
+        resp = self.client.get("/Zurich/sphere.json?t=2026-01-15T20:00", headers=TERMINAL)
+        data = resp.json()
+        below_horizon = [s for s in data["stars"] if s["alt"] < 0]
+        self.assertTrue(below_horizon)
+
+    def test_hours_to_dark_is_null_at_night(self):
+        resp = self.client.get("/Zurich/sphere.json?t=2026-01-15T20:00", headers=TERMINAL)
+        self.assertIsNone(resp.json()["hours_to_dark"])
+
+    def test_hours_to_dark_counts_down_to_dusk_by_day(self):
+        resp = self.client.get("/Zurich/sphere.json?t=2026-08-01T16:54", headers=TERMINAL)
+        data = resp.json()
+        self.assertGreater(data["sun_alt"], 0)
+        self.assertIsNotNone(data["hours_to_dark"])
+        self.assertGreater(data["hours_to_dark"], 0)
+        self.assertLess(data["hours_to_dark"], 24)
+
+    def test_sphere_stats_counters_increment(self):
+        self.client.get("/Zurich/sphere", headers=BROWSER)
+        self.client.get("/Zurich/sphere.json?t=2026-01-15T20:00", headers=TERMINAL)
+        stats = self.client.get("/stats?format=json").json()
+        self.assertGreaterEqual(stats["sphere"], 1)
+        sphere_stats = self.client.get("/stats/sphere?format=json").json()
+        self.assertGreaterEqual(sphere_stats["sphere_json"], 1)
+
+    def test_sphere_views_tracked_separately_per_place(self):
+        # /Zurich/sphere.json isn't a page view (no browser navigates there
+        # on its own), only /Zurich/sphere should count toward this.
+        self.client.get("/Tokyo/sphere", headers=BROWSER)
+        stats = self.client.get("/stats/sphere?format=json").json()
+        self.assertIn("Tokyo", stats["top_places"])
+        self.assertGreaterEqual(stats["top_places"]["Tokyo"], 1)
+
+    def test_sphere_places_are_separate_from_text_places(self):
+        # A sphere-only view of a place shouldn't inflate the ASCII chart's
+        # own top_places count, since sphere_page() never calls _tally().
+        self.client.get("/Reykjavik/sphere", headers=BROWSER)
+        sphere_stats = self.client.get("/stats/sphere?format=json").json()
+        text_stats = self.client.get("/stats?format=json").json()
+        self.assertIn("Reykjavík", sphere_stats["top_places"])
+        self.assertNotIn("Reykjavík", text_stats["top_places"])
+
+    def test_sphere_os_breakdown(self):
+        self.client.get("/Osaka/sphere", headers={
+            "accept": "text/html",
+            "user-agent": "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36"})
+        stats = self.client.get("/stats/sphere?format=json").json()
+        self.assertGreaterEqual(stats["by_os"].get("android", 0), 1)
+
+    def test_stats_sphere_page_renders_in_a_browser(self):
+        resp = self.client.get("/stats/sphere", headers=BROWSER)
+        self.assertEqual(resp.status_code, 200)
+        self.assertTrue(resp.headers["content-type"].startswith("text/html"))
+
+    def test_stats_sphere_not_duplicated_in_main_stats(self):
+        stats = self.client.get("/stats?format=json").json()
+        self.assertNotIn("top_sphere_places", stats)
+        self.assertNotIn("mobile_redirect", stats)
+
+
+class MobileRedirectsToSphere(unittest.TestCase):
+    """The text/ASCII view has no real value on a phone screen -- a mobile
+    UA landing on the bare root or any named place is sent straight to that
+    place's 3D sphere instead. Desktop browsers, curl, and unknown places
+    are all unaffected."""
+
+    def setUp(self):
+        client_cm = TestClient(server.app, follow_redirects=False)
+        self.client = client_cm.__enter__()
+        self.addCleanup(client_cm.__exit__, None, None, None)
+
+    def test_mobile_root_redirects_to_sphere(self):
+        resp = self.client.get("/", headers=MOBILE)
+        self.assertEqual(resp.status_code, 302)
+        self.assertTrue(resp.headers["location"].endswith("/sphere"))
+
+    def test_mobile_named_place_redirects_to_its_own_sphere(self):
+        resp = self.client.get("/Tokyo", headers=MOBILE)
+        self.assertEqual(resp.status_code, 302)
+        self.assertEqual(resp.headers["location"], "/Tokyo/sphere")
+
+    def test_query_string_carries_over(self):
+        resp = self.client.get("/Tokyo?t=2026-01-15T20:00", headers=MOBILE)
+        self.assertEqual(resp.status_code, 302)
+        self.assertEqual(resp.headers["location"], "/Tokyo/sphere?t=2026-01-15T20:00")
+
+    def test_desktop_browser_is_unaffected(self):
+        resp = self.client.get("/Tokyo", headers=BROWSER)
+        self.assertEqual(resp.status_code, 200)
+
+    def test_terminal_is_unaffected_even_with_a_mobile_looking_ua(self):
+        resp = self.client.get("/Tokyo", headers=TERMINAL)
+        self.assertEqual(resp.status_code, 200)
+
+    def test_unknown_place_falls_through_to_the_normal_404(self):
+        resp = self.client.get("/Nowhereville", headers=MOBILE)
+        self.assertEqual(resp.status_code, 404)
+
+    def test_mobile_redirect_stats_counter_increments(self):
+        self.client.get("/Tokyo", headers=MOBILE)
+        stats = self.client.get("/stats/sphere?format=json").json()
+        self.assertGreaterEqual(stats["mobile_redirect"], 1)
 
 
 class Favicon(unittest.TestCase):

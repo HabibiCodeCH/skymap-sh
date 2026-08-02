@@ -1,6 +1,6 @@
 # skymap.sh
 
-The night sky above you, as text.
+The night sky above you, as text: CLI, web, Bluesky bot, and now mobile too.
 
 ```
 curl skymap.sh                      located by IP
@@ -19,6 +19,9 @@ files to download.
 `?dso=1` overlays 739 galaxies, nebulae and clusters (Revised NGC, public
 domain). `?quadrant=A` crops the chart to one lettered cell instead of the
 whole sky, letters are marked on the chart to pick from.
+
+On a phone, an additive 3D sky sphere is one tap away: look around by
+moving the phone, at `/{place}/sphere`.
 
 ## Run it
 
@@ -57,7 +60,7 @@ python3 cli.py Zurich 2026-08-12T23:00 --json    # marks a real ISS pass automat
 `PARAMETERS.md` lists every option with real sample output.
 
 `NOTES.md` records why things are the way they are. `LICENSES.md` records where
-the data came from — everything shipped is public domain or written here.
+the data came from: everything shipped is public domain or written here.
 
 ## One URL, four consumers
 
@@ -73,7 +76,7 @@ Negotiated on `User-Agent` and `Accept`:
 ## Animate, then share it
 
 `?animate` streams the next 24h of sky, one frame every 15 simulated
-minutes, live in the terminal — stars and planets fade in and out with real
+minutes, live in the terminal: stars and planets fade in and out with real
 twilight, no hard cut at sunset. When the stream finishes it prints a
 shareable GIF link, already rendered and cached:
 
@@ -93,19 +96,19 @@ link appears next to it.
 
 `Caddyfile`, `sky.service` and `sky.cron` are a working origin: Caddy terminates
 TLS and proxies to uvicorn under systemd, cron refreshes the TLE every six hours.
-Put Cloudflare in front — it absorbs a launch burst and supplies the
+Put Cloudflare in front: it absorbs a launch burst and supplies the
 `CF-IPLatitude` / `CF-IPLongitude` headers that make a bare `curl skymap.sh` know
 where you are.
 
-Responses carry `s-maxage` matching the render bucket — 300 s at night, 900 s by
-day. Get that header right and almost nothing reaches origin.
+Responses carry `s-maxage` matching the render bucket (300 s at night, 900 s by
+day). Get that header right and almost nothing reaches origin.
 
 ### Load
 
 A cold render is ~12 ms; a cache hit is a dict lookup at ~2 ms end-to-end, or
 about 440 req/s single-threaded. Requests are bucketed in time (5 minutes at
 night, 15 by day), so 30 clients asking within a bucket produce one render and
-29 hits — measured 98.8% hit rate under a repeat load. Origin sees 12 renders
+29 hits, measured 98.8% hit rate under a repeat load. Origin sees 12 renders
 per city per hour at night, 4 by day.
 
 While the Sun is up there is no star chart worth drawing, so the default view
@@ -117,13 +120,13 @@ Someone running `watch -n 1 curl skymap.sh` is 86,400 requests a day; they get a
 429 that explains the sky is recomputed every five minutes and suggests
 `watch -n 300`. The buckets (and the `/stats` counters) are per process, and
 Caddy's proxy has enough source-IP stickiness that different visitors can land
-on different workers and see different, non-overlapping numbers — so
+on different workers and see different, non-overlapping numbers, so
 `sky.service` runs a single worker rather than multiplying either one.
 
 Cache-key surfaces are bounded in code so a client cannot generate misses for
 free: `?t=` snaps to a 5-minute grain and clamps to ±2 years, coordinates snap to
-0.1° (~11 km) at parse time, and the 40-day `find` scan is memoised — 68 ms cold,
-0.08 ms warm. See `DEPLOY.md` for the edge rules that finish the job, including
+0.1° (~11 km) at parse time, and the 40-day `find` scan is memoised (68 ms cold,
+0.08 ms warm). See `DEPLOY.md` for the edge rules that finish the job, including
 the Cloudflare cache-key rule that stops unknown query parameters busting the
 CDN.
 

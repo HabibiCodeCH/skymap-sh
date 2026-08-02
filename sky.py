@@ -242,10 +242,13 @@ DSO_NAMES = {"gal": "galaxy", "clu": "cluster", "neb": "nebula", "pln": "planeta
 DSO_LEGEND = ("deep sky:  " +
               "  ".join(f"{DSO_GLYPH[k][0]} {DSO_NAMES[k]}" for k in DSO_NAMES))
 
-def deepsky_visible(dso_limit, jd, lat, lst):
-    """Deep-sky objects above the horizon and brighter than dso_limit.
-    dso_limit=None means the layer is off (the default -- most of these
-    need binoculars, so they only show up when asked for)."""
+def deepsky_visible(dso_limit, jd, lat, lst, above_horizon=True):
+    """Deep-sky objects brighter than dso_limit (and, by default, above the
+    horizon). dso_limit=None means the layer is off (the default -- most of
+    these need binoculars, so they only show up when asked for).
+    above_horizon=False is for the 3D sphere view's "full sphere" mode,
+    which also shows what's below the horizon -- the far side of the sky,
+    night for someone even when it's day here."""
     if dso_limit is None:
         return []
     out = []
@@ -254,8 +257,59 @@ def deepsky_visible(dso_limit, jd, lat, lst):
             continue
         ra, de = precess(o["ra"], o["de"], jd)
         a, z = altaz(ra, de, lat, lst)
-        if a > 0:
+        if a > 0 or not above_horizon:
             out.append((o, a, z))
+    return out
+
+def stars_visible(mag_limit, jd, lat, lst, above_horizon=True):
+    """Stars brighter than mag_limit (and, by default, above the horizon),
+    same filter as the star loop inside render() (kept separate so a data
+    consumer -- the 3D sphere view -- doesn't have to draw ASCII to get
+    positions). See deepsky_visible for what above_horizon=False means."""
+    out = []
+    for s in _load("stars.json"):
+        if s["m"] > mag_limit:
+            continue
+        ra, de = precess(s["ra"], s["de"], jd)
+        a, z = altaz(ra, de, lat, lst)
+        if a > 0 or not above_horizon:
+            out.append((s, a, z))
+    return out
+
+def asterism_lines_visible(jd, lat, lst, above_horizon=True):
+    """Constellation line segments (by default, above the horizon), as
+    (alt, az) point pairs -- the geometry half of render()'s
+    constellation-lines block, without the ASCII-projection parts
+    (project(), the on-screen-length guard, character-angle bucketing) that
+    only matter when drawing glyphs into a flat grid. See deepsky_visible
+    for what above_horizon=False means."""
+    cpos = {t["hr"]: [t["ra"], t["de"]] for t in _load("stars.json")}
+    out = []
+    for con in _load("asterisms.json"):
+        alts = []
+        for poly in con["lines"]:
+            for hip in poly:
+                if hip in cpos:
+                    ra, dec = cpos[hip]
+                    ra, dec = precess(ra, dec, jd)
+                    alts.append(altaz(ra, dec, lat, lst)[0])
+        if above_horizon and (not alts or sum(1 for a in alts if a > 12) < 0.85 * len(alts)):
+            continue                      # mostly below or grazing the horizon
+        segments = []
+        for poly in con["lines"]:
+            pts = []
+            for hip in poly:
+                if hip not in cpos:
+                    pts.append(None); continue
+                ra, dec = cpos[hip]
+                ra, dec = precess(ra, dec, jd)
+                a, z = altaz(ra, dec, lat, lst)
+                pts.append((a, z) if (a > 0 or not above_horizon) else None)
+            for p, q in zip(pts, pts[1:]):
+                if p and q:
+                    segments.append([list(p), list(q)])
+        if segments:
+            out.append({"name": con["name"], "segments": segments})
     return out
 
 def render(when_utc, lat, lon, height=34, color=True, show_lines=True, mag_limit=4.2,
@@ -425,7 +479,7 @@ def sky_read(st, place, when_local, tzname):
     L = []
     L.append(f"{place} · {when_local:%a %d %b %Y %H:%M} {tzname}")
     if su["alt"] > 0:
-        sky = "daylight — the sun is up"
+        sky = "daylight, the sun is up"
     elif su["alt"] > -6:
         sky = "civil twilight"
     elif su["alt"] > -12:
@@ -789,7 +843,7 @@ def visibility(t, jd, lat, lst, min_alt=8.0):
     mag = t["mag"] if t.get("mag") is not None else t.get("faint")
     if t["alt"] < min_alt:
         return False, ("below the horizon" if t["alt"] <= 0 else
-                       "too low — under 8°, so trees and buildings will be in the way")
+                       "too low, under 8°, so trees and buildings will be in the way")
     if not dark_enough(sa, mag):
         return False, ("the sky is still too bright" if sa > -6
                        else "the sky is not quite dark enough for it")
