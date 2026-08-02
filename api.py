@@ -2235,12 +2235,12 @@ function applyOrientation(e) {{
   camera.quaternion.copy(deviceQ);
   if (DEBUG) {{
     debugEl.textContent =
-      'raw alpha: ' + (e.alpha === null ? 'null' : e.alpha.toFixed(1)) + '\n' +
-      'webkitCompassHeading: ' + (typeof e.webkitCompassHeading === 'number' ? e.webkitCompassHeading.toFixed(1) : 'n/a') + '\n' +
-      'raw beta: ' + (e.beta === null ? 'null' : e.beta.toFixed(1)) + '\n' +
-      'raw gamma: ' + (e.gamma === null ? 'null' : e.gamma.toFixed(1)) + '\n' +
-      'event type: ' + _orientEvent + ' / absolute: ' + e.absolute + '\n' +
-      'used alphaDeg: ' + alphaDeg.toFixed(1) + '\n' +
+      'raw alpha: ' + (e.alpha === null ? 'null' : e.alpha.toFixed(1)) + '\\n' +
+      'webkitCompassHeading: ' + (typeof e.webkitCompassHeading === 'number' ? e.webkitCompassHeading.toFixed(1) : 'n/a') + '\\n' +
+      'raw beta: ' + (e.beta === null ? 'null' : e.beta.toFixed(1)) + '\\n' +
+      'raw gamma: ' + (e.gamma === null ? 'null' : e.gamma.toFixed(1)) + '\\n' +
+      'event type: ' + _orientEvent + ' / absolute: ' + e.absolute + '\\n' +
+      'used alphaDeg: ' + alphaDeg.toFixed(1) + '\\n' +
       'fps: ' + _fps;
   }}
 }}

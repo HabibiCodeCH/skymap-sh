@@ -6,6 +6,8 @@ Run:  python3 test_server.py
 import json
 import os
 import re
+import shutil
+import subprocess
 import tempfile
 import time
 import unittest
@@ -541,6 +543,29 @@ class SpherePage(unittest.TestCase):
         client_cm = TestClient(server.app)
         self.client = client_cm.__enter__()
         self.addCleanup(client_cm.__exit__, None, None, None)
+
+    def test_inline_script_is_syntactically_valid_javascript(self):
+        # A f-string escaping mistake (a literal \n instead of an escaped
+        # \\n, so Python turned it into a real newline inside a JS string
+        # literal) once shipped a syntax error that broke the ENTIRE
+        # inline script -- not just the feature being changed, the whole
+        # page, including the "look around" button's click handler.
+        # Python's own tests never caught it because they only ever check
+        # that api.py itself parses, not that the JS it renders does.
+        node = shutil.which("node")
+        if not node:
+            self.skipTest("node not available to check JS syntax")
+        resp = self.client.get("/Zurich/sphere", headers=BROWSER)
+        script = re.search(r'<script type="module">(.*?)</script>',
+                           resp.text, re.DOTALL).group(1)
+        with tempfile.NamedTemporaryFile(suffix=".mjs", mode="w", delete=False) as f:
+            f.write(script)
+            path = f.name
+        try:
+            result = subprocess.run([node, "--check", path], capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+        finally:
+            os.remove(path)
 
     def test_sphere_page_returns_html_with_three_js_and_json_fetch(self):
         resp = self.client.get("/Zurich/sphere", headers=BROWSER)
