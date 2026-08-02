@@ -32,9 +32,17 @@ TERMINALS = ("curl", "wget", "httpie", "http/", "powershell", "libcurl", "lwp",
 # straight there instead of the text page it can't do much with.
 MOBILE_UA = ("iphone", "ipod", "android", "windows phone", "blackberry")
 
+# Crawlers self-identify in their UA (a matter of etiquette, not enforcement),
+# and Googlebot's and Bingbot's mobile crawlers both send an Android/iPhone-
+# looking UA -- without this, they'd get redirected to the sphere page same
+# as a real phone, meaning Google's mobile index (the primary one today)
+# would see a thin, JS-only page instead of the real text content this site
+# is actually about.
+CRAWLER_UA = ("bot", "spider", "crawler", "slurp", "facebookexternalhit")
+
 def _is_mobile(request):
     ua = (request.headers.get("user-agent") or "").lower()
-    if any(t in ua for t in TERMINALS):
+    if any(t in ua for t in TERMINALS) or any(t in ua for t in CRAWLER_UA):
         return False
     return any(t in ua for t in MOBILE_UA)
 
@@ -1082,12 +1090,18 @@ def stats_hourly(request: Req):
 def robots():
     # /animate and /stats aren't content -- each is either a one-shot,
     # ID-scoped render or a live counter, so indexing them just burns crawl
-    # budget a search engine would rather spend on real pages.
+    # budget a search engine would rather spend on real pages. /sphere is a
+    # mobile-only, JS-dependent re-skin of the same place page, one per
+    # place -- thin/duplicate content not worth a separate index entry
+    # (crawlers are also exempted from ever being redirected there, see
+    # CRAWLER_UA, but this is a second line of defence for the URL itself).
     return PlainTextResponse(
         "User-agent: *\n"
         "Allow: /\n"
         "Disallow: /animate/\n"
         "Disallow: /stats\n"
+        "Disallow: /*/sphere\n"
+        "Disallow: /*/sphere.json\n"
         "Sitemap: https://skymap.sh/sitemap.xml\n"
     )
 

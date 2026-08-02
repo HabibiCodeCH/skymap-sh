@@ -704,6 +704,21 @@ class MobileRedirectsToSphere(unittest.TestCase):
         stats = self.client.get("/stats/sphere?format=json").json()
         self.assertGreaterEqual(stats["mobile_redirect"], 1)
 
+    def test_googlebot_mobile_crawler_is_not_redirected(self):
+        # Googlebot's and Bingbot's mobile crawlers send an Android/iPhone
+        # UA -- without an exemption they'd get the sphere page redirect
+        # same as a real phone, and Google's mobile index (the primary one
+        # today) would see a thin, JS-only page instead of the real text
+        # content this site is actually about.
+        resp = self.client.get("/Tokyo", headers={
+            "accept": "text/html",
+            "user-agent": "Mozilla/5.0 (Linux; Android 6.0.1; Nexus 5X Build/MMB29P) "
+                          "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 "
+                          "Mobile Safari/537.36 (compatible; Googlebot/2.1; "
+                          "+http://www.google.com/bot.html)"})
+        self.assertEqual(resp.status_code, 200)
+        self.assertNotIn("three.module.js", resp.text)
+
 
 class Favicon(unittest.TestCase):
     """Browsers request /favicon.ico and /apple-touch-icon.png on every visit
@@ -741,6 +756,13 @@ class SeoRoutes(unittest.TestCase):
         resp = self.client.get("/robots.txt")
         self.assertEqual(resp.status_code, 200)
         self.assertIn("Sitemap: https://skymap.sh/sitemap.xml", resp.text)
+
+    def test_robots_disallows_the_sphere_view(self):
+        # Thin, JS-dependent, one entry per place -- not worth indexing,
+        # on top of the crawler exemption in _is_mobile() itself.
+        resp = self.client.get("/robots.txt")
+        self.assertIn("Disallow: /*/sphere\n", resp.text)
+        self.assertIn("Disallow: /*/sphere.json\n", resp.text)
 
     def test_sitemap_is_valid_looking_xml_with_absolute_urls(self):
         resp = self.client.get("/sitemap.xml")
