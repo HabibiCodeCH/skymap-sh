@@ -211,5 +211,147 @@ class NightOverrideDuringDaylight(unittest.TestCase):
         api.compose_chart_only(r)   # raises on failure; nothing to assert
 
 
+class CatalogText(unittest.TestCase):
+    """catalog_text() lists every object findable by name via ?find= -- it
+    must actually match what resolve_target() accepts, or the page would
+    promise names that fail to find."""
+
+    def setUp(self):
+        self.jd = api.julian(dt.datetime(2026, 7, 30, 23, 0))
+
+    def test_section_counts_match_the_underlying_catalogues(self):
+        text = api.catalog_text(color=False)
+        stars = api.sky._load("stars.json")
+        asterisms = api.sky._load("asterisms.json")
+        dso = api.sky._load("deepsky.json")
+        n_stars = sum(1 for s in stars if s.get("n"))
+        n_dso = sum(1 for o in dso if o["n"] != o["id"])
+        self.assertIn(f"NAMED STARS ({n_stars})", text)
+        self.assertIn(f"CONSTELLATIONS ({len(asterisms)})", text)
+        self.assertIn(f"DEEP SKY ({n_dso})", text)
+
+    def test_a_named_star_is_actually_findable(self):
+        text = api.catalog_text(color=False)
+        self.assertIn("Sirius", text)
+        self.assertIsNotNone(api.resolve_target("Sirius", self.jd, 47.4, 0.0))
+
+    def test_an_asterism_is_actually_findable(self):
+        text = api.catalog_text(color=False)
+        self.assertIn("Big Dipper", text)
+        self.assertIsNotNone(api.resolve_target("Big Dipper", self.jd, 47.4, 0.0))
+
+    def test_a_common_named_dso_shows_its_messier_and_common_name(self):
+        text = api.catalog_text(color=False)
+        self.assertIn("M31 (Andromeda Galaxy)", text)
+        self.assertIsNotNone(api.resolve_target("M31", self.jd, 47.4, 0.0))
+        self.assertIsNotNone(api.resolve_target("Andromeda Galaxy", self.jd, 47.4, 0.0))
+
+    def test_bare_ngc_numbered_objects_are_excluded(self):
+        # Those have no traditional name -- just a catalogue number -- so
+        # they don't belong on a page of *named* objects.
+        text = api.catalog_text(color=False)
+        dso_section = text[text.index("DEEP SKY"):]
+        self.assertNotIn("NGC", dso_section)
+
+    def test_solar_system_bodies_are_listed(self):
+        text = api.catalog_text(color=False)
+        for body in ("Sun", "Moon", "Venus", "Jupiter"):
+            self.assertIn(body, text)
+
+    def test_solar_system_bodies_use_the_same_glyphs_as_the_chart(self):
+        # Same glyphs sky.py's render()/render_linear() actually draw on the
+        # chart -- so this list can't drift into showing symbols nothing on
+        # screen matches. Moon's glyph is the real current phase, not a
+        # fixed circle, so it's checked separately below.
+        text = api.catalog_text(color=False)
+        i = text.index("SOLAR SYSTEM")
+        section = text[i:text.index("CONSTELLATIONS")]
+        self.assertIn("☀ Sun", section)
+        self.assertIn("◆ Mercury", section)
+
+    def test_moon_shows_its_real_current_phase(self):
+        import sky
+        text = api.catalog_text(color=False)
+        age = sky.moon(sky.julian(dt.datetime.utcnow()))["age"]
+        self.assertIn(f"Moon ({sky.phase_name(age)})", text)
+        self.assertIn(sky.moon_glyph(age), text[text.index("SOLAR SYSTEM"):text.index("Moon")])
+
+    def test_named_stars_show_a_brightness_glyph_and_full_constellation_name(self):
+        text = api.catalog_text(color=False)
+        # Sirius is mag -1.46, well under sky.glyph_for's 0.8 cutoff for the
+        # brightest dot -- and CMa's full name should show, not the abbreviation.
+        self.assertIn("● Sirius", text)
+        self.assertIn("Canis Major", text)
+        self.assertNotIn(" CMa\n", text)
+
+
+class CatalogHtml(unittest.TestCase):
+    """catalog_html() is the browser-only twin of catalog_text() -- every
+    object is a link to /?find=<name> opened in a new tab, so browsing the
+    catalog never navigates away from the chart on screen. A bare place
+    (no city in the path) resolves through the visitor's own geo-IP fallback
+    in the new tab, same as curl skymap.sh with no place given."""
+
+    def test_a_star_links_to_a_bare_find_in_a_new_tab(self):
+        h = api.catalog_html()
+        self.assertIn('href="/?find=Sirius" target="_blank" rel="noopener"', h)
+
+    def test_moon_link_uses_the_plain_name_not_the_phase_annotated_display(self):
+        # Displayed as "Moon (waning gibbous)" or similar, but resolve_target
+        # only matches the bare word "moon" -- the phase text in parens
+        # would never resolve if it leaked into the href.
+        import sky
+        h = api.catalog_html()
+        self.assertIn('href="/?find=Moon" target="_blank" rel="noopener"', h)
+        age = sky.moon(sky.julian(dt.datetime.utcnow()))["age"]
+        self.assertIn(f"Moon ({sky.phase_name(age)})", h)
+
+    def test_a_multi_word_name_is_url_encoded(self):
+        h = api.catalog_html()
+        self.assertIn("find=Big%20Dipper", h)
+
+    def test_a_dso_links_with_dso_and_quadrant_turned_on(self):
+        h = api.catalog_html()
+        # Displayed as "M31 (Andromeda Galaxy)" but the href must use the
+        # canonical short id, not the whole parenthesised label.
+        self.assertIn("href=\"/?find=M31&amp;dso=1&amp;quadrant\"", h)
+        self.assertIn(">M31 (Andromeda Galaxy)<", h)
+
+    def test_a_non_dso_link_does_not_carry_dso_or_quadrant(self):
+        h = api.catalog_html()
+        sirius_link = h[h.index('href="/?find=Sirius"'):][:120]
+        self.assertNotIn("dso=1", sirius_link)
+        self.assertNotIn("quadrant", sirius_link)
+
+    def test_planets_get_distinct_colours_not_one_shared_colour(self):
+        h = api.catalog_html()
+        mercury = h[h.index("Mercury") - 60:h.index("Mercury")]
+        venus = h[h.index("Venus") - 60:h.index("Venus")]
+        self.assertNotEqual(
+            mercury[mercury.index("color:"):mercury.index("color:") + 20],
+            venus[venus.index("color:"):venus.index("color:") + 20])
+
+    def test_lists_the_same_objects_as_the_terminal_version(self):
+        # Both are built from _catalog_data() -- this pins that they can't
+        # drift into showing different objects for the two audiences.
+        text = api.catalog_text(color=False)
+        h = api.catalog_html()
+        self.assertIn("NAMED STARS (327)", text)
+        self.assertIn("NAMED STARS (327)", h)
+        self.assertIn("DEEP SKY (112)", text)
+        self.assertIn("DEEP SKY (112)", h)
+
+
+class LegendMatchesTheRealGlyphs(unittest.TestCase):
+    def test_moon_phase_row_is_generated_not_hand_typed(self):
+        # Regression test: this line used to be a separately hand-typed
+        # literal string that could (and did) drift out of sync once
+        # moon_glyph()'s own output changed.
+        import sky
+        text = api.legend_text(color=False)
+        expected = " ".join(sky.moon_glyph(a) for a in range(0, 360, 45))
+        self.assertIn(expected, text)
+
+
 if __name__ == "__main__":
     unittest.main()

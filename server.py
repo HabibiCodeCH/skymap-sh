@@ -11,7 +11,7 @@ Run:  uvicorn server:app --host 0.0.0.0 --port 8000
 """
 import asyncio, datetime as dt, html, json, os, re, secrets, threading, time
 from collections import OrderedDict
-from urllib.parse import quote
+from urllib.parse import quote, urlparse
 from fastapi import FastAPI, Request as Req
 from fastapi.responses import (PlainTextResponse, HTMLResponse, JSONResponse,
                                StreamingResponse, FileResponse, Response,
@@ -85,6 +85,7 @@ _finds = Counter()
 # _tally(), which sphere_page() never calls), so which cities people want
 # to actually look around in would otherwise be invisible.
 _sphere_places = Counter()
+_referrers = Counter()
 _TOP_KEEP = 2000            # trim the long tail so the tables cannot grow forever
 
 # --- persisting the live counters ----------------------------------------------
@@ -103,7 +104,8 @@ def _save_stats_state():
         with open(tmp, "w") as f:
             json.dump(dict(started=STARTED, stat=dict(_stat),
                           places=dict(_places), finds=dict(_finds),
-                          sphere_places=dict(_sphere_places)), f)
+                          sphere_places=dict(_sphere_places),
+                          referrers=dict(_referrers)), f)
         os.replace(tmp, STATS_STATE_FILE)   # atomic -- a crash mid-write
     except OSError:                          # can't leave a corrupt file
         pass
@@ -121,6 +123,7 @@ def _load_stats_state():
     _places.update(data.get("places", {}))
     _finds.update(data.get("finds", {}))
     _sphere_places.update(data.get("sphere_places", {}))
+    _referrers.update(data.get("referrers", {}))
 
 
 # --- hourly history -----------------------------------------------------------
@@ -151,6 +154,15 @@ def _read_bsky_stats():
         return {}
 
 
+HOURLY_TOP_REFERRERS = 5    # per-hour breakdown, not the all-time list -- kept
+                            # small so a forever-growing log stays cheap to read
+
+
+def _top_hour_referrers(hstat, n=HOURLY_TOP_REFERRERS):
+    refs = {k[4:]: v for k, v in hstat.items() if k.startswith("ref:")}
+    return dict(sorted(refs.items(), key=lambda kv: -kv[1])[:n])
+
+
 def _flush_hour(hour_key, hstat):
     # Cumulative snapshot goes out regardless of whether this particular
     # hour had any traffic -- the totals it's saving span the process's
@@ -160,6 +172,9 @@ def _flush_hour(hour_key, hstat):
         return
     row = dict(hour=hour_key, requests=hstat["requests"], hit=hstat["hit"],
               miss=hstat["miss"], day=hstat["day"], night=hstat["night"])
+    top_ref = _top_hour_referrers(hstat)
+    if top_ref:
+        row["top_referrers"] = top_ref
     try:
         with open(HOURLY_LOG, "a") as f:
             f.write(json.dumps(row) + "\n")
@@ -194,7 +209,26 @@ def _read_hourly_history(days=7):
     return rows
 
 
-def _tally(r, daytime, hit, mode, status, data, colour=True):
+def _referrer_domain(request: Req):
+    """Bare domain from the Referer header, or None for direct/CLI traffic.
+    Self-referrals (a link from skymap.sh back to skymap.sh) aren't an
+    origin worth counting, so those are dropped too."""
+    ref = request.headers.get("referer")
+    if not ref:
+        return None
+    try:
+        host = urlparse(ref).netloc.lower()
+    except ValueError:
+        return None
+    host = host.split(":")[0]
+    if host.startswith("www."):
+        host = host[4:]
+    if not host or host == (request.headers.get("host") or "").split(":")[0].lower():
+        return None
+    return host
+
+
+def _tally(r, daytime, hit, mode, status, data, colour=True, referrer=None):
     _roll_hour()
     _stat["requests"] += 1
     _stat["hit" if hit else "miss"] += 1
@@ -229,12 +263,18 @@ def _tally(r, daytime, hit, mode, status, data, colour=True):
     _places[r.place.name] += 1
     if r.find:
         _finds[r.find.strip().title()[:40]] += 1
+    if referrer:
+        _referrers[referrer] += 1
+        _hour_stat[f"ref:{referrer}"] += 1
     if len(_places) > _TOP_KEEP:
         for k, _v in _places.most_common()[_TOP_KEEP:]:
             del _places[k]
     if len(_finds) > _TOP_KEEP:
         for k, _v in _finds.most_common()[_TOP_KEEP:]:
             del _finds[k]
+    if len(_referrers) > _TOP_KEEP:
+        for k, _v in _referrers.most_common()[_TOP_KEEP:]:
+            del _referrers[k]
 
 
 def stats_text(n=50):
@@ -306,6 +346,11 @@ def stats_text(n=50):
         L.append(f"top finds ({len(_finds):,} distinct)")
         for name, c in _finds.most_common(n):
             L.append(f"  {name[:28]:28} {c:>8,}")
+    if _referrers:
+        L.append("")
+        L.append(f"top referrers ({len(_referrers):,} distinct)")
+        for name, c in _referrers.most_common(n):
+            L.append(f"  {name[:28]:28} {c:>8,}")
     return "\n".join(L) + "\n"
 
 
@@ -325,6 +370,8 @@ def stats_json(n=50):
         places_distinct=len(_places), finds_distinct=len(_finds),
         top_places=dict(_places.most_common(n)),
         top_finds=dict(_finds.most_common(n)),
+        referrers_distinct=len(_referrers),
+        top_referrers=dict(_referrers.most_common(n)),
         bsky=_read_bsky_stats(),
     )
 
@@ -355,23 +402,37 @@ def stats_sphere_json(n=50):
     )
 
 
+def _hour_top_referrer_str(row):
+    """The single busiest domain that hour, e.g. 'twitter.com (42)' -- the
+    full per-hour breakdown (up to HOURLY_TOP_REFERRERS domains) is only
+    in the JSON view; the text table has room for one column, not a list."""
+    top_ref = row.get("top_referrers") or {}
+    if not top_ref:
+        return ""
+    name, c = next(iter(top_ref.items()))
+    return f"{name[:18]} ({c})"
+
+
 def stats_hourly_text(days=7):
     _roll_hour()
     rows = _read_hourly_history(days=days)
     if _hour_stat:
         rows = rows + [dict(hour=_hour_key, requests=_hour_stat["requests"],
                             hit=_hour_stat["hit"], miss=_hour_stat["miss"],
-                            day=_hour_stat["day"], night=_hour_stat["night"])]
+                            day=_hour_stat["day"], night=_hour_stat["night"],
+                            top_referrers=_top_hour_referrers(_hour_stat))]
     if not rows:
         return "skymap.sh: hourly stats\n\nno data yet (first hour still in progress)\n"
     L = [f"skymap.sh: hourly stats, last {days}d ({len(rows)} hour(s) on record)", "",
-        f"{'hour (UTC)':17} {'requests':>9} {'hit%':>6} {'day':>6} {'night':>6}"]
+        f"{'hour (UTC)':17} {'requests':>9} {'hit%':>6} {'day':>6} {'night':>6}  "
+        f"{'top referrer':24}"]
     for row in rows:
         req = row["requests"] or 1
         hitpct = 100 * row["hit"] / req
         current = "  (in progress)" if row["hour"] == _hour_key and row is rows[-1] else ""
         L.append(f"{row['hour']:17} {row['requests']:>9,} {hitpct:>5.1f}% "
-                f"{row['day']:>6,} {row['night']:>6,}{current}")
+                f"{row['day']:>6,} {row['night']:>6,}  "
+                f"{_hour_top_referrer_str(row):24}{current}")
     return "\n".join(L) + "\n"
 
 
@@ -382,6 +443,7 @@ def stats_hourly_json(days=7):
         rows = rows + [dict(hour=_hour_key, requests=_hour_stat["requests"],
                             hit=_hour_stat["hit"], miss=_hour_stat["miss"],
                             day=_hour_stat["day"], night=_hour_stat["night"],
+                            top_referrers=_top_hour_referrers(_hour_stat),
                             in_progress=True)]
     return dict(hours=rows)
 
@@ -730,7 +792,8 @@ def _respond(request: Req, place: str | None):
                                  headers={"Cache-Control": "no-store"})
     r = _build(request, place)
     res, daytime, hit = _cached(r)
-    _tally(r, daytime, hit, mode, res.status, res.data, colour)
+    _tally(r, daytime, hit, mode, res.status, res.data, colour,
+           referrer=_referrer_domain(request))
     edge = DAY_EDGE if daytime else NIGHT_EDGE
     headers = {"Cache-Control": f"public, max-age={edge // 4}, s-maxage={edge}, "
                                 f"stale-while-revalidate=600",
@@ -813,7 +876,7 @@ def _respond(request: Req, place: str | None):
         # TERMINALS lets curl/wget be told apart from a browser.
         sphere_btn = f'<a class="animate-btn mobile-only" href="/{r.place.slug}/sphere">◎ View in 3D</a>'
         body = api.PAGE.format(title=f"skymap.sh: {r.place.name}",
-                               path=f"/{r.place.slug}" if place else "",
+                               header=api.header_html(f"/{r.place.slug}" if place else ""),
                                explore=explore, animate_btn=animate_btn,
                                quadrant_btn=quadrant_btn, sphere_btn=sphere_btn,
                                body=api.ansi_to_html(page_text), extra=extra)
@@ -846,7 +909,7 @@ def help_(request: Req):
     mode, _colour = _wants(request)
     headers = {"Cache-Control": "public, max-age=3600"}
     if mode == "html":
-        body = api.PAGE.format(title="skymap.sh: usage", path="/help",
+        body = api.PAGE.format(title="skymap.sh: usage", header=api.header_html("/help"),
                                explore=api.EXPLORE.format(place=""), body=html.escape(api.HELP),
                                extra="", animate_btn="", quadrant_btn="", sphere_btn="")
         return HTMLResponse(body, headers=headers)
@@ -911,7 +974,7 @@ def legend(request: Req):
     mode, colour = _wants(request)
     headers = {"Cache-Control": "public, max-age=3600"}
     if mode == "html":
-        body = api.PAGE.format(title="skymap.sh: legend", path="/legend",
+        body = api.PAGE.format(title="skymap.sh: legend", header=api.header_html("/legend"),
                                explore=api.EXPLORE.format(place=""),
                                body=api.ansi_to_html(api.legend_text(True)),
                                extra="", animate_btn="", quadrant_btn="", sphere_btn="")
@@ -925,9 +988,9 @@ def catalog(request: Req):
     mode, colour = _wants(request)
     headers = {"Cache-Control": "public, max-age=3600"}
     if mode == "html":
-        body = api.PAGE.format(title="skymap.sh: catalog", path="/catalog",
+        body = api.PAGE.format(title="skymap.sh: catalog", header=api.header_html("/catalog"),
                                explore=api.EXPLORE.format(place=""),
-                               body=api.ansi_to_html(api.catalog_text(True)),
+                               body=api.catalog_html(),
                                extra="", animate_btn="", quadrant_btn="",
                                sphere_btn="")
         return HTMLResponse(body, headers=headers)
@@ -956,7 +1019,7 @@ def stats(request: Req):
     headers = {"Cache-Control": "no-store"}
     mode, _colour = _wants(request)
     if mode == "html":
-        body = api.PAGE.format(title="skymap.sh: stats", path="/stats",
+        body = api.PAGE.format(title="skymap.sh: stats", header=api.header_html("/stats"),
                                explore=api.EXPLORE, body=html.escape(stats_text()),
                                extra="", animate_btn="", quadrant_btn="", sphere_btn="")
         return HTMLResponse(body, headers=headers)
@@ -970,7 +1033,8 @@ def stats_sphere(request: Req):
     headers = {"Cache-Control": "no-store"}
     mode, _colour = _wants(request)
     if mode == "html":
-        body = api.PAGE.format(title="skymap.sh: sphere stats", path="/stats/sphere",
+        body = api.PAGE.format(title="skymap.sh: sphere stats",
+                               header=api.header_html("/stats/sphere"),
                                explore=api.EXPLORE, body=html.escape(stats_sphere_text()),
                                extra="", animate_btn="", quadrant_btn="", sphere_btn="")
         return HTMLResponse(body, headers=headers)
@@ -989,7 +1053,7 @@ def stats_hourly(request: Req):
     headers = {"Cache-Control": "no-store"}
     mode, _colour = _wants(request)
     if mode == "html":
-        body = api.PAGE.format(title="skymap.sh: stats", path="/stats/hourly",
+        body = api.PAGE.format(title="skymap.sh: stats", header=api.header_html("/stats/hourly"),
                                explore=api.EXPLORE, body=html.escape(stats_hourly_text(days)),
                                extra="", animate_btn="", quadrant_btn="", sphere_btn="")
         return HTMLResponse(body, headers=headers)

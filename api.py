@@ -665,7 +665,7 @@ def _compose_sky(r):
                 f"horizon panorama, 0-70° + zenith inset{quad_bit}")
 
     head = _horizon_head(r, mode)
-    prose = sky_read(st, p.name, r.when_local, f"UTC{r.tz:+g}")
+    prose = sky_read(st, p.name, r.when_local, f"UTC{r.tz:+g}", p.lat)
 
     out = ["", paint(head, C.HEAD, c), "", art, ""]
     out += [paint("  " + l, C.LABEL, c) for l in prose.split("\n")[1:]]
@@ -719,29 +719,10 @@ def _compose_sky(r):
     return Result("\n".join(out), data)
 
 
-# xterm-256 -> #rrggbb, matching PAGE's own client-side xtermHex() exactly --
-# so the 3D view can be handed a ready-to-draw colour per object instead of
-# duplicating this table in JS. Every colour sky.py's ASCII renderer uses is
-# one of these codes (see star_colour, sky.C, DSO_GLYPH).
-_XTERM_BASE16 = ["000000", "800000", "008000", "808000", "000080", "800080",
-                "008080", "c0c0c0", "808080", "ff0000", "00ff00", "ffff00",
-                "0000ff", "ff00ff", "00ffff", "ffffff"]
-_XTERM_LEVELS = [0, 95, 135, 175, 215, 255]
-_ANSI_256 = re.compile(r"\033\[38;5;(\d+)m")
-
-def _xterm_hex(n):
-    if n < 16:
-        return "#" + _XTERM_BASE16[n]
-    if n < 232:
-        n -= 16
-        r, g, b = _XTERM_LEVELS[n // 36], _XTERM_LEVELS[(n // 6) % 6], _XTERM_LEVELS[n % 6]
-        return f"#{r:02x}{g:02x}{b:02x}"
-    v = 8 + (n - 232) * 10
-    return f"#{v:02x}{v:02x}{v:02x}"
-
-def _ansi_hex(ansi):
-    m = _ANSI_256.search(ansi)
-    return _xterm_hex(int(m.group(1))) if m else "#ffffff"
+# _ansi_hex()/_xterm_hex() (defined later in this file, for catalog_html())
+# give the 3D view a ready-to-draw colour per object -- same xterm-256 table
+# sky.py's ASCII renderer uses (star_colour, sky.C, DSO_GLYPH), so the sphere
+# is a faithful re-skin, not a reinvention.
 
 # The Sun's glyph colour is inlined in render() rather than a named C.
 # constant (sky.py's render(), the "-- bodies --" block) -- kept in sync here
@@ -1249,7 +1230,13 @@ def legend_text(color=True):
         "",
         head("SOLAR SYSTEM"),
         f"  {P('☀', SUN_C)}  Sun        {P('◆', C.PLANET)}  planet",
-        f"  {P('○ ◔ ◐ ◕ ● ◕ ◐ ◔', C.MOON)}  Moon, by phase (new, first quarter, full, last quarter, new)",
+        # Built from moon_glyph() itself, not typed out separately, so this
+        # can't silently drift from what the chart actually draws. Left to
+        # right: new -> waxing -> full -> waning -> new -- the words for each
+        # step aren't spelled out here since phase_name() already gives the
+        # exact one for whatever the chart is showing right now.
+        f"  {P(' '.join(sky.moon_glyph(a) for a in range(0, 360, 45)), C.MOON)}"
+        "  Moon, by phase (new -> full -> new)",
         "",
         head("DEEP SKY  --  ?dso=1"),
         f"  {P(gal_gl, gal_c)}  galaxy      {P(clu_gl, clu_c)}  open/globular cluster"
@@ -1279,6 +1266,51 @@ def _columns(items, col_width, per_row):
     return L
 
 
+# Real visual colour of each planet, not the generic C.PLANET diamond every
+# planet shares on the actual chart -- this page is a reference list, not a
+# rendering of the sky at a moment, so distinguishing them here is useful in
+# a way it wouldn't be on the chart itself (too small, too briefly on screen).
+_SUN_C = "\033[38;5;227m"
+PLANET_COLORS = {
+    "Mercury": "\033[38;5;246m",   # grey rock
+    "Venus":   "\033[38;5;230m",   # pale cream cloud deck
+    "Mars":    "\033[38;5;209m",   # rust
+    "Jupiter": "\033[38;5;180m",   # tan bands -- same as C.PLANET
+    "Saturn":  "\033[38;5;222m",   # pale gold
+    "Uranus":  "\033[38;5;123m",   # pale cyan
+    "Neptune": "\033[38;5;69m",    # deep blue
+}
+
+
+def _catalog_data():
+    """Single source of truth for /catalog: which objects, in what order.
+    Both catalog_text() (terminal) and catalog_html() (browser) render this
+    same data, so they can't drift into listing different things."""
+    stars = sky._load("stars.json")
+    asterisms = sky._load("asterisms.json")
+    dso = sky._load("deepsky.json")
+
+    named_stars = sorted((s for s in stars if s.get("n")), key=lambda s: s["m"])
+    # o["n"] is already the best label build_deepsky.py could give it (a
+    # Messier number, else a hand-picked common name) -- a bare NGC number
+    # there just means no traditional name exists, so those aren't "named".
+    named_dso = sorted((o for o in dso if o["n"] != o["id"]), key=lambda o: o["m"])
+    # Real current phase, not a fixed glyph -- this page reflects "right now"
+    # for the Moon specifically, same as the chart itself does since the
+    # render_linear()/moon_glyph() fix. Everything else here is a static
+    # reference list, but the Moon's phase is too central to its identity to
+    # leave generic.
+    moon_age = sky.moon(sky.julian(dt.datetime.utcnow()))["age"]
+    moon_display = f"Moon ({sky.phase_name(moon_age)})"
+    solar_system = [("Sun", "Sun", "☀", _SUN_C),
+                    ("Moon", moon_display, sky.moon_glyph(moon_age), C.MOON)]
+    solar_system += [(nm, nm, "◆", PLANET_COLORS[nm]) for nm in
+                     ("Mercury", "Venus", "Mars", "Jupiter", "Saturn", "Uranus", "Neptune")]
+
+    return dict(solar_system=solar_system, asterisms=sorted(a["name"] for a in asterisms),
+               named_stars=named_stars, named_dso=named_dso)
+
+
 def catalog_text(color=True):
     """Every object findable by name via ?find= -- pulled live from the same
     catalogues resolve_target() reads, so this can't list something that
@@ -1289,43 +1321,110 @@ def catalog_text(color=True):
     def head(s):
         return paint(s, C.HEAD, color)
 
-    stars = sky._load("stars.json")
-    asterisms = sky._load("asterisms.json")
-    dso = sky._load("deepsky.json")
-
-    named_stars = sorted((s for s in stars if s.get("n")), key=lambda s: s["m"])
-    # o["n"] is already the best label build_deepsky.py could give it (a
-    # Messier number, else a hand-picked common name) -- a bare NGC number
-    # there just means no traditional name exists, so those aren't "named".
-    named_dso = sorted((o for o in dso if o["n"] != o["id"]), key=lambda o: o["m"])
-    solar_system = ["Sun", "Moon", "Mercury", "Venus", "Mars", "Jupiter",
-                    "Saturn", "Uranus", "Neptune"]
+    d = _catalog_data()
 
     L = [
         "skymap.sh -- object catalog", "",
         "Everything below is findable by name, e.g.:",
         "  curl 'skymap.sh/Zurich?find=Vega'", "",
-        head(f"SOLAR SYSTEM ({len(solar_system)})"),
+        head(f"SOLAR SYSTEM ({len(d['solar_system'])})"),
     ]
-    L += _columns(solar_system, 12, 6)
+    for _nm, display, glyph, glyph_c in d["solar_system"]:
+        L.append(f"  {P(glyph, glyph_c)} {display}")
     L.append("")
-    L.append(head(f"CONSTELLATIONS ({len(asterisms)})"))
-    L += _columns(sorted(a["name"] for a in asterisms), 18, 5)
+    L.append(head(f"CONSTELLATIONS ({len(d['asterisms'])})"))
+    L += _columns(d["asterisms"], 18, 5)
     L.append("")
-    L.append(head(f"NAMED STARS ({len(named_stars)}) -- brightest first"))
-    for s in named_stars:
+    L.append(head(f"NAMED STARS ({len(d['named_stars'])}) -- brightest first"))
+    for s in d["named_stars"]:
         starcol = sky.star_colour(s.get("ci"))
+        glyph = sky.glyph_for(s["m"])
         name = f"{s['n']:22}"
-        L.append(f"  {P(name, starcol)} mag {s['m']:>5.2f}  {s['c']}")
+        con = sky.CONSTELLATION_NAMES.get(s["c"], s["c"]) if s.get("c") else ""
+        L.append(f"  {P(glyph, starcol)} {P(name, starcol)} mag {s['m']:>5.2f}  {con}")
     L.append("")
-    L.append(head(f"DEEP SKY ({len(named_dso)}) -- ?dso=1, brightest first"))
-    for o in named_dso:
+    L.append(head(f"DEEP SKY ({len(d['named_dso'])}) -- ?dso=1, brightest first"))
+    for o in d["named_dso"]:
         glyph, glyph_c = sky.DSO_GLYPH[o["t"]]
-        label = o["n"]
-        if o.get("cn") and o["cn"] != label:
-            label = f"{label} ({o['cn']})"
+        label = _dso_label(o)
         label = f"{label:34}"
         L.append(f"  {P(glyph, glyph_c)} {P(label, C.HEAD)} mag {o['m']:>5.2f}  {sky.DSO_NAMES[o['t']]}")
+    L.append("")
+    return "\n".join(L)
+
+
+def _dso_label(o):
+    label = o["n"]
+    if o.get("cn") and o["cn"] != label:
+        label = f"{label} ({o['cn']})"
+    return label
+
+
+_ANSI_NUM = re.compile(r"38;5;(\d+)")
+
+
+def _ansi_hex(ansi):
+    m = _ANSI_NUM.search(ansi)
+    return _xterm_hex(m.group(1)) if m else "#c9d1d9"
+
+
+def _pad_html(visible_len, width):
+    return " " * max(1, width - visible_len)
+
+
+def catalog_html():
+    """Browser twin of catalog_text() -- every object links to /?find=<name>
+    (bare place, so it resolves through the visitor's own geo-IP fallback,
+    the same way a bare `curl skymap.sh` does) opened in a new tab, so
+    browsing the catalog never navigates away from the chart on screen.
+    DSOs additionally turn on ?dso=1&quadrant so the new tab shows the
+    deep-sky layer and quadrant grid, not just a bare star chart."""
+    def col(s, ansi):
+        return f'<span style="color:{_ansi_hex(ansi)}">{html.escape(s)}</span>'
+
+    def head(s):
+        return col(s, C.HEAD)
+
+    def link(name, extra=""):
+        href = html.escape(f"/?find={quote(name)}{extra}")
+        return f'<a href="{href}" target="_blank" rel="noopener">{html.escape(name)}</a>'
+
+    def link_col(name, ansi, extra="", href_name=None):
+        href = html.escape(f"/?find={quote(href_name or name)}{extra}")
+        return (f'<a href="{href}" target="_blank" rel="noopener">'
+                f'<span style="color:{_ansi_hex(ansi)}">{html.escape(name)}</span></a>')
+
+    d = _catalog_data()
+
+    L = [
+        "skymap.sh -- object catalog", "",
+        "Everything below opens the current sky with that object framed, in a new tab.", "",
+        head(f"SOLAR SYSTEM ({len(d['solar_system'])})"),
+    ]
+    for nm, display, glyph, glyph_c in d["solar_system"]:
+        L.append(f"  {col(glyph, glyph_c)} {link_col(display, glyph_c, href_name=nm)}")
+    L.append("")
+    L.append(head(f"CONSTELLATIONS ({len(d['asterisms'])})"))
+    for i in range(0, len(d["asterisms"]), 5):
+        row = d["asterisms"][i:i + 5]
+        line = "  " + "".join(link(nm) + _pad_html(len(nm), 18) for nm in row)
+        L.append(line.rstrip())
+    L.append("")
+    L.append(head(f"NAMED STARS ({len(d['named_stars'])}) -- brightest first"))
+    for s in d["named_stars"]:
+        starcol = sky.star_colour(s.get("ci"))
+        glyph = sky.glyph_for(s["m"])
+        con = sky.CONSTELLATION_NAMES.get(s["c"], s["c"]) if s.get("c") else ""
+        name_html = link_col(s["n"], starcol) + _pad_html(len(s["n"]), 22)
+        L.append(f"  {col(glyph, starcol)} {name_html} mag {s['m']:>5.2f}  {html.escape(con)}")
+    L.append("")
+    L.append(head(f"DEEP SKY ({len(d['named_dso'])}) -- ?dso=1, brightest first"))
+    for o in d["named_dso"]:
+        glyph, glyph_c = sky.DSO_GLYPH[o["t"]]
+        label = _dso_label(o)
+        name_html = (link_col(label, C.HEAD, "&dso=1&quadrant", href_name=o["n"])
+                    + _pad_html(len(label), 34))
+        L.append(f"  {col(glyph, glyph_c)} {name_html} mag {o['m']:>5.2f}  {sky.DSO_NAMES[o['t']]}")
     L.append("")
     return "\n".join(L)
 
@@ -1366,6 +1465,18 @@ def strip_ansi(text):
     return ANSI.sub("", text)
 
 
+def header_html(path):
+    """The cta line + nav, identical on every page -- one function so the
+    nav can never drift or reorder between routes the way six separate
+    PAGE.format() call sites each re-deciding it independently did. "home"
+    stays onscreen even on the home page itself -- consistent nav position
+    beats not linking to the page you're already on."""
+    return (f'<pre class="cta">curl skymap.sh{path}</pre>\n'
+            f'<p class="t"><b>skymap.sh</b>\n'
+            f'<a href="/">home</a> · <a href="/catalog">catalog</a> · <a href="/demo">demo</a> · '
+            f'<a href="/help">help</a> · <a href="/legend">legend</a></p>')
+
+
 PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>{title}</title>
@@ -1381,6 +1492,8 @@ PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
  .t{{color:#6e7681;font-size:12px;margin:0 0 18px}}
  .t b{{color:#c9d1d9;font-weight:600}}
  a{{color:#87d7ff}}
+ #chart-pre a{{color:#87d7ff;text-decoration:none}}
+ #chart-pre a:hover{{text-decoration:underline}}
  .ex{{margin:0 0 18px}}
  .ex form{{display:flex;gap:8px;flex-wrap:wrap;margin:0 0 10px}}
  .ex input{{background:#0d1117;border:1px solid #30363d;color:#c9d1d9;
@@ -1418,9 +1531,7 @@ PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
  .mobile-only{{display:none}}
  @media (pointer:coarse) and (max-width:900px){{.mobile-only{{display:inline-block}}}}
 </style></head><body><div class="w">
-<pre class="cta">curl skymap.sh{path}</pre>
-<p class="t"><b>skymap.sh</b>
-<a href="/demo">demo</a> · <a href="/help">help</a> · <a href="/legend">legend</a> · <a href="/catalog">catalog</a></p>
+{header}
 {explore}<div class="toolbar"><div class="toolbar-left">{animate_btn}{quadrant_btn}</div><div class="toolbar-right">{sphere_btn}{extra}</div></div><pre id="chart-pre">{body}</pre>
 <p class="t" style="margin-top:18px">Created by <a href="https://x.com/habibicode">@habibicode</a>
 · <a href="https://github.com/HabibiCodeCH/skymap-sh">see the repo</a></p>

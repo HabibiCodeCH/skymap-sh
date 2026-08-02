@@ -245,6 +245,113 @@ class TopPlacesFormatting(unittest.TestCase):
         self.assertNotIn("City50", shown)
 
 
+class ReferrerTracking(unittest.TestCase):
+    """Referer header -> bare domain in /stats, so a share on Twitter or
+    Bluesky is visible without pulling in IPs, user agents, or full URLs."""
+
+    def setUp(self):
+        client_cm = TestClient(server.app)
+        self.client = client_cm.__enter__()
+        self.addCleanup(client_cm.__exit__, None, None, None)
+        self._orig_referrers = server._referrers.copy()
+        self.addCleanup(self._restore)
+
+    def _restore(self):
+        server._referrers.clear()
+        server._referrers.update(self._orig_referrers)
+
+    def test_referer_header_shows_up_as_bare_domain(self):
+        server._referrers.clear()
+        self.client.get("/Zurich", headers={**TERMINAL, "referer": "https://twitter.com/some/status"})
+        resp = self.client.get("/stats", headers=TERMINAL)
+        self.assertIn("top referrers", resp.text)
+        self.assertIn("twitter.com", resp.text)
+
+    def test_www_prefix_is_stripped(self):
+        server._referrers.clear()
+        self.client.get("/Zurich", headers={**TERMINAL, "referer": "https://www.google.com/search?q=skymap"})
+        resp = self.client.get("/stats", headers=TERMINAL)
+        self.assertIn("google.com", resp.text)
+        self.assertNotIn("www.google.com", resp.text)
+
+    def test_no_referer_header_is_not_counted(self):
+        server._referrers.clear()
+        self.client.get("/Zurich", headers=TERMINAL)
+        resp = self.client.get("/stats", headers=TERMINAL)
+        self.assertNotIn("top referrers", resp.text)
+
+    def test_self_referral_is_not_counted(self):
+        server._referrers.clear()
+        # TestClient's default Host is "testserver" -- match it, since the
+        # self-referral check compares the Referer's host against whatever
+        # Host header the request actually carried.
+        self.client.get("/Zurich", headers={**TERMINAL, "referer": "http://testserver/"})
+        self.assertEqual(len(server._referrers), 0)
+
+    def test_json_mode_exposes_top_referrers(self):
+        server._referrers.clear()
+        self.client.get("/Zurich", headers={**TERMINAL, "referer": "https://bsky.app/profile/x"})
+        resp = self.client.get("/stats?format=json")
+        data = resp.json()
+        self.assertEqual(data["top_referrers"].get("bsky.app"), 1)
+        self.assertEqual(data["referrers_distinct"], 1)
+
+
+class HourlyReferrers(unittest.TestCase):
+    """/stats/hourly gets a per-hour top-domains breakdown alongside the
+    existing requests/hit/day/night counts, so a spike from one platform is
+    visible on the hourly trend, not just in the all-time /stats totals."""
+
+    def setUp(self):
+        self._orig_hour_stat = server._hour_stat.copy()
+        self.addCleanup(self._restore)
+
+    def _restore(self):
+        server._hour_stat.clear()
+        server._hour_stat.update(self._orig_hour_stat)
+
+    def test_top_hour_referrers_sorts_and_caps(self):
+        hstat = server.Counter()
+        hstat.update({"ref:a.com": 3, "ref:b.com": 9, "ref:c.com": 1,
+                      "ref:d.com": 5, "ref:e.com": 2, "ref:f.com": 7,
+                      "requests": 27})
+        top = server._top_hour_referrers(hstat, n=3)
+        self.assertEqual(list(top.items()), [("b.com", 9), ("f.com", 7), ("d.com", 5)])
+
+    def test_flush_hour_writes_top_referrers_to_the_log(self):
+        orig_log = server.HOURLY_LOG
+        self.addCleanup(setattr, server, "HOURLY_LOG", orig_log)
+        fd, path = tempfile.mkstemp(suffix=".jsonl")
+        os.close(fd); os.remove(path)
+        self.addCleanup(lambda: os.path.exists(path) and os.remove(path))
+        server.HOURLY_LOG = path
+
+        hstat = server.Counter()
+        hstat.update({"requests": 5, "hit": 4, "miss": 1, "day": 0, "night": 5,
+                      "ref:twitter.com": 2})
+        server._flush_hour("2026-08-01T10:00", hstat)
+
+        rows = server._read_hourly_history(days=1)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["top_referrers"], {"twitter.com": 2})
+
+    def test_current_hour_shows_up_in_text_and_json(self):
+        server._hour_stat.clear()
+        server._hour_stat.update({"requests": 1, "hit": 1, "miss": 0, "day": 0,
+                                  "night": 1, "ref:bsky.app": 4})
+        text = server.stats_hourly_text()
+        self.assertIn("bsky.app (4)", text)
+
+        data = server.stats_hourly_json()
+        self.assertEqual(data["hours"][-1]["top_referrers"], {"bsky.app": 4})
+
+    def test_hour_with_no_referrers_leaves_the_column_blank(self):
+        server._hour_stat.clear()
+        server._hour_stat.update({"requests": 1, "hit": 1, "miss": 0, "day": 0, "night": 1})
+        data = server.stats_hourly_json()
+        self.assertEqual(data["hours"][-1]["top_referrers"], {})
+
+
 class StatsPersistence(unittest.TestCase):
     """_stat/_places/_finds are otherwise purely in-memory -- a restart
     (deploy, crash, systemd bounce) would silently zero them. This checks
@@ -262,6 +369,7 @@ class StatsPersistence(unittest.TestCase):
         self._orig_stat = server._stat.copy()
         self._orig_places = server._places.copy()
         self._orig_finds = server._finds.copy()
+        self._orig_referrers = server._referrers.copy()
         self._orig_started = server.STARTED
         self.addCleanup(self._restore)
 
@@ -269,6 +377,7 @@ class StatsPersistence(unittest.TestCase):
         server._stat.clear(); server._stat.update(self._orig_stat)
         server._places.clear(); server._places.update(self._orig_places)
         server._finds.clear(); server._finds.update(self._orig_finds)
+        server._referrers.clear(); server._referrers.update(self._orig_referrers)
         server.STARTED = self._orig_started
 
     def test_save_then_load_restores_counters(self):
@@ -278,12 +387,15 @@ class StatsPersistence(unittest.TestCase):
         server._places.update({"Zurich": 5})
         server._finds.clear()
         server._finds.update({"Venus": 3})
+        server._referrers.clear()
+        server._referrers.update({"twitter.com": 7})
         server.STARTED = 12345.0
         server._save_stats_state()
 
         server._stat.clear()
         server._places.clear()
         server._finds.clear()
+        server._referrers.clear()
         server.STARTED = time.time()
         server._load_stats_state()
 
@@ -291,6 +403,7 @@ class StatsPersistence(unittest.TestCase):
         self.assertEqual(server._stat["hit"], 30)
         self.assertEqual(server._places["Zurich"], 5)
         self.assertEqual(server._finds["Venus"], 3)
+        self.assertEqual(server._referrers["twitter.com"], 7)
         self.assertEqual(server.STARTED, 12345.0)
 
     def test_missing_state_file_is_a_silent_noop(self):
@@ -325,6 +438,39 @@ class CatalogPage(unittest.TestCase):
     def test_nav_links_to_the_catalog_page(self):
         resp = self.client.get("/legend", headers=BROWSER)
         self.assertIn('href="/catalog"', resp.text)
+
+    def test_catalog_is_the_first_nav_link_after_home(self):
+        resp = self.client.get("/legend", headers=BROWSER)
+        nav = resp.text[resp.text.index('<b>skymap.sh</b>'):]
+        self.assertLess(nav.index('href="/"'), nav.index('href="/catalog"'))
+        self.assertLess(nav.index('href="/catalog"'), nav.index('href="/demo"'))
+
+
+class HomeNavLink(unittest.TestCase):
+    """Every page, including the home page itself, links to home -- a
+    consistent nav position beats hiding the link on the one page where it
+    would point at the current page."""
+
+    def setUp(self):
+        client_cm = TestClient(server.app)
+        self.client = client_cm.__enter__()
+        self.addCleanup(client_cm.__exit__, None, None, None)
+
+    def test_home_page_still_shows_the_home_link(self):
+        resp = self.client.get("/", headers=BROWSER)
+        self.assertIn('href="/"', resp.text)
+
+    def test_a_place_page_links_home(self):
+        resp = self.client.get("/Zurich", headers=BROWSER)
+        self.assertIn('href="/"', resp.text)
+
+    def test_catalog_links_home(self):
+        resp = self.client.get("/catalog", headers=BROWSER)
+        self.assertIn('href="/"', resp.text)
+
+    def test_legend_links_home(self):
+        resp = self.client.get("/legend", headers=BROWSER)
+        self.assertIn('href="/"', resp.text)
 
 
 class StaticPageViewCounters(unittest.TestCase):
