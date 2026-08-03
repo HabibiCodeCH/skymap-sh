@@ -126,6 +126,18 @@ def _save_stats_state():
 
 
 def _load_stats_state():
+    """Restore the counters from disk, replacing whatever is in memory.
+
+    Replacing, not adding. Counter.update() adds, so loading twice doubled
+    every number and then persisted the doubled value on the way out. In
+    production there is one startup per process, so it never showed; under
+    pytest two TestClient context managers are two startups, and the doubling
+    compounded across runs until stats_state.json held 366-digit integers and
+    /stats died with OverflowError trying to format them.
+
+    "Restore from disk" replacing memory is also just the right meaning, and
+    it makes the function safe to call more than once.
+    """
     global STARTED
     try:
         with open(STATS_STATE_FILE) as f:
@@ -133,12 +145,12 @@ def _load_stats_state():
     except (OSError, json.JSONDecodeError, ValueError):
         return
     STARTED = data.get("started", STARTED)
-    _stat.update(data.get("stat", {}))
-    _places.update(data.get("places", {}))
-    _finds.update(data.get("finds", {}))
-    _sphere_places.update(data.get("sphere_places", {}))
-    _events_places.update(data.get("events_places", {}))
-    _referrers.update(data.get("referrers", {}))
+    for counter, key in ((_stat, "stat"), (_places, "places"),
+                         (_finds, "finds"), (_sphere_places, "sphere_places"),
+                         (_events_places, "events_places"),
+                         (_referrers, "referrers")):
+        counter.clear()
+        counter.update(data.get(key, {}))
 
 
 # --- hourly history -----------------------------------------------------------

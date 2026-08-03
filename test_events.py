@@ -299,15 +299,84 @@ def test_solar_eclipse_excluded_where_the_sun_is_down():
     assert "below the horizon" in ec["reason"]
 
 
-def test_solar_eclipse_never_promises_totality_to_one_place():
-    """Zürich gets a deep partial on 12 Aug 2026, not totality, and nothing we
-    can compute distinguishes it from Reykjavík inside the path. The note must
-    describe the track rather than claim this place is on it."""
-    evs = events.upcoming(*ZURICH, now_utc=dt.datetime(2026, 8, 1), days=30)
-    ec = _find(evs, "eclipse")
+MADRID = (40.42, -3.70, 2)
+BURGOS = (42.34, -3.70, 2)          # northern Spain, inside the 2026 track
+REYKJAVIK = (64.15, -21.94, 0)      # western Iceland, inside it too
+
+
+def test_solar_eclipse_says_partial_where_it_is_partial():
+    """Zürich gets a deep partial on 12 Aug 2026. The headline said "Total
+    solar eclipse", which is the eclipse's global type and a promise Zürich
+    cannot keep."""
+    ec = _find(events.upcoming(*ZURICH, now_utc=dt.datetime(2026, 8, 1), days=30),
+               "eclipse")
     assert ec["visible"] is True and ec["in_range"] is True
+    assert ec["headline"] == "Partial solar eclipse here"
+    assert ec["local_type"] == "partial"
     assert "narrow track" in ec["note"]
-    assert "partial eclipse" in ec["note"]
+
+
+@pytest.mark.parametrize("place", [REYKJAVIK, BURGOS])
+def test_solar_eclipse_says_track_nearby_in_the_region(place):
+    """Not "total solar eclipse": a box is a region, not the track. NASA names
+    whole countries, so the same wording has to be honest for someone in Perth
+    when the 2028 bracket says only "[Total: Australia]"."""
+    ec = _find(events.upcoming(*place, now_utc=dt.datetime(2026, 8, 1), days=30),
+               "eclipse")
+    assert ec["headline"] == "Total solar eclipse: track nearby"
+    assert ec["local_type"] == "near-track"
+    assert "detailed map" in ec["note"]
+
+
+def test_no_solar_eclipse_ever_headlines_plain_totality():
+    """The whole point: no place is told it will see totality."""
+    for place in (ZURICH, SYDNEY, MADRID, BURGOS, REYKJAVIK, TROMSO, NAIROBI):
+        for e in events.upcoming(*place, now_utc=dt.datetime(2026, 1, 1), days=365 * 14):
+            if e["kind"] == "eclipse" and e.get("in_range"):
+                assert e["headline"] in ("Partial solar eclipse here",
+                                         "Total solar eclipse: track nearby",
+                                         "Annular solar eclipse: track nearby",
+                                         "Hybrid solar eclipse: track nearby"), e["headline"]
+
+
+def test_eclipse_table_covers_2026_to_2040():
+    ecs = events._eclipses()
+    years = {int(e["when_utc"][:4]) for e in ecs}
+    assert min(years) == 2026 and max(years) == 2040
+    solar = [e for e in ecs if "solar" in e["type"]]
+    assert len(solar) >= 20
+    # Every solar entry needs boxes, or it can never say anything but partial.
+    assert all(e.get("total_boxes") for e in solar)
+    # 2029 has no total or annular solar eclipse at all, only partials.
+    assert not [e for e in solar if e["when_utc"].startswith("2029")]
+
+
+def test_no_penumbral_lunar_eclipses_in_the_table():
+    """Nobody can tell one from an ordinary full Moon, so listing them is
+    noise. Two 2027 entries were also wrongly typed as total at one point."""
+    assert not [e for e in events._eclipses() if "penumbral" in e["type"]]
+
+
+def test_central_spain_is_outside_the_2026_track():
+    """Madrid sees a very deep partial and no totality. The northern-Spain box
+    must not swallow the whole country."""
+    ec = _find(events.upcoming(*MADRID, now_utc=dt.datetime(2026, 8, 1), days=30),
+               "eclipse")
+    assert ec["local_type"] == "partial"
+
+
+def test_totality_boxes_are_well_formed():
+    for ec in events._eclipses():
+        for box in ec.get("total_boxes") or []:
+            lo_lat, hi_lat, lo_lon, hi_lon = box
+            assert -90 <= lo_lat < hi_lat <= 90, box
+            assert -180 <= lo_lon < hi_lon <= 180, box
+
+
+def test_missing_box_data_defaults_to_partial_not_total():
+    """Under-claiming is the safe direction: the track is a sliver, so
+    "partial" is right for almost everywhere that sees the eclipse."""
+    assert events._in_totality_region({"regions": "x"}, 47.0, 8.0) is None
 
 
 # ---------------------------------------------------------------- ids

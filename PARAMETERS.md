@@ -155,10 +155,10 @@ $ python3 cli.py Zurich 2026-08-11T23:00 --events --days=20
 
   Zürich  47.38°N 8.54°E  ·  next 20 days  ·  local time
 
-  Wed 12 Aug  ◉ Total solar eclipse              8° WNW
-              the Sun is up here. Total only along a narrow track through
-              Greenland, Iceland and northern Spain; a partial eclipse
-              either side of it
+  Wed 12 Aug  ◉ Partial solar eclipse here       8° WNW
+              total only along a narrow track through the Arctic, Greenland,
+              Iceland and northern Spain; a partial eclipse either side of
+              it, which is what you get
   Wed 12 Aug  ○ New Moon
   Thu 13 Aug  ☄ Perseids peak                    66° NE, best 22:10-04:50, up to 100/hr
               the Moon is down, nothing washing it out
@@ -187,9 +187,18 @@ $ python3 cli.py Sydney 2026-08-11T23:00 --events --days=10
               that night
 ```
 
-A solar eclipse never claims totality for one place. Totality is a track about
-100 km wide, and nothing computable here separates a deep partial from being
-inside it, so the note names where the track runs and lets you place yourself.
+A solar eclipse never tells one place it will see totality. Totality is a band
+a hundred-odd km wide, and nothing computable here separates a 90% partial from
+being on the centre line — the difference is about 0.07° of Sun-Moon separation
+and this ephemeris carries four times that. So `eclipses.json` records the
+regions NASA lists for each track: outside them you get "Partial solar eclipse
+here", inside them "Total solar eclipse: track nearby" and a pointer to a
+detailed map. Zürich reads partial, Reykjavík reads track nearby.
+
+The table covers every total, annular and hybrid solar eclipse and every total
+and partial lunar eclipse from 2026 to 2040, from NASA's decade tables.
+Penumbral lunar eclipses are left out because nobody can tell one from an
+ordinary full Moon.
 
 `--next` is one line and nothing else, for a shell prompt or a MOTD. It prints
 nothing at all when there's nothing close, so it composes into scripts:

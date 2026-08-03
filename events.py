@@ -414,7 +414,25 @@ def meteor_showers(jd0, jd1):
 @lru_cache(maxsize=1)
 def _eclipses():
     with open(f"{BASE}/eclipses.json") as fh:
-        return json.load(fh)
+        # JSON has no comments, and the totality-box convention needs
+        # explaining where the data lives rather than only in NOTES.md, so
+        # the file carries one _comment entry that is not an eclipse.
+        return [e for e in json.load(fh) if "when_utc" in e]
+
+
+def _in_totality_region(ec, lat, lon):
+    """Is this place inside one of the regions the track crosses?
+
+    None when the table has no boxes for that eclipse, which reads as "we
+    can't say" and is treated the same as outside -- the safe direction,
+    because the track is a sliver and almost everywhere that sees the
+    eclipse sees a partial.
+    """
+    boxes = ec.get("total_boxes")
+    if not boxes:
+        return None
+    lon = ((lon + 180) % 360) - 180
+    return any(a <= lat <= b and c <= lon <= d for a, b, c, d in boxes)
 
 
 def eclipses(jd0, jd1):
@@ -436,6 +454,7 @@ def eclipses(jd0, jd1):
             kind="eclipse", name=ec["name"], when_utc=when,
             id=event_id("eclipse", ec["name"], when),
             eclipse_type=ec["type"], regions=ec["regions"],
+            total_boxes=ec.get("total_boxes"),
             glyph="◐" if ec["type"].endswith("lunar") else "◉",
             headline=ec["name"], note=f"visible from {ec['regions']}",
         ))
@@ -594,18 +613,38 @@ def localise(ev, lat, lon, tz_offset):
                            if lunar else
                            "the Sun is below the horizon here, it's night")
         elif not lunar:
-            # The Sun being up only means this place is *in range*, never that
-            # it is on the centre line. Totality is a track ~100 km wide;
-            # Zürich sees a deep partial on 12 Aug 2026 while Reykjavík is
-            # inside the path, and nothing computable from here tells the two
-            # apart. So say where totality runs and let the reader place
-            # themselves, rather than promising them an eclipse they'll miss.
-            # Quoting a local percentage would need Besselian elements — see
-            # NOTES.md.
+            # The Sun being up only means this place is in range, never that
+            # it is on the track. Totality is a sliver 100-300 km wide, so
+            # "total solar eclipse" as a headline is wrong for almost everyone
+            # who can see the thing at all -- Zürich gets a deep partial on
+            # 12 Aug 2026 and the headline used to promise it totality.
+            #
+            # Nothing computable here decides it: the separation between a
+            # 90% partial and the centre line is about 0.07°, and sky.py's
+            # Moon carries ~0.3° of error, four times larger. So the answer
+            # comes from the region boxes in the table, and the default when
+            # they are absent or you are outside them is "partial", which is
+            # the direction that cannot over-promise.
+            kindword = ev["eclipse_type"].split()[0]      # total | annular | hybrid
+            inside = _in_totality_region(ev, lat, lon)
             e["in_range"] = True
-            e["note"] = (f"the Sun is up here. {ev['eclipse_type'].split()[0].title()} "
-                         f"only along a narrow track through {ev['regions']}; "
-                         f"a partial eclipse either side of it")
+            if inside:
+                # A box is a REGION, not the track. NASA names whole countries
+                # the path crosses, so the box for "[Total: Australia]" covers
+                # Perth as well as the sliver near Sydney. Saying "track
+                # nearby" is true for both; saying "total solar eclipse" would
+                # be a promise to Perth we cannot keep.
+                e["local_type"] = "near-track"
+                e["headline"] = f"{kindword.title()} solar eclipse: track nearby"
+                e["note"] = (f"the track crosses {ev['regions']}. {kindword.title()}ity "
+                             f"is a band only a hundred-odd km wide, so check a "
+                             f"detailed map before you travel")
+            else:
+                e["local_type"] = "partial"
+                e["headline"] = "Partial solar eclipse here"
+                e["note"] = (f"{kindword} only along a narrow track through "
+                             f"{ev['regions']}; a partial eclipse either side "
+                             f"of it, which is what you get")
         return e
 
     if kind == "meteor_shower":

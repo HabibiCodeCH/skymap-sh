@@ -1014,10 +1014,13 @@ def events_teaser(r):
         where = f", {e['alt']:.0f}° {e['compass']}" if e.get("compass") else ""
         return f"Coming up: {a} and {b} pass {e['sep_deg']}° apart {when}{where}."
     if e["kind"] == "eclipse":
+        # headline, not name: name is the eclipse's global type ("Total solar
+        # eclipse") and localise() rewrites headline to what *this* place
+        # actually gets, which for almost everywhere is a partial.
         note = e.get("note", "")
         if note:
             note = " " + note[0].upper() + note[1:] + "."
-        return f"Coming up: {e['name'].lower()} {when}.{note}"
+        return f"Coming up: {e['headline'].lower()} {when}.{note}"
     if e["kind"] == "opposition":
         return (f"Coming up: {e['body']} at opposition {when}, "
                 f"up all night, brightest of the year.")
