@@ -1,0 +1,18 @@
+[
+  {"name": "Total lunar eclipse", "type": "total lunar", "when_utc": "2026-03-03T11:34:00",
+   "regions": "east Asia, Australia, the Pacific and the Americas"},
+  {"name": "Annular solar eclipse", "type": "annular solar", "when_utc": "2026-02-17T12:12:00",
+   "regions": "Antarctica"},
+  {"name": "Total solar eclipse", "type": "total solar", "when_utc": "2026-08-12T17:46:00",
+   "regions": "Greenland, Iceland and northern Spain"},
+  {"name": "Partial lunar eclipse", "type": "partial lunar", "when_utc": "2026-08-28T04:14:00",
+   "regions": "the Americas, Europe and Africa"},
+  {"name": "Annular solar eclipse", "type": "annular solar", "when_utc": "2027-02-06T16:00:00",
+   "regions": "Chile and Argentina"},
+  {"name": "Total solar eclipse", "type": "total solar", "when_utc": "2027-08-02T10:07:00",
+   "regions": "southern Spain, north Africa, the Middle East and Somalia"},
+  {"name": "Annular solar eclipse", "type": "annular solar", "when_utc": "2028-01-26T15:08:00",
+   "regions": "South America, the Atlantic, Spain and Portugal"},
+  {"name": "Total solar eclipse", "type": "total solar", "when_utc": "2028-07-22T02:56:00",
+   "regions": "Australia and New Zealand"}
+]
