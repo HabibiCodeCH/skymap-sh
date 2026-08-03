@@ -15,6 +15,7 @@ from sky import (C, paint, julian, gmst_hours, altaz, angsep, compass, moon_glyp
                  phase_name, resolve_target, visibility, next_visible,
                  solar_elongation, find_text, sky_read, render, render_linear,
                  sun, moon, planet, sun_arc, sun_events, dark_enough, DSO_LEGEND)
+import events as ev_mod
 
 # deepsky.json is pre-filtered to mag 11 at build time (build_deepsky.py), so
 # ?dso=1 is a plain on/off toggle rather than a tunable cutoff -- the catalog
@@ -688,6 +689,10 @@ def _compose_sky(r):
         out.append(paint(f"  Quadrants {letters[0]}-{letters[-1]} are marked on the chart. "
                          f"To zoom in, rerun adding ?quadrant={letters[0]} "
                          f"(or --quadrant={letters[0]} on the CLI).", C.MUTE, c))
+    teaser = events_teaser(r)
+    if teaser:
+        import textwrap
+        out += [paint("  " + l, EVENT_COL, c) for l in textwrap.wrap(teaser, 76)]
     # {base_url} is a literal placeholder -- api.py doesn't know its own
     # host, server.py substitutes the real one on the way out, on both
     # cache hits and misses, so a cached render never leaks whatever host
@@ -714,6 +719,7 @@ def _compose_sky(r):
         dso=r.dso,
         quadrant=dict(cells=[cell["letter"] for cell in st.get("quad_cells", [])],
                      applied=st.get("quad_applied"), error=st.get("quad_error")),
+        coming_up=teaser,
         prose=prose,
     )
     return Result("\n".join(out), data)
@@ -896,6 +902,9 @@ def _compose_day(r):
                      ", ".join(b["name"] for b in later) +
                      f", and a {phase_name(mo['age'])} Moon "
                      f"({mo['illum']*100:.0f}% lit).")
+    teaser = events_teaser(r)
+    if teaser:
+        lines.append(teaser)
     if first:
         tl = first + dt.timedelta(hours=off)
         # Quoted: zsh (the default shell on macOS) treats a bare ? as a glob
@@ -928,8 +937,308 @@ def _compose_day(r):
                 visible_tonight=[b["name"] for b in later],
                 moon=dict(phase=phase_name(mo["age"]),
                           illum=round(mo["illum"] * 100)),
+                # "events" was already taken by the Sun's own rise/transit/set
+                # above, so the sky-events list is "coming_up" rather than
+                # shadowing a key clients already read.
+                coming_up=teaser,
                 prose="\n".join(body))
     return Result("\n".join(out), data)
+
+
+# ---------------------------------------------------------------- what's coming up
+EVENT_COL = "\033[38;5;213m"    # orchid: not the sun's yellow, not the DSO green
+
+# How near an event has to be before it earns a line on a page that is
+# otherwise a star chart. Two weeks is long enough to plan a night out and
+# short enough that the line is absent most of the time -- which is what
+# keeps it worth reading when it does appear.
+TEASER_DAYS = 14
+
+# Beyond this the list is padding. Ninety days covers a season, which is the
+# horizon people actually plan on.
+EVENTS_WINDOW_DAYS = 90
+
+
+def _events_for(r, days=EVENTS_WINDOW_DAYS, visible_only=True):
+    p = r.place
+    return ev_mod.upcoming(p.lat, p.lon, r.tz, now_utc=r.when_utc, days=days,
+                           visible_only=visible_only)
+
+
+def _days_away(e, now_utc):
+    return (e["when_utc"] - now_utc).total_seconds() / 86400
+
+
+def _when_words(e, r):
+    """"tonight", "tomorrow night", or a weekday. People plan in those words,
+    not in dates, and a shower peaking after midnight still belongs to the
+    evening you have to go outside on."""
+    watch = e.get("best_local") or e["when_local"]
+    # A 03:00 peak is "tonight" to someone reading this at 22:00, so the night
+    # an event belongs to starts at noon, not at midnight.
+    night = (watch - dt.timedelta(hours=12)).date()
+    today = (r.when_local - dt.timedelta(hours=12)).date()
+    delta = (night - today).days
+    if delta <= 0:
+        return "tonight"
+    if delta == 1:
+        return "tomorrow night"
+    if delta < 7:
+        return f"on {watch:%A}"
+    return f"on {watch:%a %d %b}"
+
+
+def events_teaser(r):
+    """One line for the bottom of a chart, or None if nothing is close.
+
+    Absent most of the time on purpose. A line that is always there stops
+    being read; a line that shows up only when the Perseids are two nights
+    out is the reason someone comes back.
+    """
+    e = ev_mod.next_event(r.place.lat, r.place.lon, r.tz, now_utc=r.when_utc,
+                          within_days=TEASER_DAYS)
+    if e is None:
+        return None
+    when = _when_words(e, r)
+    if e["kind"] == "meteor_shower":
+        bits = [f"{e['name']} peak {when}"]
+        if e.get("zhr"):
+            bits.append(f"up to {e['zhr']} an hour")
+        if e.get("compass") and e.get("alt"):
+            bits.append(f"radiant {e['alt']:.0f}° {e['compass']}")
+        if e.get("moon_verdict"):
+            bits.append(e["moon_verdict"])
+        return "Coming up: " + ", ".join(bits) + "."
+    if e["kind"] == "conjunction":
+        a, b = e["bodies"]
+        where = f", {e['alt']:.0f}° {e['compass']}" if e.get("compass") else ""
+        return f"Coming up: {a} and {b} pass {e['sep_deg']}° apart {when}{where}."
+    if e["kind"] == "eclipse":
+        note = e.get("note", "")
+        if note:
+            note = " " + note[0].upper() + note[1:] + "."
+        return f"Coming up: {e['name'].lower()} {when}.{note}"
+    if e["kind"] == "opposition":
+        return (f"Coming up: {e['body']} at opposition {when}, "
+                f"up all night, brightest of the year.")
+    if e["kind"] == "elongation":
+        return f"Coming up: {e['headline']} {when}, {e['note']}."
+    return f"Coming up: {e['headline']} {when}."
+
+
+def _event_line(e, r):
+    """One event as a table row: when, glyph, what, and where to look."""
+    when = f"{e['when_local']:%a %d %b}"
+    head = f"{e.get('glyph', ' ')} {e['headline']}"
+    tail = []
+    if e.get("alt") is not None and e.get("compass"):
+        tail.append(f"{e['alt']:.0f}° {e['compass']}")
+    if e.get("window_local"):
+        tail.append(f"best {e['window_local'][0]}-{e['window_local'][1]}")
+    if e.get("zhr"):
+        tail.append(f"up to {e['zhr']}/hr")
+    # sep_deg means two different things: how far apart a pair is (already in
+    # the headline, so repeating it gave "Moon and Venus 1.9° apart ... 1.9°
+    # apart") and how far an inner planet strays from the Sun, which the
+    # headline doesn't say and which is the whole point of the event.
+    if e["kind"] == "elongation" and e.get("sep_deg") is not None:
+        tail.append(f"{e['sep_deg']}° from the Sun")
+    return f"  {when:<11} {head:<34} {', '.join(tail)}".rstrip()
+
+
+def _compose_events(r, next_only=False, days=EVENTS_WINDOW_DAYS):
+    """The full list for /{place}/events.
+
+    Events nobody here can see are kept, at the bottom, rather than dropped:
+    "the Geminids peak on the 14th but the radiant never rises here" is worth
+    saying out loud, and silently omitting it just looks like a gap.
+    """
+    p, c = r.place, r.color
+    every = _events_for(r, days=days, visible_only=False)
+
+    if next_only:
+        # One line, nothing else, for a shell prompt or a MOTD. Empty output
+        # and exit 0 when there is nothing, so it composes into scripts.
+        line = events_teaser(r)
+        return Result((line.replace("Coming up: ", "") + "\n") if line else "",
+                      dict(place=p.name, next=line))
+
+    here = [e for e in every if e["visible"] is not False]
+    not_here = [e for e in every if e["visible"] is False]
+
+    head = (f"  {p.name}  {abs(p.lat):.2f}°{'N' if p.lat >= 0 else 'S'} "
+            f"{abs(p.lon):.2f}°{'E' if p.lon >= 0 else 'W'}  ·  "
+            f"next {days} days  ·  local time")
+    out = ["", paint(head, C.HEAD, c), ""]
+    if not here:
+        out.append(paint("  Nothing above the horizon here in the next "
+                         f"{days} days.", C.MUTE, c))
+    import textwrap
+    for e in here:
+        out.append(paint(_event_line(e, r), EVENT_COL, c))
+        note = e.get("moon_verdict") or e.get("note")
+        if note:
+            # Hang the note under the headline column so it reads as a
+            # continuation of the row rather than a new one. The eclipse notes
+            # in particular run well past 80 columns unwrapped.
+            for l in textwrap.wrap(note, 62):
+                out.append(paint(f"  {'':<11} {l}", C.MUTE, c))
+    if not_here:
+        out += ["", paint("  Happening, but not from here:", C.MUTE, c)]
+        for e in not_here:
+            txt = (f"{e['when_local']:%a %d %b}  {e['headline']}: "
+                   f"{e.get('reason', 'not visible')}")
+            for i, l in enumerate(textwrap.wrap(txt, 74)):
+                out.append(paint(("  " if i == 0 else "  " + " " * 12) + l, C.MUTE, c))
+    out += ["", paint("  Subscribe: add /events.ics to your calendar, or "
+                      "/events.rss to a reader.", C.MUTE, c)]
+    out += ["", _footer(p, c), ""]
+
+    data = dict(place=p.name, lat=p.lat, lon=p.lon, tz_offset=r.tz,
+                when_utc=r.when_utc.isoformat() + "Z", window_days=days,
+                upcoming=[_event_json(e) for e in every])
+    return Result("\n".join(out), data)
+
+
+def _event_json(e):
+    """One event as plain JSON. Datetimes become ISO strings; everything else
+    is already a string, number or list."""
+    out = {}
+    for k, v in e.items():
+        out[k] = v.isoformat() if isinstance(v, dt.datetime) else v
+    return out
+
+
+# ---------------------------------------------------------------- feeds
+def _ics_escape(s):
+    return (s.replace("\\", "\\\\").replace(";", r"\;")
+             .replace(",", r"\,").replace("\n", r"\n"))
+
+
+def _ics_fold(line):
+    """RFC 5545 caps a content line at 75 octets and continues with a leading
+    space. Calendar clients genuinely reject over-long lines, so this is not
+    optional politeness."""
+    raw = line.encode("utf-8")
+    if len(raw) <= 73:
+        return line
+    out, chunk = [], b""
+    for ch in line:
+        b = ch.encode("utf-8")
+        if len(chunk) + len(b) > 73:
+            out.append(chunk.decode("utf-8"))
+            chunk = b" " + b
+        else:
+            chunk += b
+    out.append(chunk.decode("utf-8"))
+    return "\r\n".join(out)
+
+
+def events_ics(r, base_url="https://skymap.sh", days=EVENTS_WINDOW_DAYS):
+    """An iCalendar feed. This is what "subscribe" means to most people: it
+    lands in the calendar app they already look at, at the right local time."""
+    p = r.place
+    L = ["BEGIN:VCALENDAR", "VERSION:2.0",
+         "PRODID:-//skymap.sh//events//EN", "CALSCALE:GREGORIAN",
+         "METHOD:PUBLISH", f"X-WR-CALNAME:Sky events: {p.name}",
+         "X-WR-CALDESC:What's coming up in the sky above "
+         f"{p.name}, from skymap.sh"]
+    for e in _events_for(r, days=days, visible_only=True):
+        start, end = _ics_span(e)
+        # Floating local time (no Z, no TZID): the event is quoted in the
+        # place's own clock, and a floating time shows at that wall-clock
+        # reading whatever timezone the reader's device is in. Someone
+        # subscribed to Tokyo's feed wants Tokyo's hours.
+        L += ["BEGIN:VEVENT",
+              f"UID:{e['id']}@skymap.sh",
+              f"DTSTAMP:{r.when_utc:%Y%m%dT%H%M%S}Z",
+              f"DTSTART:{start:%Y%m%dT%H%M%S}",
+              f"DTEND:{end:%Y%m%dT%H%M%S}",
+              f"SUMMARY:{_ics_escape(_ics_summary(e))}",
+              f"DESCRIPTION:{_ics_escape(_ics_description(e, p, base_url))}",
+              f"URL:{base_url}/{quote(p.slug)}/events",
+              "END:VEVENT"]
+    L.append("END:VCALENDAR")
+    return "\r\n".join(_ics_fold(x) for x in L) + "\r\n"
+
+
+def _ics_span(e):
+    """(start, end) for a calendar entry.
+
+    Where there's a viewing window, the entry covers it: a reminder that fires
+    when the Perseid radiant is *highest* goes off at 04:50, by which point
+    you have missed most of the night. The window start is when to go outside.
+    Windows that run past midnight are already absolute datetimes, so an end
+    before the start just means the run crossed into the next day.
+    """
+    win = e.get("window_local")
+    best = e.get("best_local") or e["when_local"]
+    if not win:
+        return best, best + dt.timedelta(hours=1)
+    day = best.date()
+    start = dt.datetime.combine(day, dt.time.fromisoformat(win[0]))
+    end = dt.datetime.combine(day, dt.time.fromisoformat(win[1]))
+    # The window is quoted as two wall-clock times; if the second is earlier
+    # it belongs to the following morning.
+    if end <= start:
+        end += dt.timedelta(days=1)
+    # best_local sits inside the window by construction, so if the clock
+    # times put it outside, the whole run belongs to the previous evening.
+    if best < start:
+        start -= dt.timedelta(days=1)
+        end -= dt.timedelta(days=1)
+    return start, end
+
+
+def _ics_summary(e):
+    s = e["headline"]
+    if e.get("alt") is not None and e.get("compass"):
+        s += f", {e['alt']:.0f}° {e['compass']}"
+    return s
+
+
+def _ics_description(e, p, base_url):
+    bits = []
+    if e.get("window_local"):
+        bits.append(f"Best {e['window_local'][0]}–{e['window_local'][1]} local.")
+    if e.get("moon_verdict"):
+        bits.append(e["moon_verdict"][0].upper() + e["moon_verdict"][1:] + ".")
+    if e.get("note"):
+        bits.append(e["note"][0].upper() + e["note"][1:] + ".")
+    when = e.get("best_local") or e["when_local"]
+    bits.append(f"{base_url}/{quote(p.slug)}?t={when:%Y-%m-%dT%H:%M}")
+    return " ".join(bits)
+
+
+def events_rss(r, base_url="https://skymap.sh", days=EVENTS_WINDOW_DAYS):
+    """RSS 2.0. The one thing that has to be right is the guid: keyed on the
+    event, never on render time, or every reader re-flags every item on every
+    poll."""
+    p = r.place
+    esc = html.escape
+    items = []
+    for e in _events_for(r, days=days, visible_only=True):
+        when = e.get("best_local") or e["when_local"]
+        link = f"{base_url}/{quote(p.slug)}?t={when:%Y-%m-%dT%H:%M}"
+        desc = _ics_description(e, p, base_url)
+        # RFC 822 date, in the place's own offset rather than pretending UTC.
+        off = f"{'+' if r.tz >= 0 else '-'}{int(abs(r.tz)):02d}{int(abs(r.tz) % 1 * 60):02d}"
+        items.append(
+            "<item>"
+            f"<title>{esc(_ics_summary(e))}</title>"
+            f"<link>{esc(link)}</link>"
+            f"<guid isPermaLink=\"false\">{esc(e['id'])}</guid>"
+            f"<pubDate>{when:%a, %d %b %Y %H:%M:%S} {off}</pubDate>"
+            f"<description>{esc(desc)}</description>"
+            "</item>")
+    return ('<?xml version="1.0" encoding="UTF-8"?>\n'
+            '<rss version="2.0"><channel>'
+            f"<title>Sky events: {esc(p.name)}</title>"
+            f"<link>{esc(base_url)}/{quote(p.slug)}/events</link>"
+            f"<description>What's coming up in the sky above {esc(p.name)}."
+            "</description>"
+            f"<language>en</language>{''.join(items)}"
+            "</channel></rss>")
 
 
 # ---------------------------------------------------------------- animation

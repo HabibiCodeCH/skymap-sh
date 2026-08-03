@@ -23,6 +23,18 @@ whole sky, letters are marked on the chart to pick from.
 On a phone, an additive 3D sky sphere is one tap away: look around by
 moving the phone, at `/{place}/sphere`.
 
+`/{place}/events` is what's coming up over that place in the next 90 days:
+meteor showers with the radiant's altitude and whether the Moon is in the way,
+eclipses, oppositions, close approaches, phases and equinoxes. Subscribe with
+`/events.ics` (calendar) or `/events.rss` (reader), or put the one-line form in
+your shell:
+
+```sh
+sky() { curl -s "skymap.sh/${SKYMAP_PLACE:-Zurich}/events?next=1"; }
+```
+
+When something is close, one line about it also appears under the chart itself.
+
 ## Run it
 
 ```
@@ -56,6 +68,9 @@ python3 cli.py Zurich 2026-08-12T23:00 --json    # marks a real ISS pass automat
 | `build_deepsky.py` | regenerates the above from the Revised NGC catalogue (build time only) |
 | `cities.json` | 40,803 cities with timezone, country, state, population |
 | `build_cities.py` | regenerates the above (needs `tzfpy`, build time only) |
+| `events.py` | what's coming up: phases, seasons, oppositions, elongations, conjunctions, computed from the same ephemeris |
+| `showers.json` | 12 meteor showers, keyed by solar longitude so peaks land right in any year |
+| `eclipses.json` | 10 eclipses 2026-2028; a table, not a computation (see `NOTES.md`) |
 
 `PARAMETERS.md` lists every option with real sample output.
 

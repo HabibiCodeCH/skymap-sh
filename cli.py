@@ -11,6 +11,8 @@ skymap.sh on the command line. Same composition layer the HTTP service uses, so
     python3 cli.py Zurich --iss --json
     python3 cli.py Zurich --dso
     python3 cli.py Zurich --quadrant=A
+    python3 cli.py Zurich --events           what's coming up, next 90 days
+    python3 cli.py Zurich --next             the one-line version, for a prompt
 """
 import sys, json, datetime as dt
 import api, tle
@@ -56,8 +58,18 @@ def main(argv):
         # shown automatically whenever a real pass is up; --iss is a no-op now
         tle=tle.current() or f"{api.sky.BASE}/demo.tle",
     )
-    res = api.compose(r)
-    print(json.dumps(res.data, indent=2, default=str) if "--json" in flags else res.text)
+    if "--events" in flags or "--next" in flags:
+        days = int(flags["--days"]) if flags.get("--days") else api.EVENTS_WINDOW_DAYS
+        res = api._compose_events(r, next_only="--next" in flags, days=days)
+    else:
+        res = api.compose(r)
+    if "--json" in flags:
+        print(json.dumps(res.data, indent=2, default=str))
+    else:
+        # --next already ends in a newline (it is meant to be one bare line in
+        # a shell prompt), so print must not add a second one and leave a
+        # blank line in someone's MOTD.
+        print(res.text, end="" if res.text.endswith("\n") else "\n")
     return 0 if res.status == 200 else 1
 
 if __name__ == "__main__":

@@ -41,11 +41,15 @@ from sky import (D, altaz, angsep, compass, gmst_hours, julian, moon,
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 
-# Naked-eye bodies only. Uranus at opposition is mag 5.7 and arguably worth a
-# line; Uranus 2° from Mars is not something anyone goes outside for, so the
-# outer two are eligible for oppositions and excluded from conjunctions.
+# Naked-eye bodies only, and "naked-eye" is the whole filter.
+#
+# Uranus reaches mag 5.6 at opposition, which is genuinely visible from a dark
+# site, so it earns a line. Neptune peaks at 7.8 and never does, so it doesn't
+# -- an event you cannot go outside and see is padding, however real it is.
+# Neither of them belongs in conjunctions either: Uranus 2° from Mars is not
+# something anyone sets an alarm for.
 CONJUNCTION_BODIES = ["Moon", "Mercury", "Venus", "Mars", "Jupiter", "Saturn"]
-OPPOSITION_BODIES = ["Mars", "Jupiter", "Saturn", "Uranus", "Neptune"]
+OPPOSITION_BODIES = ["Mars", "Jupiter", "Saturn", "Uranus"]
 INFERIOR_BODIES = ["Mercury", "Venus"]
 
 # How close two bodies have to get before it's worth a line. The Moon sweeps
@@ -588,7 +592,7 @@ def localise(ev, lat, lon, tz_offset):
         if not e["visible"]:
             e["reason"] = ("the Moon is below the horizon here at that moment"
                            if lunar else
-                           "the Sun is below the horizon here — it's night")
+                           "the Sun is below the horizon here, it's night")
         elif not lunar:
             # The Sun being up only means this place is *in range*, never that
             # it is on the centre line. Totality is a track ~100 km wide;
@@ -646,7 +650,7 @@ def localise(ev, lat, lon, tz_offset):
 
 def _moon_verdict(illum, up):
     if not up:
-        return "the Moon is down — nothing washing it out"
+        return "the Moon is down, nothing washing it out"
     if illum < 25:
         return "a thin Moon, barely in the way"
     if illum < 60:
@@ -670,14 +674,47 @@ def upcoming(lat, lon, tz_offset, now_utc=None, days=90, visible_only=False):
     return evs
 
 
-def next_event(lat, lon, tz_offset, now_utc=None, within_days=14):
+# How far ahead each kind of event is worth flagging on a page that is
+# otherwise a star chart, in days. A kind missing from this map is never
+# teased at all.
+#
+# The horizons differ because the events do. A meteor shower is worth knowing
+# about a fortnight out, because you might arrange your week around it. The
+# Moon passing Jupiter is worth knowing about the night before, and stale
+# three days later.
+#
+# Moon phases and equinoxes are deliberately absent. There is a principal moon
+# phase every 7.4 days, so including them at any horizon over a week means the
+# line is on screen permanently -- which is exactly what a first version did,
+# firing on 72 of 72 sampled nights. A line that is always there stops being
+# read, and then the Perseids scroll past in it unnoticed.
+TEASER_HORIZON = {
+    "eclipse": 14,
+    "meteor_shower": 14,
+    "opposition": 10,
+    "elongation": 7,
+    "conjunction": 3,
+}
+
+
+def next_event(lat, lon, tz_offset, now_utc=None, within_days=14,
+               horizons=TEASER_HORIZON):
     """The single most interesting thing coming up, or None.
 
     Not simply the nearest: a first-quarter Moon three days out should not
     bury a meteor shower peaking in four. Rank by how much someone would
     actually want to know, then break ties by date.
+
+    horizons=None considers everything inside within_days, which is what the
+    full list wants; the default applies the per-kind cutoffs above, which is
+    what the one-line teaser wants.
     """
-    evs = upcoming(lat, lon, tz_offset, now_utc, days=within_days, visible_only=True)
+    now = now_utc or dt.datetime.utcnow().replace(microsecond=0)
+    evs = upcoming(lat, lon, tz_offset, now, days=within_days, visible_only=True)
+    if horizons is not None:
+        evs = [e for e in evs
+               if e["kind"] in horizons
+               and (e["when_utc"] - now).total_seconds() / 86400 <= horizons[e["kind"]]]
     if not evs:
         return None
     return max(evs, key=lambda e: (_interest(e), -e["when_utc"].timestamp()))

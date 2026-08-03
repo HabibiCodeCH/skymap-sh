@@ -93,6 +93,11 @@ _finds = Counter()
 # _tally(), which sphere_page() never calls), so which cities people want
 # to actually look around in would otherwise be invisible.
 _sphere_places = Counter()
+# Same reasoning as _sphere_places: /events and its two feeds never go through
+# _tally(), so which cities people actually subscribe to would be invisible
+# without their own tally. A subscription is a much stronger signal than a
+# page view -- someone put it in their calendar.
+_events_places = Counter()
 _referrers = Counter()
 _TOP_KEEP = 2000            # trim the long tail so the tables cannot grow forever
 
@@ -113,6 +118,7 @@ def _save_stats_state():
             json.dump(dict(started=STARTED, stat=dict(_stat),
                           places=dict(_places), finds=dict(_finds),
                           sphere_places=dict(_sphere_places),
+                          events_places=dict(_events_places),
                           referrers=dict(_referrers)), f)
         os.replace(tmp, STATS_STATE_FILE)   # atomic -- a crash mid-write
     except OSError:                          # can't leave a corrupt file
@@ -131,6 +137,7 @@ def _load_stats_state():
     _places.update(data.get("places", {}))
     _finds.update(data.get("finds", {}))
     _sphere_places.update(data.get("sphere_places", {}))
+    _events_places.update(data.get("events_places", {}))
     _referrers.update(data.get("referrers", {}))
 
 
@@ -310,6 +317,20 @@ def stats_text(n=50):
     if _stat["sphere"]:
         L.append(f"  {'sphere':12} {_stat['sphere']:>8,}  (see /stats/sphere)")
     L.append("")
+    if _stat["events"] or _stat["events.ics"] or _stat["events.rss"]:
+        L.append("what's coming up")
+        L.append(f"  {'page':12} {_stat['events']:>8,}")
+        # Feed pulls are the number worth watching: a page view is a glance,
+        # a subscription keeps costing a request an hour until it's cancelled.
+        L.append(f"  {'ics':12} {_stat['events.ics']:>8,}")
+        L.append(f"  {'rss':12} {_stat['events.rss']:>8,}")
+        if _events_places:
+            # Not "top places": test_server.py keys on that exact string to
+            # find the main table, and a second occurrence here shadowed it.
+            L.append(f"  by place ({len(_events_places):,} distinct)")
+            for name, c in _events_places.most_common(10):
+                L.append(f"    {name[:26]:26} {c:>8,}")
+        L.append("")
     pages = sorted(k for k in _stat if k.startswith("page:"))
     if pages:
         L.append("pages")
@@ -370,6 +391,10 @@ def stats_json(n=50):
         animate=_stat["animate"], animate_rejected=_stat["animate_rejected"],
         gif=_stat["gif"], gif_rejected=_stat["gif_rejected"], png=_stat["png"],
         sphere=_stat["sphere"],
+        events=dict(page=_stat["events"], ics=_stat["events.ics"],
+                    rss=_stat["events.rss"],
+                    places_distinct=len(_events_places),
+                    top_places=dict(_events_places.most_common(n))),
         views={k[5:]: v for k, v in _stat.items() if k.startswith("view:")},
         pages={k[5:]: v for k, v in _stat.items() if k.startswith("page:")},
         modes={k[5:]: v for k, v in _stat.items() if k.startswith("mode:")},
@@ -1152,6 +1177,12 @@ def robots():
         "Disallow: /stats\n"
         "Disallow: /*/sphere\n"
         "Disallow: /*/sphere.json\n"
+        # The events *page* is real content and stays indexable; the two
+        # feeds are the same facts in machine formats, so crawling them is
+        # duplicate content on a budget better spent elsewhere. Readers
+        # subscribing on a person's behalf ignore robots.txt anyway.
+        "Disallow: /*/events.ics\n"
+        "Disallow: /*/events.rss\n"
         "Sitemap: https://skymap.sh/sitemap.xml\n"
     )
 
@@ -1253,6 +1284,90 @@ def sphere_page(request: Req, place: str):
                                   place_slug=p.slug, place_name=html.escape(p.name),
                                   home_suffix=" (my sky)" if home else "")
     return HTMLResponse(body, headers={"Cache-Control": "public, max-age=300"})
+
+
+# What's coming up changes on the scale of days, not the five minutes a star
+# chart does, so these get their own bucket. A day at the edge means a reader
+# polling hourly costs one origin render per city per day.
+EVENTS_EDGE = 86400
+
+
+def _events_headers():
+    return {"Cache-Control": f"public, max-age={EVENTS_EDGE // 4}, "
+                             f"s-maxage={EVENTS_EDGE}"}
+
+
+def _events_window(request: Req):
+    """?days=, clamped. Bounded here so a client can't mint unbounded cache
+    entries with ?days=1, ?days=2, ?days=3 -- the same free-cache-miss guard
+    ?w= and ?t= already get in api.Request."""
+    raw = request.query_params.get("days")
+    if not raw:
+        return api.EVENTS_WINDOW_DAYS
+    try:
+        return max(7, min(365, int(raw)))
+    except ValueError:
+        return api.EVENTS_WINDOW_DAYS
+
+
+@app.get("/{place}/events.ics")
+def events_ics(request: Req, place: str):
+    if api.lookup_place(place) is None:
+        return PlainTextResponse("", status_code=404)
+    r = _build(request, place)
+    _stat["events.ics"] += 1
+    _events_places[r.place.name] += 1
+    body = api.events_ics(r, base_url=str(request.base_url).rstrip("/"),
+                          days=_events_window(request))
+    return Response(body, media_type="text/calendar; charset=utf-8",
+                    headers=_events_headers() | {
+                        "Content-Disposition":
+                            f'inline; filename="skymap-{r.place.slug}.ics"'})
+
+
+@app.get("/{place}/events.rss")
+def events_rss(request: Req, place: str):
+    if api.lookup_place(place) is None:
+        return PlainTextResponse("", status_code=404)
+    r = _build(request, place)
+    _stat["events.rss"] += 1
+    _events_places[r.place.name] += 1
+    body = api.events_rss(r, base_url=str(request.base_url).rstrip("/"),
+                          days=_events_window(request))
+    return Response(body, media_type="application/rss+xml; charset=utf-8",
+                    headers=_events_headers())
+
+
+@app.get("/{place}/events", response_class=PlainTextResponse)
+def events_page(request: Req, place: str):
+    if api.lookup_place(place) is None:
+        return PlainTextResponse(UNKNOWN.format(q=place, did=api.suggest(place)),
+                                 status_code=404)
+    r = _build(request, place)
+    next_only = bool(request.query_params.get("next"))
+    _stat["events"] += 1
+    if next_only:
+        _stat["param:next"] += 1
+    _events_places[r.place.name] += 1
+    res = api._compose_events(r, next_only=next_only,
+                              days=_events_window(request))
+    kind, colour = _wants(request)
+    if kind == "json":
+        return JSONResponse(res.data, headers=_events_headers())
+    if next_only:
+        # Deliberately bare: this goes in a shell prompt or a MOTD, so no
+        # header, no nav, no footer. Empty body when nothing is coming, so
+        # `sky()` in a profile prints nothing rather than a blank box.
+        return PlainTextResponse(res.text, headers=_events_headers())
+    if kind == "html":
+        body = api.PAGE.format(
+            title=f"skymap.sh: what's coming up over {r.place.name}",
+            header=api.header_html(f"/{r.place.slug}/events"),
+            explore=api.EXPLORE, body=api.ansi_to_html(res.text),
+            extra="", animate_btn="", quadrant_btn="", sphere_btn="")
+        return HTMLResponse(body, headers=_events_headers())
+    return PlainTextResponse(api.strip_ansi(res.text) if not colour else res.text,
+                             headers=_events_headers())
 
 
 @app.get("/{place}/horizon.png")

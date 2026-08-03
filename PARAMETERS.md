@@ -134,6 +134,87 @@ objects (by Messier number, NGC id, or one of 28 common names: Andromeda
 Galaxy, Ring Nebula, Double Cluster and the like). `?span=` widens the window
 here too.
 
+## What's coming up
+
+| you type | you get |
+|---|---|
+| `--events` / `/{place}/events` | the next 90 days, in local time |
+| `--next` / `?next=1` | one bare line, or nothing |
+| `--days=20` / `?days=20` | a different window; clamped to 7–365 |
+| `/{place}/events.ics` | an iCalendar feed to subscribe to |
+| `/{place}/events.rss` | the same as RSS |
+| `--events --json` / `?format=json` | structured, under `upcoming` |
+
+Meteor showers, eclipses, oppositions, greatest elongations, close approaches,
+moon phases, equinoxes and solstices. Everything except showers and eclipses is
+computed from the same ephemeris the charts use; those two come from
+`showers.json` and `eclipses.json`.
+
+```
+$ python3 cli.py Zurich 2026-08-11T23:00 --events --days=20
+
+  Zürich  47.38°N 8.54°E  ·  next 20 days  ·  local time
+
+  Wed 12 Aug  ◉ Total solar eclipse              8° WNW
+              the Sun is up here. Total only along a narrow track through
+              Greenland, Iceland and northern Spain; a partial eclipse
+              either side of it
+  Wed 12 Aug  ○ New Moon
+  Thu 13 Aug  ☄ Perseids peak                    66° NE, best 22:10-04:50, up to 100/hr
+              the Moon is down, nothing washing it out
+  Fri 14 Aug  ✦ Venus at greatest elongation east 11° WSW, 45.5° from the Sun
+              highest in the evening sky after sunset
+  Sun 16 Aug  ● Moon and Venus 1.9° apart        10° WSW
+  Thu 20 Aug  ◑ First quarter Moon
+  Fri 28 Aug  ● Full Moon
+  Fri 28 Aug  ◐ Partial lunar eclipse            5° WSW
+              visible from the Americas, Europe and Africa
+```
+
+Whether you can actually see a thing is worked out for your latitude, so the
+list is not the same everywhere. Events that happen but aren't visible from
+where you asked are listed at the bottom with the reason, rather than dropped:
+
+```
+$ python3 cli.py Sydney 2026-08-11T23:00 --events --days=10
+
+  Happening, but not from here:
+  Tue 11 Aug  Moon and Mercury 2.0° apart: never above the horizon in a dark
+              enough sky that night
+  Thu 13 Aug  Total solar eclipse: the Sun is below the horizon here, it's
+              night
+  Thu 13 Aug  Perseids peak: never above the horizon in a dark enough sky
+              that night
+```
+
+A solar eclipse never claims totality for one place. Totality is a track about
+100 km wide, and nothing computable here separates a deep partial from being
+inside it, so the note names where the track runs and lets you place yourself.
+
+`--next` is one line and nothing else, for a shell prompt or a MOTD. It prints
+nothing at all when there's nothing close, so it composes into scripts:
+
+```
+$ python3 cli.py Zurich 2026-08-11T23:00 --next
+Perseids peak tomorrow night, up to 100 an hour, radiant 66° NE, the Moon is down, nothing washing it out.
+
+$ sky() { curl -s "skymap.sh/${SKYMAP_PLACE:-Zurich}/events?next=1"; }
+```
+
+The same line appears under the chart itself when something is close, so a
+plain `curl skymap.sh/Zurich` mentions the Perseids without being asked. It is
+absent most nights on purpose: a shower is worth flagging a fortnight out, the
+Moon passing Jupiter only the night before, and moon phases never, since there
+is one every 7.4 days and a line that is always there stops being read.
+
+JSON keys, events view: `place lat lon tz_offset when_utc window_days upcoming`,
+where each entry in `upcoming` has `kind name headline id when_utc when_local
+visible` plus whatever that kind carries — `alt compass window_local zhr
+moon_illum moon_up moon_verdict sep_deg bodies mag regions reason`.
+
+`id` is stable and day-grained (`shower-perseids-20260813`). It is the ICS UID
+and the RSS GUID, so a reader never re-flags an item it has already shown.
+
 ## Output format
 
 | you type | you get |
