@@ -2069,6 +2069,102 @@ def strip_ansi(text):
     return ANSI.sub("", text)
 
 
+# Live map for /stats, injected through PAGE's {extra} slot rather than into
+# PAGE itself -- every other page shares that template and none of them has a
+# map to animate.
+#
+# Polls /stats/live for cells that saw a request since the last poll, flashes
+# each one white-hot, then lets the transition carry it back to whatever the
+# heat ramp says its running total deserves. The flash says "just now"; the
+# resting colour still says "in total", so neither lies about the other.
+def stats_live_html(ramp_hex, dot, flash_dot, tick_ms=3000):
+    """The live map's style and script.
+
+    ramp_hex is the heat ramp as hex, in order, and the two glyphs come from
+    the caller too -- server.py owns MAP_RAMP and MAP_DOT, and a second copy
+    of either here is a second thing to keep in sync.
+
+    Every dot is an inline-block exactly 1ch wide. That is what makes the
+    glyph swap safe: a bullet is a wider glyph than a middle dot in most
+    fonts, and without a pinned advance width one flashing dot would shove
+    the rest of its row sideways. The scale on top is a transform, which by
+    definition takes no part in layout."""
+    levels = "\n".join(f" .h{i}{{color:{c}}}" for i, c in enumerate(ramp_hex))
+    return ("<style>\n"
+            " .d{display:inline-block;width:1ch;vertical-align:baseline;"
+            "text-align:center;font-style:normal;\n"
+            "     transition:color 1.4s ease-out,text-shadow 1.4s ease-out,"
+            "transform 1.4s ease-out}\n"
+            f"{levels}\n"
+            " .d.hot{color:#fff !important;"
+            "text-shadow:0 0 7px #fff,0 0 14px #ffc400,0 0 22px #ff6d00;\n"
+            "        transform:scale(1.9);transition:none}\n"
+            " @media (prefers-reduced-motion:reduce){\n"
+            "   .d,.d.hot{transition:none;transform:none;text-shadow:none}\n"
+            " }\n"
+            "</style>\n"
+            "<script>\n(function(){\n"
+            f"  var ramp = {json.dumps(list(ramp_hex))};\n"
+            f"  var tick = {int(tick_ms)};\n"
+            # ensure_ascii=False so the glyphs read as themselves rather than
+            # as \u escapes. The page is utf-8 and declares it.
+            f"  var DOT = {json.dumps(dot, ensure_ascii=False)}, "
+            f"FLASH = {json.dumps(flash_dot, ensure_ascii=False)};\n"
+            """  var since = 0, dead = 0;
+  function paint(cells){
+    for (var i = 0; i < cells.length; i++){
+      var el = document.getElementById('d' + cells[i][0] + '_' + cells[i][1]);
+      if (!el) continue;
+      var rest = ramp[cells[i][2]] || ramp[0];
+      // Drop the class and force a reflow before re-adding it. Without that
+      // gap a cell that keeps getting hits never restarts its animation --
+      // the class is already there, so nothing changes.
+      el.classList.remove('hot');
+      void el.offsetWidth;
+      el.textContent = FLASH;
+      el.classList.add('hot');
+      (function(e, c){
+        setTimeout(function(){
+          e.classList.remove('hot');   // transition carries it back down
+          e.style.color = c;           // to whatever the total now deserves
+          e.textContent = DOT;
+        }, 400);
+      })(el, rest);
+    }
+  }
+  function poll(){
+    if (document.hidden){ setTimeout(poll, tick); return; }
+    fetch('/stats/live?since=' + since, {cache: 'no-store'})
+      .then(function(r){ return r.json(); })
+      .then(function(d){ since = d.now; dead = 0; paint(d.flash || []); })
+      .catch(function(){
+        // Back off rather than keep hammering a server already unhappy.
+        dead++;
+        if (dead > 5) tick = 30000;
+      })
+      .then(function(){ setTimeout(poll, tick); });
+  }
+  function start(){
+    if (!document.querySelector('.d')) return;
+    // First poll asks for everything still in the buffer, which would flash
+    // the whole backlog at once. Take that answer only to learn the server's
+    // clock, then start showing flashes from there.
+    fetch('/stats/live?since=0', {cache: 'no-store'})
+      .then(function(r){ return r.json(); })
+      .then(function(d){ since = d.now; })
+      .catch(function(){})
+      .then(function(){ setTimeout(poll, tick); });
+  }
+  // This script is injected into the toolbar, which the parser reaches
+  // before the <pre> holding the map -- so at this point there are no dots
+  // to find yet and querySelector would come back empty.
+  if (document.readyState === 'loading')
+    document.addEventListener('DOMContentLoaded', start);
+  else start();
+})();
+</script>""")
+
+
 def header_html(path):
     """The cta line + nav, identical on every page -- one function so the
     nav can never drift or reorder between routes the way six separate

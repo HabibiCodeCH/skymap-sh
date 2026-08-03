@@ -32,8 +32,12 @@ def setUpModule():
     # 429 that has nothing to do with what they're actually testing. Rate
     # limiting is a production concern, not something test correctness
     # should depend on, so it's effectively disabled for this process only.
+    # The /stats family draws on its own bucket, so it needs lifting too --
+    # otherwise the stats tests throttle each other instead.
     server.RATE = 1_000_000
     server.BURST = 1_000_000
+    server.STATS_RATE = 1_000_000
+    server.STATS_BURST = 1_000_000
 
 
 class AnimateBrowserVsTerminal(unittest.TestCase):
@@ -762,6 +766,187 @@ class WorldMap(unittest.TestCase):
         self.assertIn("distinct location(s)", text)
 
 
+class LiveMap(unittest.TestCase):
+    """/stats/live and the per-dot map the browser flashes. curl must not be
+    affected by any of it."""
+
+    @classmethod
+    def setUpClass(cls):
+        client_cm = TestClient(server.app)
+        cls.client = client_cm.__enter__()
+        cls.addClassCleanup(client_cm.__exit__, None, None, None)
+
+    def setUp(self):
+        self._hits = server._geo_hits.copy()
+        self._recent = list(server._geo_recent)
+        self.addCleanup(self._restore)
+        server._geo_hits.clear()
+        server._geo_recent.clear()
+        server._heat_cache = (0.0, None, None)
+
+    def _restore(self):
+        server._geo_hits.clear()
+        server._geo_hits.update(self._hits)
+        server._geo_recent.clear()
+        server._geo_recent.extend(self._recent)
+        server._heat_cache = (0.0, None, None)
+
+    def test_since_filters_out_what_the_caller_already_saw(self):
+        now = time.time()
+        server._geo_recent.extend([(now - 60, 47, 9), (now - 1, -34, 151)])
+        server._geo_hits.update({"47,9": 5, "-34,151": 5})
+        everything = server.stats_live_json(0.0)["flash"]
+        self.assertEqual(len(everything), 2)
+        recent = server.stats_live_json(now - 10)["flash"]
+        self.assertEqual(len(recent), 1)
+        self.assertEqual(server.stats_live_json(now + 1)["flash"], [])
+
+    def test_flash_carries_the_colour_the_dot_settles_to(self):
+        # The bin key and the recent-buffer entry have to round identically.
+        # A map column is ~2 degrees, so 47.37 and 47 can be different
+        # columns, and then the flashed cell has no heat and settles white.
+        now = time.time()
+        server._geo_hits.update({"47,9": 500, "-34,151": 1})
+        server._geo_recent.extend([(now, 47, 9), (now, -34, 151)])
+        flash = {(r, c): i for r, c, i in server.stats_live_json(0.0)["flash"]}
+        _rows, w, h, top, bot = server._load_worldmap()
+        busy = server._map_cell(47.0, 9.0, w, h, top, bot)
+        quiet = server._map_cell(-34.0, 151.0, w, h, top, bot)
+        self.assertEqual(flash[busy], len(server.MAP_RAMP) - 1)
+        self.assertGreater(flash[busy], flash[quiet])
+
+    def test_the_buffer_forgets_the_oldest(self):
+        cap = server._geo_recent.maxlen
+        for i in range(cap + 50):
+            server._geo_recent.append((float(i), 47, 9))
+        self.assertEqual(len(server._geo_recent), cap)
+        self.assertEqual(server._geo_recent[0][0], 50.0)
+
+    def test_positions_off_the_map_are_dropped_not_clamped(self):
+        server._geo_recent.append((time.time(), -89, 0))   # Antarctica
+        self.assertEqual(server.stats_live_json(0.0)["flash"], [])
+
+    def test_junk_since_is_treated_as_from_the_beginning(self):
+        server._geo_recent.append((time.time(), 47, 9))
+        server._geo_hits.update({"47,9": 1})
+        resp = self.client.get("/stats/live?since=abc")
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(len(resp.json()["flash"]), 1)
+
+    def test_route_counts_itself_and_is_not_cached(self):
+        before = server._stat["page:stats.live"]
+        resp = self.client.get("/stats/live")
+        self.assertEqual(resp.headers["cache-control"], "no-store")
+        self.assertEqual(server._stat["page:stats.live"], before + 1)
+
+    def _throttle_after(self, n):
+        """Drop the stats allowance to n for one test. setUpModule lifts it
+        to a million so unrelated tests never trip it; these three are about
+        the limit itself, so they need it back."""
+        for name, value in (("STATS_RATE", n), ("STATS_BURST", n)):
+            self.addCleanup(setattr, server, name, getattr(server, name))
+            setattr(server, name, value)
+        server._stats_buckets.clear()
+        self.addCleanup(server._stats_buckets.clear)
+        self.addCleanup(server._buckets.clear)
+
+    def test_polling_draws_on_the_looser_stats_allowance(self):
+        # An open tab polls 20 times a minute. Against the chart allowance of
+        # 30 that would throttle the reader's actual sky requests, so the
+        # stats family has its own, larger bucket.
+        server._stats_buckets.clear()
+        resp = self.client.get("/stats/live")
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.headers["x-ratelimit-limit"],
+                         str(server.STATS_RATE))
+        # The shipped defaults, not the ones setUpModule lifted.
+        src = open(os.path.join(os.path.dirname(os.path.abspath(server.__file__)),
+                                "server.py")).read()
+        rate = int(re.search(r"^RATE = (\d+)", src, re.M).group(1))
+        stats_rate = int(re.search(r"^STATS_RATE = (\d+)", src, re.M).group(1))
+        self.assertGreater(stats_rate, rate)
+        self.assertGreater(stats_rate, 20 * 2)   # room over a polling tab
+
+    def test_hammering_stats_does_not_lock_you_out_of_the_charts(self):
+        # Separate buckets, so abuse of one cannot deny the other.
+        self._throttle_after(5)
+        for _ in range(6):
+            self.client.get("/stats/live")
+        self.assertEqual(self.client.get("/stats/live").status_code, 429)
+        self.assertEqual(self.client.get("/Zurich", headers=TERMINAL).status_code,
+                         200)
+
+    def test_the_stats_throttle_says_something_that_makes_sense(self):
+        # THROTTLED is written for someone looping a chart -- on /stats it
+        # would suggest watching a place they never asked for.
+        self._throttle_after(5)
+        for _ in range(6):
+            self.client.get("/stats/live")
+        resp = self.client.get("/stats/live")
+        self.assertEqual(resp.status_code, 429)
+        self.assertIn("/stats", resp.text)
+        self.assertNotIn("watch -n", resp.text)
+        self.assertIn("retry-after", resp.headers)
+
+    def test_browser_gets_addressable_dots_and_curl_does_not(self):
+        server._geo_hits.update({"47,9": 3})
+        server._heat_cache = (0.0, None, None)
+        html_body = self.client.get("/stats", headers=BROWSER).text
+        self.assertRegex(html_body, r'class="d h\d" id="d\d+_\d+"')
+        self.assertIn("/stats/live?since=", html_body)
+        text = self.client.get("/stats", headers=TERMINAL).text
+        self.assertNotIn("<i ", text)
+        self.assertNotIn("stats/live", text)
+
+    def test_colour_lives_in_classes_not_on_every_dot(self):
+        # Seven colours, thousands of dots -- repeating the hex on each one
+        # costs about 20 bytes a dot to say nothing new.
+        body = self.client.get("/stats", headers=BROWSER).text
+        self.assertNotIn('style="color:#', server._map_html())
+        for i in range(len(server.MAP_RAMP)):
+            self.assertIn(f".h{i}{{color:", body)
+
+    def test_dots_are_pinned_to_one_character_so_the_flash_cannot_shift_them(self):
+        # The flash swaps in a wider glyph. Without a fixed advance width
+        # that would shove the rest of the row sideways.
+        body = self.client.get("/stats", headers=BROWSER).text
+        self.assertIn("width:1ch", body)
+        self.assertIn("font-style:normal", body)   # <i> would italicise
+        self.assertIn(server.MAP_FLASH_DOT, body)
+
+    def test_polling_starts_after_the_dots_exist(self):
+        # The script is injected into the toolbar, which the parser reaches
+        # before the <pre> holding the map. Starting immediately would find
+        # no dots and never poll at all.
+        body = self.client.get("/stats", headers=BROWSER).text
+        self.assertIn("DOMContentLoaded", body)
+        self.assertLess(body.index("stats/live?since="), body.index('id="d'))
+
+    def test_the_slot_marker_never_reaches_a_reader(self):
+        for body in (self.client.get("/stats", headers=TERMINAL).text,
+                     self.client.get("/stats", headers=BROWSER).text,
+                     server.stats_text()):
+            self.assertNotIn(server.MAP_SLOT, body)
+            self.assertNotIn("\x00", body)
+
+    def test_the_ramp_the_browser_gets_matches_the_server_palette(self):
+        body = self.client.get("/stats", headers=BROWSER).text
+        for n in server.MAP_RAMP:
+            self.assertIn(server.api._xterm_hex(n), body)
+
+    def test_heat_is_cached_but_not_forever(self):
+        _rows, w, h, top, bot = server._load_worldmap()
+        server._geo_hits.update({"47,9": 1})
+        first, _t = server._cached_heat(w, h, top, bot)
+        server._geo_hits.update({"47,9": 99})
+        cached, _t = server._cached_heat(w, h, top, bot)
+        self.assertEqual(cached, first)          # inside the TTL
+        server._heat_cache = (time.time() - server.HEAT_TTL - 1,
+                              *server._heat_cache[1:])
+        fresh, _t = server._cached_heat(w, h, top, bot)
+        self.assertNotEqual(fresh, first)        # expired, recomputed
+
+
 class StatsDailyRoute(unittest.TestCase):
     """/stats/daily, the drill-down behind the 30-day chart on /stats."""
 
@@ -801,10 +986,12 @@ class StatsDailyRoute(unittest.TestCase):
         self.client.get("/stats/daily", headers=TERMINAL)
         self.assertEqual(server._stat["page:stats.daily"], before + 1)
 
-    def test_not_cached_and_not_rate_limited(self):
+    def test_not_cached_and_on_the_stats_allowance(self):
+        server._stats_buckets.clear()
         resp = self.client.get("/stats/daily", headers=TERMINAL)
         self.assertEqual(resp.headers["cache-control"], "no-store")
-        self.assertNotIn("x-ratelimit-limit", resp.headers)
+        self.assertEqual(resp.headers["x-ratelimit-limit"],
+                         str(server.STATS_RATE))
 
 
 class StatsPersistence(unittest.TestCase):

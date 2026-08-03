@@ -10,7 +10,7 @@ skymap.sh: one URL, four consumers.
 Run:  uvicorn server:app --host 0.0.0.0 --port 8000
 """
 import asyncio, datetime as dt, html, json, math, os, re, secrets, threading, time
-from collections import OrderedDict
+from collections import OrderedDict, deque
 from urllib.parse import quote, urlparse
 from fastapi import FastAPI, Request as Req
 from fastapi.responses import (PlainTextResponse, HTMLResponse, JSONResponse,
@@ -110,6 +110,12 @@ _referrers = Counter()
 # and a name would need resolving back to a position anyway. Whole degrees is
 # already finer than the map can draw.
 _geo_hits = Counter()
+# The last few hundred requests with a timestamp, for the live map. _geo_hits
+# is a running total with no time axis, so nothing in it can say which
+# requests are new -- the same gap the counters had before the charts landed.
+# Deliberately not persisted: "what arrived in the last few seconds" means
+# nothing after a restart.
+_geo_recent = deque(maxlen=400)
 _TOP_KEEP = 2000            # trim the long tail so the tables cannot grow forever
 _GEO_KEEP = 5000            # same idea for the map: distinct 1-degree cells
 
@@ -570,6 +576,11 @@ WORLDMAP_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
 # so api.ansi_to_html() converts it for the browser with no extra work.
 MAP_RAMP = (231, 229, 227, 220, 214, 208, 196)
 MAP_DOT = "·"
+# Swapped in for the moment a dot flashes. A bullet is a bigger, rounder mark
+# than a middle dot, which is the point -- at one character per cell a flash
+# on a plain "·" is easy to miss. It only differs in the browser; the text
+# map has no animation to swap anything for.
+MAP_FLASH_DOT = "•"
 _worldmap = None
 
 
@@ -625,9 +636,7 @@ def _world_map():
     if not loaded:
         return []
     rows, w, h, lat_top, lat_bot = loaded
-    heat = _map_heat(w, h, lat_top, lat_bot)
-    top = max(heat.values()) if heat else 0
-    scale = math.log1p(top) if top else 1
+    shade = _map_shader(w, h, lat_top, lat_bot)
     out = []
     for r, row in enumerate(rows):
         line, pen = [], None
@@ -640,10 +649,7 @@ def _world_map():
                     pen = None
                 line.append(" ")
                 continue
-            n = heat.get((r, c), 0)
-            i = (0 if not n else
-                 min(len(MAP_RAMP) - 1,
-                     1 + int(math.log1p(n) / scale * (len(MAP_RAMP) - 2))))
+            i = shade(r, c)
             if i != pen:
                 line.append(f"\033[38;5;{MAP_RAMP[i]}m")
                 pen = i
@@ -654,10 +660,80 @@ def _world_map():
     return out
 
 
-def _map_block():
+_heat_cache = (0.0, None, None)
+HEAT_TTL = 2.0              # seconds
+
+
+def _cached_heat(w, h, lat_top, lat_bot):
+    """_map_heat walks every 1-degree bin and parses its key, which is a few
+    milliseconds once _geo_hits is large. /stats/live is polled every few
+    seconds per open tab, so without this every tab pays that separately.
+    A couple of seconds stale is invisible on a map of running totals."""
+    global _heat_cache
+    at, heat, top = _heat_cache
+    now = time.time()
+    if heat is None or now - at > HEAT_TTL:
+        heat = _map_heat(w, h, lat_top, lat_bot)
+        top = max(heat.values()) if heat else 0
+        _heat_cache = (now, heat, top)
+    return heat, top
+
+
+def _map_shader(w, h, lat_top, lat_bot):
+    """(row, col) -> index into MAP_RAMP. Shared so the text map and the
+    browser's map cannot drift apart on what colour a cell should be."""
+    heat, top = _cached_heat(w, h, lat_top, lat_bot)
+    scale = math.log1p(top) if top else 1
+
+    def shade(r, c):
+        n = heat.get((r, c), 0)
+        return (0 if not n else
+                min(len(MAP_RAMP) - 1,
+                    1 + int(math.log1p(n) / scale * (len(MAP_RAMP) - 2))))
+    return shade
+
+
+def _map_html():
+    """The map with one addressable span per land dot.
+
+    The text version emits one escape code per run of same-coloured dots,
+    which is the right trade there. The browser needs the opposite: a dot
+    cannot be flashed on its own unless it is its own element.
+
+    Colour goes on a class rather than an inline style. There are only seven
+    possible colours and thousands of dots, so repeating the hex on each one
+    costs about 20 bytes a dot for nothing. The classes are defined once in
+    stats_live_html() from the same MAP_RAMP."""
+    loaded = _load_worldmap()
+    if not loaded:
+        return ""
+    rows, w, h, lat_top, lat_bot = loaded
+    shade = _map_shader(w, h, lat_top, lat_bot)
+    out = []
+    for r, row in enumerate(rows):
+        for c, ch in enumerate(row):
+            if ch == " ":
+                out.append(" ")
+                continue
+            out.append(f'<i class="d h{shade(r, c)}" id="d{r}_{c}">'
+                       f'{MAP_DOT}</i>')
+        out.append("\n")
+    return "".join(out).rstrip("\n")
+
+
+# Stands in for the map while stats_text() builds the page, so the HTML route
+# can splice its own per-dot version in. A control character because it must
+# never collide with real content, and curl never sees it -- the text path
+# renders the real map straight in.
+MAP_SLOT = "\x00worldmap\x00"
+
+
+def _map_block(body=None):
     """Title, map, and a legend naming the busiest place, or nothing at all
     when there is no map file and no traffic to draw on it."""
-    body = _world_map()
+    if not _load_worldmap():
+        return []
+    body = _world_map() if body is None else body
     if not body:
         return []
     L = ["WHERE REQUESTS COME FROM", ""] + body + [""]
@@ -736,7 +812,13 @@ def _tally(r, daytime, hit, mode, status, data, colour=True, referrer=None):
     # Straight off the resolved position, so a request for "47.37,8.55" lands
     # in the same bin as one for "Zurich". A string key because this is
     # persisted as JSON, and JSON object keys are strings.
-    _geo_hits[f"{round(r.place.lat)},{round(r.place.lon)}"] += 1
+    lat, lon = round(r.place.lat), round(r.place.lon)
+    _geo_hits[f"{lat},{lon}"] += 1
+    # Rounded the same way as the key above, not raw. A map column is about
+    # two degrees wide, so 47.37 and 47 can land in different columns -- and
+    # then a flashed dot settles to white because the cell the heat is
+    # counted against isn't the cell that flashed.
+    _geo_recent.append((time.time(), lat, lon))
     if r.find:
         _finds[r.find.strip().title()[:40]] += 1
     if referrer:
@@ -756,7 +838,10 @@ def _tally(r, daytime, hit, mode, status, data, colour=True, referrer=None):
             del _geo_hits[k]
 
 
-def stats_text(n=50):
+def stats_text(n=50, map_slot=False):
+    """map_slot leaves MAP_SLOT where the map goes instead of drawing it, so
+    the HTML route can splice in its per-dot version. The text path never
+    passes it and never sees the marker."""
     up = time.time() - STARTED
     req = _stat["requests"] or 1
     L = [f"skymap.sh: {req:,} requests over {up/3600:.1f} h "
@@ -774,7 +859,7 @@ def stats_text(n=50):
     L += _side_by_side(hourly, daily)
     L += ["", f"{gut}sparklines: cache hit % (latest) and night share of "
               f"the window", ""]
-    mapped = _map_block()
+    mapped = _map_block([MAP_SLOT] if map_slot else None)
     if mapped:
         L += mapped + ["", ""]
     L.append(f"cache      {_stat['hit']:,} hit / {_stat['miss']:,} miss "
@@ -1063,6 +1148,31 @@ def stats_daily_text(days=CHART_DAYS):
     return "\n".join(L) + "\n"
 
 
+def stats_live_json(since=0.0):
+    """What has arrived since the caller last asked.
+
+    Returns map cells rather than coordinates: the browser has no projection
+    and shouldn't need one, and a cell is what it has to address anyway. Each
+    entry is [row, col, ramp index] -- the index is where the dot settles
+    after its flash, so the resting colour keeps up as totals grow."""
+    now = time.time()
+    loaded = _load_worldmap()
+    flash = []
+    if loaded:
+        _rows, w, h, lat_top, lat_bot = loaded
+        shade = _map_shader(w, h, lat_top, lat_bot)
+        cells = set()
+        for at, lat, lon in _geo_recent:
+            if at <= since:
+                continue
+            cell = _map_cell(lat, lon, w, h, lat_top, lat_bot)
+            if cell:
+                cells.add(cell)
+        flash = [[r, c, shade(r, c)] for r, c in sorted(cells)]
+    return dict(now=now, flash=flash, requests=_stat["requests"],
+                distinct=len(_geo_hits))
+
+
 def stats_daily_json(days=CHART_DAYS):
     return dict(days=_dense_days(_hourly_rows(days + 1), days))
 
@@ -1085,6 +1195,21 @@ BURST = 45                  # allowed spike before shaping kicks in
 MAX_IPS = 20000             # bounded so the table cannot grow without limit
 _buckets = OrderedDict()    # ip -> [tokens, last_seen]
 
+# The /stats family gets its own, looser bucket rather than sharing the one
+# above. An open /stats tab polls /stats/live every 3 s -- 20 requests a
+# minute -- which would eat two thirds of the chart allowance and start
+# throttling the reader's actual sky requests. A separate bucket also means
+# hammering /stats cannot lock someone out of the charts, or the reverse.
+#
+# These are deliberately generous: the whole family is no-store and cheap
+# (0.3 ms for /stats/live, 2 ms for /stats itself), so the cap exists to stop
+# abuse, not to shape normal use. A polling tab uses a fifth of it.
+STATS_RATE = 100            # sustained requests per minute per IP
+STATS_BURST = 140
+_stats_buckets = OrderedDict()
+STATS_PATHS = ("/stats", "/stats/sphere", "/stats/hourly", "/stats/daily",
+               "/stats/live")
+
 
 def client_ip(request: Req):
     h = request.headers
@@ -1096,18 +1221,22 @@ def client_ip(request: Req):
     return request.client.host if request.client else "?"
 
 
-def take_token(ip, now=None):
-    """True if allowed. Returns (ok, retry_after_seconds)."""
+def take_token(ip, now=None, buckets=None, rate=RATE, burst=BURST):
+    """True if allowed. Returns (ok, retry_after_seconds).
+
+    `buckets` picks which table to draw from, so the /stats family can have
+    its own allowance without its polling counting against the charts."""
     now = now or time.monotonic()
-    tokens, last = _buckets.pop(ip, (BURST, now))
-    tokens = min(BURST, tokens + (now - last) * RATE / 60.0)
+    buckets = _buckets if buckets is None else buckets
+    tokens, last = buckets.pop(ip, (burst, now))
+    tokens = min(burst, tokens + (now - last) * rate / 60.0)
     ok = tokens >= 1.0
     if ok:
         tokens -= 1.0
-    _buckets[ip] = (tokens, now)
-    if len(_buckets) > MAX_IPS:
-        _buckets.popitem(last=False)          # evict least recently seen
-    return ok, 0 if ok else max(1, int((1.0 - tokens) * 60 / RATE))
+    buckets[ip] = (tokens, now)
+    if len(buckets) > MAX_IPS:
+        buckets.popitem(last=False)           # evict least recently seen
+    return ok, 0 if ok else max(1, int((1.0 - tokens) * 60 / rate))
 
 
 THROTTLED = """\
@@ -1513,18 +1642,34 @@ def _respond(request: Req, place: str | None):
 
 @app.middleware("http")
 async def ratelimit(request: Req, call_next):
-    if request.url.path in ("/healthz", "/robots.txt", "/stats", "/stats/sphere",
-                            "/stats/hourly", "/stats/daily"):
+    path = request.url.path
+    if path in ("/healthz", "/robots.txt"):
         return await call_next(request)
-    ok, retry = take_token(client_ip(request))
+    # The /stats family draws on its own bucket. An open /stats tab polls
+    # /stats/live 20 times a minute, and against the chart allowance of 30
+    # that would throttle the reader's actual sky requests within seconds.
+    stats = path in STATS_PATHS
+    rate = STATS_RATE if stats else RATE
+    ok, retry = take_token(
+        client_ip(request),
+        buckets=_stats_buckets if stats else _buckets,
+        rate=rate, burst=STATS_BURST if stats else BURST)
     if not ok:
-        place = (request.url.path.strip("/") or "Zurich").split("?")[0]
+        # THROTTLED is written for someone looping a chart; on a stats page
+        # it would suggest watching a place they never asked for.
+        if stats:
+            return PlainTextResponse(
+                f"  Slow down a moment -- {rate} requests a minute for "
+                f"/stats.\n  Retry in {retry}s.\n",
+                status_code=429,
+                headers={"Retry-After": str(retry), "Cache-Control": "no-store"})
+        place = (path.strip("/") or "Zurich").split("?")[0]
         return PlainTextResponse(
-            THROTTLED.format(rate=RATE, retry=retry, place=place),
+            THROTTLED.format(rate=rate, retry=retry, place=place),
             status_code=429,
             headers={"Retry-After": str(retry), "Cache-Control": "no-store"})
     resp = await call_next(request)
-    resp.headers["X-RateLimit-Limit"] = str(RATE)
+    resp.headers["X-RateLimit-Limit"] = str(rate)
     return resp
 
 
@@ -1666,17 +1811,37 @@ def stats(request: Req):
         return JSONResponse(stats_json(), headers={"Cache-Control": "no-store"})
     headers = {"Cache-Control": "no-store"}
     mode, colour = _wants(request)
-    text = stats_text()
     if mode == "html":
         # ansi_to_html, not html.escape: the world map is the one coloured
         # thing on this page, and escaping would print its escape codes.
-        # ansi_to_html escapes everything else on the way through.
-        body = api.PAGE.format(title="skymap.sh: stats", header=api.header_html("/stats"),
-                               explore=api.EXPLORE, body=api.ansi_to_html(text),
-                               extra="", animate_btn="", quadrant_btn="", sphere_btn="")
-        return HTMLResponse(body, headers=headers)
+        # ansi_to_html escapes everything else on the way through -- which is
+        # also why the per-dot map is spliced in after the conversion rather
+        # than before it, or its own markup would be escaped too.
+        before, _slot, after = stats_text(map_slot=True).partition(MAP_SLOT)
+        body = (api.ansi_to_html(before) + _map_html()
+                + api.ansi_to_html(after))
+        page = api.PAGE.format(title="skymap.sh: stats", header=api.header_html("/stats"),
+                               explore=api.EXPLORE, body=body,
+                               extra=api.stats_live_html(
+                                   [api._xterm_hex(n) for n in MAP_RAMP],
+                                   MAP_DOT, MAP_FLASH_DOT),
+                               animate_btn="",
+                               quadrant_btn="", sphere_btn="")
+        return HTMLResponse(page, headers=headers)
+    text = stats_text()
     return PlainTextResponse(text if colour else api.strip_ansi(text),
                              headers=headers)
+
+
+@app.get("/stats/live", response_class=JSONResponse)
+def stats_live(request: Req):
+    _stat["page:stats.live"] += 1
+    try:
+        since = float(request.query_params.get("since", 0))
+    except ValueError:
+        since = 0.0
+    return JSONResponse(stats_live_json(since),
+                        headers={"Cache-Control": "no-store"})
 
 
 @app.get("/stats/sphere", response_class=PlainTextResponse)

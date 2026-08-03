@@ -294,6 +294,7 @@ at all.
 | `/stats/hourly` | hour-by-hour chart and table; `?days=` (1–3650, default 7) |
 | `/stats/daily` | day-by-day chart and table; `?days=` (1–3650, default 30) |
 | `/stats/sphere` | sphere views by place and OS |
+| `/stats/live` | JSON: map cells that saw a request since `?since=`, for the live map |
 | `/{place}/sphere` | mobile-only 3D sky sphere, look around by tilting the phone |
 | `/{place}/events` | what's coming up over that place, next 90 days |
 | `/{place}/events.ics` | iCalendar feed of the same |
