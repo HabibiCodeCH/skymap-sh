@@ -1746,7 +1746,13 @@ def _respond(request: Req, place: str | None):
             kbd["quadrant"] = api._quadrant_toggle_url(r)
             kbd["grid"] = api._quadrant_grid_url(r)
         controls = api.controls_html(explore, animate_btn, quadrant_btn, sphere_btn, extra)
-        header = api.header_html(r.place.name, find_value=r.find or "")
+        # _toggle_qs(r) already drops find= (documented, matches the
+        # quadrant button/d shortcut) -- None rather than "" when there's
+        # no active search, so header_html knows not to render an X next
+        # to an empty, not-yet-searched field.
+        find_close_url = f"/{r.place.slug}{api._toggle_qs(r)}" if r.find else None
+        header = api.header_html(r.place.name, find_value=r.find or "",
+                                 find_close_url=find_close_url)
         # Auto-fit applies to any plain horizon panorama, find= included --
         # find draws the full panorama now, not a crop, so it goes through
         # the same _effective_width(r) as the ordinary view (see

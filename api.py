@@ -2672,7 +2672,7 @@ SOCIAL_ICONS = (
 )
 
 
-def header_html(value="", find_value=None):
+def header_html(value="", find_value=None, find_close_url=None):
     """The command bar + nav, identical on every page -- one function so the
     nav can never drift or reorder between routes the way six separate
     PAGE.format() call sites each re-deciding it independently did. "home"
@@ -2700,10 +2700,23 @@ def header_html(value="", find_value=None):
     chart itself, right after place -- worth the same prominence as place,
     not buried behind the drawer toggle.
 
+    find_close_url, when given (server.py only sets it once r.find is
+    actually set -- an active search, not just an empty/placeholder field),
+    renders a small "return to the plain chart" X inside the field itself.
+    Before this there was no direct way back to the ordinary view short of
+    manually clearing the text and resubmitting, or "reset skymap" in the
+    drawer, which also drops the place. Built with _toggle_qs(r), same as
+    every other toggle link -- drops find= (and any span= that was find's
+    own crop window, not facing's), keeps everything else on screen.
+
     The command bar and the nav row share one flex row (.header-row) so the
     nav sits inline with it instead of wrapping to a line of its own."""
     findbar = ""
     if find_value is not None:
+        find_close = ""
+        if find_value and find_close_url:
+            find_close = (f'<a class="find-close" href="{html.escape(find_close_url)}" '
+                         f'aria-label="Close find mode" title="Close find mode">✕</a>')
         findbar = (
             f'<div class="findbar" id="findbar">'
             f'<button type="button" class="find-trigger" id="find-trigger" '
@@ -2715,6 +2728,7 @@ def header_html(value="", find_value=None):
             f'role="combobox" aria-expanded="false" aria-controls="find-dropdown" '
             f'aria-label="Find an object by name">'
             f'<ul class="find-dropdown" id="find-dropdown" role="listbox" hidden></ul>'
+            f'{find_close}'
             f'</span></div>')
     return (f'<div class="header-row">'
             f'<form class="cmdbar" id="bar" method="get" action="/">'
@@ -2909,6 +2923,14 @@ document.documentElement.classList.add('js');
  .find-field input{{background:transparent;border:0;color:#e6edf3;font:inherit;
                     padding:0;margin:0;outline:none;width:210px;max-width:40vw}}
  .find-field input::placeholder{{color:#6e7681}}
+ /* Only rendered once find_value is actually set (an active search, not
+    just the empty/placeholder field) -- the one direct way back to the
+    plain chart, same visual language as the coming-up card's own .cu-
+    dismiss. */
+ .find-close{{background:none;border:0;color:#6e7681;cursor:pointer;
+             font-size:13px;line-height:1;padding:2px 4px;margin-left:4px;
+             flex-shrink:0;text-decoration:none}}
+ .find-close:hover{{color:#c9d1d9}}
  .find-dropdown{{position:absolute;top:100%;left:0;margin:4px 0 0;padding:4px;
                  background:#0d1117;border:1px solid #30363d;border-radius:6px;
                  min-width:220px;max-width:320px;max-height:280px;

@@ -1734,6 +1734,26 @@ class FindFieldWiring(unittest.TestCase):
         resp = self.client.get("/Zurich?find=Venus", headers=BROWSER)
         self.assertIn('id="find" type="text" value="Venus"', resp.text)
 
+    def test_no_close_x_when_not_actively_searching(self):
+        resp = self.client.get("/Zurich", headers=BROWSER)
+        self.assertNotIn('class="find-close"', resp.text)
+
+    def test_close_x_appears_once_actively_searching(self):
+        resp = self.client.get("/Zurich?find=Venus", headers=BROWSER)
+        self.assertIn('class="find-close"', resp.text)
+
+    def test_close_x_drops_find_but_keeps_the_place(self):
+        resp = self.client.get("/Zurich?find=Venus", headers=BROWSER)
+        href = resp.text.split('class="find-close" href="')[1].split('"')[0]
+        self.assertTrue(href.startswith("/Zurich"))
+        self.assertNotIn("find=", href)
+
+    def test_close_x_preserves_other_params_like_t(self):
+        resp = self.client.get("/Zurich?find=Venus&t=2026-07-30T21:30", headers=BROWSER)
+        href = resp.text.split('class="find-close" href="')[1].split('"')[0]
+        self.assertIn("t=2026-07-30T21", href)
+        self.assertNotIn("find=", href)
+
     def test_non_chart_pages_keep_find_in_the_drawer_only(self):
         resp = self.client.get("/catalog", headers=BROWSER)
         self.assertNotIn('id="findbar"', resp.text)
