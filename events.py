@@ -606,6 +606,7 @@ def localise(ev, lat, lon, tz_offset):
         ra, dec = body_radec("Moon" if lunar else "Sun", jd)
         alt, az = _alt_az(ra, dec, jd, lat, lon)
         e["alt"] = round(alt, 1)
+        e["az"] = round(az, 1)
         e["compass"] = compass(az)
         e["visible"] = alt > 0
         if not e["visible"]:
@@ -739,35 +740,61 @@ TEASER_HORIZON = {
 }
 
 
-def active_shower(lat, lon, tz_offset, now_utc=None, before=2.0, after=2.0):
-    """The shower worth pointing at right now, or None.
 
-    Not upcoming(): that only looks forward, and a shower that peaked last
-    night is still the reason to go outside tonight. Rates fall off either
-    side of the peak rather than switching off, so the window straddles it.
+# How long either side of an event it is worth putting a marker in the sky,
+# in days: (before, after). A shower runs for nights either side of maximum;
+# a conjunction is tonight's business and stale by the weekend; an eclipse is
+# that day and no other.
+#
+# These are deliberately tighter than TEASER_HORIZON. The teaser answers
+# "what should I plan for", the markers answer "what is up there right now",
+# and a sky full of rings for things happening next week helps nobody.
+MARKER_WINDOW = {
+    "meteor_shower": (2.0, 2.0),
+    "conjunction": (0.5, 1.5),
+    "opposition": (1.0, 2.0),
+    "elongation": (2.0, 2.0),
+    "eclipse": (0.25, 0.75),
+}
 
-    Returns the localised event, with alt/az of the radiant already worked
-    out, or None if nothing is active or the radiant never clears the
-    horizon in a dark enough sky.
+# More than this and the sphere is rings rather than sky.
+MAX_MARKERS = 4
+
+
+def locatable_tonight(lat, lon, tz_offset, now_utc=None, limit=MAX_MARKERS):
+    """Everything worth turning to face right now, best first.
+
+    Ranked by _interest rather than by time, because when the Perseids and a
+    Moon-Mercury pairing land on the same night the shower is the headline.
+    Anything without a real position, or that never clears the horizon in a
+    dark enough sky, is dropped -- there is nothing to point at.
     """
     now = now_utc or dt.datetime.utcnow().replace(microsecond=0)
-    start = now - dt.timedelta(days=before)
-    span = int(before + after) + 2
-    best = None
-    for e in scan_global(start, span):
-        if e["kind"] != "meteor_shower":
+    widest = max(b for b, _a in MARKER_WINDOW.values())
+    span = int(widest + max(a for _b, a in MARKER_WINDOW.values())) + 2
+    out = []
+    for e in scan_global(now - dt.timedelta(days=widest), span):
+        win = MARKER_WINDOW.get(e["kind"])
+        if not win:
             continue
         days = (e["when_utc"] - now).total_seconds() / 86400
-        if not -before <= days <= after:
+        if not -win[0] <= days <= win[1]:
             continue
         loc = localise(e, lat, lon, tz_offset)
-        if not loc["visible"]:
+        if not loc["visible"] or loc.get("az") is None:
             continue
-        # Closest to peak wins when two overlap, which the Taurids and
-        # Leonids manage most Novembers.
-        if best is None or abs(days) < abs(best[0]):
-            best = (days, loc)
-    return best[1] if best else None
+        out.append(loc)
+    out.sort(key=lambda e: (-_interest(e), e["when_utc"]))
+    return out[:limit]
+
+
+def active_shower(lat, lon, tz_offset, now_utc=None, before=2.0, after=2.0):
+    """The shower worth pointing at right now, or None. Kept as its own entry
+    point because a radiant is drawn differently from everything else."""
+    for e in locatable_tonight(lat, lon, tz_offset, now_utc, limit=99):
+        if e["kind"] == "meteor_shower":
+            return e
+    return None
 
 
 def next_event(lat, lon, tz_offset, now_utc=None, within_days=14,

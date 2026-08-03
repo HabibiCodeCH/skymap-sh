@@ -1279,7 +1279,7 @@ def sphere_json(request: Req, place: str):
     # How often anyone actually opens the 3D view on a night with a shower
     # running -- the whole reason the radiant marker exists, and the only way
     # to tell whether it's ever seen.
-    if data.get("radiant"):
+    if data.get("markers"):
         _stat["sphere_radiant"] += 1
     edge = DAY_EDGE if not r.night and api.is_daytime(r) else NIGHT_EDGE
     return JSONResponse(data, headers={

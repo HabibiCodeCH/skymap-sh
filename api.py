@@ -808,26 +808,59 @@ def _compose_sphere(r):
         moon=dict(phase=phase_name(mo["age"]), illum=round(mo["illum"] * 100),
                   alt=round(mo["alt"], 1), az=round(mo["az"], 1), compass=compass(mo["az"])),
         # The one thing this view can do that no chart can: point your actual
-        # body at the radiant. Null on all but a handful of nights a year.
-        radiant=_radiant_json(r),
+        # body at the thing. Empty on all but a handful of nights a year.
+        markers=_markers_json(r),
     )
 
 
-def _radiant_json(r):
-    """The active meteor shower's radiant, ready to place on the sphere, or
-    None. Uses the radiant's alt/az at the best moment tonight rather than at
-    the instant of the request -- the radiant climbs through the night, and
-    the useful answer is where to look when you actually go out."""
-    sh = ev_mod.active_shower(r.place.lat, r.place.lon, r.tz, now_utc=r.when_utc)
-    if sh is None:
-        return None
-    return dict(name=sh["name"], alt=sh["alt"], az=sh["az"],
-                compass=sh.get("compass"), zhr=sh.get("zhr"),
-                peak_local=sh["when_local"].isoformat(),
-                best_local=(sh["best_local"].isoformat() if sh.get("best_local") else None),
-                window_local=sh.get("window_local"),
-                moon_verdict=sh.get("moon_verdict"),
-                note=sh.get("note"), glyph="☄")
+def _marker_caption(e):
+    """The one line the sphere's strip shows for this marker. Short: it has a
+    single line on a phone, and the chevron eats the end of it."""
+    bits = []
+    if e["kind"] == "meteor_shower":
+        bits.append(f"{e['name']} radiant")
+        if e.get("window_local"):
+            bits.append(f"best {e['window_local'][0]}-{e['window_local'][1]}")
+        if e.get("zhr"):
+            bits.append(f"up to {e['zhr']}/hr")
+        if e.get("moon_verdict"):
+            bits.append(e["moon_verdict"])
+    else:
+        bits.append(e["headline"])
+        if e.get("alt") is not None and e.get("compass"):
+            bits.append(f"{e['alt']:.0f}° {e['compass']}")
+        if e.get("window_local"):
+            bits.append(f"best {e['window_local'][0]}-{e['window_local'][1]}")
+    return " · ".join(bits)
+
+
+def _markers_json(r):
+    """Everything worth turning to face tonight, best first.
+
+    Positions are taken at the BEST moment tonight, not at the instant of the
+    request: things climb through the night, and where to look when you
+    actually go outside is the useful answer. That makes these fixed markers
+    rather than live positions, which is why nothing re-computes them on a
+    timer.
+    """
+    out = []
+    for e in ev_mod.locatable_tonight(r.place.lat, r.place.lon, r.tz,
+                                      now_utc=r.when_utc):
+        out.append(dict(
+            kind=e["kind"], name=e["name"], headline=e["headline"],
+            alt=e["alt"], az=e["az"], compass=e.get("compass"),
+            zhr=e.get("zhr"), sep_deg=e.get("sep_deg"),
+            when_local=e["when_local"].isoformat(),
+            best_local=(e["best_local"].isoformat() if e.get("best_local") else None),
+            window_local=e.get("window_local"),
+            moon_verdict=e.get("moon_verdict"),
+            caption=_marker_caption(e),
+            # A radiant is a direction with nothing at it; everything else is
+            # an object sitting at a point. The client draws them differently.
+            shape="radiant" if e["kind"] == "meteor_shower" else "point",
+            glyph=e.get("glyph", "✦"),
+        ))
+    return out
 
 
 # ---------------------------------------------------------------- daytime
@@ -2223,6 +2256,10 @@ SPHERE_PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
                    border-bottom:1px dashed rgba(255,154,230,.55);
                    padding-bottom:1px}}
  #radiant-hud span:active{{color:#ffd0f4}}
+ #radiant-hud-cycle{{margin-left:8px;border:1px solid rgba(255,154,230,.5);
+                    border-radius:4px;padding:1px 6px;font-size:11px;
+                    white-space:nowrap}}
+ #radiant-hud-cycle[hidden]{{display:none}}
  body.daytime #radiant-hud{{color:#8a2f74}}
  body.daytime #radiant-hud span{{border-bottom-color:rgba(138,47,116,.55)}}
 </style></head><body>
@@ -2247,7 +2284,7 @@ you're holding it; anywhere else, drag to look around.</p>
 </div>
 <p id="find-msg"></p>
 <div id="find-arrow">&gt;&gt;&gt;</div>
-<p id="radiant-hud"><span id="radiant-hud-text" role="button" tabindex="0"></span></p>
+<p id="radiant-hud"><span id="radiant-hud-text" role="button" tabindex="0"></span><span id="radiant-hud-cycle" role="button" tabindex="0" hidden></span></p>
 <div id="find-reticle">
 <div class="tick tick-top"></div>
 <div class="tick tick-bottom"></div>
@@ -2407,19 +2444,17 @@ function toVec(alt, az) {{
 // actually go outside is the useful answer. It is therefore a fixed marker,
 // not a live position, which is why nothing re-computes it on a timer.
 var RADIANT_RING_SEGMENTS = 64;
-function addRadiant(rad) {{
-  var centre = toVec(rad.alt, rad.az);
-  var colour = 0xff9ae6;
+var MARKER_COLOUR = 0xff9ae6;
 
-  // Build the ring in a local frame around the radiant direction, then
-  // orient it so it lies flat against the sphere and reads as a circle from
-  // the middle rather than an ellipse edge-on.
+// A ring lying flat against the sphere at the given direction. Built in a
+// local frame around that direction so it reads as a circle from the middle
+// rather than an ellipse seen edge-on.
+function markerRing(centre, ringR, spokes) {{
   var normal = centre.clone().normalize();
   var up = Math.abs(normal.y) > 0.95 ? new THREE.Vector3(1, 0, 0)
                                      : new THREE.Vector3(0, 1, 0);
   var e1 = new THREE.Vector3().crossVectors(up, normal).normalize();
   var e2 = new THREE.Vector3().crossVectors(normal, e1).normalize();
-  var ringR = RADIUS * 0.09;
   var pts = [];
   for (var i = 0; i <= RADIANT_RING_SEGMENTS; i++) {{
     var t = i / RADIANT_RING_SEGMENTS * Math.PI * 2;
@@ -2427,52 +2462,90 @@ function addRadiant(rad) {{
       .addScaledVector(e1, Math.cos(t) * ringR)
       .addScaledVector(e2, Math.sin(t) * ringR));
   }}
-  var ring = new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts),
-                            new THREE.LineBasicMaterial({{color: colour}}));
-  scene.add(ring);
-
-  // Four short ticks pointing outward, the direction meteors actually streak.
-  var spokes = [];
+  scene.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts),
+                           new THREE.LineBasicMaterial({{color: MARKER_COLOUR}})));
+  if (!spokes) return;
+  // Four short ticks pointing outward, the way meteors actually streak.
+  var segs = [];
   for (var k = 0; k < 4; k++) {{
     var t2 = k / 4 * Math.PI * 2 + Math.PI / 4;
     var dir = e1.clone().multiplyScalar(Math.cos(t2))
                .addScaledVector(e2, Math.sin(t2));
-    spokes.push(centre.clone().addScaledVector(dir, ringR * 1.35),
-                centre.clone().addScaledVector(dir, ringR * 2.1));
+    segs.push(centre.clone().addScaledVector(dir, ringR * 1.35),
+              centre.clone().addScaledVector(dir, ringR * 2.1));
   }}
   scene.add(new THREE.LineSegments(
-    new THREE.BufferGeometry().setFromPoints(spokes),
-    new THREE.LineBasicMaterial({{color: colour}})));
+    new THREE.BufferGeometry().setFromPoints(segs),
+    new THREE.LineBasicMaterial({{color: MARKER_COLOUR}})));
+}}
 
-  addLabel(rad.glyph + ' ' + rad.name, centre, 'radiant-label', 0);
+var MARKERS = [];
+var markerIndex = 0;
 
+function addMarkers(list) {{
+  if (!list || !list.length) return;
+  MARKERS = list;
+  list.forEach(function(m) {{
+    var centre = toVec(m.alt, m.az);
+    // A radiant is a direction with nothing at it, so it gets the big ring
+    // and the outward ticks. Everything else is an object already drawn on
+    // the sphere, so it gets a small ring around it: a highlight, not a
+    // second copy of the thing.
+    if (m.shape === 'radiant') markerRing(centre, RADIUS * 0.09, true);
+    else markerRing(centre, RADIUS * 0.045, false);
+    addLabel(m.glyph + ' ' + m.name, centre, 'radiant-label', 0);
+  }});
+  showMarker(0);
   var hud = document.getElementById('radiant-hud');
-  var hudText = document.getElementById('radiant-hud-text');
-  if (hud && hudText) {{
-    var bits = [rad.name + ' radiant'];
-    if (rad.window_local) bits.push('best ' + rad.window_local[0] + '-' + rad.window_local[1]);
-    if (rad.zhr) bits.push('up to ' + rad.zhr + '/hr');
-    if (rad.moon_verdict) bits.push(rad.moon_verdict);
-    hudText.textContent = bits.join(' · ') + ' · tap to point me at it';
-    hud.style.display = 'block';
-    liftRadiantHud();
+  if (hud) hud.style.display = 'block';
+  liftRadiantHud();
+}}
 
-    // Reuse the find machinery rather than a second kind of pointer: same
-    // arrow when it's off screen, same reticle as it comes into view, same
-    // cancel button. The radiant is not a catalogue object so there is
-    // nothing to look up -- we already know exactly where it is.
-    var aim = function(ev) {{
-      if (ev) ev.preventDefault();
-      findMsg.textContent = '';
-      findTarget = {{alt: rad.alt, az: rad.az, name: rad.name + ' radiant'}};
-      findCancelBtn.hidden = false;
-    }};
-    hudText.addEventListener('click', aim);
-    hudText.addEventListener('keydown', function(ev) {{
-      if (ev.key === 'Enter' || ev.key === ' ') aim(ev);
-    }});
+function showMarker(i) {{
+  if (!MARKERS.length) return;
+  markerIndex = ((i % MARKERS.length) + MARKERS.length) % MARKERS.length;
+  var m = MARKERS[markerIndex];
+  var text = document.getElementById('radiant-hud-text');
+  var cyc = document.getElementById('radiant-hud-cycle');
+  if (text) text.textContent = m.caption + ' · tap to point me at it';
+  if (cyc) {{
+    // Hidden entirely at one marker -- a "1/1 ›" that does nothing is worse
+    // than no control. Two or more happens about ten nights a year.
+    cyc.hidden = MARKERS.length < 2;
+    cyc.textContent = (markerIndex + 1) + '/' + MARKERS.length + ' ›';
   }}
 }}
+
+// Reuse the find machinery rather than a second kind of pointer: same arrow
+// while it's off screen, same reticle as it comes into view, same cancel
+// button. Nothing to look up -- we already know exactly where it is.
+function aimAtMarker() {{
+  var m = MARKERS[markerIndex];
+  if (!m) return;
+  findMsg.textContent = '';
+  findTarget = {{alt: m.alt, az: m.az,
+                name: m.shape === 'radiant' ? m.name + ' radiant' : m.name}};
+  findCancelBtn.hidden = false;
+}}
+
+(function() {{
+  var text = document.getElementById('radiant-hud-text');
+  var cyc = document.getElementById('radiant-hud-cycle');
+  if (text) {{
+    text.addEventListener('click', function(ev) {{ ev.preventDefault(); aimAtMarker(); }});
+    text.addEventListener('keydown', function(ev) {{
+      if (ev.key === 'Enter' || ev.key === ' ') {{ ev.preventDefault(); aimAtMarker(); }}
+    }});
+  }}
+  if (cyc) {{
+    cyc.addEventListener('click', function(ev) {{
+      ev.preventDefault();
+      ev.stopPropagation();      // cycling is not aiming
+      showMarker(markerIndex + 1);
+      liftRadiantHud();          // the caption length changes the wrap
+    }});
+  }}
+}})();
 
 // #toolbar wraps to a second row on a narrow phone, so its height is not
 // knowable from CSS -- measure it and sit the HUD above whatever it actually
@@ -2679,7 +2752,7 @@ fetch('/' + PLACE + '/sphere.json' + window.location.search).then(function(r) {{
     addLabel(b.name, toVec(b.alt, b.az), 'body-label', 0);
   }});
 
-  if (data.radiant) addRadiant(data.radiant);
+  addMarkers(data.markers);
 
   var linePts = [];
   data.asterisms.forEach(function(con) {{

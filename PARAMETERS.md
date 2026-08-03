@@ -216,14 +216,23 @@ absent most nights on purpose: a shower is worth flagging a fortnight out, the
 Moon passing Jupiter only the night before, and moon phases never, since there
 is one every 7.4 days and a line that is always there stops being read.
 
-On a shower night the sphere marks the radiant: a ring around empty sky (a
-radiant is a direction, not an object, so there is nothing there to draw) with
-four ticks pointing the way meteors streak, the shower's name, and a line
-across the bottom with the window, the rate and what the Moon is doing. It sits
-at the radiant's altitude at the *best* moment that night rather than at the
-moment you loaded the page, because the radiant climbs through the night and
-where to look when you actually go out is the useful answer. Absent on all but
-a handful of nights a year, and absent anywhere the radiant never rises.
+The sphere marks whatever is worth turning to face tonight: meteor radiants,
+close approaches, oppositions, greatest elongations and eclipses. A radiant
+gets a big ring with four outward ticks, because a radiant is a direction and
+not an object -- there is nothing at that point to draw, and the ticks are the
+way meteors streak. Everything else is already on the sphere, so it gets a
+small ring round it as a highlight rather than a second copy.
+
+Markers sit where the thing will be at the *best* moment that night, not where
+it is when the page loads: things climb through the night, and where to look
+when you actually go out is the useful answer.
+
+One line across the bottom describes one marker at a time, since that is all
+the room a phone has. Tap the text and it points you there, reusing the same
+arrow and reticle the `find` box uses. With more than one marker a `1/3 ›`
+chevron appears to cycle; at a single marker the chevron is hidden, because a
+`1/1 ›` that does nothing is worse than no control. About ten nights a year
+have two or more. Most nights have none at all, and the strip is absent.
 
 JSON keys, events view: `place lat lon tz_offset when_utc window_days upcoming`,
 where each entry in `upcoming` has `kind name headline id when_utc when_local

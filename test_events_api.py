@@ -314,67 +314,93 @@ def test_rss_pubdate_carries_the_places_own_offset():
     assert dates and all(d.endswith("+0900") for d in dates), dates[:3]
 
 
-# ---------------------------------------------------------------- sphere radiant
+# ---------------------------------------------------------------- sphere markers
 PEAK_NIGHT = dt.datetime(2026, 8, 13, 1, 0)
+BUSY_NIGHT = dt.datetime(2026, 10, 4, 23, 0)      # opposition + two pairings
 
 
-def test_sphere_carries_the_radiant_on_a_shower_night():
-    rad = api._compose_sphere(_req(when=PEAK_NIGHT))["radiant"]
-    assert rad and rad["name"] == "Perseids"
-    assert rad["compass"] in ("N", "NNE", "NE", "ENE")
-    assert 0 < rad["alt"] <= 90
-    assert 0 <= rad["az"] < 360
-    assert rad["zhr"] == 100
+def _markers(**kw):
+    return api._compose_sphere(_req(**kw))["markers"]
 
 
-def test_sphere_radiant_is_null_on_an_ordinary_night():
-    """Null on all but a handful of nights a year, or the marker means
-    nothing when it does appear."""
-    assert api._compose_sphere(_req(when=dt.datetime(2026, 9, 20, 23, 0)))["radiant"] is None
+def test_sphere_marks_the_radiant_on_a_shower_night():
+    ms = _markers(when=PEAK_NIGHT)
+    assert ms and ms[0]["name"] == "Perseids"
+    assert ms[0]["shape"] == "radiant"
+    assert ms[0]["compass"] in ("N", "NNE", "NE", "ENE")
+    assert 0 < ms[0]["alt"] <= 90 and 0 <= ms[0]["az"] < 360
 
 
-def test_sphere_radiant_survives_the_night_after_the_peak():
-    """Rates fall off either side of maximum rather than switching off, and
-    upcoming() only looks forward, so active_shower straddles the peak."""
-    after = api._compose_sphere(_req(when=dt.datetime(2026, 8, 14, 23, 0)))["radiant"]
-    assert after and after["name"] == "Perseids"
+def test_sphere_has_no_markers_on_an_ordinary_night():
+    """Empty on all but a handful of nights a year, or a marker means nothing
+    when one does appear."""
+    assert _markers(when=dt.datetime(2026, 9, 20, 23, 0)) == []
 
 
-def test_sphere_radiant_absent_where_the_radiant_never_rises():
-    assert api._compose_sphere(_req(place="Sydney", when=PEAK_NIGHT))["radiant"] is None
+def test_sphere_marks_more_than_showers():
+    """Conjunctions and oppositions are worth turning towards too, and they
+    are where the multi-marker case actually comes from."""
+    ms = _markers(when=BUSY_NIGHT)
+    assert len(ms) >= 2
+    kinds = {m["kind"] for m in ms}
+    assert kinds - {"meteor_shower"}, kinds
 
 
-def test_sphere_radiant_uses_the_best_moment_not_the_request_instant():
-    """The radiant climbs through the night; where to look when you go out is
-    the useful answer, so the marker must not move with the clock."""
-    a = api._compose_sphere(_req(when=dt.datetime(2026, 8, 12, 21, 0)))["radiant"]
-    b = api._compose_sphere(_req(when=dt.datetime(2026, 8, 13, 2, 0)))["radiant"]
-    assert abs(a["alt"] - b["alt"]) < 1.0
-    assert abs(a["az"] - b["az"]) < 1.0
+def test_markers_are_ranked_best_first():
+    """When a shower and a Moon pairing land on the same night the shower is
+    the headline, so it must be the one the strip opens on."""
+    ms = _markers(when=dt.datetime(2026, 8, 11, 23, 0))
+    assert len(ms) >= 2
+    assert ms[0]["kind"] == "meteor_shower"
 
 
-def test_sphere_radiant_json_is_serialisable():
+def test_markers_are_capped():
+    for when in (PEAK_NIGHT, BUSY_NIGHT, dt.datetime(2026, 8, 11, 23, 0)):
+        assert len(_markers(when=when)) <= api.ev_mod.MAX_MARKERS
+
+
+def test_point_events_are_not_drawn_as_radiants():
+    for m in _markers(when=BUSY_NIGHT):
+        assert m["shape"] == ("radiant" if m["kind"] == "meteor_shower" else "point")
+
+
+def test_every_marker_has_a_caption_and_a_position():
+    for when in (PEAK_NIGHT, BUSY_NIGHT):
+        for m in _markers(when=when):
+            assert m["caption"] and " · " in m["caption"]
+            assert m["alt"] is not None and m["az"] is not None
+
+
+def test_sphere_marker_survives_the_night_after_a_peak():
+    """Rates fall off either side of maximum rather than switching off."""
+    ms = _markers(when=dt.datetime(2026, 8, 14, 23, 0))
+    assert any(m["name"] == "Perseids" for m in ms)
+
+
+def test_no_markers_where_nothing_clears_the_horizon():
+    assert _markers(place="Sydney", when=PEAK_NIGHT) == []
+
+
+def test_marker_position_uses_the_best_moment_not_the_request_instant():
+    a = _markers(when=dt.datetime(2026, 8, 12, 21, 0))[0]
+    b = _markers(when=dt.datetime(2026, 8, 13, 2, 0))[0]
+    assert abs(a["alt"] - b["alt"]) < 1.0 and abs(a["az"] - b["az"]) < 1.0
+
+
+def test_sphere_markers_json_is_serialisable():
     import json
-    json.dumps(api._compose_sphere(_req(when=PEAK_NIGHT)))
-
-
-def test_sphere_page_has_the_radiant_drawing_code(client):
-    body = client.get("/Zurich/sphere",
-                      headers={"User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0)"}).text
-    for token in ("addRadiant", "radiant-hud", "radiant-label", "data.radiant"):
-        assert token in body, token
+    json.dumps(api._compose_sphere(_req(when=BUSY_NIGHT)))
 
 
 @pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
 def test_sphere_page_javascript_parses():
     """A syntax error anywhere in this script kills the entire sphere page,
-    which has happened before (874cbdf's parent line of work). Nothing else in
-    the suite would notice, because the server happily serves broken JS with a
-    200. Parse-only, no execution -- there is no DOM here."""
+    which has happened before. Nothing else in the suite would notice, because
+    the server serves broken JS with a cheerful 200. Parse-only -- no DOM."""
     page = api.SPHERE_PAGE.format(title="t", place_slug="Zurich",
                                   place_name="Zürich", home_suffix="")
     js = re.search(r'<script type="module">(.*?)</script>', page, re.S).group(1)
-    js = re.sub(r"^\s*import .*$", "", js, flags=re.M)     # bare specifiers
+    js = re.sub(r"^\s*import .*$", "", js, flags=re.M)
     out = subprocess.run(
         ["node", "-e",
          "const s=require('fs').readFileSync(process.argv[1],'utf8');"
@@ -384,12 +410,19 @@ def test_sphere_page_javascript_parses():
     assert "OK" in out.stdout, out.stderr[:600]
 
 
-def test_sphere_json_route_includes_radiant(client):
-    j = client.get("/Zurich/sphere.json?t=2026-08-13T01:00").json()
-    assert "radiant" in j
+def test_sphere_page_has_the_marker_code(client):
+    body = client.get("/Zurich/sphere",
+                      headers={"User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0)"}).text
+    for token in ("addMarkers", "showMarker", "aimAtMarker",
+                  "radiant-hud-cycle", "data.markers"):
+        assert token in body, token
 
 
-def test_stats_counts_radiant_nights(client):
+def test_sphere_json_route_includes_markers(client):
+    assert "markers" in client.get("/Zurich/sphere.json?t=2026-08-13T01:00").json()
+
+
+def test_stats_counts_marker_nights(client):
     """Standing rule: a new thing on a route ships with its counter."""
     before = server._stat["sphere_radiant"]
     client.get("/Zurich/sphere.json?t=2026-08-13T01:00")
