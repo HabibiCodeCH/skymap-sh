@@ -1747,11 +1747,13 @@ def _respond(request: Req, place: str | None):
             kbd["grid"] = api._quadrant_grid_url(r)
         controls = api.controls_html(explore, animate_btn, quadrant_btn, sphere_btn, extra)
         header = api.header_html(r.place.name, find_value=r.find or "")
-        # Auto-fit only applies to the plain horizon panorama -- facing= has
-        # its own aspect-locked "true shape" formula, disc is a fixed circle,
-        # and find= has its own framing, none of which _effective_width
-        # actually governs (see api.py's DEFAULT_HORIZON_WIDTH comment).
-        fits_width = r.view != "disc" and not r.facing and not r.find
+        # Auto-fit applies to any plain horizon panorama, find= included --
+        # find draws the full panorama now, not a crop, so it goes through
+        # the same _effective_width(r) as the ordinary view (see
+        # _compose_sky's width= line). facing= is still excluded: it has its
+        # own aspect-locked "true shape" formula _effective_width doesn't
+        # govern. disc is a fixed circle, excluded for the same reason.
+        fits_width = r.view != "disc" and not r.facing
         fit_width = api._effective_width(r) if fits_width else "null"
         body = api.PAGE.format(title=f"skymap.sh: {r.place.name}",
                                header=header, controls=controls,

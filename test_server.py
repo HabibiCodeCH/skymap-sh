@@ -1503,9 +1503,13 @@ class AutoFitWidth(unittest.TestCase):
         resp = self.client.get("/Zurich?t=2026-07-30T23:00&view=disc", headers=BROWSER)
         self.assertIn("var FIT_W=null;", resp.text)
 
-    def test_find_view_opts_out(self):
-        resp = self.client.get("/Zurich?find=Venus", headers=BROWSER)
-        self.assertIn("var FIT_W=null;", resp.text)
+    def test_find_view_gets_auto_fit_too(self):
+        # find used to crop to a narrow window (opted out, same as facing=)
+        # -- it draws the full panorama now, same width as the ordinary
+        # view, so auto-fit applies exactly the same way.
+        resp = self.client.get("/Zurich?find=Venus&t=2026-07-30T23:00", headers=BROWSER)
+        self.assertIn('class="w w-wide"', resp.text)
+        self.assertIn("var FIT_W=110;", resp.text)
 
     def test_non_chart_pages_opt_out(self):
         for path in ("/catalog", "/legend", "/help", "/stats"):

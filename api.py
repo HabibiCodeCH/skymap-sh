@@ -572,21 +572,32 @@ def _compose_find(r):
                      width=_effective_width(r),
                      mag_limit=_fade_mag_limit(sun_alt))
     sp = extra["span"]
+    # side_panel=r.panel: find draws the full panorama now (see the comment
+    # above), so it earns the same zenith-inset-beside-the-chart treatment
+    # as the ordinary view (see _compose_sky) -- without this, the inset
+    # always rendered below regardless of ?panel=1, since render_linear's
+    # side_panel default is False.
     art, st = render_linear(shown_utc, p.lat, p.lon, color=c, show_lines=r.lines,
-                            tle=r.tle, target=tgt, **extra)
+                            tle=r.tle, target=tgt, side_panel=r.panel, **extra)
     shown_local = shown_utc + dt.timedelta(hours=p.offset(shown_utc))
     guide = find_text(tgt, st["visible"], p.lat)
 
     where = f"{int(sp)}° window" if zoomed else "full panorama"
-    out = ["", paint(f"  {p.name}   {shown_local:%d %b %Y %H:%M}   finding "
-                     f"{tgt['name']}, {where}", C.HEAD, c), ""]
+    head_line = paint(f"  {p.name}   {shown_local:%d %b %Y %H:%M}   finding "
+                      f"{tgt['name']}, {where}", C.HEAD, c)
     if note:
-        out += [paint("  " + note[0], C.MUTE, c),
-                paint("  " + note[1], "\033[38;5;213m", c)]
+        notice = [paint("  " + note[0], C.MUTE, c),
+                  paint("  " + note[1], "\033[38;5;213m", c)]
     else:
-        out.append(paint("  Visible now.", "\033[38;5;48m", c))
-    out += ["", art, ""]
-    out += [paint("  " + l, C.LABEL, c) for l in guide.split("\n")]
+        notice = [paint("  Visible now.", "\033[38;5;48m", c)]
+    guide_lines = [paint("  " + l, C.LABEL, c) for l in guide.split("\n")]
+    if r.panel:
+        zenith = st.get("zenith_lines") or []
+        out = ["", head_line, ""] + notice
+        out += _side_by_side(art.split("\n"), zenith)
+        out += [""] + guide_lines
+    else:
+        out = ["", head_line, ""] + notice + ["", art, ""] + guide_lines
     out += ["", _footer(p, c), ""]
 
     data.update(alt=round(tgt["alt"], 1), az=round(tgt["az"], 1),
