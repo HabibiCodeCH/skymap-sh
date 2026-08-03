@@ -122,11 +122,43 @@ def frame_to_png(text):
     return buf.getvalue()
 
 
+def _base_palette(frame_texts):
+    """An explicit, exact palette -- every xterm-256 colour code that
+    appears anywhere in the sequence, RGB-converted, each getting its own
+    slot -- built from a regex scan over the already-in-memory ANSI
+    strings, no image rendering needed, so this costs nothing extra.
+
+    Replaces the old palette.convert("P", palette=Image.ADAPTIVE) derived
+    from frame 0 alone: an *adaptive* palette only picks up colours that
+    frame actually contains, and frame 0 is whatever moment the GIF starts
+    at -- often "now", which can easily be daylight with zero stars drawn.
+    Every later night frame's real star colours then had nothing to match
+    in that palette but nearby greys, which is the whole "GIF stars are
+    grey but the static PNG isn't" bug: frame_to_png (the PNG export)
+    never quantises to an indexed palette at all, only this function did.
+    Scanning every frame first means a colour that only shows up two-thirds
+    of the way through the animation still gets an exact slot."""
+    codes = {int(m) for t in frame_texts for m in ANSI.findall(t) if m}
+    # BG and WATERMARK_COLOR are plain RGB fills, never routed through an
+    # xterm code at all -- included explicitly so they don't fall back to
+    # nearest-match either. FG_DEFAULT is also the fallback colour for any
+    # char before the first ANSI code on a line, same reasoning.
+    colors = [BG, FG_DEFAULT, WATERMARK_COLOR] + [_xterm_rgb(c) for c in sorted(codes)]
+    pal_img = Image.new("P", (1, 1))
+    pal_img.putpalette([channel for rgb in dict.fromkeys(colors) for channel in rgb])
+    return pal_img
+
+
 def frames_to_gif(frame_texts, frame_ms):
-    """List of ANSI frame strings -> GIF bytes. One shared palette (quantised
-    from the first frame) across every frame, so colours don't flicker or
+    """List of ANSI frame strings -> GIF bytes. One shared, explicit palette
+    (see _base_palette) across every frame, so colours don't flicker or
     drift as the GIF plays -- per-frame adaptive palettes would each pick
-    slightly different shades for the same xterm colour.
+    slightly different shades for the same xterm colour, and an adaptive
+    palette derived from just one frame can miss colours entirely (see
+    _base_palette's docstring). dither=Image.NONE: these are flat, single-
+    colour text glyphs, not photographic gradients, and every colour a
+    frame can contain already has an exact slot -- dithering would only
+    blend pixels at glyph edges for no benefit.
 
     Quantises each frame right after rendering it and drops the full-size
     RGB copy before rendering the next -- building the whole RGB list first
@@ -147,18 +179,16 @@ def frames_to_gif(frame_texts, frame_ms):
     once in the global header. Measured on a 96-frame render: passing it
     explicitly took peak memory from 297MB to 183MB and render time from
     5.6s to 1.3s, for the same pixel-identical output."""
-    first = frame_to_image(frame_texts[0])
-    base = first.convert("P", palette=Image.ADAPTIVE, colors=256)
-    first_q = first.quantize(palette=base)
-    del first
+    base = _base_palette(frame_texts)
 
     def rest():
         for t in frame_texts[1:]:
             im = frame_to_image(t)
-            q = im.quantize(palette=base)
+            q = im.quantize(palette=base, dither=Image.NONE)
             del im
             yield q
 
+    first_q = frame_to_image(frame_texts[0]).quantize(palette=base, dither=Image.NONE)
     buf = io.BytesIO()
     first_q.save(buf, format="GIF", save_all=True, append_images=rest(),
                 duration=frame_ms, loop=0, palette=base)

@@ -844,6 +844,8 @@ def _tally(r, daytime, hit, mode, status, data, colour=True, referrer=None):
     # shipped -- dso/quadrant landed with none at all until this pass.
     if r.dso:
         _stat["param:dso"] += 1
+    if r.nodso:
+        _stat["param:nodso"] += 1
     if r.quadrant_requested:
         _stat["param:quadrant"] += 1
     if r.night:
@@ -852,6 +854,8 @@ def _tally(r, daytime, hit, mode, status, data, colour=True, referrer=None):
         _stat["param:nolines"] += 1
     if r.width:
         _stat["param:w"] += 1
+    if r.panel:
+        _stat["param:panel"] += 1
     if not colour:
         _stat["param:plain"] += 1
     _places[r.place.name] += 1
@@ -938,6 +942,8 @@ def stats_text(n=50, map_slot=False):
         L.append(f"  {'iss':12} {_stat['iss']:>8,}")
     if _stat["sphere"]:
         L.append(f"  {'sphere':12} {_stat['sphere']:>8,}  (see /stats/sphere)")
+    if _stat["geo_redirect"]:
+        L.append(f"  {'geo_redirect':12} {_stat['geo_redirect']:>8,}")
     L.append("")
     if _stat["events"] or _stat["events.ics"] or _stat["events.rss"]:
         L.append("what's coming up")
@@ -1021,7 +1027,7 @@ def stats_json(n=50):
         night=_stat["night"], day=_stat["day"], iss=_stat["iss"],
         animate=_stat["animate"], animate_rejected=_stat["animate_rejected"],
         gif=_stat["gif"], gif_rejected=_stat["gif_rejected"], png=_stat["png"],
-        sphere=_stat["sphere"],
+        sphere=_stat["sphere"], geo_redirect=_stat["geo_redirect"],
         events=dict(page=_stat["events"], ics=_stat["events.ics"],
                     rss=_stat["events.rss"], via_nav=_stat["events_ip"],
                     places_distinct=len(_events_places),
@@ -1414,6 +1420,8 @@ def _build(request: Req, place: str | None):
         # from the param being absent entirely; api.Request uses that
         # difference to decide whether to switch dso on.
         quadrant=(q["quadrant"] if "quadrant" in q else None),
+        nodso=bool(q.get("nodso")),
+        panel=bool(q.get("panel")),
     )
 
 
@@ -1430,7 +1438,8 @@ UNKNOWN = """\
 
 def _cache_key(r, daytime):
     q = (round(r.place.lat, 1), round(r.place.lon, 1), r.view, r.facing, r.span,
-         (r.find or "").lower(), bool(r.tle), r.night, r.width, r.dso, r.quadrant)
+         (r.find or "").lower(), bool(r.tle), r.night, r.width, r.dso, r.quadrant,
+         r.lines, r.panel)
     bucket = DAY_BUCKET if daytime else NIGHT_BUCKET
     stamp = int(r.when_utc.timestamp() // bucket)
     return (q, stamp)
@@ -1575,6 +1584,25 @@ async def _animate(base_r, hours, base_url, is_ui=False):
 def _respond(request: Req, place: str | None):
     mode, colour = _wants(request)
     q = request.query_params
+    if place and mode == "html":
+        # A browser landing on raw coordinates (the 'm' keyboard shortcut's
+        # precise GPS fix, an old bookmarked link, someone pasting lat,lon
+        # into the search box) gets bounced to the nearby city's own name
+        # instead -- both the URL bar and the search field then read
+        # "Geneva", not "46.20,6.20". curl/JSON keep the exact coordinates
+        # verbatim: redirecting there would silently break anyone scripting
+        # against a specific lat/lon, and there's no URL bar to tidy up.
+        # Terminal-mode ?animate= not excluded here -- it's already the same
+        # story either way, since this only ever fires when mode=="html".
+        m = api.LATLON.match(place)
+        if m:
+            lat, lon = float(m.group(1)), float(m.group(2))
+            if -90 <= lat <= 90 and -180 <= lon <= 180:
+                city = api._confident_nearby_city(lat, lon)
+                if city:
+                    _stat["geo_redirect"] += 1
+                    qs = f"?{request.url.query}" if request.url.query else ""
+                    return RedirectResponse(f"/{quote(city)}{qs}", status_code=302)
     if place and api.lookup_place(place) is None:
         near = api.suggest(place)
         did = ("\n  Did you mean:\n" + "".join(f"    {n}\n" for n in near)
@@ -1630,22 +1658,28 @@ def _respond(request: Req, place: str | None):
         # the bare root same as an explicit place does), so these depend on
         # r.place rather than the raw `place` URL segment, which is None on
         # the root even though there's a real location to animate/share.
-        # Share as a GIF (hidden until animate starts, see skymapAnimate) +
-        # Share as a PNG (always there), right-aligned in the toolbar above
-        # the chart, not down beside it -- gif-btn/gif-status are found by
-        # id from the JS now rather than by parentElement.querySelector, so
-        # they can live in a different part of the page than animate-btn.
+        # Share as a GIF + Share as a PNG side by side (.share-row) in the
+        # drawer's actions section -- gif-btn/gif-status are found by id
+        # from the JS rather than by parentElement.querySelector, so they
+        # can live in a different part of the page than animate-btn.
         # gif-status sits in its own column under the button (.gif-group),
         # so the "View GIF" link that appears there once rendering finishes
         # reads as belonging to that button, not floating next to Share as a PNG.
-        extra = ('<div class="gif-group">'
+        # Always visible (rendering doesn't actually depend on animate having
+        # played -- data-gif-url is a real, independent server route) --
+        # skymapPollGifCapacity greys it out on page load whenever the
+        # server's at its concurrent-render cap, same as it always has, just
+        # no longer gated behind clicking animate first.
+        extra = ('<div class="share-row">'
+                '<div class="gif-group">'
                 f'<button id="gif-btn" class="animate-btn gif-btn" '
                 f'data-gif-url="{api._animate_gif_url(r)}" '
-                'onclick="skymapRenderGif(this)" hidden>Share as a GIF</button>'
+                'onclick="skymapRenderGif(this)">Share as a GIF</button>'
                 '<span id="gif-status" class="gif-status"></span>'
                 '</div>'
                 f'<a class="animate-btn" href="{png_href}" target="_blank" '
-                'rel="noopener">Share as a PNG</a>')
+                'rel="noopener">Share as a PNG</a>'
+                '</div>')
         # Carries the exact moment on screen (r.when_local, whether that
         # came from ?t= or just defaulted to now) into the live-preview
         # fetch -- otherwise the animation would start from real "now"
@@ -1653,6 +1687,12 @@ def _respond(request: Req, place: str | None):
         # for, which is confusing on any ?t= link and outright broken on a
         # future one.
         live_t = r.when_local.strftime("%Y-%m-%dT%H:%M")
+        # Carries the static chart's own width through too -- compose_frame
+        # (unlike the GIF export) renders at whatever width it's given, and
+        # without this the preview replaces #chart-pre with frames rendered
+        # at the DEFAULT_HORIZON_WIDTH fallback, visibly *shrinking* the
+        # chart the moment animate starts on any auto-fit-widened page.
+        live_w = f"&w={r.width}" if r.width else ""
         # ui=1 marks this as the page's own JS fetch, not a real curl/terminal
         # session -- fetch() doesn't send Accept: text/html by default, so
         # _wants() can't tell the two apart on headers alone, and the
@@ -1661,7 +1701,7 @@ def _respond(request: Req, place: str | None):
         animate_btn = (
             '<div class="animate-controls">'
             f'<button id="animate-btn" class="animate-btn" '
-            f'data-live-url="/{r.place.slug}?animate=24&t={live_t}&ui=1" '
+            f'data-live-url="/{r.place.slug}?animate=24&t={live_t}{live_w}&ui=1" '
             'onclick="skymapAnimate(this)">▶ animate</button>'
             '</div>')
         if q.get("animate") is not None:
@@ -1684,20 +1724,65 @@ def _respond(request: Req, place: str | None):
             label = "hide quadrants" if r.quadrant_requested else "show quadrants"
             quadrant_btn = (f'<a class="animate-btn" href="{api._quadrant_toggle_url(r)}">'
                            f'⊞ {label}</a>')
-        # Pre-filled with the place actually being viewed -- otherwise
-        # picking a date/time without retyping the city loses it: the JS
-        # reads an empty #place and falls back to the home/IP-located page.
-        explore = api.EXPLORE.format(place=html.escape(r.place.name))
+        # No place or find field of its own any more -- the command bar's
+        # #q is already pre-filled with the place actually being viewed,
+        # and find is promoted onto the header too (header_html's
+        # find_value below), right next to it. This form's own onsubmit
+        # still reads both by id regardless of where they live in the DOM.
+        explore = api.EXPLORE_DATETIME
         # Shown for everyone -- CSS (.mobile-only, a pointer:coarse media
         # query) decides who actually sees it, since there's no reliable
         # server-side "does this phone have a gyroscope" signal the way
         # TERMINALS lets curl/wget be told apart from a browser.
         sphere_btn = f'<a class="animate-btn mobile-only" href="/{r.place.slug}/sphere">◎ View in 3D</a>'
+        # Same day/night gate quadrant_btn's disabled state uses -- dso and
+        # quadrant only mean anything on the star chart, not the Sun's-arc
+        # day view. "quadrant" (the 'd' key) moves dso and the grid
+        # together; "grid" (the 'z' key) always lands on the bare lettered
+        # grid so the arrow-key/enter picker has something to land on.
+        star_chart = r.night or not daytime
+        kbd = {}
+        if star_chart:
+            kbd["quadrant"] = api._quadrant_toggle_url(r)
+            kbd["grid"] = api._quadrant_grid_url(r)
+        controls = api.controls_html(explore, animate_btn, quadrant_btn, sphere_btn, extra)
+        # _toggle_qs(r) already drops find= (documented, matches the
+        # quadrant button/d shortcut) -- None rather than "" when there's
+        # no active search, so header_html knows not to render an X next
+        # to an empty, not-yet-searched field.
+        find_close_url = f"/{r.place.slug}{api._toggle_qs(r)}" if r.find else None
+        header = api.header_html(r.place.name, find_value=r.find or "",
+                                 find_close_url=find_close_url)
+        # Auto-fit applies to any plain horizon panorama, find= included --
+        # find draws the full panorama now, not a crop, so it goes through
+        # the same _effective_width(r) as the ordinary view (see
+        # _compose_sky's width= line). facing= is still excluded: it has its
+        # own aspect-locked "true shape" formula _effective_width doesn't
+        # govern. disc is a fixed circle, excluded for the same reason.
+        fits_width = r.view != "disc" and not r.facing
+        fit_width = api._effective_width(r) if fits_width else "null"
+        # Called fresh here rather than read off res.data -- _compose_find
+        # doesn't set coming_up_card (find already answers "what's worth
+        # looking at"), but the card is a homepage highlight, not tied to
+        # whichever view composed this particular render. scan_global() is
+        # memoised per UTC day, so a second call here is cheap. Plural
+        # (events_cards, not events_card): the odd night two things are
+        # both genuinely close -- an eclipse and a shower peak a day apart,
+        # say -- gets both, cycled, not just whichever ranks higher.
+        coming_up_card = api.coming_up_card_html(api.events_cards(r))
+        # strip_duplicate_ui_lines: the prose repeats itself once real UI
+        # exists for the same thing -- Coming up (the card above), Share
+        # as a PNG (the drawer button), See tonight's chart now (a curl
+        # command, odd to hand a browser reader who can just click). CLI/
+        # JSON/PNG output is untouched -- both strips only run on the copy
+        # of page_text that becomes this HTML response.
+        html_text = api.strip_duplicate_ui_lines(page_text, r, res, base_url)
         body = api.PAGE.format(title=f"skymap.sh: {r.place.name}",
-                               header=api.header_html(f"/{r.place.slug}" if place else ""),
-                               explore=explore, animate_btn=animate_btn,
-                               quadrant_btn=quadrant_btn, sphere_btn=sphere_btn,
-                               body=api.ansi_to_html(page_text), extra=extra)
+                               header=header, controls=controls,
+                               wide_class=" w-wide" if fits_width else "",
+                               fit_width=fit_width, coming_up_card=coming_up_card,
+                               kbd_urls=json.dumps(kbd), shortcuts_hint=api.SHORTCUTS_HINT,
+                               body=api.ansi_to_html(api.strip_footer_line(html_text)))
         return HTMLResponse(body, status_code=res.status, headers=headers)
     text = page_text if colour else api.strip_ansi(page_text)
     return PlainTextResponse(text, status_code=res.status, headers=headers)
@@ -1706,7 +1791,11 @@ def _respond(request: Req, place: str | None):
 @app.middleware("http")
 async def ratelimit(request: Req, call_next):
     path = request.url.path
-    if path in ("/healthz", "/robots.txt"):
+    if path in ("/healthz", "/robots.txt", "/complete", "/complete/objects"):
+        # /complete and /complete/objects are exempt too -- both fire one
+        # debounced request per pause in typing, which a normal word can
+        # easily reach on its own; both are cheap, cached, and length-
+        # capped, so there's nothing here worth throttling per visitor.
         return await call_next(request)
     # The /stats family draws on its own bucket. An open /stats tab polls
     # /stats/live 20 times a minute, and against the chart allowance of 30
@@ -1743,9 +1832,12 @@ def help_(request: Req):
     mode, _colour = _wants(request)
     headers = {"Cache-Control": "public, max-age=3600"}
     if mode == "html":
-        body = api.PAGE.format(title="skymap.sh: usage", header=api.header_html("/help"),
-                               explore=api.EXPLORE.format(place=""), body=html.escape(api.HELP),
-                               extra="", animate_btn="", quadrant_btn="", sphere_btn="")
+        controls = api.controls_html(api.EXPLORE)
+        body = api.PAGE.format(title="skymap.sh: usage", header=api.header_html("help"),
+                               controls=controls, wide_class="", fit_width="null",
+                               coming_up_card="",
+                               body=html.escape(api.HELP),
+                               kbd_urls="{}", shortcuts_hint="")
         return HTMLResponse(body, headers=headers)
     return PlainTextResponse(api.HELP, headers=headers)
 
@@ -1809,6 +1901,34 @@ def demo_animate_gif():
                         headers={"Cache-Control": "public, max-age=3600"})
 
 
+@app.get("/complete")
+def complete(request: Req):
+    """Command-bar ghost completion (SPEC-command-bar.md #4) -- up to 8
+    canonical city names starting with ?q=, most populous first. cities.json
+    is ~3.9 MB and never goes to the browser; this is the server-side
+    substitute. Aggressively cached (completions are static data and should
+    never reach origin twice for the same prefix) and prefix-capped, so a
+    pathological ?q= can't turn this into a scanning oracle."""
+    q = request.query_params.get("q", "")[:api.COMPLETE_PREFIX_CAP]
+    return JSONResponse(api.complete_cities(q),
+                        headers={"Cache-Control": "public, max-age=86400, "
+                                                  "s-maxage=604800, immutable"})
+
+
+@app.get("/complete/objects")
+def complete_objects(request: Req):
+    """The find field's dropdown data source -- up to 8 catalog objects
+    (solar system, named stars, deep sky, constellations) matching ?q=, each
+    with the same glyph/colour /catalog shows. Much shorter cache than
+    /complete: the Moon's glyph reflects its real phase (see
+    _catalog_data()), and a week-long cache would show a stale one -- an
+    hour is short enough that nobody notices, long enough this still isn't
+    hit on every keystroke across visitors."""
+    q = request.query_params.get("q", "")[:api.COMPLETE_OBJECT_CAP]
+    return JSONResponse(api.complete_objects(q),
+                        headers={"Cache-Control": "public, max-age=3600, s-maxage=3600"})
+
+
 @app.get("/gif-capacity")
 def gif_capacity():
     # Polled by the "Share as a GIF" button so it can grey itself out before
@@ -1826,10 +1946,12 @@ def legend(request: Req):
     mode, colour = _wants(request)
     headers = {"Cache-Control": "public, max-age=3600"}
     if mode == "html":
-        body = api.PAGE.format(title="skymap.sh: legend", header=api.header_html("/legend"),
-                               explore=api.EXPLORE.format(place=""),
+        controls = api.controls_html(api.EXPLORE)
+        body = api.PAGE.format(title="skymap.sh: legend", header=api.header_html("legend"),
+                               controls=controls, wide_class="", fit_width="null",
+                               coming_up_card="",
                                body=api.ansi_to_html(api.legend_text(True)),
-                               extra="", animate_btn="", quadrant_btn="", sphere_btn="")
+                               kbd_urls="{}", shortcuts_hint="")
         return HTMLResponse(body, headers=headers)
     return PlainTextResponse(api.legend_text(colour), headers=headers)
 
@@ -1840,11 +1962,12 @@ def catalog(request: Req):
     mode, colour = _wants(request)
     headers = {"Cache-Control": "public, max-age=3600"}
     if mode == "html":
-        body = api.PAGE.format(title="skymap.sh: catalog", header=api.header_html("/catalog"),
-                               explore=api.EXPLORE.format(place=""),
+        controls = api.controls_html(api.EXPLORE)
+        body = api.PAGE.format(title="skymap.sh: catalog", header=api.header_html("catalog"),
+                               controls=controls, wide_class="", fit_width="null",
+                               coming_up_card="",
                                body=api.catalog_html(),
-                               extra="", animate_btn="", quadrant_btn="",
-                               sphere_btn="")
+                               kbd_urls="{}", shortcuts_hint="")
         return HTMLResponse(body, headers=headers)
     return PlainTextResponse(api.catalog_text(colour), headers=headers)
 
@@ -1892,13 +2015,12 @@ def stats(request: Req):
         body = body.replace(
             LEGEND_SLOT,
             f'<span id="live-legend">{html.escape(_map_legend())}</span>')
-        page = api.PAGE.format(title="skymap.sh: stats", header=api.header_html("/stats"),
-                               explore=api.EXPLORE, body=body,
-                               extra=api.stats_live_html(
-                                   [api._xterm_hex(n) for n in MAP_RAMP],
-                                   MAP_SIZES, MAP_DOT, MAP_FLASH_DOT),
-                               animate_btn="",
-                               quadrant_btn="", sphere_btn="")
+        controls = api.controls_html(api.EXPLORE, extra=api.stats_live_html(
+            [api._xterm_hex(n) for n in MAP_RAMP], MAP_SIZES, MAP_DOT, MAP_FLASH_DOT))
+        page = api.PAGE.format(title="skymap.sh: stats", header=api.header_html("stats"),
+                               controls=controls, wide_class="", fit_width="null",
+                               coming_up_card="",
+                               body=body, kbd_urls="{}", shortcuts_hint="")
         return HTMLResponse(page, headers=headers)
     text = stats_text()
     return PlainTextResponse(text if colour else api.strip_ansi(text),
@@ -1923,10 +2045,13 @@ def stats_sphere(request: Req):
     headers = {"Cache-Control": "no-store"}
     mode, _colour = _wants(request)
     if mode == "html":
+        controls = api.controls_html(api.EXPLORE)
         body = api.PAGE.format(title="skymap.sh: sphere stats",
-                               header=api.header_html("/stats/sphere"),
-                               explore=api.EXPLORE, body=html.escape(stats_sphere_text()),
-                               extra="", animate_btn="", quadrant_btn="", sphere_btn="")
+                               header=api.header_html("stats/sphere"),
+                               controls=controls, wide_class="", fit_width="null",
+                               coming_up_card="",
+                               body=html.escape(stats_sphere_text()),
+                               kbd_urls="{}", shortcuts_hint="")
         return HTMLResponse(body, headers=headers)
     return PlainTextResponse(stats_sphere_text(), headers=headers)
 
@@ -1944,10 +2069,13 @@ def stats_daily(request: Req):
     headers = {"Cache-Control": "no-store"}
     mode, _colour = _wants(request)
     if mode == "html":
+        controls = api.controls_html(api.EXPLORE)
         body = api.PAGE.format(title="skymap.sh: daily stats",
-                               header=api.header_html("/stats/daily"),
-                               explore=api.EXPLORE, body=html.escape(stats_daily_text(days)),
-                               extra="", animate_btn="", quadrant_btn="", sphere_btn="")
+                               header=api.header_html("stats/daily"),
+                               controls=controls, wide_class="", fit_width="null",
+                               coming_up_card="",
+                               body=html.escape(stats_daily_text(days)),
+                               kbd_urls="{}", shortcuts_hint="")
         return HTMLResponse(body, headers=headers)
     return PlainTextResponse(stats_daily_text(days), headers=headers)
 
@@ -1964,9 +2092,12 @@ def stats_hourly(request: Req):
     headers = {"Cache-Control": "no-store"}
     mode, _colour = _wants(request)
     if mode == "html":
-        body = api.PAGE.format(title="skymap.sh: stats", header=api.header_html("/stats/hourly"),
-                               explore=api.EXPLORE, body=html.escape(stats_hourly_text(days)),
-                               extra="", animate_btn="", quadrant_btn="", sphere_btn="")
+        controls = api.controls_html(api.EXPLORE)
+        body = api.PAGE.format(title="skymap.sh: stats", header=api.header_html("stats/hourly"),
+                               controls=controls, wide_class="", fit_width="null",
+                               coming_up_card="",
+                               body=html.escape(stats_hourly_text(days)),
+                               kbd_urls="{}", shortcuts_hint="")
         return HTMLResponse(body, headers=headers)
     return PlainTextResponse(stats_hourly_text(days), headers=headers)
 
@@ -2221,12 +2352,14 @@ def events_page(request: Req, place: str | None):
         # events_html(), not ansi_to_html(res.text): the browser version wraps
         # each event row in a link to the chart for that moment, which the
         # ANSI text has no way to carry.
+        controls = api.controls_html(api.EXPLORE)
         body = api.PAGE.format(
             title=f"skymap.sh: what's coming up over {r.place.name}",
-            header=api.header_html(f"/{r.place.slug}/events"),
-            explore=api.EXPLORE,
+            header=api.header_html(f"{r.place.slug}/events"),
+            controls=controls, wide_class="", fit_width="null",
+            coming_up_card="",
             body=api.events_html(r, days=_events_window(request)),
-            extra="", animate_btn="", quadrant_btn="", sphere_btn="")
+            kbd_urls="{}", shortcuts_hint="")
         return HTMLResponse(body, headers=_events_headers())
     return PlainTextResponse(api.strip_ansi(res.text) if not colour else res.text,
                              headers=_events_headers())
@@ -2324,6 +2457,16 @@ def _mobile_sphere_redirect(request, place):
 
 @app.get("/")
 def root(request: Req):
+    q = request.query_params.get("q", "").strip()
+    if q:
+        # The command bar (header_html/PAGE's script) is a real <form
+        # method="get" action="/">, so pressing Enter works with no JS at
+        # all -- it just lands here first and gets bounced on to the real
+        # place URL, one redirect heavier than the JS-driven version but
+        # functionally identical.
+        rest = [f"{k}={v}" for k, v in request.query_params.items() if k != "q"]
+        qs = f"?{'&'.join(rest)}" if rest else ""
+        return RedirectResponse(f"/{quote(q)}{qs}", status_code=302)
     redirect = _mobile_sphere_redirect(request, None)
     if redirect:
         return redirect

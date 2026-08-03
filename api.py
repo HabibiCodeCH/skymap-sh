@@ -135,6 +135,41 @@ def suggest(spec, n=6):
             break
     return res
 
+
+COMPLETE_PREFIX_CAP = 24    # matches the client's own cap (SPEC-command-bar.md
+                            # #4) -- enforced again here since this is a public
+                            # endpoint, not just called from our own JS.
+
+
+def complete_cities(prefix, n=8):
+    """Up to n canonical city names whose normalized form starts with
+    prefix's normalized form, most populous first -- the command bar's
+    ghost-completion data source (GET /complete, SPEC-command-bar.md #4).
+
+    Deliberately narrower than suggest(): prefix-only (not suggest()'s
+    looser startswith-or-contains "did you mean" matching), and returns the
+    bare display name ("New York") rather than suggest()'s disambiguated
+    label ("New York, New York, United States") -- a ghost completion is a
+    plain continuation of what's already been typed, not a fresh answer.
+    Each _cities() bucket is already population-sorted (hits[0] is always
+    the most populous), so no per-candidate sort is needed, only across
+    buckets."""
+    key = norm_name(prefix)[:COMPLETE_PREFIX_CAP]
+    if len(key) < 2:
+        return []
+    out = []
+    for k, hits in _cities().items():
+        if k.startswith(key):
+            out.append((-hits[0][6], hits[0][7]))
+    out.sort()
+    seen, res = set(), []
+    for _pop, name in out:
+        if name not in seen:
+            seen.add(name); res.append(name)
+        if len(res) >= n:
+            break
+    return res
+
 def _nearest_city(lat, lon, prefer_radius_deg=0.5, max_radius_deg=5):
     """The well-known city near (lat, lon), or None beyond max_radius_deg (open
     ocean, poles). Used to give bare coordinates a real IANA timezone instead
@@ -150,8 +185,11 @@ def _nearest_city(lat, lon, prefer_radius_deg=0.5, max_radius_deg=5):
 
     Memoised per 0.1-degree cell: CF-IPLatitude/Longitude are already rounded
     that coarsely before this is called, so repeat visitors from the same area
-    cost a dict lookup, not a fresh scan."""
-    key = (round(lat, 1), round(lon, 1))
+    cost a dict lookup, not a fresh scan. Keyed on the radii too, not just the
+    cell -- every caller used the same defaults until _confident_nearby_city
+    started passing a tighter pair, and a bare (lat, lon) key would have
+    silently handed that call whichever radii happened to be cached first."""
+    key = (round(lat, 1), round(lon, 1), prefer_radius_deg, max_radius_deg)
     hit = _NEAREST_CACHE.get(key)
     if hit is not None:
         return hit or None
@@ -174,6 +212,18 @@ def _nearest_city(lat, lon, prefer_radius_deg=0.5, max_radius_deg=5):
         _NEAREST_CACHE.clear()
     _NEAREST_CACHE[key] = best
     return best
+
+
+def _confident_nearby_city(lat, lon):
+    """A well-known city close enough (~55 km, prefer_radius_deg's "most
+    populous within this ring" band) that showing its name in place of raw
+    coordinates is a claim worth making -- unlike _nearest_city's own
+    default up-to-~550 km fallback, which only ever backs a soft "near X"
+    hint (resolve_place, Place.near), not a stand-in identity. Collapses
+    both radii to the same tight value so a city 200 km away (real, but not
+    confidently "here") never qualifies."""
+    hit = _nearest_city(lat, lon, prefer_radius_deg=0.5, max_radius_deg=0.5)
+    return hit[7] if hit else None
 
 
 _NEAREST_CACHE = {}
@@ -279,11 +329,18 @@ def resolve_place(spec, fallback=None):
 class Request:
     def __init__(self, place=None, when=None, view="horizon", facing=None, span=None,
                  find=None, iss=False, lines=True, color=True, fallback=None,
-                 tle=None, now=None, night=False, width=None, dso=False, quadrant=None):
+                 tle=None, now=None, night=False, width=None, dso=False, quadrant=None,
+                 nodso=False, panel=False):
         self.place = resolve_place(place, fallback)
         self.view, self.facing, self.span = view, facing, span
         self.find, self.iss, self.lines, self.color = find, iss, lines, color
         self.night = night
+        # ?panel=1 -- put the zenith inset + prose text beside the horizon
+        # chart instead of below it. Never inferred from width: the browser
+        # auto-fit JS is the only thing that ever sets this, so a CLI/curl
+        # request at any width renders exactly as it always has unless
+        # someone explicitly asks for it too.
+        self.panel = panel
         # Bounded to a single letter (or None) here, before it ever reaches a
         # cache key -- otherwise arbitrary ?quadrant= garbage would each mint
         # its own cache entry, the same free-cache-miss surface ?w= and ?t=
@@ -303,8 +360,12 @@ class Request:
         # letter is picked (bare ?quadrant, showing the grid to choose from).
         # That's why this checks the *raw* argument (quadrant is not None)
         # rather than self.quadrant -- a blank or not-yet-chosen quadrant
-        # request should still switch dso on.
-        self.dso = dso or (quadrant is not None)
+        # request should still switch dso on. ?nodso=1 is the explicit
+        # opt-out of that implication -- crop to the quadrant grid without
+        # the deep-sky overlay, used by the 'd' keyboard shortcut to stay
+        # independently toggleable even while the grid is up.
+        self.nodso = nodso
+        self.dso = (dso or (quadrant is not None)) and not nodso
         self.tle = tle
         # clamped once, here, so it's already canonical by the time it ever
         # reaches a cache key -- otherwise every distinct raw ?w= value before
@@ -336,7 +397,8 @@ class Request:
         r2.find, r2.iss, r2.lines, r2.color = None, False, self.lines, self.color
         r2.night, r2.tle, r2.width = self.night, None, self.width
         r2.dso, r2.quadrant = self.dso, self.quadrant
-        r2.quadrant_requested = self.quadrant_requested
+        r2.quadrant_requested, r2.nodso = self.quadrant_requested, self.nodso
+        r2.panel = self.panel
         r2.when_utc = when_utc
         r2.when_local = when_utc + dt.timedelta(hours=self.place.offset(when_utc))
         r2.tz = self.place.offset(when_utc)
@@ -354,6 +416,91 @@ def _footer(p, c):
     return (paint("  Follow ", C.MUTE, c) +
             paint("@habibicode", "\033[38;5;117m", c) +
             paint(" for skymap.sh updates", C.MUTE, c))
+
+
+def strip_footer_line(text):
+    """Removes _footer's "Follow @habibicode..." line from an already-
+    composed render -- used only by server.py's HTML branch. compose()'s
+    output is cached once and reused for every output mode (plain-text,
+    JSON, HTML, PNG -- see server.py's _cached docstring), so this can't
+    live inside compose() itself without splitting that cache in two; doing
+    it here, after the shared render, keeps curl/CLI output unchanged and
+    only touches what the browser actually receives. The header's nav row
+    carries the same invitation as icon links instead (see header_html)."""
+    marker = _footer(None, False)
+    lines = text.split("\n")
+    out, skip_blank = [], False
+    for line in lines:
+        if strip_ansi(line) == marker:
+            skip_blank = True
+            continue
+        if skip_blank and line == "":
+            skip_blank = False
+            continue
+        out.append(line)
+    return "\n".join(out)
+
+
+def _strip_prose_block(text, raw_sentence, wrap_width=76, prefix="  "):
+    """Removes one logical sentence from an already-composed render, even
+    though textwrap.wrap() may have split it across several physical lines
+    with no blank line in between (unlike strip_footer_line's target, this
+    can run right up against the next sentence) -- reconstructs the same
+    wrap independently to know exactly how many lines to drop, then matches
+    on strip_ansi'd content so colour doesn't matter. raw_sentence already
+    including its own "  " prefix (never wrapped, e.g. the PNG share line)
+    should pass prefix="" -- wrap_width is irrelevant there since
+    textwrap.wrap on a string with no spaces to break at just returns it
+    whole either way, but skipping it avoids the pretence. No-op (returns
+    text unchanged) if raw_sentence is falsy or the block isn't present --
+    find/disc views don't have every line every other view does."""
+    if not raw_sentence:
+        return text
+    import textwrap
+    target = [prefix + w for w in textwrap.wrap(raw_sentence, wrap_width)] \
+        if prefix else [raw_sentence]
+    if not target:
+        return text
+    lines = text.split("\n")
+    n = len(target)
+    for i in range(len(lines) - n + 1):
+        if all(strip_ansi(lines[i + j]) == target[j] for j in range(n)):
+            return "\n".join(lines[:i] + lines[i + n:])
+    return text
+
+
+def strip_duplicate_ui_lines(text, r, res, base_url):
+    """Removes prose lines that duplicate a real UI element elsewhere on
+    the browser page -- used only by server.py's HTML branch, same "post-
+    process after the shared compose()" reasoning as strip_footer_line
+    (see its docstring), for the same reason: curl/JSON/PNG output must
+    keep every line, only the browser page has the duplicate.
+
+    - "Coming up: ..." duplicates the coming-up card at the top of the page.
+    - "Share as a PNG: <url>" duplicates the drawer's own share button.
+    - "See tonight's chart now: curl '...'" (daytime view only) hands a
+      browser reader a shell command to run themselves, when they can just
+      click through instead -- useful on a terminal, odd on a page.
+
+    res.data carries everything needed to reconstruct each one exactly as
+    composed: "coming_up" is the already-built teaser sentence, and
+    "first_stars" (present only on the daytime view) is first's local ISO
+    timestamp with the same tz offset baked in that built the original
+    line, so re-parsing it reproduces tl without recomputing sun_events.
+    base_url must be the same real host text already substituted into
+    text's own {base_url} placeholders (server.py's page_text) -- _png_url
+    on its own still has the bare placeholder in it, which would never
+    match the already-substituted line actually sitting in text."""
+    text = _strip_prose_block(text, res.data.get("coming_up"))
+    png_url = _png_url(r).replace("{base_url}", base_url)
+    text = _strip_prose_block(text, f"  Share as a PNG: {png_url}", prefix="")
+    first_stars = res.data.get("first_stars")
+    if first_stars:
+        tl = dt.datetime.fromisoformat(first_stars)
+        text = _strip_prose_block(
+            text, f"See tonight's chart now:  "
+                  f"curl 'skymap.sh/{r.place.slug}?t={tl:%Y-%m-%dT%H:%M}'")
+    return text
 
 
 def _bodies_json(st):
@@ -487,21 +634,37 @@ def _compose_find(r):
                      width=_effective_width(r),
                      mag_limit=_fade_mag_limit(sun_alt))
     sp = extra["span"]
+    # side_panel=r.panel: find draws the full panorama now (see the comment
+    # above), so it earns the same zenith-inset-beside-the-chart treatment
+    # as the ordinary view (see _compose_sky) -- without this, the inset
+    # always rendered below regardless of ?panel=1, since render_linear's
+    # side_panel default is False.
     art, st = render_linear(shown_utc, p.lat, p.lon, color=c, show_lines=r.lines,
-                            tle=r.tle, target=tgt, **extra)
+                            tle=r.tle, target=tgt, side_panel=r.panel, **extra)
     shown_local = shown_utc + dt.timedelta(hours=p.offset(shown_utc))
-    guide = find_text(tgt, st["visible"], p.lat)
+    # Same wrap_width choice sky_read() makes for the ordinary view's prose
+    # -- the guide text used to be stuck at a fixed 76 columns even once
+    # ?panel=1 gave the chart itself the full effective width, wrapping
+    # mid-sentence well short of the space actually available.
+    guide = find_text(tgt, st["visible"], p.lat,
+                      wrap_width=_effective_width(r) if r.panel else 76)
 
     where = f"{int(sp)}° window" if zoomed else "full panorama"
-    out = ["", paint(f"  {p.name}   {shown_local:%d %b %Y %H:%M}   finding "
-                     f"{tgt['name']}, {where}", C.HEAD, c), ""]
+    head_line = paint(f"  {p.name}   {shown_local:%d %b %Y %H:%M}   finding "
+                      f"{tgt['name']}, {where}", C.HEAD, c)
     if note:
-        out += [paint("  " + note[0], C.MUTE, c),
-                paint("  " + note[1], "\033[38;5;213m", c)]
+        notice = [paint("  " + note[0], C.MUTE, c),
+                  paint("  " + note[1], "\033[38;5;213m", c)]
     else:
-        out.append(paint("  Visible now.", "\033[38;5;48m", c))
-    out += ["", art, ""]
-    out += [paint("  " + l, C.LABEL, c) for l in guide.split("\n")]
+        notice = [paint("  Visible now.", "\033[38;5;48m", c)]
+    guide_lines = [paint("  " + l, C.LABEL, c) for l in guide.split("\n")]
+    if r.panel:
+        zenith = st.get("zenith_lines") or []
+        out = ["", head_line, ""] + notice
+        out += _side_by_side(art.split("\n"), zenith)
+        out += [""] + guide_lines
+    else:
+        out = ["", head_line, ""] + notice + ["", art, ""] + guide_lines
     out += ["", _footer(p, c), ""]
 
     data.update(alt=round(tgt["alt"], 1), az=round(tgt["az"], 1),
@@ -621,22 +784,83 @@ def _png_url(r):
     return f"{{base_url}}/{r.place.slug}/horizon.png{qs}"
 
 
-def _quadrant_toggle_url(r):
-    """Toggle URL for the quadrant grid button: adds a bare ?quadrant (no
-    letter chosen yet) when it's not currently on, or drops it (and the dso
-    it auto-enabled) when it is. facing/span/night/w carried over either
-    way, same as _png_url, so toggling doesn't reset the rest of the view
-    the visitor is already looking at. Relative: same-origin navigation, no
-    base_url substitution needed."""
+def _toggle_qs(r, night=None, nolines=None, dso=None, quadrant_requested=None,
+                force_dso_off=False):
+    """Query string for the current view with one or more flags overridden --
+    shared basis for every toggle link (the quadrant button, and the d/l
+    keyboard shortcuts). facing/span/w/panel/t always carry over, same
+    reasoning as _png_url: toggling one thing shouldn't reset the rest of
+    the view already on screen -- panel in particular, since dropping it
+    silently moved the zenith inset from beside the chart to below it the
+    instant any of these shortcuts fired on an auto-fit-widened page. t=
+    only when it was actually picked (r.when_explicit), same as _png_url,
+    so the default link keeps tracking whatever's current. Doesn't carry
+    find=, matching the quadrant button's existing behaviour these
+    shortcuts extend.
+
+    force_dso_off writes an explicit ?nodso=1 alongside ?quadrant -- not used
+    by any keyboard shortcut ('d' controls dso and the grid together now),
+    but kept as a manual/CLI-only escape hatch: crop to a quadrant without
+    the deep-sky overlay. Plain `dso` being false isn't enough to trigger it:
+    that's also the ordinary resolved state of a fresh quadrant toggle, which
+    should keep the normal implied-on default, not silently opt out of it."""
+    night = r.night if night is None else night
+    nolines = (not r.lines) if nolines is None else nolines
+    dso = r.dso if dso is None else dso
+    quadrant_requested = r.quadrant_requested if quadrant_requested is None else quadrant_requested
     q = []
     if r.facing: q.append(f"facing={r.facing}")
     if r.span: q.append(f"span={r.span:g}")
-    if r.night: q.append("night=1")
+    if night: q.append("night=1")
     if r.width: q.append(f"w={int(r.width)}")
-    if not r.quadrant_requested:
+    if r.panel: q.append("panel=1")
+    if r.when_explicit: q.append(f"t={r.when_local:%Y-%m-%dT%H:%M}")
+    if quadrant_requested:
         q.append("quadrant")
-    qs = ("?" + "&".join(q)) if q else ""
+        if force_dso_off: q.append("nodso=1")
+    elif dso:
+        q.append("dso=1")
+    if nolines: q.append("nolines=1")
+    return ("?" + "&".join(q)) if q else ""
+
+
+def _quadrant_toggle_url(r):
+    """Toggle URL for the 'd' keyboard shortcut (and the quadrant button):
+    adds a bare ?quadrant (no letter chosen yet) when it's not currently on,
+    or drops it (and the dso it auto-enabled) when it is -- quadrant and dso
+    move together as one unit, there's no independent dso-only toggle in the
+    keyboard layer (see _dso_toggle_url for the manual/CLI-only escape
+    hatch). dso is forced False here either way -- this link never writes an
+    explicit dso=1 of its own, whether turning the grid on (quadrant alone
+    auto-enables dso server-side, no need to spell it out) or off (dropping
+    the grid should drop the dso it implied, not carry over r.dso's still-
+    true resolved value from before the toggle). Never writes nodso=1
+    either -- toggling the grid itself always resets to the normal
+    implied-dso default."""
+    qs = _toggle_qs(r, quadrant_requested=not r.quadrant_requested, dso=False)
     return f"/{r.place.slug}{qs}"
+
+
+def _quadrant_grid_url(r):
+    """URL that always lands on the bare lettered grid (?quadrant, no
+    specific cell), regardless of the current state -- used by the 'z'
+    (zoom) shortcut to get there from anywhere (grid off, or already zoomed
+    into one cell) before the arrow-key/enter cell picker takes over
+    client-side. Unlike _quadrant_toggle_url this never turns the grid off:
+    it's a "go here" link, not a toggle."""
+    return f"/{r.place.slug}{_toggle_qs(r, quadrant_requested=True)}"
+
+
+def _dso_toggle_url(r):
+    """Independent dso-only toggle -- no longer bound to a keyboard
+    shortcut ('d' now controls dso and the quadrant grid together, see
+    _quadrant_toggle_url), kept for manual/CLI use via ?nodso=1. With the
+    grid up, dso is force-implied True by default, so turning it off has to
+    write ?nodso=1 to actually stick (see _toggle_qs); turning it back on
+    just drops that override."""
+    new_dso = not r.dso
+    return f"/{r.place.slug}{_toggle_qs(r, dso=new_dso, force_dso_off=r.quadrant_requested and not new_dso)}"
+
 
 
 def _animate_gif_url(r):
@@ -681,7 +905,7 @@ def _compose_sky(r):
                                 # crash with a KeyError.
                                 bodies=_fade_visible_bodies(sun_alt, jd) | {"Sun", "Moon"},
                                 dso_limit=dso_limit, quadrant=r.quadrant,
-                                quadrants=r.quadrant_requested)
+                                quadrants=r.quadrant_requested, side_panel=r.panel)
         quad_bit = f", quadrant {st['quad_applied']}" if st.get("quad_applied") else ""
         # a quadrant crop replaces the zenith inset (there's no room, and no
         # need -- the crop already narrows the view), so the header must stop
@@ -694,38 +918,57 @@ def _compose_sky(r):
                 f"horizon panorama, 0-70° + zenith inset{quad_bit}")
 
     head = _horizon_head(r, mode)
-    prose = sky_read(st, p.name, r.when_local, f"UTC{r.tz:+g}", p.lat)
+    # Panel mode still wraps wide -- prose sits in its own full-width block
+    # below the chart+zenith row (see the side_panel branch below), not
+    # squeezed into the zenith's ~30-column-wide column, so there's no
+    # reason to wrap it any narrower than the chart itself.
+    prose = sky_read(st, p.name, r.when_local, f"UTC{r.tz:+g}", p.lat,
+                     wrap_width=_effective_width(r) if r.panel else 76)
 
-    out = ["", paint(head, C.HEAD, c), "", art, ""]
-    out += [paint("  " + l, C.LABEL, c) for l in prose.split("\n")[1:]]
+    right = [paint("  " + l, C.LABEL, c) for l in prose.split("\n")[1:]]
     tr = st.get("track")
     if tr:
         pk = max(tr, key=lambda x: x[1])
-        out.append(paint(f"  Pass: rises {compass(tr[0][2])} +{tr[0][0]:.0f} min, "
-                         f"peaks {pk[1]:.0f}° in the {compass(pk[2])}, "
-                         f"sets {compass(tr[-1][2])} +{tr[-1][0]:.0f} min.",
-                         "\033[38;5;48m", c))
+        right.append(paint(f"  Pass: rises {compass(tr[0][2])} +{tr[0][0]:.0f} min, "
+                           f"peaks {pk[1]:.0f}° in the {compass(pk[2])}, "
+                           f"sets {compass(tr[-1][2])} +{tr[-1][0]:.0f} min.",
+                           "\033[38;5;48m", c))
     elif st.get("iss_err"):
-        out.append(paint(f"  ISS: {st['iss_err']}", C.MUTE, c))
+        right.append(paint(f"  ISS: {st['iss_err']}", C.MUTE, c))
     if r.dso:
-        out.append(paint(f"  {DSO_LEGEND}", C.MUTE, c))
+        right.append(paint(f"  {DSO_LEGEND}", C.MUTE, c))
     if st.get("quad_error"):
-        out.append(paint(f"  Unknown quadrant '{st['quad_error']}' -- showing the full view.",
-                         C.MUTE, c))
+        right.append(paint(f"  Unknown quadrant '{st['quad_error']}' -- showing the full view.",
+                           C.MUTE, c))
     if st.get("quad_cells"):
         letters = [cell["letter"] for cell in st["quad_cells"]]
-        out.append(paint(f"  Quadrants {letters[0]}-{letters[-1]} are marked on the chart. "
-                         f"To zoom in, rerun adding ?quadrant={letters[0]} "
-                         f"(or --quadrant={letters[0]} on the CLI).", C.MUTE, c))
+        right.append(paint(f"  Quadrants {letters[0]}-{letters[-1]} are marked on the chart. "
+                           f"To zoom in, rerun adding ?quadrant={letters[0]} "
+                           f"(or --quadrant={letters[0]} on the CLI).", C.MUTE, c))
     teaser = events_teaser(r)
     if teaser:
         import textwrap
-        out += [paint("  " + l, EVENT_COL, c) for l in textwrap.wrap(teaser, 76)]
+        right += [paint("  " + l, EVENT_COL, c) for l in textwrap.wrap(teaser, 76)]
     # {base_url} is a literal placeholder -- api.py doesn't know its own
     # host, server.py substitutes the real one on the way out, on both
     # cache hits and misses, so a cached render never leaks whatever host
     # first produced it.
-    out.append(paint(f"  Share as a PNG: {_png_url(r)}", SUN_COL, c))
+    right.append(paint(f"  Share as a PNG: {_png_url(r)}", SUN_COL, c))
+
+    if r.panel:
+        # zenith_lines is None when this view has no inset at all (facing=,
+        # target=, or a quadrant crop already applied) -- st.get, not
+        # st[...], since disc view's own st dict never has this key. Only
+        # the zenith rides beside the chart; prose goes in its own
+        # full-width block below, same as the non-panel layout, so it never
+        # gets squeezed into the zenith's narrow column.
+        zenith = st.get("zenith_lines") or []
+        out = ["", paint(head, C.HEAD, c), ""]
+        out += _side_by_side(art.split("\n"), zenith)
+        out += [""] + right
+    else:
+        out = ["", paint(head, C.HEAD, c), "", art, ""]
+        out += right
     out += ["", _footer(p, c), ""]
 
     mo, su = st["moon"], st["sun"]
@@ -1073,17 +1316,10 @@ def _when_words(e, r):
     return f"on {watch:%a %d %b}"
 
 
-def events_teaser(r):
-    """One line for the bottom of a chart, or None if nothing is close.
-
-    Absent most of the time on purpose. A line that is always there stops
-    being read; a line that shows up only when the Perseids are two nights
-    out is the reason someone comes back.
-    """
-    e = ev_mod.next_event(r.place.lat, r.place.lon, r.tz, now_utc=r.when_utc,
-                          within_days=TEASER_DAYS)
-    if e is None:
-        return None
+def _event_teaser_text(e, r):
+    """One sentence for a single event -- shared by events_teaser() (the
+    single top event) and _event_card_from() (any event in events_cards()'s
+    list, not necessarily the top-ranked one)."""
     when = _when_words(e, r)
     if e["kind"] == "meteor_shower":
         bits = [f"{e['name']} peak {when}"]
@@ -1114,6 +1350,20 @@ def events_teaser(r):
     return f"Coming up: {e['headline']} {when}."
 
 
+def events_teaser(r):
+    """One line for the bottom of a chart, or None if nothing is close.
+
+    Absent most of the time on purpose. A line that is always there stops
+    being read; a line that shows up only when the Perseids are two nights
+    out is the reason someone comes back.
+    """
+    e = ev_mod.next_event(r.place.lat, r.place.lon, r.tz, now_utc=r.when_utc,
+                          within_days=TEASER_DAYS)
+    if e is None:
+        return None
+    return _event_teaser_text(e, r)
+
+
 def _event_date(e):
     """The date to file an event under: the evening you go outside, not the
     instant it peaks.
@@ -1135,10 +1385,11 @@ def _event_date(e):
 
 
 # ---------------------------------------------------------------- card payload
-# Data for the prominent "Coming up" card on a place page. Deliberately data
-# only: nothing here renders HTML, and PAGE does not include the card. The
-# markup lives in the web UI, which is being built separately -- see the
-# <!-- skymap:coming-up-card --> marker in PAGE for where it goes.
+# Data for the prominent "Coming up" card on a place page. events_card()
+# itself stays data-only (also served as "card" on /{place}/events?
+# format=json and "coming_up_card" on /{place}?format=json) -- the actual
+# markup is coming_up_card_html() below, rendered at the
+# <!-- skymap:coming-up-card --> marker in PAGE.
 #
 # events_card() returns None on most nights, which is the point: the card is
 # meant to mean something when it appears. See TEASER_HORIZON in events.py for
@@ -1156,19 +1407,13 @@ def _card_urgency(days_away):
     return "later"
 
 
-def events_card(r):
-    """The next thing worth a card on this place's page, or None.
-
-    A flat dict, ready to hand to a template. Everything the card might want
-    is precomputed here rather than left as raw event fields, so the UI never
-    has to reimplement the "which night does this belong to" or "is the Moon
-    in the way" reasoning that the text views already do.
-    """
-    e = ev_mod.next_event(r.place.lat, r.place.lon, r.tz, now_utc=r.when_utc,
-                          within_days=TEASER_DAYS)
-    if e is None:
-        return None
-
+def _event_card_from(e, r):
+    """A flat dict, ready to hand to a template, for one event -- shared by
+    events_card() (the single top event) and events_cards() (any event in
+    its ranked list). Everything the card might want is precomputed here
+    rather than left as raw event fields, so the UI never has to reimplement
+    the "which night does this belong to" or "is the Moon in the way"
+    reasoning that the text views already do."""
     watch = e.get("best_local") or e["when_local"]
     days_away = (e["when_utc"] - r.when_utc).total_seconds() / 86400
 
@@ -1195,7 +1440,7 @@ def events_card(r):
         eyebrow=_when_words(e, r),
         headline=e["headline"],
         # One sentence, the same wording the terminal views use.
-        body=(events_teaser(r) or "").replace("Coming up: ", ""),
+        body=_event_teaser_text(e, r).replace("Coming up: ", ""),
         detail=detail,
         moon_verdict=e.get("moon_verdict"),
         note=e.get("note"),
@@ -1209,6 +1454,120 @@ def events_card(r):
         cta=dict(label="show me that sky", url=_event_url(e, r)),
         more=dict(label="everything coming up",
                   url=f"/{quote(r.place.slug)}/events"),
+    )
+
+
+def events_card(r):
+    """The next thing worth a card on this place's page, or None."""
+    e = ev_mod.next_event(r.place.lat, r.place.lon, r.tz, now_utc=r.when_utc,
+                          within_days=TEASER_DAYS)
+    return _event_card_from(e, r) if e is not None else None
+
+
+def events_cards(r, n=3):
+    """Up to n cards, most interesting first -- the coming-up card's
+    cycling data source for the (rare, maybe ten nights a year) case where
+    more than one thing is genuinely close, e.g. a partial eclipse and a
+    meteor shower peak a day apart. [] on a quiet night, same as
+    events_card() returning None."""
+    evs = ev_mod.next_events(r.place.lat, r.place.lon, r.tz, now_utc=r.when_utc,
+                             within_days=TEASER_DAYS, n=n)
+    return [_event_card_from(e, r) for e in evs]
+
+
+def coming_up_card_html(cards):
+    """The homepage highlight at the <!-- skymap:coming-up-card --> marker
+    in PAGE -- "" when cards is empty (most nights), which the marker's own
+    placement in PAGE just renders as nothing.
+
+    One line, deliberately tight: glyph, the same one-sentence body the CLI
+    teaser uses (already reads as "<headline> <eyebrow phrase>, <facts>", so
+    a separate headline would just repeat itself), a single CTA (straight to
+    the framed chart -- "everything coming up" is one click away via the nav
+    now anyway), and a dismiss button. Color rides entirely on --cu-accent,
+    set per data-urgency in CSS -- retune the three hex values there, not
+    here.
+
+    cards can hold more than one (events_cards()'s ranked list, capped) for
+    the rare night two things are both genuinely close -- a partial eclipse
+    and a meteor shower peak a day apart, say. A "›" chevron cycles between
+    them client-side, same pattern as the 3D sphere's radiant HUD
+    (#radiant-hud-cycle): hidden entirely at one card, "1/2 ›" otherwise.
+    cards[0] renders server-side so a no-JS visitor still sees the top one
+    (just can't cycle or dismiss it -- both are inherently client-only
+    state); the rest ride along as inline JSON for the cycle handler.
+
+    Dismiss is real, not just decorative: keyed on each card's own id
+    (stable across renders, shared with the ICS UID/RSS GUID) in
+    localStorage, so dismissing "Perseids peak" doesn't come back on
+    refresh, but a different event next week does, and dismissing it while
+    cycled to it doesn't take a still-relevant eclipse with it. No server
+    round-trip -- there's nothing here a signed-out visitor's browser can't
+    remember on its own. The inline <script> right after the div (not
+    PAGE's big shared one) is deliberate: it runs the instant it's parsed,
+    before anything below it paints, so an already-dismissed top card is
+    gone before it would otherwise flash on screen -- same reasoning as the
+    .js-class script at the top of <head>."""
+    if not cards:
+        return ""
+    first = cards[0]
+    payload = json.dumps([
+        dict(id=c["id"], glyph=c["glyph"], body=c["body"], urgency=c["urgency"],
+             cta=c["cta"]) for c in cards
+    ]).replace("</", "<\\/")   # a body/label can't smuggle a </script> close
+    return (
+        f'<div class="coming-up" id="coming-up" data-urgency="{html.escape(first["urgency"])}" '
+        f'data-id="{html.escape(first["id"])}">'
+        f'<span class="cu-glyph" id="cu-glyph" aria-hidden="true">{first["glyph"]}</span>'
+        f'<span class="cu-body" id="cu-body">{html.escape(first["body"])}</span>'
+        f'<a class="cu-cta" id="cu-cta" href="{html.escape(first["cta"]["url"])}">'
+        f'{html.escape(first["cta"]["label"])}</a>'
+        f'<span class="cu-cycle" id="cu-cycle" role="button" tabindex="0" hidden></span>'
+        f'<button type="button" class="cu-dismiss" id="coming-up-dismiss" '
+        f'aria-label="Dismiss">✕</button>'
+        f'</div>'
+        f'<script>(function(){{'
+        f"var el=document.getElementById('coming-up');"
+        f"if(!el)return;"
+        f"var CARDS={payload};"
+        f"var KEY='skymap-cu-dismissed';"
+        f"var dismissed;"
+        f"try{{dismissed=JSON.parse(localStorage.getItem(KEY)||'[]');}}catch(e){{dismissed=[];}}"
+        f"CARDS=CARDS.filter(function(c){{return dismissed.indexOf(c.id)===-1;}});"
+        f"if(!CARDS.length){{el.remove();return;}}"
+        f"var idx=0;"
+        f"var glyphEl=document.getElementById('cu-glyph');"
+        f"var bodyEl=document.getElementById('cu-body');"
+        f"var ctaEl=document.getElementById('cu-cta');"
+        f"var cycleEl=document.getElementById('cu-cycle');"
+        f"function render(){{"
+        f"var c=CARDS[idx];"
+        f"el.dataset.urgency=c.urgency;"
+        f"el.dataset.id=c.id;"
+        f"glyphEl.textContent=c.glyph;"
+        f"bodyEl.textContent=c.body;"
+        f"ctaEl.textContent=c.cta.label;"
+        f"ctaEl.href=c.cta.url;"
+        # Hidden at one card, same "a 1/1 that does nothing is worse than
+        # no control" reasoning as the sphere's own chevron.
+        f"cycleEl.hidden=CARDS.length<2;"
+        f"cycleEl.textContent=(idx+1)+'/'+CARDS.length+' \\u203a';"
+        f"}}"
+        f"render();"
+        f"cycleEl.addEventListener('click',function(){{"
+        f"idx=(idx+1)%CARDS.length;"
+        f"render();"
+        f"}});"
+        f"var btn=document.getElementById('coming-up-dismiss');"
+        f"if(btn)btn.addEventListener('click',function(){{"
+        f"dismissed.push(CARDS[idx].id);"
+        f"try{{localStorage.setItem(KEY,JSON.stringify(dismissed));}}catch(e){{}}"
+        f"CARDS.splice(idx,1);"
+        f"if(!CARDS.length){{el.remove();return;}}"
+        f"idx=idx%CARDS.length;"
+        f"render();"
+        f"}});"
+        f'}})();</script>'
     )
 
 
@@ -1773,8 +2132,18 @@ VIEWS
 
 FIND
   ?find=Venus      frame one object, with directions in fists
-  ?find=Big+Dipper works for planets, Sun, Moon, named stars, asterisms
-                   tells you if you can see it, and if not, when you can
+  ?find=M31        planets, Sun, Moon, named stars, asterisms, deep-sky
+                   objects (M31, Andromeda Galaxy...), or a meteor shower's
+                   radiant (Perseids) -- and whether you can see it right
+                   now, or when you next can
+  ?find=X&span=90  crop to a window around it instead of the full sky
+
+EVENTS -- meteor showers, eclipses, oppositions, conjunctions, elongations
+  curl skymap.sh/Zurich/events            what's coming up, next 90 days
+  curl skymap.sh/Zurich/events?next=1     one line, for a shell prompt
+  curl skymap.sh/Zurich/events?days=30    a different window, 7-365
+                                           .ics and .rss feeds too, for a
+                                           calendar app or a feed reader
 
 OPTIONS
   ?t=2026-08-12T23:00   local time at that place (default: now)
@@ -1783,7 +2152,8 @@ OPTIONS
   ?dso=1                overlay galaxies, nebulae and clusters to mag 11 (Revised NGC)
   ?quadrant=A           crop to one lettered cell of the horizon view --
                         letters are marked on the chart, rerun adding the
-                        one you want to zoom in (horizon view only)
+                        one you want to zoom in (horizon view only, also
+                        turns on ?dso=1 unless ?nodso=1 is added too)
   ?format=json          the same facts, structured
   ?plain=1              no ANSI colour
   ?w=100                render at N columns wide instead of the default
@@ -1792,6 +2162,13 @@ OPTIONS
 
   Fit any terminal automatically, add to your shell profile:
     skymap() { curl "skymap.sh/${1:-}?w=$(tput cols)"; }
+
+KEYBOARD (in a browser, on a chart page)
+  p/tab  focus the place search        a   toggle animate
+  f      focus the find field          g   share as a GIF
+  m      jump to my location           d   toggle quadrant grid + dso
+  esc    cancel/exit find mode, drawer z   zoom: pick a quadrant cell with
+                                            arrow keys, enter to crop to it
 
 Stars: Yale Bright Star Catalogue. Planets: JPL approximate elements.
 Sun and Moon: Meeus. Satellites: CelesTrak.
@@ -2033,6 +2410,53 @@ def catalog_html():
     return "\n".join(L)
 
 
+# A generic outline-star for constellations -- the only _catalog_data()
+# group with no glyph of its own (catalog_text/catalog_html don't give them
+# one either), kept visually distinct from a named star's filled/magnitude
+# glyph and a planet's solid diamond.
+_ASTERISM_GLYPH = ("✧", "#8b949e")
+
+COMPLETE_OBJECT_CAP = 24   # same reasoning as COMPLETE_PREFIX_CAP
+
+
+def complete_objects(prefix, n=8):
+    """Up to n findable objects (solar system, named stars, deep sky,
+    constellations) matching prefix -- the find field's dropdown data
+    source (GET /complete/objects). Pulled from the same _catalog_data()
+    catalog_html() renders from, so a suggestion can't drift from what's
+    actually findable.
+
+    Matches the start of any word in the name, not just the whole string
+    (city-style prefix-only matching would miss "Big Dipper" on "dip"), and
+    is ranked solar system first, then brightest named star, then brightest
+    deep-sky object, then constellations alphabetically -- the order
+    _catalog_data() already returns each group in, concatenated."""
+    key = norm_name(prefix)[:COMPLETE_OBJECT_CAP]
+    if len(key) < 2:
+        return []
+
+    def word_match(name):
+        return any(norm_name(w).startswith(key) for w in name.split())
+
+    d = _catalog_data()
+    out = []
+    for _nm, display, glyph, glyph_c in d["solar_system"]:
+        if word_match(display):
+            out.append({"name": display, "glyph": glyph, "color": _ansi_hex(glyph_c)})
+    for s in d["named_stars"]:
+        if word_match(s["n"]):
+            out.append({"name": s["n"], "glyph": sky.glyph_for(s["m"]),
+                       "color": _ansi_hex(sky.star_colour(s.get("ci")))})
+    for o in d["named_dso"]:
+        if word_match(_dso_label(o)):
+            glyph, glyph_c = sky.DSO_GLYPH[o["t"]]
+            out.append({"name": o["n"], "glyph": glyph, "color": _ansi_hex(glyph_c)})
+    for nm in d["asterisms"]:
+        if word_match(nm):
+            out.append({"name": nm, "glyph": _ASTERISM_GLYPH[0], "color": _ASTERISM_GLYPH[1]})
+    return out[:n]
+
+
 # ---------------------------------------------------------------- ansi -> html
 ANSI = re.compile(r"\033\[(?:38;5;(\d+)|0)m")
 
@@ -2196,20 +2620,146 @@ def stats_live_html(ramp_hex, sizes, dot, flash_dot, tick_ms=3000):
 </script>""")
 
 
-def header_html(path):
-    """The cta line + nav, identical on every page -- one function so the
+def _side_by_side(left_lines, right_lines, gap=3):
+    """Zip two blocks of (possibly ANSI-coloured) text lines into one,
+    left padded to its own widest *visible* line (ANSI colour codes add
+    invisible characters, so padding on raw string length would misalign
+    the right column). Uneven heights are fine -- the shorter block just
+    leaves blank space in its column past its own last line."""
+    left_width = max((len(strip_ansi(l)) for l in left_lines), default=0)
+    out = []
+    for i in range(max(len(left_lines), len(right_lines))):
+        l = left_lines[i] if i < len(left_lines) else ""
+        r = right_lines[i] if i < len(right_lines) else ""
+        if r:
+            pad = left_width - len(strip_ansi(l))
+            out.append(l + " " * (pad + gap) + r)
+        else:
+            out.append(l)
+    return out
+
+
+# Official brand marks (GitHub, Reddit, Bluesky, X), inline so this stays a
+# dependency-free single file -- no icon package, no external request. Same
+# links the old "Created by @habibicode · see the repo" footer line pointed
+# at, plus the community's new Reddit and Bluesky homes; that line only ever
+# existed on the web page (never part of the shared chart text CLI/curl
+# see), so any of this moving/changing doesn't touch CLI output.
+# Path data fetched verbatim from Simple Icons (cdn.jsdelivr.net/npm/simple-
+# icons/icons/{name}.svg) -- hand-transcribing SVG path data from memory is
+# exactly how you get a silently-corrupted icon (two numbers running
+# together at a line break, missing a separator), so every path here was
+# copied from the real file, not retyped.
+_GITHUB_PATH = "M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61C4.422 18.07 3.633 17.7 3.633 17.7c-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12"
+_REDDIT_PATH = "M12 0C5.373 0 0 5.373 0 12c0 3.314 1.343 6.314 3.515 8.485l-2.286 2.286C.775 23.225 1.097 24 1.738 24H12c6.627 0 12-5.373 12-12S18.627 0 12 0Zm4.388 3.199c1.104 0 1.999.895 1.999 1.999 0 1.105-.895 2-1.999 2-.946 0-1.739-.657-1.947-1.539v.002c-1.147.162-2.032 1.15-2.032 2.341v.007c1.776.067 3.4.567 4.686 1.363.473-.363 1.064-.58 1.707-.58 1.547 0 2.802 1.254 2.802 2.802 0 1.117-.655 2.081-1.601 2.531-.088 3.256-3.637 5.876-7.997 5.876-4.361 0-7.905-2.617-7.998-5.87-.954-.447-1.614-1.415-1.614-2.538 0-1.548 1.255-2.802 2.803-2.802.645 0 1.239.218 1.712.585 1.275-.79 2.881-1.291 4.64-1.365v-.01c0-1.663 1.263-3.034 2.88-3.207.188-.911.993-1.595 1.959-1.595Zm-8.085 8.376c-.784 0-1.459.78-1.506 1.797-.047 1.016.64 1.429 1.426 1.429.786 0 1.371-.369 1.418-1.385.047-1.017-.553-1.841-1.338-1.841Zm7.406 0c-.786 0-1.385.824-1.338 1.841.047 1.017.634 1.385 1.418 1.385.785 0 1.473-.413 1.426-1.429-.046-1.017-.721-1.797-1.506-1.797Zm-3.703 4.013c-.974 0-1.907.048-2.77.135-.147.015-.241.168-.183.305.483 1.154 1.622 1.964 2.953 1.964 1.33 0 2.47-.81 2.953-1.964.057-.137-.037-.29-.184-.305-.863-.087-1.795-.135-2.769-.135Z"
+_BLUESKY_PATH = "M5.202 2.857C7.954 4.922 10.913 9.11 12 11.358c1.087-2.247 4.046-6.436 6.798-8.501C20.783 1.366 24 .213 24 3.883c0 .732-.42 6.156-.667 7.037-.856 3.061-3.978 3.842-6.755 3.37 4.854.826 6.089 3.562 3.422 6.299-5.065 5.196-7.28-1.304-7.847-2.97-.104-.305-.152-.448-.153-.327 0-.121-.05.022-.153.327-.568 1.666-2.782 8.166-7.847 2.97-2.667-2.737-1.432-5.473 3.422-6.3-2.777.473-5.899-.308-6.755-3.369C.42 10.04 0 4.615 0 3.883c0-3.67 3.217-2.517 5.202-1.026"
+_X_PATH = "M14.234 10.162 22.977 0h-2.072l-7.591 8.824L7.251 0H.258l9.168 13.343L.258 24H2.33l8.016-9.318L16.749 24h6.993zm-2.837 3.299-.929-1.329L3.076 1.56h3.182l5.965 8.532.929 1.329 7.754 11.09h-3.182z"
+
+
+def _social_icon(href, label, path):
+    return (f'<a href="{href}" aria-label="{label}" title="{label}">'
+            f'<svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor">'
+            f'<path d="{path}"/></svg></a>')
+
+
+SOCIAL_ICONS = (
+    '<span class="social-icons">'
+    + _social_icon("https://github.com/HabibiCodeCH/skymap-sh", "See the repo on GitHub", _GITHUB_PATH)
+    + _social_icon("https://www.reddit.com/r/skymap/", "Join r/skymap on Reddit", _REDDIT_PATH)
+    + _social_icon("https://bsky.app/profile/skymap.sh", "Follow on Bluesky", _BLUESKY_PATH)
+    + _social_icon("https://x.com/habibicode", "Follow on X", _X_PATH)
+    + '</span>'
+)
+
+
+def header_html(value="", find_value=None, find_close_url=None):
+    """The command bar + nav, identical on every page -- one function so the
     nav can never drift or reorder between routes the way six separate
     PAGE.format() call sites each re-deciding it independently did. "home"
     stays onscreen even on the home page itself -- consistent nav position
-    beats not linking to the page you're already on."""
-    return (f'<pre class="cta">curl skymap.sh{path}</pre>\n'
-            f'<p class="t"><b>skymap.sh</b>\n'
-            f'<a href="/">home</a> · <a href="/catalog">catalog</a> · <a href="/demo">demo</a> · '
+    beats not linking to the page you're already on. Social icons (GitHub,
+    Reddit, Bluesky, X) sit right after "legend" -- the GitHub/X pair used
+    to be a separate "Created by ... see the repo" line below the chart;
+    folding them into the nav row keeps the same links without spending a
+    whole extra row on them.
+
+    value is whatever belongs after "skymap.sh/" -- the current place's
+    display name on a chart page, or the bare page name ("catalog", "help",
+    ...) elsewhere, same as the old static "$ curl skymap.sh/<path>" chip
+    always showed. Keeping that on every page (rather than leaving it blank
+    off the chart view) is deliberate: it's still "curl skymap.sh/help", it
+    reads as editable and *curlable* everywhere, not just for places.
+    Real <input>, not decoration -- see PAGE's script for the auto-size/
+    click-to-focus/ghost-completion behaviour and _respond's ?q= handling
+    for the plain-HTML-forms fallback this degrades to without JS.
+
+    find_value=None (the default) omits the find field entirely -- every
+    page except the chart view, which passes r.find or "" here instead of
+    leaving it in the drawer (EXPLORE_DATETIME there has no #find of its
+    own). /stats showed find as the second-most-viewed feature behind the
+    chart itself, right after place -- worth the same prominence as place,
+    not buried behind the drawer toggle.
+
+    find_close_url, when given (server.py only sets it once r.find is
+    actually set -- an active search, not just an empty/placeholder field),
+    renders a small "return to the plain chart" X inside the field itself.
+    Before this there was no direct way back to the ordinary view short of
+    manually clearing the text and resubmitting, or "reset skymap" in the
+    drawer, which also drops the place. Built with _toggle_qs(r), same as
+    every other toggle link -- drops find= (and any span= that was find's
+    own crop window, not facing's), keeps everything else on screen.
+
+    The command bar and the nav row share one flex row (.header-row) so the
+    nav sits inline with it instead of wrapping to a line of its own."""
+    findbar = ""
+    if find_value is not None:
+        find_close = ""
+        if find_value and find_close_url:
+            find_close = (f'<a class="find-close" href="{html.escape(find_close_url)}" '
+                         f'aria-label="Close find mode" title="Close find mode">✕</a>')
+        findbar = (
+            f'<div class="findbar" id="findbar">'
+            f'<button type="button" class="find-trigger" id="find-trigger" '
+            f'aria-label="Find an object" aria-expanded="false" aria-controls="find-field">⌕</button>'
+            f'<span class="find-field" id="find-field">'
+            f'<span class="find-icon" aria-hidden="true">⌕</span>'
+            f'<input id="find" type="text" value="{html.escape(find_value)}" '
+            f'placeholder="Find (Venus, Big Dipper…)" autocomplete="off" '
+            f'role="combobox" aria-expanded="false" aria-controls="find-dropdown" '
+            f'aria-label="Find an object by name">'
+            f'<ul class="find-dropdown" id="find-dropdown" role="listbox" hidden></ul>'
+            f'{find_close}'
+            f'</span></div>')
+    return (f'<div class="header-row">'
+            f'<form class="cmdbar" id="bar" method="get" action="/">'
+            f'<span class="prompt" aria-hidden="true">$</span>'
+            f'<span class="fixed" aria-hidden="true">'
+            f'<span class="curlword">curl </span>skymap.sh/</span>'
+            f'<span class="field">'
+            f'<input id="q" name="q" value="{html.escape(value)}" '
+            f'aria-label="City, or lat,lon" spellcheck="false" autocapitalize="off" '
+            f'autocorrect="off" autocomplete="off" enterkeyhint="go">'
+            f'<span class="ghosttext" id="ghost" aria-hidden="true"></span>'
+            f'<span class="measure" id="measure" aria-hidden="true"></span>'
+            f'</span>'
+            f'<span class="cursor" id="cur" aria-hidden="true"></span>'
+            f'<span class="grow"></span>'
+            f'<button type="button" class="copy" id="copy">⧉ copy</button>'
+            f'</form>'
+            f'{findbar}'
+            f'<p class="t nav-row"><span>'
+            f'<a href="/">home</a> · '
             # Bare /events, not /{place}/events: the nav is the same on every
             # page, so it cannot carry a place. The route locates by IP the
             # way a bare `curl skymap.sh` does.
             f'<a href="/events">events</a> · '
-            f'<a href="/help">help</a> · <a href="/legend">legend</a></p>')
+            # catalog/demo/legend moved into the drawer (see
+            # DRAWER_LINKS_HTML) -- less-used than events/help, and the nav
+            # row was the one thing on every page that couldn't collapse.
+            f'<a href="/help">help</a> {SOCIAL_ICONS}'
+            f'<button type="button" class="drawer-trigger" id="drawer-trigger" '
+            f'aria-expanded="false" aria-controls="drawer">☰</button>'
+            f'</span></p></div>')
 
 
 PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
@@ -2218,76 +2768,331 @@ PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="description" content="The night sky above you, as plain text. curl skymap.sh">
 <link rel="icon" href="/favicon.ico" sizes="any">
 <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<script>
+// Feature-detection class, not a capability check -- the drawer's CSS (see
+// below) only turns into an off-canvas panel once this is present, so a
+// page with JS disabled falls back to every control simply being visible
+// inline, not hidden behind a trigger that does nothing. Deliberately up
+// here, before the page body exists to paint anything, not down with the rest of
+// the script by #chart-pre: on a real full-page navigation (e.g. clicking
+// "show quadrants", a plain link) the browser paints whatever HTML it's
+// parsed so far as it goes -- if this ran down there instead, the drawer's
+// un-enhanced, full-width, always-open state (including its full-width
+// "go" button) would flash on screen for a frame before the class landed
+// and CSS collapsed it back into the narrow hidden panel.
+document.documentElement.classList.add('js');
+</script>
 <style>
  body{{margin:0;background:#04060a;color:#c9d1d9;
       font-family:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
-      padding:24px 16px 48px;-webkit-font-smoothing:antialiased}}
+      /* Bottom padding only needs to clear .kbd-hint's own fixed bar
+         (~33px) plus a little breathing room -- it used to be 64px, nearly
+         double that, which on a page short enough to not otherwise need
+         scrolling was exactly enough overflow to force a few px of
+         vertical scroll anyway. */
+      padding:24px 16px 40px;-webkit-font-smoothing:antialiased}}
  .w{{max-width:1200px;margin:0 auto}}
+ .w-wide{{max-width:none}}
  pre{{margin:0;font-size:11px;line-height:1.22;overflow-x:auto;font-variant-ligatures:none}}
+ /* Bigger than the generic pre{{}} above -- scoped to the chart page only
+    (catalog/help/legend/stats stay at 11px), not a blanket change. Chart
+    height is invariant to this: the auto-fit JS measures #chart-pre's own
+    font size to pick column count, and the row count is always cols/
+    HORIZON_COLS_PER_ROW, so a bigger font just means fewer, taller
+    cells -- same total pixel height either way. Only the fixed-line-count
+    prose below the chart actually grows, which is the whole point. */
+ #chart-pre{{font-size:13px}}
  .t{{color:#6e7681;font-size:12px;margin:0 0 18px}}
- .t b{{color:#c9d1d9;font-weight:600}}
+ .nav-row{{display:flex;justify-content:flex-end;align-items:center;
+          flex-wrap:wrap;gap:8px}}
+ .header-row{{display:flex;justify-content:space-between;align-items:center;
+             flex-wrap:wrap;gap:12px;margin:0 0 8px}}
+ .header-row .nav-row{{margin:0;flex:1;min-width:0}}
+ .social-icons{{display:inline-flex;gap:8px;margin-left:8px;vertical-align:middle}}
+ .social-icons a{{color:#6e7681;display:inline-flex}}
+ .social-icons a:hover{{color:#c9d1d9}}
+ .social-icons svg{{display:block}}
  a{{color:#87d7ff}}
  #chart-pre a{{color:#87d7ff;text-decoration:none}}
  #chart-pre a:hover{{text-decoration:underline}}
- .ex{{margin:0 0 18px}}
- .ex form{{display:flex;gap:8px;flex-wrap:wrap;margin:0 0 10px}}
+ /* Drawer (SPEC-command-bar.md #9, adapted: slide in from the right, no
+    backdrop, opened via header_html's #drawer-trigger next to the social
+    icons). The base rules here are deliberately just a plain, always-
+    visible block section -- see controls_html's docstring. Only once
+    PAGE's script adds .js to <html> do the fixed/off-canvas/hidden rules
+    below apply, so every control stays reachable with no JS at all. */
+ #drawer{{margin:0 0 14px}}
+ .drawer-section{{margin:0 0 16px;padding:0 0 16px;border-bottom:1px solid #30363d}}
+ .drawer-section:last-child{{margin:0;padding:0;border-bottom:0}}
+ .drawer-section:empty{{display:none}}
+ .drawer-trigger{{display:none}}
+ .js .drawer-trigger{{display:inline-flex;align-items:center;justify-content:center;
+                      background:#0d1117;border:1px solid #30363d;color:#ffd700;
+                      border-radius:4px;width:28px;height:28px;margin-left:8px;
+                      font-size:14px;line-height:1;cursor:pointer}}
+ .js .drawer-trigger:hover{{border-color:#ffd700}}
+ .drawer-close{{display:none}}
+ .js .drawer-close{{display:block;position:absolute;top:16px;right:16px;
+                    background:none;border:0;color:#ffd700;font-size:16px;
+                    line-height:1;padding:6px;cursor:pointer}}
+ .js .drawer-close:hover{{color:#fff}}
+ .js #drawer{{position:fixed;top:0;right:0;bottom:0;width:320px;max-width:90vw;
+             margin:0;padding:56px 16px 16px;background:#0d1117;
+             border-left:1px solid #30363d;overflow-y:auto;z-index:20;
+             transform:translateX(100%);transition:transform .2s ease}}
+ .js #drawer.open{{transform:translateX(0)}}
+ .ex{{display:block}}
+ .ex form{{display:flex;flex-direction:column;gap:8px;margin:0}}
  .ex input{{background:#0d1117;border:1px solid #30363d;color:#c9d1d9;
-           padding:6px 10px;border-radius:4px;font:inherit;font-size:12px}}
- .ex input#place{{width:170px}}
- .ex input#find{{width:190px}}
- .ex input#whenDate{{width:140px;color-scheme:dark}}
- .ex input#whenTime{{width:100px;color-scheme:dark}}
- .ex button{{background:#238636;border:0;color:#fff;padding:6px 14px;
-            border-radius:4px;font:inherit;font-size:12px;cursor:pointer}}
+           padding:6px 10px;border-radius:4px;font:inherit;font-size:12px;
+           width:100%;box-sizing:border-box}}
+ .ex input#whenDate,.ex input#whenTime{{color-scheme:dark}}
+ .ex-row{{display:flex;gap:8px}}
+ .ex-row input{{width:auto;flex:1;min-width:0}}
+ .ex button{{background:#238636;border:0;color:#fff;padding:8px 14px;
+            border-radius:4px;font:inherit;font-size:12px;cursor:pointer;
+            width:100%}}
  .ex button:hover{{background:#2ea043}}
- .ex .tries{{color:#6e7681;font-size:12px;margin:0}}
- .ex .tries a{{color:#87d7ff;text-decoration:none}}
- .ex .tries a:hover{{text-decoration:underline}}
- .cta{{background:#0d1117;border:1px solid #30363d;border-radius:6px;
-      padding:10px 14px;margin:0 0 14px;color:#7ee787;font-size:13px;
-      display:inline-block}}
- .cta::before{{content:"$ ";color:#6e7681}}
- .toolbar{{display:flex;justify-content:space-between;align-items:center;
-          flex-wrap:wrap;gap:10px;margin:0 0 14px}}
- .toolbar-left{{display:flex;align-items:center;gap:10px;flex-wrap:wrap}}
- .toolbar-right{{display:flex;align-items:flex-start;gap:10px;flex-wrap:wrap;
-                padding-top:6px}}
- .toolbar-right a{{color:#ffd700;font-size:12px;text-decoration:none;white-space:nowrap}}
- .toolbar-right a:hover{{text-decoration:underline}}
- .animate-controls{{display:flex;align-items:center;gap:8px;flex-wrap:wrap}}
+ .tries{{color:#6e7681;font-size:12px;margin:0}}
+ .tries a{{color:#87d7ff;text-decoration:none}}
+ .tries a:hover{{text-decoration:underline}}
+ /* Command bar -- an inline-editable "$ curl skymap.sh/<place>" line.
+    Everything up to and including the "/" is fixed, decorative text; #q is
+    a real input laid out inline with it via the same monospace text
+    engine, so it never has to be kept in sync with an overlay. min-width:0
+    on .field/input (not this element -- see below) is required for flex
+    children to shrink/scroll instead of blowing out the row -- the default
+    flex min-width is auto, not 0. */
+ /* This is the page's main CTA -- it shouldn't visibly grow and shrink on
+    every keystroke (or every time a ghost completion of a different length
+    pops in or out from under the debounced /complete fetch). The min-width
+    floor absorbs that: .grow (a flex:1 spacer between the cursor and the
+    copy button) eats the slack whenever content is narrower than the
+    floor, pinning "copy" to the bar's right edge instead of letting the
+    whole bar visibly resize. min(560px,90vw) so it still fits a narrow
+    viewport instead of forcing horizontal overflow. */
+ /* height+box-sizing:border-box (not just matching padding) is what
+    actually guarantees .find-field below renders exactly this tall --
+    letting it emerge from padding+content, the original approach, is at
+    the mercy of font-metric/nested-element quirks that can differ by a
+    pixel or two between browsers. An explicit shared number on both
+    can't drift apart. */
+ .cmdbar{{display:inline-flex;align-items:center;background:#0d1117;
+         border:1px solid #30363d;border-radius:6px;padding:9px 12px;
+         margin:0;color:#7ee787;font-size:13px;cursor:text;
+         max-width:100%;min-width:min(560px,90vw);
+         box-sizing:border-box;height:45px}}
+ .cmdbar .prompt{{color:#6e7681;margin-right:6px}}
+ .cmdbar .fixed{{white-space:pre}}
+ .cmdbar .curlword{{color:#6e7681}}
+ .cmdbar .field{{display:inline-flex;min-width:0;max-width:100%}}
+ .cmdbar input{{background:transparent;border:0;color:#e6edf3;font:inherit;
+               padding:0;margin:0;min-width:0;max-width:100%;outline:none}}
+ .cmdbar .ghosttext{{color:#3d4451;white-space:pre;pointer-events:none}}
+ .cmdbar .measure{{position:absolute;visibility:hidden;white-space:pre;left:-9999px}}
+ .cmdbar .grow{{flex:1}}
+ .cmdbar .copy{{background:none;border:1px solid #30363d;color:#6e7681;
+               border-radius:4px;padding:4px 8px;margin-left:10px;
+               font:inherit;font-size:12px;cursor:pointer;white-space:nowrap}}
+ .cmdbar .copy:hover{{border-color:#7ee787;color:#7ee787}}
+ .cursor{{display:inline-block;width:.55em;height:1.15em;margin-left:1px;
+         background:#7ee787;vertical-align:-0.2em;
+         animation:blink 1.06s step-end infinite}}
+ .cmdbar.focused .cursor{{visibility:hidden;animation:none}}
+ @keyframes blink{{0%,50%{{opacity:1}}50.01%,100%{{opacity:0}}}}
+ @media (prefers-reduced-motion: reduce){{
+   .cursor{{animation:none;opacity:.55}}
+ }}
+ /* Find field -- promoted out of the drawer and next to the command bar on
+    the chart page only (header_html's find_value param), since /stats
+    showed find as the second-most-viewed feature after the chart itself.
+    Same visual language as .cmdbar (dark box, monospace) but its own
+    element, not fused into the "$ curl ..." line -- it isn't part of that
+    curlable command. Below findbar-collapse-width, .find-field hides and
+    .find-trigger (an icon button) takes its place; clicking it adds
+    .expanded, same show/hide pattern as the drawer trigger. */
+ .findbar{{display:inline-flex;align-items:center}}
+ .find-trigger{{display:none}}
+ /* Explicit height+box-sizing:border-box, matching .cmdbar exactly -- see
+    its comment above. */
+ .find-field{{display:inline-flex;align-items:center;position:relative;
+             background:#0d1117;border:1px solid #30363d;border-radius:6px;
+             padding:9px 12px;color:#8b949e;font-size:13px;
+             box-sizing:border-box;height:45px}}
+ .find-icon{{color:#6e7681;margin-right:6px}}
+ .find-field input{{background:transparent;border:0;color:#e6edf3;font:inherit;
+                    padding:0;margin:0;outline:none;width:210px;max-width:40vw}}
+ .find-field input::placeholder{{color:#6e7681}}
+ /* Only rendered once find_value is actually set (an active search, not
+    just the empty/placeholder field) -- the one direct way back to the
+    plain chart, same visual language as the coming-up card's own .cu-
+    dismiss. */
+ .find-close{{background:none;border:0;color:#6e7681;cursor:pointer;
+             font-size:13px;line-height:1;padding:2px 4px;margin-left:4px;
+             flex-shrink:0;text-decoration:none}}
+ .find-close:hover{{color:#c9d1d9}}
+ .find-dropdown{{position:absolute;top:100%;left:0;margin:4px 0 0;padding:4px;
+                 background:#0d1117;border:1px solid #30363d;border-radius:6px;
+                 min-width:220px;max-width:320px;max-height:280px;
+                 overflow-y:auto;z-index:30;list-style:none}}
+ .find-dropdown[hidden]{{display:none}}
+ .find-option{{display:flex;align-items:center;gap:8px;padding:6px 8px;
+              border-radius:4px;cursor:pointer;font-size:13px;color:#c9d1d9}}
+ .find-option .glyph{{width:1.2em;text-align:center;flex-shrink:0}}
+ .find-option:hover,.find-option.active{{background:#1c2128}}
+ @media (max-width:700px){{
+   .find-trigger{{display:inline-flex;align-items:center;justify-content:center;
+                 background:#0d1117;border:1px solid #30363d;color:#8b949e;
+                 border-radius:4px;width:28px;height:28px;margin-left:8px;
+                 font-size:14px;line-height:1;cursor:pointer}}
+   .find-trigger:hover{{border-color:#8b949e}}
+   .find-field{{display:none;flex-basis:100%;margin-top:8px}}
+   .findbar{{flex-wrap:wrap}}
+   .findbar.expanded .find-field{{display:inline-flex}}
+   .find-field input{{max-width:none;flex:1}}
+ }}
+ .animate-controls{{display:block;margin:0 0 8px}}
  .animate-btn{{background:#0d1117;border:1px solid #30363d;color:#ffd700;
-              padding:6px 12px;border-radius:4px;font:inherit;font-size:12px;
-              cursor:pointer;display:inline-block;text-decoration:none}}
+              padding:8px 12px;border-radius:4px;font:inherit;font-size:12px;
+              cursor:pointer;display:block;width:100%;box-sizing:border-box;
+              text-align:center;text-decoration:none;margin:0 0 8px}}
  .animate-btn:hover{{border-color:#ffd700;text-decoration:none}}
  .animate-btn:disabled{{opacity:.6;cursor:default}}
- .animate-btn[hidden]{{display:none}}
- .gif-group{{display:flex;flex-direction:column;gap:4px;align-items:flex-start}}
- .gif-status{{color:#6e7681;font-size:12px;white-space:nowrap}}
+ .share-row{{display:flex;gap:8px;margin:0 0 8px}}
+ .share-row .gif-group{{flex:1;margin:0}}
+ .share-row>.animate-btn{{flex:1;margin:0}}
+ .gif-group{{display:flex;flex-direction:column;gap:4px;margin:0 0 8px}}
+ .gif-group .animate-btn{{margin:0}}
+ .gif-status{{color:#6e7681;font-size:12px}}
+ .gif-status a{{color:#ffd700;text-decoration:none}}
+ .gif-status a:hover{{text-decoration:underline}}
  .mobile-only{{display:none}}
  @media (pointer:coarse) and (max-width:900px){{.mobile-only{{display:inline-block}}}}
-</style></head><body><div class="w">
+ .kbd-hint{{position:fixed;left:0;right:0;bottom:0;margin:0;padding:9px 16px;
+           text-align:center;background:#0d1117;border-top:1px solid #30363d;
+           color:#6e7681;font-size:11.5px;z-index:10}}
+ .kbd-hint kbd{{background:#04060a;border:1px solid #30363d;border-radius:3px;
+              padding:0 5px;font-family:inherit;font-size:11px;color:#c9d1d9}}
+ .quad-pick{{background:#ffff00;color:#000 !important;border-radius:2px}}
+ /* Coming-up card -- one line, full width, colour entirely from
+    --cu-accent so retuning per urgency is a one-line change per bucket,
+    not a rule rewrite. .cu-body ellipsizes rather than wraps: "tight,
+    one line" holds at any viewport width instead of degrading to two. */
+ .coming-up{{display:flex;align-items:center;gap:10px;padding:8px 14px;
+            margin:0 0 12px;background:#0d1117;border:1px solid #30363d;
+            border-left:3px solid var(--cu-accent,#ff87ff);border-radius:6px;
+            font-size:12.5px}}
+ .coming-up[data-urgency="tonight"]{{--cu-accent:#ffd700}}
+ .coming-up[data-urgency="soon"]{{--cu-accent:#ff87ff}}
+ .coming-up[data-urgency="later"]{{--cu-accent:#a186a6}}
+ .cu-glyph{{color:var(--cu-accent,#ff87ff);flex-shrink:0}}
+ .cu-body{{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;
+          white-space:nowrap;color:#8b949e}}
+ .cu-cta{{color:var(--cu-accent,#ff87ff);text-decoration:none;
+         white-space:nowrap;flex-shrink:0}}
+ .cu-cta:hover{{text-decoration:underline}}
+ /* Same chevron the sphere's radiant HUD cycles multiple markers with
+    (#radiant-hud-cycle) -- one pattern for "more than one thing, one
+    line of room". [hidden] (not display:none) since JS is what decides
+    whether more than one dismissal-filtered card is actually left. */
+ .cu-cycle{{border:1px solid var(--cu-accent,#ff87ff);border-radius:4px;
+           padding:1px 6px;font-size:11px;color:var(--cu-accent,#ff87ff);
+           cursor:pointer;white-space:nowrap;flex-shrink:0;opacity:.75}}
+ .cu-cycle:hover{{opacity:1}}
+ .cu-cycle[hidden]{{display:none}}
+ .cu-dismiss{{background:none;border:0;color:#6e7681;cursor:pointer;
+             font-size:13px;line-height:1;padding:2px 4px;flex-shrink:0}}
+ .cu-dismiss:hover{{color:#c9d1d9}}
+</style></head><body>
 {header}
-{explore}<!-- skymap:coming-up-card
-     Insertion point for the prominent "Coming up" card. Nothing renders it
-     yet -- the markup belongs to the web UI, built separately.
-
-     Data:  api.events_card(r) -> dict | None   (None on most nights)
-            also served as "card" on /{{place}}/events?format=json
-            and as "coming_up_card" on /{{place}}?format=json
-     Suggested element id:  coming-up
-     Suggested attribute:   data-urgency = tonight | soon | later
-     Fields marked [] are lists of {{label, value}} pairs.
-     Fields: id kind glyph eyebrow headline body detail[] moon_verdict note
-             urgency days_away when_local watch_local window_local cta more
-
-     It belongs here, above the toolbar and the chart, so it reads before the
-     sky rather than after it. Absent most nights on purpose: see
-     TEASER_HORIZON in events.py.
--->
-<div class="toolbar"><div class="toolbar-left">{animate_btn}{quadrant_btn}</div><div class="toolbar-right">{sphere_btn}{extra}</div></div><pre id="chart-pre">{body}</pre>
-<p class="t" style="margin-top:18px">Created by <a href="https://x.com/habibicode">@habibicode</a>
-· <a href="https://github.com/HabibiCodeCH/skymap-sh">see the repo</a></p>
+<!-- skymap:coming-up-card
+     api.coming_up_card_html(api.events_card(r)) -- "" (renders nothing) on
+     most nights, see TEASER_DAYS in events.py. Above the drawer and the
+     chart deliberately, so it reads before the sky rather than after it.
+     Chart-page only; every other PAGE.format() call site passes "". -->
+{coming_up_card}
+<div class="w{wide_class}">
+{controls}{shortcuts_hint}<pre id="chart-pre">{body}</pre>
 <script>
+(function(){{
+  // Auto-fit the horizon panorama to the real browser width -- the server
+  // always renders at a fixed column count (DEFAULT_HORIZON_WIDTH) unless
+  // ?w= says otherwise, so on a wide desktop window that default leaves the
+  // chart much narrower than the space available. FIT_W is null on every
+  // page/view this doesn't apply to (see server.py's fits_width). Snapped to
+  // steps of 10 columns and clamped to [60,220] -- matches the server's own
+  // clamp (Request.__init__) and keeps ?w= from becoming a distinct cache
+  // key per visitor's exact pixel width (server._cache_key includes it).
+  var FIT_W={fit_width};
+  if(FIT_W===null)return;
+  var pre=document.getElementById('chart-pre');
+  var w=document.querySelector('.w');
+  if(!pre||!w)return;
+  // Returns null on anything that makes fitting meaningless (no charWidth
+  // to measure against) rather than {{cols:FIT_W,...}} -- callers treat
+  // null as "leave the current width alone", not "reset to the default".
+  function computeFit(){{
+    var preStyle=getComputedStyle(pre);
+    var probe=document.createElement('span');
+    probe.style.position='absolute';
+    probe.style.visibility='hidden';
+    probe.style.whiteSpace='pre';
+    // The `font` shorthand can compute to "" in some browsers (its value
+    // isn't always expressible as a shorthand), which silently no-ops the
+    // assignment and leaves the probe on the page's default font instead
+    // of the chart's actual monospace one -- wildly overstating char width
+    // and making auto-fit ask for far fewer columns than the screen can
+    // hold. Longhand properties don't have that failure mode.
+    probe.style.fontFamily=preStyle.fontFamily;
+    probe.style.fontSize=preStyle.fontSize;
+    probe.textContent=new Array(101).join('0');
+    document.body.appendChild(probe);
+    var charWidth=probe.getBoundingClientRect().width/100;
+    document.body.removeChild(probe);
+    if(!charWidth)return null;
+    // If there's room for a sensible chart *and* a side panel (the zenith
+    // inset only -- prose renders full-width below, see api.py's
+    // _side_by_side/PANEL_COLS), reserve PANEL_COLS+GAP_COLS for it and
+    // ask for panel=1 too -- otherwise the full width goes to the chart
+    // alone. 40 covers the inset's own 21 columns plus room for a body
+    // name tacked on beside it (longest is "Rigil Kentaurus").
+    var PANEL_COLS=40,GAP_COLS=3,MIN_MAIN=60;
+    var totalCols=Math.floor(w.getBoundingClientRect().width/charWidth);
+    var wantPanel=totalCols>=(MIN_MAIN+GAP_COLS+PANEL_COLS);
+    var mainRaw=wantPanel?totalCols-GAP_COLS-PANEL_COLS:totalCols;
+    var cols=Math.max(60,Math.min(220,Math.round(mainRaw/10)*10));
+    return {{cols:cols,wantPanel:wantPanel}};
+  }}
+  // force=true (used on resize) applies even when the URL already has an
+  // explicit ?w= -- a width fitted (or pinned) at load time otherwise sticks
+  // forever, so shrinking the window after a wide auto-fit left the chart
+  // stuck too wide for its new container, forcing horizontal scroll instead
+  // of ever re-fitting down. Without force, an incoming ?w= link is left
+  // alone on first paint, same as always -- only a live resize overrides it.
+  function applyFit(force){{
+    var params=new URLSearchParams(location.search);
+    if(!force&&params.has('w'))return;
+    var fit=computeFit();
+    if(!fit)return;
+    // On first load (not force), compare against the server-rendered
+    // default (FIT_W, no panel) -- skip the reload entirely when that
+    // default already happens to be correct. On a live resize, compare
+    // against whatever's actually in the URL right now instead, since
+    // that's the width the page is currently stuck at.
+    var curCols=force?parseInt(params.get('w'),10):FIT_W;
+    var curPanel=force?params.has('panel'):false;
+    if(curCols===fit.cols&&curPanel===fit.wantPanel)return;
+    params.set('w',fit.cols);
+    if(fit.wantPanel)params.set('panel','1');else params.delete('panel');
+    location.replace(location.pathname+'?'+params.toString());
+  }}
+  applyFit(false);
+  var resizeTimer=null;
+  window.addEventListener('resize',function(){{
+    if(resizeTimer)clearTimeout(resizeTimer);
+    resizeTimer=setTimeout(function(){{applyFit(true);}},400);
+  }});
+}})();
 function xtermHex(n){{
   n=parseInt(n,10);
   if(n<16){{
@@ -2322,15 +3127,13 @@ function ansiToHtml(text){{
 }}
 function skymapAnimate(btn){{
   // Live preview plays right in the chart itself from the same streaming
-  // ?animate= text the CLI uses. The "Share as a GIF" button appears the
-  // moment the preview starts, but rendering only actually happens if it's
-  // clicked -- see skymapRenderGif -- since that's real Pillow work, not
-  // free to do for every single viewer.
+  // ?animate= text the CLI uses. "Share as a GIF" is visible the whole
+  // time (see skymapPollGifCapacity, kicked off on page load) -- rendering
+  // only actually happens if it's clicked -- see skymapRenderGif -- since
+  // that's real Pillow work, not free to do for every single viewer.
   var liveUrl=btn.getAttribute('data-live-url');
-  var gifBtn=document.getElementById('gif-btn');
   var pre=document.getElementById('chart-pre');
   btn.disabled=true;btn.textContent='animating…';
-  if(gifBtn){{gifBtn.hidden=false;skymapPollGifCapacity(gifBtn);}}
   fetch(liveUrl).then(function(resp){{
     var reader=resp.body.getReader();
     var decoder=new TextDecoder();
@@ -2410,29 +3213,569 @@ function skymapRenderGif(btn){{
     btn.disabled=false;
   }});
 }}
+(function(){{
+  // Command bar: auto-size (hidden-measure technique -- field-sizing:content
+  // isn't portable yet) + click-anywhere-to-focus, so the whole bar reads as
+  // one editable command line rather than decorative text bolted onto a
+  // separate input box, plus ghost-text completion against GET /complete
+  // (SPEC-command-bar.md #3-4). Present on every page (see header_html), so
+  // no page-specific gating here -- only the element lookups are null-safe.
+  var bar=document.getElementById('bar');
+  var q=document.getElementById('q');
+  var measure=document.getElementById('measure');
+  var ghost=document.getElementById('ghost');
+  var copyBtn=document.getElementById('copy');
+  if(bar&&q&&measure&&ghost){{
+    var size=function(){{
+      measure.textContent=q.value||'';
+      q.style.width=(measure.offsetWidth+2)+'px';
+    }};
+    var matches=[];
+    // Strips accents the same way api.py's norm_name does server-side --
+    // without this, plain toLowerCase() rejects the server's own correctly
+    // accent-folded matches: 'zürich'.startsWith('zur') is false in JS
+    // (ü !== u as characters), so typing the ASCII "zur" would never show
+    // the "ich" ghost for "Zürich" at all.
+    var fold=function(s){{return s.normalize('NFD').replace(/[\\u0300-\\u036f]/g,'').toLowerCase();}};
+    // Prefix match only, first (most populous) hit wins -- /complete
+    // already returns candidates ranked and prefix-filtered, this re-check
+    // is a staleness guard: a slow response for an earlier, shorter prefix
+    // can still land after the user's kept typing, and showing it then
+    // would ghost-suggest text that no longer applies. The user's own
+    // casing (and accents) are always kept in what's displayed -- "zur" +
+    // ghost "ich", never a correction to "Zürich".
+    var complete=function(){{
+      var v=q.value;
+      if(!v){{ghost.textContent='';return;}}
+      var hit=matches.find(function(c){{
+        return fold(c).startsWith(fold(v))&&c.length>v.length;
+      }});
+      ghost.textContent=hit?hit.slice(v.length):'';
+    }};
+    var completeAbort=null, completeTimer=null;
+    var fetchMatches=function(){{
+      if(completeAbort)completeAbort.abort();
+      var v=q.value.trim();
+      if(v.length<2){{matches=[];complete();return;}}
+      completeAbort=new AbortController();
+      fetch('/complete?q='+encodeURIComponent(v.toLowerCase().slice(0,24)),
+            {{signal:completeAbort.signal}})
+        .then(function(r){{return r.json();}})
+        .then(function(names){{matches=names;complete();}})
+        .catch(function(){{}});
+    }};
+    size();
+    q.addEventListener('input',function(e){{
+      size();
+      // Clear on Backspace before recomputing, so deleting never appears
+      // to re-suggest what was just removed.
+      if(e.inputType==='deleteContentBackward'){{matches=[];ghost.textContent='';}}
+      if(completeTimer)clearTimeout(completeTimer);
+      completeTimer=setTimeout(fetchMatches,120);
+    }});
+    q.addEventListener('keydown',function(e){{
+      if(!ghost.textContent)return;
+      var atEnd=q.selectionStart===q.value.length;
+      if(e.key==='Tab'||(e.key==='ArrowRight'&&atEnd)){{
+        e.preventDefault();
+        q.value+=ghost.textContent;
+        ghost.textContent='';
+        size();
+        q.setSelectionRange(q.value.length,q.value.length);
+      }}
+    }});
+    q.addEventListener('focus',function(){{bar.classList.add('focused');}});
+    q.addEventListener('blur',function(){{bar.classList.remove('focused');}});
+    bar.addEventListener('mousedown',function(e){{
+      if(copyBtn&&(e.target===copyBtn||copyBtn.contains(e.target)))return;
+      if(e.target!==q){{
+        e.preventDefault();
+        q.focus();
+        q.setSelectionRange(q.value.length,q.value.length);
+      }}
+    }});
+    // Enter in the command bar does exactly what "go" in the explore form
+    // does (SPEC-command-bar.md #7) -- rather than a second, separately
+    // maintained "just navigate to place" path that could drift from it
+    // (e.g. silently dropping find=/t= from the other fields), this
+    // delegates to that form's own onsubmit, which already reads #q. A
+    // visible ghost is accepted first: without this, pressing Enter on
+    // "zur" would submit the literal text "zur" (a 404 -- lookup_place
+    // does exact name matching, not prefix matching) even though the
+    // ghost "ich" made it look like "Zürich" was already typed.
+    bar.addEventListener('submit',function(e){{
+      e.preventDefault();
+      if(ghost.textContent){{
+        q.value+=ghost.textContent;
+        ghost.textContent='';
+        size();
+      }}
+      var exploreForm=document.getElementById('explore');
+      if(exploreForm){{
+        if(exploreForm.requestSubmit)exploreForm.requestSubmit();
+        else exploreForm.dispatchEvent(new Event('submit',{{cancelable:true}}));
+        return;
+      }}
+      // No find/date/time form on this page (e.g. /demo) to delegate to --
+      // still a real place to navigate to, so fall back to going there
+      // directly rather than Enter silently doing nothing.
+      if(q.value)location.href='/'+encodeURIComponent(q.value);
+    }});
+    // navigator.clipboard is HTTPS/localhost-only -- feature-detect and
+    // hide the button entirely where it's unavailable rather than wiring
+    // up a click that would just silently do nothing.
+    if(copyBtn){{
+      if(!navigator.clipboard){{
+        copyBtn.hidden=true;
+      }}else{{
+        var copyLabel=copyBtn.textContent;
+        var copyResetTimer=null;
+        copyBtn.addEventListener('click',function(){{
+          // Includes any accepted-but-not-yet-typed ghost completion --
+          // copying should grab the resolved command, not just what's
+          // literally been keyed in so far.
+          var place=q.value+ghost.textContent;
+          var path=place.includes(' ')?
+            "'skymap.sh/"+place+"'":'skymap.sh/'+place;
+          navigator.clipboard.writeText('curl '+path).then(function(){{
+            if(copyResetTimer)clearTimeout(copyResetTimer);
+            copyBtn.textContent='✓ copied';
+            copyResetTimer=setTimeout(function(){{
+              copyBtn.textContent=copyLabel;
+              copyResetTimer=null;
+            }},1400);
+          }}).catch(function(){{}});
+        }});
+      }}
+    }}
+  }}
+}})();
+(function(){{
+  // Drawer (SPEC-command-bar.md #9) -- present on every page (see
+  // header_html/controls_html), so no page-specific gating, only the
+  // element lookups are null-safe.
+  var trigger=document.getElementById('drawer-trigger');
+  var drawer=document.getElementById('drawer');
+  var closeBtn=document.getElementById('drawer-close');
+  if(!trigger||!drawer)return;
+  window.skymapCloseDrawer=function(){{
+    drawer.classList.remove('open');
+    trigger.setAttribute('aria-expanded','false');
+    trigger.textContent='☰';
+  }};
+  var openDrawer=function(){{
+    drawer.classList.add('open');
+    trigger.setAttribute('aria-expanded','true');
+    trigger.textContent='✕';
+  }};
+  trigger.addEventListener('click',function(){{
+    if(drawer.classList.contains('open'))window.skymapCloseDrawer();else openDrawer();
+  }});
+  if(closeBtn)closeBtn.addEventListener('click',window.skymapCloseDrawer);
+  // No backdrop (a deliberate choice -- the chart stays fully visible while
+  // the drawer is open), so a click anywhere outside it is what closes it
+  // instead.
+  document.addEventListener('mousedown',function(e){{
+    if(!drawer.classList.contains('open'))return;
+    if(drawer.contains(e.target)||e.target===trigger)return;
+    window.skymapCloseDrawer();
+  }});
+  // The command bar is the main way in and out of everywhere else on this
+  // page, so any click elsewhere -- the chart, a nav link, a toolbar
+  // button once its own click has done its thing -- hands focus straight
+  // back to it, ready to type. Not while the drawer's open, though: its
+  // own fields (find/date/time, go, share...) need to keep whatever focus
+  // clicking them gave, or they'd be unusable. Skips #q itself too, so
+  // clicking into the field to reposition the caret doesn't immediately
+  // get overridden by a fresh select-all. Also skips anything inside
+  // #findbar, same reasoning -- without this, clicking find-trigger to
+  // expand the field, or a dropdown suggestion, would immediately lose
+  // focus back to #q as the click bubbles up to this same listener.
+  var q=document.getElementById('q');
+  if(q){{
+    document.addEventListener('click',function(e){{
+      if(drawer.classList.contains('open')||e.target===q)return;
+      var findbarEl=document.getElementById('findbar');
+      if(findbarEl&&findbarEl.contains(e.target))return;
+      q.focus();
+      q.select();
+    }});
+  }}
+}})();
+(function(){{
+  // Keyboard shortcuts -- ignored while typing in a field (except Escape,
+  // which exists precisely to get you out of one), and while a modifier is
+  // held, so this can't hijack a real browser/OS shortcut. KBD's keys are
+  // only ever set by server.py where the corresponding toggle is actually
+  // meaningful for the current view (e.g. all of them are omitted on the
+  // Sun's-arc day view, where dso/nolines/quadrant don't apply) -- a
+  // missing key here is exactly what makes the shortcut silently no-op
+  // rather than needing every page to special-case which keys apply.
+  var KBD={kbd_urls};
+  // Fixed 4x3 layout, matches sky.py's quadrant_grid() -- always these 12
+  // cells in this order, regardless of facing/span, so no server round trip
+  // is needed to know the picker's shape.
+  var GRID=[['A','B','C','D'],['E','F','G','H'],['I','J','K','L']];
+  var pick={{active:false,row:0,col:0}};
+  var hintEl=document.querySelector('.kbd-hint');
+  var hintHTML=hintEl?hintEl.innerHTML:null;
+  var hintRestoreTimer=null;
+  // Transient status in the same spot as the keyboard hint itself (e.g.
+  // "Locating..." / a geolocation error) instead of an alert() -- restores
+  // the real hint text after ms, clearing any earlier pending restore so
+  // two flashes in quick succession don't stomp on each other.
+  function flashHint(msg,ms){{
+    if(!hintEl)return;
+    if(hintRestoreTimer)clearTimeout(hintRestoreTimer);
+    hintEl.innerHTML=msg;
+    hintRestoreTimer=setTimeout(function(){{
+      if(hintHTML!==null)hintEl.innerHTML=hintHTML;
+      hintRestoreTimer=null;
+    }},ms||4000);
+  }}
+  // Share as a GIF is visible from the start now (not just after clicking
+  // animate) -- greys itself out here the same way it always has whenever
+  // the server's at its concurrent-render cap. Null-safe: only present on
+  // chart pages.
+  var gifBtn=document.getElementById('gif-btn');
+  if(gifBtn)skymapPollGifCapacity(gifBtn);
+  // color:#ffff00 is the one ANSI colour (sky.py's QL / api.py's QUAD_C,
+  // 256-colour 226) used exclusively for quadrant-grid letters -- nothing
+  // else in the chart ever renders with it, so it doubles as a reliable way
+  // to find the 12 grid-letter glyphs without the server tagging them.
+  function quadSpans(){{
+    var spans={{}}, all=document.querySelectorAll('#chart-pre span');
+    for(var i=0;i<all.length;i++){{
+      var s=all[i];
+      if(s.style.color==='rgb(255, 255, 0)'&&/^[A-L]$/.test(s.textContent))spans[s.textContent]=s;
+    }}
+    return spans;
+  }}
+  function paintPick(){{
+    var spans=quadSpans(), old=document.querySelector('.quad-pick');
+    if(old)old.classList.remove('quad-pick');
+    var span=spans[GRID[pick.row][pick.col]];
+    if(span)span.classList.add('quad-pick');
+  }}
+  function startPick(){{
+    pick.active=true;pick.row=0;pick.col=0;
+    paintPick();
+    if(hintEl)hintEl.innerHTML='Pick a quadrant: ←↑→↓ move &middot; '+
+      '<kbd>enter</kbd> zoom in &middot; <kbd>esc</kbd> cancel';
+  }}
+  function stopPick(){{
+    pick.active=false;
+    var old=document.querySelector('.quad-pick');
+    if(old)old.classList.remove('quad-pick');
+    if(hintEl&&hintHTML!==null)hintEl.innerHTML=hintHTML;
+  }}
+  if(location.hash==='#pick'&&Object.keys(quadSpans()).length>0){{
+    startPick();
+    history.replaceState(null,'',location.pathname+location.search);
+  }}
+  document.addEventListener('keydown', function(e){{
+    if(e.metaKey||e.ctrlKey||e.altKey)return;
+    var tag=(document.activeElement&&document.activeElement.tagName)||'';
+    if(e.key==='Escape'){{
+      // Closing the drawer takes priority over blurring whatever's
+      // focused inside it -- one Escape dismisses the whole panel, not
+      // just whichever field happened to have focus.
+      var drawerEl=document.getElementById('drawer');
+      if(drawerEl&&drawerEl.classList.contains('open')&&window.skymapCloseDrawer){{
+        window.skymapCloseDrawer();
+        return;
+      }}
+      var ae=document.activeElement;
+      if(ae&&ae!==document.body){{ae.blur();return;}}
+      if(pick.active){{stopPick();return;}}
+      var q=new URLSearchParams(location.search).get('quadrant');
+      if(q&&KBD.grid){{location.href=KBD.grid;return;}}
+      return;
+    }}
+    if(tag==='INPUT'||tag==='TEXTAREA'||tag==='SELECT')return;
+    if(pick.active){{
+      if(e.key==='ArrowLeft'){{e.preventDefault();pick.col=Math.max(0,pick.col-1);paintPick();return;}}
+      if(e.key==='ArrowRight'){{e.preventDefault();pick.col=Math.min(3,pick.col+1);paintPick();return;}}
+      if(e.key==='ArrowUp'){{e.preventDefault();pick.row=Math.max(0,pick.row-1);paintPick();return;}}
+      if(e.key==='ArrowDown'){{e.preventDefault();pick.row=Math.min(2,pick.row+1);paintPick();return;}}
+      if(e.key==='Enter'){{
+        e.preventDefault();
+        var params=new URLSearchParams(location.search);
+        params.set('quadrant', GRID[pick.row][pick.col]);
+        location.href=location.pathname+'?'+params.toString();
+        return;
+      }}
+    }}
+    if(e.key==='p'||e.key==='Tab'){{
+      // Tab reaches here at all only because of the guard just above --
+      // once focus is actually in #q (an INPUT), this whole branch is
+      // skipped and #q's own keydown handler owns Tab instead (accepting a
+      // ghost completion). Outside of an input/textarea/select, though,
+      // this does take over Tab's normal "move to the next focusable
+      // element" job -- pressing it while a button or link is focused jumps
+      // back into the command bar instead of advancing, same tradeoff the
+      // single-letter shortcuts (p/f/a/g/...) already accept everywhere
+      // else on this page.
+      var place=document.getElementById('q');
+      if(place){{e.preventDefault();place.focus();place.select();}}
+      return;
+    }}
+    if(e.key==='f'){{
+      var find=document.getElementById('find');
+      // Below findbar-collapse-width the field starts display:none behind
+      // .find-trigger -- expand it first, or focus()/select() on a hidden
+      // input would silently no-op.
+      var findbar=document.getElementById('findbar');
+      if(findbar)findbar.classList.add('expanded');
+      if(find){{e.preventDefault();find.focus();find.select();}}
+      return;
+    }}
+    if(e.key==='m'){{
+      e.preventDefault();
+      if(!navigator.geolocation){{
+        flashHint('Geolocation is not available in this browser.');
+        return;
+      }}
+      flashHint('Locating…',15000);
+      navigator.geolocation.getCurrentPosition(function(pos){{
+        var lat=pos.coords.latitude.toFixed(4);
+        var lon=pos.coords.longitude.toFixed(4);
+        location.href='/'+lat+','+lon;
+      }},function(err){{
+        flashHint('Could not get your location'+(err&&err.message?': '+err.message:'')+'.');
+      }},{{timeout:10000}});
+      return;
+    }}
+    if(e.key==='a'){{
+      var ab=document.getElementById('animate-btn');
+      if(ab&&!ab.disabled)ab.click();
+      return;
+    }}
+    if(e.key==='g'){{
+      var gb=document.getElementById('gif-btn');
+      if(gb&&!gb.disabled)gb.click();
+      return;
+    }}
+    if(e.key==='z'){{
+      if(pick.active)return;
+      if(Object.keys(quadSpans()).length>0){{startPick();return;}}
+      if(KBD.grid){{location.href=KBD.grid+'#pick';}}
+      return;
+    }}
+    if(e.key==='d'&&KBD.quadrant){{location.href=KBD.quadrant;return;}}
+  }});
+}})();
+(function(){{
+  // Find field -- live dropdown against GET /complete/objects, keyboard-
+  // navigable (SPEC-command-bar.md's ghost-completion pattern, but a real
+  // dropdown since object names aren't a simple continuation of what's
+  // typed the way a place ghost-completion is). Only present on the chart
+  // page (header_html's find_value param) -- null-safe so every other page
+  // just skips this whole IIFE. Deliberately after the keyboard-shortcuts
+  // IIFE above, not before it -- both handle 'Escape', and the global
+  // handler's drawer-priority behaviour is what should win a plain text
+  // search for "e.key==='Escape'" in the rendered page.
+  var findInput=document.getElementById('find');
+  var dropdown=document.getElementById('find-dropdown');
+  if(!findInput||!dropdown)return;
+  var trigger=document.getElementById('find-trigger');
+  var findbar=document.getElementById('findbar');
+  var items=[], active=-1, fetchAbort=null, fetchTimer=null;
+
+  function renderDropdown(){{
+    dropdown.innerHTML='';
+    if(!items.length){{dropdown.hidden=true;return;}}
+    items.forEach(function(it,i){{
+      var li=document.createElement('li');
+      li.className='find-option'+(i===active?' active':'');
+      li.setAttribute('role','option');
+      var glyph=document.createElement('span');
+      glyph.className='glyph';
+      glyph.style.color=it.color;
+      glyph.textContent=it.glyph;
+      var name=document.createElement('span');
+      name.textContent=it.name;
+      li.appendChild(glyph);
+      li.appendChild(name);
+      // mousedown (not click) fires before the input's blur, so selecting
+      // with the mouse doesn't race the blur-closes-dropdown handler below.
+      li.addEventListener('mousedown',function(e){{e.preventDefault();selectItem(it);}});
+      dropdown.appendChild(li);
+    }});
+    dropdown.hidden=false;
+  }}
+
+  function closeDropdown(){{
+    items=[];active=-1;
+    dropdown.hidden=true;
+    dropdown.innerHTML='';
+    findInput.setAttribute('aria-expanded','false');
+  }}
+
+  function selectItem(it){{
+    findInput.value=it.name;
+    closeDropdown();
+    var form=document.getElementById('explore');
+    if(form){{
+      if(form.requestSubmit)form.requestSubmit();
+      else form.dispatchEvent(new Event('submit',{{cancelable:true}}));
+    }}
+  }}
+
+  function fetchMatches(){{
+    if(fetchAbort)fetchAbort.abort();
+    var v=findInput.value.trim();
+    if(v.length<2){{closeDropdown();return;}}
+    fetchAbort=new AbortController();
+    fetch('/complete/objects?q='+encodeURIComponent(v),{{signal:fetchAbort.signal}})
+      .then(function(r){{return r.json();}})
+      .then(function(res){{
+        items=res;active=-1;
+        findInput.setAttribute('aria-expanded',items.length?'true':'false');
+        renderDropdown();
+      }})
+      .catch(function(){{}});
+  }}
+
+  findInput.addEventListener('input',function(){{
+    if(fetchTimer)clearTimeout(fetchTimer);
+    fetchTimer=setTimeout(fetchMatches,120);
+  }});
+  findInput.addEventListener('keydown',function(e){{
+    if(e.key==='ArrowDown'){{
+      if(!items.length)return;
+      e.preventDefault();
+      active=(active+1)%items.length;
+      renderDropdown();
+    }}else if(e.key==='ArrowUp'){{
+      if(!items.length)return;
+      e.preventDefault();
+      active=(active-1+items.length)%items.length;
+      renderDropdown();
+    }}else if(e.key==='Enter'){{
+      if(active>=0&&items[active]){{
+        e.preventDefault();
+        selectItem(items[active]);
+      }}
+      // No highlighted suggestion -- let the #explore form's own submit
+      // handle whatever's literally typed (resolve_target does its own
+      // case-insensitive matching server-side).
+    }}else if(e.key==='Escape'){{
+      // One press, fully out -- closes the dropdown, collapses the field
+      // back to icon-only below findbar-collapse-width (letting the global
+      // handler blur it instead used to leave .expanded on: the box stayed
+      // visibly open, focus gone, with no obvious way to close it short of
+      // clicking elsewhere), and blurs. stopPropagation so the global
+      // handler doesn't also try to act on this same press.
+      e.stopPropagation();
+      closeDropdown();
+      if(findbar)findbar.classList.remove('expanded');
+      findInput.blur();
+    }}
+  }});
+  // Delayed so a dropdown-option mousedown (which calls preventDefault, but
+  // that doesn't stop the input from blurring) still gets its click handled
+  // before the dropdown disappears out from under it.
+  findInput.addEventListener('blur',function(){{setTimeout(closeDropdown,150);}});
+
+  if(trigger&&findbar){{
+    trigger.addEventListener('click',function(){{
+      findbar.classList.add('expanded');
+      findInput.focus();
+    }});
+    document.addEventListener('mousedown',function(e){{
+      if(!findbar.classList.contains('expanded'))return;
+      if(findbar.contains(e.target))return;
+      findbar.classList.remove('expanded');
+      closeDropdown();
+    }});
+  }}
+}})();
 </script>
 </div></body></html>"""
 
 
+# Only shown on an actual chart page (server.py passes "" everywhere else) --
+# most of these keys are no-ops on /catalog, /legend etc. anyway, so a hint
+# there would be more confusing than helpful.
+SHORTCUTS_HINT = (
+    '<p class="kbd-hint">Keyboard: <kbd>p</kbd> place &middot; '
+    '<kbd>f</kbd> find &middot; <kbd>m</kbd> my location &middot; '
+    '<kbd>a</kbd> animate &middot; <kbd>g</kbd> gif &middot; <kbd>d</kbd> deep sky &middot; '
+    '<kbd>z</kbd> zoom &middot; '
+    '<kbd>esc</kbd> cancel</p>'
+)
+
+# find/date/time/go, in the drawer -- used on every page except the chart
+# view, which instead gets EXPLORE_DATETIME below (find is promoted out of
+# the drawer and onto the header there, see header_html's find_value param).
+# document.getElementById('find') resolves to whichever #find happens to
+# exist on the page -- the drawer's own (here) or the header's promoted one
+# -- so this onsubmit logic never needs to know which one it is.
+#
+# All three (p/f/t) empty used to return false and silently do nothing --
+# meant to guard against an accidental blank submit, but the real effect
+# was that clearing the command bar and pressing Enter (or "go" with
+# nothing else filled) looked broken: nothing happened at all instead of
+# going home. An empty p already means "/" here (bare skymap.sh, located
+# by IP), so there was never actually an empty case worth guarding against.
 EXPLORE = """<div class="ex">
-<form id="explore" onsubmit="var p=document.getElementById('place').value.trim();
+<form id="explore" onsubmit="var qEl=document.getElementById('q');
+var p=qEl?qEl.value.trim():'';
 var f=document.getElementById('find').value.trim();
 var wd=document.getElementById('whenDate').value;
 var wt=document.getElementById('whenTime').value;
 var t=(wd&&wt)?(wd+'T'+wt):'';
-if(!p&&!f&&!t)return false;
 var q=[];
 if(f)q.push('find='+encodeURIComponent(f));
 if(t)q.push('t='+t);
 location.href='/'+(p?encodeURIComponent(p):'')+(q.length?'?'+q.join('&'):'');
 return false;">
-<input id="place" type="text" placeholder="city or lat,lon" autocomplete="off" value="{place}">
-<input id="find" type="text" placeholder="find (Venus, Big Dipper...)" autocomplete="off">
+<input id="find" type="text" placeholder="Find (Venus, Big Dipper...)" autocomplete="off">
+<div class="ex-row">
 <input id="whenDate" type="date" title="local date at that place (default: today)">
 <input id="whenTime" type="time" title="local time at that place (default: now)">
+</div>
 <button type="submit">go</button>
 </form>
-<p class="tries">Examples:
+</div>
+"""
+
+# Chart-page twin of EXPLORE -- same onsubmit, but no #find input of its own
+# since the chart page's find field lives in the header instead (see
+# header_html's find_value param), right next to the place command bar.
+EXPLORE_DATETIME = """<div class="ex">
+<form id="explore" onsubmit="var qEl=document.getElementById('q');
+var p=qEl?qEl.value.trim():'';
+var f=document.getElementById('find').value.trim();
+var wd=document.getElementById('whenDate').value;
+var wt=document.getElementById('whenTime').value;
+var t=(wd&&wt)?(wd+'T'+wt):'';
+var q=[];
+if(f)q.push('find='+encodeURIComponent(f));
+if(t)q.push('t='+t);
+location.href='/'+(p?encodeURIComponent(p):'')+(q.length?'?'+q.join('&'):'');
+return false;">
+<div class="ex-row">
+<input id="whenDate" type="date" title="local date at that place (default: today)">
+<input id="whenTime" type="time" title="local time at that place (default: now)">
+</div>
+<button type="submit">go</button>
+</form>
+</div>
+"""
+
+# Moved out of the header's nav row and into the drawer, at the top --
+# catalog/demo/legend are less-used than events/help (which stayed in the
+# nav), and this was the one thing on every page that couldn't collapse.
+DRAWER_LINKS_HTML = """<p class="tries">
+<a href="/catalog">catalog</a> ·
+<a href="/demo">demo</a> ·
+<a href="/legend">legend</a>
+</p>
+"""
+
+EXAMPLES_HTML = """<p class="tries">Examples:
 <a href="/Nairobi">Nairobi</a> ·
 <a href="/Tokyo">Tokyo</a> ·
 <a href="/London">London</a> ·
@@ -2442,8 +3785,13 @@ return false;">
 <a href="/90,0">North Pole</a> ·
 <a href="/-90,0">South Pole</a>
 </p>
-</div>
 """
+
+# A plain, static link -- no per-request state, unlike animate_btn/sphere_btn
+# (which depend on r), so this doesn't need server.py plumbing at all. Lives
+# in the drawer's actions section on every page, not just the chart view --
+# "start over" is just as meaningful from /catalog or /help.
+RESET_HTML = '<a class="animate-btn" href="/">↺ reset skymap</a>'
 
 
 # Mobile-only, additive 3D view of the current sky -- reached from PAGE's
@@ -3717,3 +5065,43 @@ function animate() {{
 animate();
 </script>
 </body></html>"""
+
+
+def _controls_inner(explore, animate_btn, quadrant_btn, sphere_btn, extra):
+    # Block layout, one section per group -- a ~320px drawer has no room
+    # for the old controls-row's inline flex-wrap, and grouped sections read
+    # far better stacked than crammed into one wrapping row anyway.
+    # sphere_btn (mobile-only "View in 3D" link) sits before extra, same
+    # order it's always been in; RESET_HTML comes last in the actions
+    # section, after the page-specific stuff, on every page -- which also
+    # means that section is never actually empty any more, so the old
+    # :empty-collapses-it behaviour for non-chart pages no longer applies
+    # (there's now always at least "reset" to show there).
+    return (f'<div class="drawer-section">{DRAWER_LINKS_HTML}</div>'
+            f'<div class="drawer-section">{explore}</div>'
+            f'<div class="drawer-section">{animate_btn}{quadrant_btn}{sphere_btn}{extra}'
+            f'{RESET_HTML}</div>'
+            f'<div class="drawer-section">{EXAMPLES_HTML}</div>')
+
+
+def controls_html(explore, animate_btn="", quadrant_btn="", sphere_btn="", extra=""):
+    """The drawer's content -- explore form, toolbar, examples -- identical
+    on every page including the chart view (animate_btn/quadrant_btn/
+    sphere_btn/extra are "" on every page except the chart, which is the
+    only one that has anything to put there).
+
+    No-JS fallback is load-bearing, not decoration: without PAGE's script
+    adding the .js class to <html>, #drawer's CSS never applies the fixed/
+    off-canvas/hidden styling at all, so this just renders as a normal
+    visible block on the page -- every control still reachable, just not as
+    a slide-in panel. header_html's trigger button is hidden by the same
+    means (it would do nothing without the JS that drives it, and the
+    content it'd reveal is already on the page). #drawer-close (top-right,
+    inside the panel itself) is hidden the same way too -- it's a second,
+    more discoverable way to close it once open, not the only one (the
+    trigger itself, clicking outside, and Escape all already do it)."""
+    return (f'<div id="drawer">'
+            f'<button type="button" class="drawer-close" id="drawer-close" '
+            f'aria-label="Close">✕</button>'
+            f'{_controls_inner(explore, animate_btn, quadrant_btn, sphere_btn, extra)}'
+            f'</div>')

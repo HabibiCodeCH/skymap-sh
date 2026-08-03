@@ -26,6 +26,21 @@ def client():
         yield c
 
 
+@pytest.fixture(autouse=True)
+def _reset_rate_limit():
+    # Same reasoning as test_server.py's fixture of the same name: one
+    # shared token bucket per client IP across the whole process, and
+    # TestClient requests all land on the same synthetic IP -- without
+    # this, cumulative requests from earlier test files in the same pytest
+    # run (this file collects before test_server.py alphabetically, so it
+    # never benefits from that file's own rate-limit-raising setUpModule)
+    # drain the bucket before this file's own tests get to it, failing them
+    # with 429s that have nothing to do with what they're actually testing.
+    server._buckets.clear()
+    server._stats_buckets.clear()
+    yield
+
+
 def _req(place="Zurich", when=WHEN, **kw):
     return api.Request(place=place, when=when, color=False, **kw)
 
@@ -389,11 +404,107 @@ def test_card_served_on_both_payloads(client):
     assert k["coming_up_card"]["id"] == j["card"]["id"]
 
 
-def test_page_carries_the_marker_but_renders_no_card(client):
-    """The UI is built separately; this only reserves the spot."""
+def test_page_carries_the_marker(client):
     body = client.get("/Zurich", headers=BROWSER).text
     assert "skymap:coming-up-card" in body
-    assert "<section" not in body          # nothing rendered there yet
+
+
+def test_coming_up_card_html_is_empty_string_for_empty_list():
+    assert api.coming_up_card_html([]) == ""
+
+
+def test_coming_up_card_html_renders_the_real_thing():
+    html_out = api.coming_up_card_html(api.events_cards(_req()))
+    assert 'id="coming-up"' in html_out
+    assert 'data-urgency="soon"' in html_out
+    assert 'data-id="shower-perseids-20260813"' in html_out
+    assert "Perseids" in html_out
+    assert '<a class="cu-cta" id="cu-cta" href="/Zurich?t=' in html_out
+    assert 'id="coming-up-dismiss"' in html_out
+
+
+def test_coming_up_card_html_escapes_the_body():
+    cards = api.events_cards(_req())
+    cards[0]["body"] = "<script>alert(1)</script>"
+    html_out = api.coming_up_card_html(cards)
+    assert "<script>alert(1)</script>" not in html_out
+    assert "&lt;script&gt;" in html_out
+
+
+def test_coming_up_card_html_has_no_second_cta(client):
+    # "everything coming up" was dropped from the one-line card -- /events
+    # is already one click away via the nav, and a second link fights the
+    # "as tight as possible, one line" ask.
+    html_out = api.coming_up_card_html(api.events_cards(_req()))
+    assert "everything coming up" not in html_out
+
+
+def test_events_cards_returns_both_when_two_things_are_close():
+    # Eclipse (Aug 12) and the Perseid peak (Aug 13) are less than a day
+    # apart here -- the single-winner events_card() would only surface
+    # whichever _interest() ranks higher (the shower, narrowly).
+    cards = api.events_cards(_req())
+    ids = {c["id"] for c in cards}
+    assert "shower-perseids-20260813" in ids
+    assert "eclipse-total-solar-eclipse-20260812" in ids
+
+
+def test_events_cards_is_capped_at_n():
+    assert len(api.events_cards(_req(), n=1)) == 1
+
+
+def test_events_cards_matches_events_card_for_the_top_pick():
+    single = api.events_card(_req())
+    plural = api.events_cards(_req())
+    assert plural[0] == single
+
+
+def test_coming_up_card_html_embeds_every_card_for_client_side_cycling():
+    cards = api.events_cards(_req())
+    assert len(cards) > 1, "test assumes the close-eclipse night"
+    html_out = api.coming_up_card_html(cards)
+    for c in cards:
+        assert c["id"] in html_out
+
+
+def test_cycle_chevron_starts_hidden_in_static_markup():
+    # JS unhides it after filtering dismissed cards down to what's actually
+    # left (cycleEl.hidden=CARDS.length<2) -- a hidden default is correct
+    # either way, for a no-JS visitor and before that filtering has run.
+    html_out = api.coming_up_card_html(api.events_cards(_req()))
+    assert '<span class="cu-cycle" id="cu-cycle" role="button" tabindex="0" hidden>' in html_out
+
+
+def test_chart_page_renders_the_card_when_one_is_due(client):
+    body = client.get("/Zurich?t=2026-08-11T23:00", headers=BROWSER).text
+    assert 'id="coming-up"' in body
+    assert "Perseids" in body
+
+
+def test_chart_page_renders_nothing_on_a_quiet_night(client):
+    body = client.get("/Zurich?t=2026-06-01T23:00", headers=BROWSER).text
+    assert 'id="coming-up"' not in body
+
+
+def test_find_view_still_gets_the_card(client):
+    # _compose_find doesn't set coming_up_card on its own Result -- the
+    # chart route calls events_cards(r) fresh, independent of which compose
+    # function ran, so find shouldn't lose the homepage highlight.
+    body = client.get("/Zurich?t=2026-08-11T23:00&find=Venus", headers=BROWSER).text
+    assert 'id="coming-up"' in body
+
+
+def test_non_chart_pages_never_show_the_card(client):
+    for path in ("/catalog", "/legend", "/help", "/stats", "/Zurich/events"):
+        body = client.get(path, headers=BROWSER).text
+        assert 'id="coming-up"' not in body, path
+
+
+def test_dismiss_is_wired_to_localstorage_keyed_on_id(client):
+    body = client.get("/Zurich?t=2026-08-11T23:00", headers=BROWSER).text
+    assert "localStorage.getItem(KEY)" in body
+    assert "localStorage.setItem(KEY" in body
+    assert "dismissed.indexOf(c.id)" in body
 
 
 def test_events_is_in_the_nav(client):

@@ -8,6 +8,24 @@ import datetime as dt
 import sky
 
 
+class SidePanelDefaultIsOff(unittest.TestCase):
+    """render_linear's side_panel param defaults to False -- every caller
+    that doesn't know about it (the CLI included) must keep drawing the
+    zenith inset inline below the sweep, exactly as before this existed."""
+
+    def test_default_appends_the_inset_inline_and_exposes_no_zenith_lines(self):
+        art, st = sky.render_linear(dt.datetime(2026, 7, 30, 22, 0), 47.3769, 8.5417)
+        self.assertIn("zenith 70-90", art)
+        self.assertIsNone(st["zenith_lines"])
+
+    def test_side_panel_true_pulls_the_inset_out_instead(self):
+        art, st = sky.render_linear(dt.datetime(2026, 7, 30, 22, 0), 47.3769, 8.5417,
+                                    side_panel=True)
+        self.assertNotIn("zenith 70-90", art)
+        self.assertIsNotNone(st["zenith_lines"])
+        self.assertTrue(any("zenith 70-90" in l for l in st["zenith_lines"]))
+
+
 class IssDarknessCheck(unittest.TestCase):
     def test_no_daylight_passes_reported(self):
         """Every point in every returned pass must have the observer's own sky
@@ -187,6 +205,30 @@ class AsterismLinesVisible(unittest.TestCase):
         cross = next(c for c in lines if c["name"] == "Southern Cross")
         alts = [pt[0] for seg in cross["segments"] for pt in seg]
         self.assertTrue(any(a < 0 for a in alts))
+
+
+class FindTextWrapWidth(unittest.TestCase):
+    """find_text() used to hard-wrap at a fixed 76 columns regardless of
+    how wide the chart it sits under actually is -- a sentence could break
+    mid-way well short of the space available once ?panel=1 gave the
+    ordinary view's own prose (sky_read) the full effective width."""
+
+    def setUp(self):
+        jd = sky.julian(dt.datetime(2026, 7, 30, 21, 10))
+        lst = (sky.gmst_hours(jd) + 8.5417 / 15.0) % 24
+        self.target = sky.resolve_target("Venus", jd, 47.3769, lst)
+
+    def test_default_wraps_at_76(self):
+        text = sky.find_text(self.target, [], 47.3769)
+        for line in text.split("\n"):
+            self.assertLessEqual(len(line), 76)
+
+    def test_wider_wrap_width_keeps_a_sentence_on_one_line(self):
+        narrow = sky.find_text(self.target, [], 47.3769, wrap_width=76)
+        wide = sky.find_text(self.target, [], 47.3769, wrap_width=160)
+        self.assertGreater(narrow.count("\n"), wide.count("\n"))
+        for line in wide.split("\n"):
+            self.assertLessEqual(len(line), 160)
 
 
 class FindResolvesDeepSkyObjects(unittest.TestCase):
