@@ -3019,12 +3019,18 @@ document.documentElement.classList.add('js');
             margin:0 0 12px;background:#0d1117;border:1px solid #30363d;
             border-left:3px solid var(--cu-accent,#ff87ff);border-radius:6px;
             font-size:12.5px}}
- .coming-up[data-urgency="tonight"]{{--cu-accent:#ffd700}}
- .coming-up[data-urgency="soon"]{{--cu-accent:#ff87ff}}
- .coming-up[data-urgency="later"]{{--cu-accent:#a186a6}}
+ /* Two variables per bucket: the accent, and how bright the sentence
+    itself is. The nearer the event, the whiter the text -- so the strip
+    says "this is close" before anything has been read, and a month-away
+    opposition sits back at the muted grey the rest of the chrome uses.
+    later's grey is the one this started with, so the ramp is built by
+    lifting the two nearer buckets, not by dimming what was there. */
+ .coming-up[data-urgency="tonight"]{{--cu-accent:#ffd700;--cu-text:#e6edf3}}
+ .coming-up[data-urgency="soon"]{{--cu-accent:#ff87ff;--cu-text:#b8c2cc}}
+ .coming-up[data-urgency="later"]{{--cu-accent:#a186a6;--cu-text:#8b949e}}
  .cu-glyph{{color:var(--cu-accent,#ff87ff);flex-shrink:0}}
  .cu-body{{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;
-          white-space:nowrap;color:#8b949e}}
+          white-space:nowrap;color:var(--cu-text,#8b949e)}}
  .cu-cta{{color:var(--cu-accent,#ff87ff);text-decoration:none;
          white-space:nowrap;flex-shrink:0}}
  .cu-cta:hover{{text-decoration:underline}}

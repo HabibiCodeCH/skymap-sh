@@ -433,6 +433,27 @@ def test_coming_up_card_html_renders_the_real_thing():
     assert 'id="coming-up-dismiss"' in html_out
 
 
+def test_the_strip_gets_whiter_the_closer_the_event_is():
+    """The sentence itself brightens with urgency, so the strip says "this is
+    close" before it has been read. Ordered by luminance rather than pinned
+    to three hex values, which would fail on any retune while saying nothing
+    about the thing that actually matters."""
+    css = api.PAGE.replace("{{", "{").replace("}}", "}")
+    got = dict(re.findall(r'data-urgency="(\w+)"\]\{[^}]*--cu-text:(#[0-9a-fA-F]{6})',
+                          css))
+    assert set(got) == {name for name, _cut in api.CARD_URGENCY}, got
+
+    def lum(hexcolour):
+        r, g, b = (int(hexcolour[i:i + 2], 16) for i in (1, 3, 5))
+        return 0.2126 * r + 0.7152 * g + 0.0722 * b
+
+    # CARD_URGENCY is ordered nearest first, so luminance must fall with it.
+    order = [lum(got[name]) for name, _cut in api.CARD_URGENCY]
+    assert order == sorted(order, reverse=True), got
+    # And the text has to read from the variable, or none of this lands.
+    assert "color:var(--cu-text,#8b949e)" in css
+
+
 def test_coming_up_card_html_escapes_the_body():
     cards = api.events_cards(_req())
     cards[0]["body"] = "<script>alert(1)</script>"
