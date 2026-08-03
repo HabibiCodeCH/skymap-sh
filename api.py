@@ -3712,6 +3712,13 @@ SHORTCUTS_HINT = (
 # document.getElementById('find') resolves to whichever #find happens to
 # exist on the page -- the drawer's own (here) or the header's promoted one
 # -- so this onsubmit logic never needs to know which one it is.
+#
+# All three (p/f/t) empty used to return false and silently do nothing --
+# meant to guard against an accidental blank submit, but the real effect
+# was that clearing the command bar and pressing Enter (or "go" with
+# nothing else filled) looked broken: nothing happened at all instead of
+# going home. An empty p already means "/" here (bare skymap.sh, located
+# by IP), so there was never actually an empty case worth guarding against.
 EXPLORE = """<div class="ex">
 <form id="explore" onsubmit="var qEl=document.getElementById('q');
 var p=qEl?qEl.value.trim():'';
@@ -3719,7 +3726,6 @@ var f=document.getElementById('find').value.trim();
 var wd=document.getElementById('whenDate').value;
 var wt=document.getElementById('whenTime').value;
 var t=(wd&&wt)?(wd+'T'+wt):'';
-if(!p&&!f&&!t)return false;
 var q=[];
 if(f)q.push('find='+encodeURIComponent(f));
 if(t)q.push('t='+t);
@@ -3745,7 +3751,6 @@ var f=document.getElementById('find').value.trim();
 var wd=document.getElementById('whenDate').value;
 var wt=document.getElementById('whenTime').value;
 var t=(wd&&wt)?(wd+'T'+wt):'';
-if(!p&&!f&&!t)return false;
 var q=[];
 if(f)q.push('find='+encodeURIComponent(f));
 if(t)q.push('t='+t);

@@ -1932,6 +1932,34 @@ class CommandBarSubmitDelegation(unittest.TestCase):
         self.assertIn("location.href='/'+encodeURIComponent(q.value);", resp.text)
 
 
+class ExploreFormEmptySubmitGoesHome(unittest.TestCase):
+    """Clearing the command bar and pressing Enter (or "go" with find/date/
+    time also empty) used to silently do nothing -- an early-return guard
+    meant to catch an accidental blank submit, but there's no such thing as
+    an empty case actually worth guarding: an empty place already means "/"
+    (bare skymap.sh, located by IP) in the line right below it."""
+
+    def setUp(self):
+        client_cm = TestClient(server.app)
+        self.client = client_cm.__enter__()
+        self.addCleanup(client_cm.__exit__, None, None, None)
+
+    def test_no_early_return_guard_on_the_chart_page(self):
+        # EXPLORE_DATETIME -- find lives in the header there, not this form.
+        resp = self.client.get("/Zurich", headers=BROWSER)
+        self.assertNotIn("if(!p&&!f&&!t)return false;", resp.text)
+
+    def test_no_early_return_guard_on_a_non_chart_page(self):
+        # EXPLORE -- has its own #find, same guard used to exist there too.
+        resp = self.client.get("/catalog", headers=BROWSER)
+        self.assertNotIn("if(!p&&!f&&!t)return false;", resp.text)
+
+    def test_empty_p_falls_through_to_the_bare_home_navigation(self):
+        resp = self.client.get("/Zurich", headers=BROWSER)
+        onsubmit = resp.text.split('onsubmit="', 1)[1].split('">', 1)[0]
+        self.assertIn("location.href='/'+(p?encodeURIComponent(p):'')", onsubmit)
+
+
 class CopyButtonWiring(unittest.TestCase):
     """The copy button (SPEC-command-bar.md #6) copies the *resolved*
     command -- q.value plus any accepted-but-pending ghost completion --
