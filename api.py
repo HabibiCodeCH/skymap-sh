@@ -456,17 +456,34 @@ def _compose_find(r):
         jd = julian(shown_utc); lst = (gmst_hours(jd) + p.lon / 15.0) % 24
         tgt = resolve_target(r.find, jd, p.lat, lst)
 
-    sp = r.span or 60.0
-    rng = 26.0
-    lo = max(0.0, min(90.0 - rng, tgt["alt"] - rng / 2))
+    # Full panorama with the thing crosshaired on it, not a 60° crop.
+    #
+    # The crop answered "what does this corner of the sky look like" when the
+    # question people actually ask is "where do I look" -- and a window with
+    # no horizon, no cardinal points either side and no familiar shapes in it
+    # is a worse answer to that than the whole sky with a mark on it.
+    # render_linear draws the crosshair at any span, so the zoom was never
+    # what made the marker work.
+    #
+    # ?span= (--span=) still crops, so the old view is one parameter away for
+    # something low in a crowded field.
+    zoomed = r.span is not None
+    if zoomed:
+        rng = 26.0
+        lo = max(0.0, min(90.0 - rng, tgt["alt"] - rng / 2))
+        extra = dict(span=r.span, alt_lo=lo, alt_hi=lo + rng, width=r.width)
+    else:
+        extra = dict(span=360.0, height=_horizon_height(r),
+                     width=_effective_width(r))
+    sp = extra["span"]
     art, st = render_linear(shown_utc, p.lat, p.lon, color=c, show_lines=r.lines,
-                            tle=r.tle, span=sp, alt_lo=lo, alt_hi=lo + rng,
-                            target=tgt, mag_limit=5.0, width=r.width)
+                            tle=r.tle, target=tgt, mag_limit=5.0, **extra)
     shown_local = shown_utc + dt.timedelta(hours=p.offset(shown_utc))
     guide = find_text(tgt, st["visible"], p.lat)
 
+    where = f"{int(sp)}° window" if zoomed else "full panorama"
     out = ["", paint(f"  {p.name}   {shown_local:%d %b %Y %H:%M}   finding "
-                     f"{tgt['name']}, {int(sp)}° window", C.HEAD, c), ""]
+                     f"{tgt['name']}, {where}", C.HEAD, c), ""]
     if note:
         out += [paint("  " + note[0], C.MUTE, c),
                 paint("  " + note[1], "\033[38;5;213m", c)]
@@ -1132,9 +1149,37 @@ def _event_url(e, r):
     """
     when = e.get("best_local") or e["when_local"]
     url = f"/{quote(r.place.slug)}?t={when:%Y-%m-%dT%H:%M}"
-    if e.get("compass"):
+    # ?find= beats ?facing=: facing only points the chart the right way, find
+    # actually puts a crosshair on the thing. Clicking "Perseids" and getting
+    # an unmarked night chart was the whole complaint.
+    target = _find_target_for(e)
+    if target:
+        url += f"&find={quote(target)}"
+    elif e.get("compass"):
         url += f"&facing={e['compass']}"
     return url
+
+
+def _find_target_for(e):
+    """What ?find= should aim at for this event, or None.
+
+    A conjunction names two bodies; the fainter one is the one you need help
+    spotting, and framing it frames the pair anyway since they are within a
+    couple of degrees by definition.
+    """
+    kind = e["kind"]
+    if kind == "meteor_shower":
+        return e["name"]                     # resolve_target knows radiants
+    if kind in ("opposition", "elongation"):
+        return e.get("body")
+    if kind == "conjunction":
+        bodies = e.get("bodies") or []
+        return next((b for b in bodies if b != "Moon"), bodies[0] if bodies else None)
+    if kind == "moon_phase":
+        return "Moon"
+    if kind == "eclipse":
+        return "Moon" if "lunar" in e.get("eclipse_type", "") else "Sun"
+    return None
 
 
 def _event_rows(r, days, colour_free=False):
@@ -1513,15 +1558,23 @@ def _find_chart_only(r):
             shown_utc = w
             jd = julian(shown_utc); lst = (gmst_hours(jd) + p.lon / 15.0) % 24
             tgt = resolve_target(r.find, jd, p.lat, lst)
-    sp = r.span or 60.0
-    rng = 26.0
-    lo = max(0.0, min(90.0 - rng, tgt["alt"] - rng / 2))
+    # Same full-panorama-by-default framing as _compose_find, so a page and
+    # the PNG it links to never disagree about what the chart shows.
+    zoomed = r.span is not None
+    if zoomed:
+        rng = 26.0
+        lo = max(0.0, min(90.0 - rng, tgt["alt"] - rng / 2))
+        extra = dict(span=r.span, alt_lo=lo, alt_hi=lo + rng, width=r.width)
+    else:
+        extra = dict(span=360.0, height=_horizon_height(r),
+                     width=_effective_width(r))
+    sp = extra["span"]
     art, _st = render_linear(shown_utc, p.lat, p.lon, color=c, show_lines=r.lines,
-                             tle=r.tle, span=sp, alt_lo=lo, alt_hi=lo + rng,
-                             target=tgt, mag_limit=5.0, width=r.width)
+                             tle=r.tle, target=tgt, mag_limit=5.0, **extra)
     shown_local = shown_utc + dt.timedelta(hours=p.offset(shown_utc))
+    where = f"{int(sp)}° window" if zoomed else "full panorama"
     head = (f"  {p.name}   {shown_local:%d %b %Y %H:%M}   "
-            f"finding {tgt['name']}, {int(sp)}° window")
+            f"finding {tgt['name']}, {where}")
     return paint(head, C.HEAD, c) + "\n\n" + art
 
 

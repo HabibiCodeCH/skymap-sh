@@ -802,6 +802,26 @@ def resolve_target(name, jd, lat, lst):
                             ra=cra, dec=cdec,
                             lead=min(m for _r, _d, m in pts),
                             faint=max(m for _r, _d, m in pts))
+    # Meteor radiants. Only the position lives here -- showers.json is static
+    # RA/Dec, so this needs no import of events.py (which imports this module;
+    # the other direction would be a cycle). When a shower peaks is events.py's
+    # business; where to point is this one's.
+    #
+    # "Perseids", "Perseid" and "Perseids radiant" all resolve, because people
+    # type all three.
+    for sh in _load("showers.json"):
+        nm = sh["name"].lower()
+        if q in (nm, nm.rstrip("s"), nm + " radiant", nm.rstrip("s") + " radiant"):
+            ra, de = precess(sh["ra"], sh["dec"], jd)
+            a, z = altaz(ra, de, lat, lst)
+            return dict(name=sh["name"] + " radiant", alt=a, az=z,
+                        # A radiant is empty sky, so there is no magnitude to
+                        # give. 2.5 buys the nautical-dark answer out of
+                        # dark_enough(), which is the condition shower rates
+                        # are quoted under anyway.
+                        mag=2.5, kind="radiant", ra=sh["ra"], dec=sh["dec"],
+                        zhr=sh["zhr"])
+
     for o in _load("deepsky.json"):
         # o["n"] is already the best short label (Messier number, else a
         # hand-picked common name, else the NGC number itself -- see

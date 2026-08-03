@@ -169,11 +169,29 @@ def test_events_html_links_every_event_to_its_own_chart():
         assert re.search(r"t=\d{4}-\d{2}-\d{2}T\d{2}:\d{2}", href), href
 
 
-def test_event_link_faces_the_right_way():
-    """The chart opens pointed at the thing, not at a default panorama."""
+def test_event_link_crosshairs_the_thing():
+    """?find=, not ?facing=. Facing only points the chart the right way;
+    clicking "Perseids" and getting an unmarked night chart was the
+    complaint."""
     h = api.events_html(_req(), days=20)
     row = [l for l in h.split("\n") if "Perseids" in l][0]
-    assert "facing=NE" in row, row
+    assert "find=Perseids" in row, row
+
+
+def test_conjunction_link_aims_at_the_fainter_body():
+    """Moon and Mercury: the Moon needs no help being found."""
+    h = api.events_html(_req(), days=20)
+    row = [l for l in h.split("\n") if "Moon and Mercury" in l]
+    if row:
+        assert "find=Mercury" in row[0], row[0]
+
+
+def test_every_linked_row_marks_something():
+    h = api.events_html(_req(), days=40)
+    rows = [l for l in h.split("\n") if 'href="/Zurich?t=' in l]
+    assert rows
+    for row in rows:
+        assert "find=" in row or "facing=" in row, row
 
 
 def test_event_link_uses_the_best_moment_not_the_instant():

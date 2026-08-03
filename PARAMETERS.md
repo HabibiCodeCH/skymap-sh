@@ -120,19 +120,27 @@ anyway.
 
 | you type | you get |
 |---|---|
-| `--find=Venus` | `finding Venus, 60° window`, crosshair on it, directions in fists |
+| `--find=Venus` | `finding Venus, full panorama`, crosshair on it, directions in fists |
 | `--find=Mars` | `Not visible right now …  Next chance: 03:50` and the chart for then |
 | `--find=Mercury` | `Mercury is not visible from Zürich` and why: 19° from the Sun |
-| `--find="Big Dipper"` | `finding Big Dipper, 60° window` |
+| `--find="Big Dipper"` | `finding Big Dipper, full panorama` |
 | `--find=Vega` | any of 327 named stars |
 | `--find=Moon` | Sun and Moon too |
-| `--find=M31` | `finding Andromeda Galaxy, 60° window`, same as any of 739 deep-sky objects |
+| `--find=M31` | `finding Andromeda Galaxy, full panorama`, same as any of 739 deep-sky objects |
+| `--find=Perseids` | `finding Perseids radiant, full panorama`, any of 12 meteor showers |
+| `--find=Venus --span=60` | crops to a 60° window instead, for something low in a crowded field |
 | `--find=wombat` | `Don't know 'wombat'.` and what it does accept |
 
 Accepts: 7 planets, Sun, Moon, 327 named stars, 28 asterisms, 739 deep-sky
 objects (by Messier number, NGC id, or one of 28 common names: Andromeda
-Galaxy, Ring Nebula, Double Cluster and the like). `?span=` widens the window
-here too.
+Galaxy, Ring Nebula, Double Cluster and the like), and the 12 meteor showers
+by radiant (`Perseids`, `Perseid` and `Perseids radiant` all work).
+
+The whole panorama is drawn with the object crosshaired on it, rather than a
+crop around it. A window with no horizon, no cardinal points either side and
+no familiar shapes in it is a worse answer to "where do I look" than the whole
+sky with a mark on it. `?span=` (`--span=`) crops to a window if you want one,
+which is genuinely better for something low in a crowded field.
 
 ## What's coming up
 
