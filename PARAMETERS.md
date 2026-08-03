@@ -120,19 +120,135 @@ anyway.
 
 | you type | you get |
 |---|---|
-| `--find=Venus` | `finding Venus, 60° window`, crosshair on it, directions in fists |
+| `--find=Venus` | `finding Venus, full panorama`, crosshair on it, directions in fists |
 | `--find=Mars` | `Not visible right now …  Next chance: 03:50` and the chart for then |
 | `--find=Mercury` | `Mercury is not visible from Zürich` and why: 19° from the Sun |
-| `--find="Big Dipper"` | `finding Big Dipper, 60° window` |
+| `--find="Big Dipper"` | `finding Big Dipper, full panorama` |
 | `--find=Vega` | any of 327 named stars |
 | `--find=Moon` | Sun and Moon too |
-| `--find=M31` | `finding Andromeda Galaxy, 60° window`, same as any of 739 deep-sky objects |
+| `--find=M31` | `finding Andromeda Galaxy, full panorama`, same as any of 739 deep-sky objects |
+| `--find=Perseids` | `finding Perseids radiant, full panorama`, any of 12 meteor showers |
+| `--find=Venus --span=60` | crops to a 60° window instead, for something low in a crowded field |
 | `--find=wombat` | `Don't know 'wombat'.` and what it does accept |
 
 Accepts: 7 planets, Sun, Moon, 327 named stars, 28 asterisms, 739 deep-sky
 objects (by Messier number, NGC id, or one of 28 common names: Andromeda
-Galaxy, Ring Nebula, Double Cluster and the like). `?span=` widens the window
-here too.
+Galaxy, Ring Nebula, Double Cluster and the like), and the 12 meteor showers
+by radiant (`Perseids`, `Perseid` and `Perseids radiant` all work).
+
+The whole panorama is drawn with the object crosshaired on it, rather than a
+crop around it. A window with no horizon, no cardinal points either side and
+no familiar shapes in it is a worse answer to "where do I look" than the whole
+sky with a mark on it. `?span=` (`--span=`) crops to a window if you want one,
+which is genuinely better for something low in a crowded field.
+
+## What's coming up
+
+| you type | you get |
+|---|---|
+| `--events` / `/{place}/events` | the next 90 days, in local time |
+| `--next` / `?next=1` | one bare line, or nothing |
+| `--days=20` / `?days=20` | a different window; snaps up to 7, 14, 30, 60, 90, 180 or 365 |
+| `/{place}/events.ics` | an iCalendar feed to subscribe to |
+| `/{place}/events.rss` | the same as RSS |
+| `--events --json` / `?format=json` | structured, under `upcoming` |
+
+Meteor showers, eclipses, oppositions, greatest elongations, close approaches,
+moon phases, equinoxes and solstices. Everything except showers and eclipses is
+computed from the same ephemeris the charts use; those two come from
+`showers.json` and `eclipses.json`.
+
+```
+$ python3 cli.py Zurich 2026-08-11T23:00 --events --days=20
+
+  Zürich  47.38°N 8.54°E  ·  next 20 days  ·  local time
+
+  Wed 12 Aug  ◉ Partial solar eclipse here       8° WNW
+              total only along a narrow track through the Arctic, Greenland,
+              Iceland and northern Spain; a partial eclipse either side of
+              it, which is what you get
+  Wed 12 Aug  ○ New Moon
+  Thu 13 Aug  ☄ Perseids peak                    66° NE, best 22:10-04:50, up to 100/hr
+              the Moon is down, nothing washing it out
+  Fri 14 Aug  ✦ Venus at greatest elongation east 11° WSW, 45.5° from the Sun
+              highest in the evening sky after sunset
+  Sun 16 Aug  ● Moon and Venus 1.9° apart        10° WSW
+  Thu 20 Aug  ◑ First quarter Moon
+  Fri 28 Aug  ● Full Moon
+  Fri 28 Aug  ◐ Partial lunar eclipse            5° WSW
+              visible from the Americas, Europe and Africa
+```
+
+Whether you can actually see a thing is worked out for your latitude, so the
+list is not the same everywhere. Events that happen but aren't visible from
+where you asked are listed at the bottom with the reason, rather than dropped:
+
+```
+$ python3 cli.py Sydney 2026-08-11T23:00 --events --days=10
+
+  Happening, but not from here:
+  Tue 11 Aug  Moon and Mercury 2.0° apart: never above the horizon in a dark
+              enough sky that night
+  Thu 13 Aug  Total solar eclipse: the Sun is below the horizon here, it's
+              night
+  Thu 13 Aug  Perseids peak: never above the horizon in a dark enough sky
+              that night
+```
+
+A solar eclipse never tells one place it will see totality. Totality is a band
+a hundred-odd km wide, and nothing computable here separates a 90% partial from
+being on the centre line — the difference is about 0.07° of Sun-Moon separation
+and this ephemeris carries four times that. So `eclipses.json` records the
+regions NASA lists for each track: outside them you get "Partial solar eclipse
+here", inside them "Total solar eclipse: track nearby" and a pointer to a
+detailed map. Zürich reads partial, Reykjavík reads track nearby.
+
+The table covers every total, annular and hybrid solar eclipse and every total
+and partial lunar eclipse from 2026 to 2040, from NASA's decade tables.
+Penumbral lunar eclipses are left out because nobody can tell one from an
+ordinary full Moon.
+
+`--next` is one line and nothing else, for a shell prompt or a MOTD. It prints
+nothing at all when there's nothing close, so it composes into scripts:
+
+```
+$ python3 cli.py Zurich 2026-08-11T23:00 --next
+Perseids peak tomorrow night, up to 100 an hour, radiant 66° NE, the Moon is down, nothing washing it out.
+
+$ sky() { curl -s "skymap.sh/${SKYMAP_PLACE:-Zurich}/events?next=1"; }
+```
+
+The same line appears under the chart itself when something is close, so a
+plain `curl skymap.sh/Zurich` mentions the Perseids without being asked. It is
+absent most nights on purpose: a shower is worth flagging a fortnight out, the
+Moon passing Jupiter only the night before, and moon phases never, since there
+is one every 7.4 days and a line that is always there stops being read.
+
+The sphere marks whatever is worth turning to face tonight: meteor radiants,
+close approaches, oppositions, greatest elongations and eclipses. A radiant
+gets a big ring with four outward ticks, because a radiant is a direction and
+not an object -- there is nothing at that point to draw, and the ticks are the
+way meteors streak. Everything else is already on the sphere, so it gets a
+small ring round it as a highlight rather than a second copy.
+
+Markers sit where the thing will be at the *best* moment that night, not where
+it is when the page loads: things climb through the night, and where to look
+when you actually go out is the useful answer.
+
+One line across the bottom describes one marker at a time, since that is all
+the room a phone has. Tap the text and it points you there, reusing the same
+arrow and reticle the `find` box uses. With more than one marker a `1/3 ›`
+chevron appears to cycle; at a single marker the chevron is hidden, because a
+`1/1 ›` that does nothing is worse than no control. About ten nights a year
+have two or more. Most nights have none at all, and the strip is absent.
+
+JSON keys, events view: `place lat lon tz_offset when_utc window_days upcoming`,
+where each entry in `upcoming` has `kind name headline id when_utc when_local
+visible` plus whatever that kind carries — `alt compass window_local zhr
+moon_illum moon_up moon_verdict sep_deg bodies mag regions reason`.
+
+`id` is stable and day-grained (`shower-perseids-20260813`). It is the ICS UID
+and the RSS GUID, so a reader never re-flags an item it has already shown.
 
 ## Output format
 
@@ -175,6 +291,10 @@ at all.
 | `/stats` | what people ask for: top cities, top finds, top referrers, views, cache hit rate |
 | `/stats?format=json` | the same, structured |
 | `/{place}/sphere` | mobile-only 3D sky sphere, look around by tilting the phone |
+| `/{place}/events` | what's coming up over that place, next 90 days |
+| `/{place}/events.ics` | iCalendar feed of the same |
+| `/{place}/events.rss` | RSS feed of the same |
+| `/events` | the same, for wherever your IP puts you; this is the nav link |
 | `/{place}/sphere.json` | the same sky as stars/asterisms/deep-sky/bodies with resolved alt/az, for the 3D view |
 | `/robots.txt` | allow all |
 | unknown place | 404 with near misses |

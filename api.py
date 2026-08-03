@@ -15,6 +15,7 @@ from sky import (C, paint, julian, gmst_hours, altaz, angsep, compass, moon_glyp
                  phase_name, resolve_target, visibility, next_visible,
                  solar_elongation, find_text, sky_read, render, render_linear,
                  sun, moon, planet, sun_arc, sun_events, dark_enough, DSO_LEGEND)
+import events as ev_mod
 
 # deepsky.json is pre-filtered to mag 11 at build time (build_deepsky.py), so
 # ?dso=1 is a plain on/off toggle rather than a tunable cutoff -- the catalog
@@ -455,17 +456,45 @@ def _compose_find(r):
         jd = julian(shown_utc); lst = (gmst_hours(jd) + p.lon / 15.0) % 24
         tgt = resolve_target(r.find, jd, p.lat, lst)
 
-    sp = r.span or 60.0
-    rng = 26.0
-    lo = max(0.0, min(90.0 - rng, tgt["alt"] - rng / 2))
+    # Full panorama with the thing crosshaired on it, not a 60° crop.
+    #
+    # The crop answered "what does this corner of the sky look like" when the
+    # question people actually ask is "where do I look" -- and a window with
+    # no horizon, no cardinal points either side and no familiar shapes in it
+    # is a worse answer to that than the whole sky with a mark on it.
+    # render_linear draws the crosshair at any span, so the zoom was never
+    # what made the marker work.
+    #
+    # ?span= (--span=) still crops, so the old view is one parameter away for
+    # something low in a crowded field.
+    zoomed = r.span is not None
+    if zoomed:
+        rng = 26.0
+        lo = max(0.0, min(90.0 - rng, tgt["alt"] - rng / 2))
+        extra = dict(span=r.span, alt_lo=lo, alt_hi=lo + rng, width=r.width,
+                     mag_limit=5.0)
+    else:
+        # Exactly what the ordinary chart draws, plus a crosshair. Nothing
+        # else: two passes at making find "richer" both made it read as a
+        # different chart rather than the familiar one with a mark on it.
+        # mag_limit 5.0 put 775 stars where the normal view has 287; drawing
+        # the extra 488 as dim backdrop was worse still, because mag 4-5 is
+        # 63% of the whole field, so most of the sky went grey and the colour
+        # and size variety that makes the chart readable disappeared with it.
+        sun_alt = altaz(*[sun(julian(shown_utc))[k] for k in ("ra", "dec")],
+                        p.lat, (gmst_hours(julian(shown_utc)) + p.lon / 15.0) % 24)[0]
+        extra = dict(span=360.0, height=_horizon_height(r),
+                     width=_effective_width(r),
+                     mag_limit=_fade_mag_limit(sun_alt))
+    sp = extra["span"]
     art, st = render_linear(shown_utc, p.lat, p.lon, color=c, show_lines=r.lines,
-                            tle=r.tle, span=sp, alt_lo=lo, alt_hi=lo + rng,
-                            target=tgt, mag_limit=5.0, width=r.width)
+                            tle=r.tle, target=tgt, **extra)
     shown_local = shown_utc + dt.timedelta(hours=p.offset(shown_utc))
     guide = find_text(tgt, st["visible"], p.lat)
 
+    where = f"{int(sp)}° window" if zoomed else "full panorama"
     out = ["", paint(f"  {p.name}   {shown_local:%d %b %Y %H:%M}   finding "
-                     f"{tgt['name']}, {int(sp)}° window", C.HEAD, c), ""]
+                     f"{tgt['name']}, {where}", C.HEAD, c), ""]
     if note:
         out += [paint("  " + note[0], C.MUTE, c),
                 paint("  " + note[1], "\033[38;5;213m", c)]
@@ -688,6 +717,10 @@ def _compose_sky(r):
         out.append(paint(f"  Quadrants {letters[0]}-{letters[-1]} are marked on the chart. "
                          f"To zoom in, rerun adding ?quadrant={letters[0]} "
                          f"(or --quadrant={letters[0]} on the CLI).", C.MUTE, c))
+    teaser = events_teaser(r)
+    if teaser:
+        import textwrap
+        out += [paint("  " + l, EVENT_COL, c) for l in textwrap.wrap(teaser, 76)]
     # {base_url} is a literal placeholder -- api.py doesn't know its own
     # host, server.py substitutes the real one on the way out, on both
     # cache hits and misses, so a cached render never leaks whatever host
@@ -714,6 +747,10 @@ def _compose_sky(r):
         dso=r.dso,
         quadrant=dict(cells=[cell["letter"] for cell in st.get("quad_cells", [])],
                      applied=st.get("quad_applied"), error=st.get("quad_error")),
+        coming_up=teaser,
+        # Structured twin of coming_up, for the web UI's card. See the
+        # <!-- skymap:coming-up-card --> marker in PAGE.
+        coming_up_card=events_card(r),
         prose=prose,
     )
     return Result("\n".join(out), data)
@@ -801,7 +838,60 @@ def _compose_sphere(r):
         bodies=bodies_json,
         moon=dict(phase=phase_name(mo["age"]), illum=round(mo["illum"] * 100),
                   alt=round(mo["alt"], 1), az=round(mo["az"], 1), compass=compass(mo["az"])),
+        # The one thing this view can do that no chart can: point your actual
+        # body at the thing. Empty on all but a handful of nights a year.
+        markers=_markers_json(r),
     )
+
+
+def _marker_caption(e):
+    """The one line the sphere's strip shows for this marker. Short: it has a
+    single line on a phone, and the chevron eats the end of it."""
+    bits = []
+    if e["kind"] == "meteor_shower":
+        bits.append(f"{e['name']} radiant")
+        if e.get("window_local"):
+            bits.append(f"best {e['window_local'][0]}-{e['window_local'][1]}")
+        if e.get("zhr"):
+            bits.append(f"up to {e['zhr']}/hr")
+        if e.get("moon_verdict"):
+            bits.append(e["moon_verdict"])
+    else:
+        bits.append(e["headline"])
+        if e.get("alt") is not None and e.get("compass"):
+            bits.append(f"{e['alt']:.0f}° {e['compass']}")
+        if e.get("window_local"):
+            bits.append(f"best {e['window_local'][0]}-{e['window_local'][1]}")
+    return " · ".join(bits)
+
+
+def _markers_json(r):
+    """Everything worth turning to face tonight, best first.
+
+    Positions are taken at the BEST moment tonight, not at the instant of the
+    request: things climb through the night, and where to look when you
+    actually go outside is the useful answer. That makes these fixed markers
+    rather than live positions, which is why nothing re-computes them on a
+    timer.
+    """
+    out = []
+    for e in ev_mod.locatable_tonight(r.place.lat, r.place.lon, r.tz,
+                                      now_utc=r.when_utc):
+        out.append(dict(
+            kind=e["kind"], name=e["name"], headline=e["headline"],
+            alt=e["alt"], az=e["az"], compass=e.get("compass"),
+            zhr=e.get("zhr"), sep_deg=e.get("sep_deg"),
+            when_local=e["when_local"].isoformat(),
+            best_local=(e["best_local"].isoformat() if e.get("best_local") else None),
+            window_local=e.get("window_local"),
+            moon_verdict=e.get("moon_verdict"),
+            caption=_marker_caption(e),
+            # A radiant is a direction with nothing at it; everything else is
+            # an object sitting at a point. The client draws them differently.
+            shape="radiant" if e["kind"] == "meteor_shower" else "point",
+            glyph=e.get("glyph", "✦"),
+        ))
+    return out
 
 
 # ---------------------------------------------------------------- daytime
@@ -896,6 +986,9 @@ def _compose_day(r):
                      ", ".join(b["name"] for b in later) +
                      f", and a {phase_name(mo['age'])} Moon "
                      f"({mo['illum']*100:.0f}% lit).")
+    teaser = events_teaser(r)
+    if teaser:
+        lines.append(teaser)
     if first:
         tl = first + dt.timedelta(hours=off)
         # Quoted: zsh (the default shell on macOS) treats a bare ? as a glob
@@ -928,8 +1021,507 @@ def _compose_day(r):
                 visible_tonight=[b["name"] for b in later],
                 moon=dict(phase=phase_name(mo["age"]),
                           illum=round(mo["illum"] * 100)),
+                # "events" was already taken by the Sun's own rise/transit/set
+                # above, so the sky-events list is "coming_up" rather than
+                # shadowing a key clients already read.
+                coming_up=teaser,
+                coming_up_card=events_card(r),
                 prose="\n".join(body))
     return Result("\n".join(out), data)
+
+
+# ---------------------------------------------------------------- what's coming up
+EVENT_COL = "\033[38;5;213m"    # orchid: not the sun's yellow, not the DSO green
+
+# How near an event has to be before it earns a line on a page that is
+# otherwise a star chart. Two weeks is long enough to plan a night out and
+# short enough that the line is absent most of the time -- which is what
+# keeps it worth reading when it does appear.
+TEASER_DAYS = 14
+
+# Beyond this the list is padding. Ninety days covers a season, which is the
+# horizon people actually plan on.
+EVENTS_WINDOW_DAYS = 90
+
+
+def _events_for(r, days=EVENTS_WINDOW_DAYS, visible_only=True):
+    p = r.place
+    return ev_mod.upcoming(p.lat, p.lon, r.tz, now_utc=r.when_utc, days=days,
+                           visible_only=visible_only)
+
+
+def _days_away(e, now_utc):
+    return (e["when_utc"] - now_utc).total_seconds() / 86400
+
+
+def _when_words(e, r):
+    """"tonight", "tomorrow night", or a weekday. People plan in those words,
+    not in dates, and a shower peaking after midnight still belongs to the
+    evening you have to go outside on."""
+    watch = e.get("best_local") or e["when_local"]
+    # A 03:00 peak is "tonight" to someone reading this at 22:00, so the night
+    # an event belongs to starts at noon, not at midnight.
+    night = (watch - dt.timedelta(hours=12)).date()
+    today = (r.when_local - dt.timedelta(hours=12)).date()
+    delta = (night - today).days
+    if delta <= 0:
+        return "tonight"
+    if delta == 1:
+        return "tomorrow night"
+    if delta < 7:
+        return f"on {watch:%A}"
+    return f"on {watch:%a %d %b}"
+
+
+def events_teaser(r):
+    """One line for the bottom of a chart, or None if nothing is close.
+
+    Absent most of the time on purpose. A line that is always there stops
+    being read; a line that shows up only when the Perseids are two nights
+    out is the reason someone comes back.
+    """
+    e = ev_mod.next_event(r.place.lat, r.place.lon, r.tz, now_utc=r.when_utc,
+                          within_days=TEASER_DAYS)
+    if e is None:
+        return None
+    when = _when_words(e, r)
+    if e["kind"] == "meteor_shower":
+        bits = [f"{e['name']} peak {when}"]
+        if e.get("zhr"):
+            bits.append(f"up to {e['zhr']} an hour")
+        if e.get("compass") and e.get("alt"):
+            bits.append(f"radiant {e['alt']:.0f}° {e['compass']}")
+        if e.get("moon_verdict"):
+            bits.append(e["moon_verdict"])
+        return "Coming up: " + ", ".join(bits) + "."
+    if e["kind"] == "conjunction":
+        a, b = e["bodies"]
+        where = f", {e['alt']:.0f}° {e['compass']}" if e.get("compass") else ""
+        return f"Coming up: {a} and {b} pass {e['sep_deg']}° apart {when}{where}."
+    if e["kind"] == "eclipse":
+        # headline, not name: name is the eclipse's global type ("Total solar
+        # eclipse") and localise() rewrites headline to what *this* place
+        # actually gets, which for almost everywhere is a partial.
+        note = e.get("note", "")
+        if note:
+            note = " " + note[0].upper() + note[1:] + "."
+        return f"Coming up: {e['headline'].lower()} {when}.{note}"
+    if e["kind"] == "opposition":
+        return (f"Coming up: {e['body']} at opposition {when}, "
+                f"up all night, brightest of the year.")
+    if e["kind"] == "elongation":
+        return f"Coming up: {e['headline']} {when}, {e['note']}."
+    return f"Coming up: {e['headline']} {when}."
+
+
+def _event_date(e):
+    """The date to file an event under: the evening you go outside, not the
+    instant it peaks.
+
+    The 2026 Perseid maximum is 13 Aug 02:10 UT, so dating the row by the peak
+    put it on Thursday the 13th while every almanac says the 12th. Both are
+    describing the same night -- the peak falls in the small hours -- and the
+    night is what a reader is planning around. Where there's a viewing window,
+    _ics_span already works out which evening it starts on, so the list and
+    the calendar entry agree by construction.
+    """
+    if e.get("window_local"):
+        return _ics_span(e)[0]
+    # Same rule without a window: a conjunction whose closest approach falls
+    # at 08:05 is watched the evening before, and _event_url sends you to that
+    # evening's chart. The row has to be dated the same, or the list says the
+    # 16th while its own link opens the 15th.
+    return e.get("best_local") or e["when_local"]
+
+
+# ---------------------------------------------------------------- card payload
+# Data for the prominent "Coming up" card on a place page. Deliberately data
+# only: nothing here renders HTML, and PAGE does not include the card. The
+# markup lives in the web UI, which is being built separately -- see the
+# <!-- skymap:coming-up-card --> marker in PAGE for where it goes.
+#
+# events_card() returns None on most nights, which is the point: the card is
+# meant to mean something when it appears. See TEASER_HORIZON in events.py for
+# how far ahead each kind of event earns a mention.
+
+# Urgency buckets, for the UI to colour from. Anything sooner than the next
+# threshold takes that bucket, so ordering matters.
+CARD_URGENCY = (("tonight", 0.6), ("soon", 3.0), ("later", 999.0))
+
+
+def _card_urgency(days_away):
+    for name, cutoff in CARD_URGENCY:
+        if days_away <= cutoff:
+            return name
+    return "later"
+
+
+def events_card(r):
+    """The next thing worth a card on this place's page, or None.
+
+    A flat dict, ready to hand to a template. Everything the card might want
+    is precomputed here rather than left as raw event fields, so the UI never
+    has to reimplement the "which night does this belong to" or "is the Moon
+    in the way" reasoning that the text views already do.
+    """
+    e = ev_mod.next_event(r.place.lat, r.place.lon, r.tz, now_utc=r.when_utc,
+                          within_days=TEASER_DAYS)
+    if e is None:
+        return None
+
+    watch = e.get("best_local") or e["when_local"]
+    days_away = (e["when_utc"] - r.when_utc).total_seconds() / 86400
+
+    detail = []
+    if e.get("window_local"):
+        detail.append(dict(label="best", value=f"{e['window_local'][0]}–{e['window_local'][1]}"))
+    if e.get("alt") is not None and e.get("compass"):
+        detail.append(dict(label="where", value=f"{e['alt']:.0f}° {e['compass']}"))
+    if e.get("zhr"):
+        detail.append(dict(label="rate", value=f"up to {e['zhr']}/hr"))
+    if e.get("sep_deg") is not None and e["kind"] == "conjunction":
+        detail.append(dict(label="apart", value=f"{e['sep_deg']}°"))
+    if e.get("mag") is not None:
+        detail.append(dict(label="magnitude", value=f"{e['mag']}"))
+
+    return dict(
+        # Stable across renders and shared with the ICS UID and RSS GUID, so
+        # the UI can key a dismissal on it and have it stay dismissed.
+        id=e["id"],
+        kind=e["kind"],
+        glyph=e.get("glyph", "✦"),
+        # "TOMORROW NIGHT", "TONIGHT", "ON FRIDAY" -- already phrased for the
+        # eyebrow, uppercase left to CSS.
+        eyebrow=_when_words(e, r),
+        headline=e["headline"],
+        # One sentence, the same wording the terminal views use.
+        body=(events_teaser(r) or "").replace("Coming up: ", ""),
+        detail=detail,
+        moon_verdict=e.get("moon_verdict"),
+        note=e.get("note"),
+        urgency=_card_urgency(days_away),
+        days_away=round(days_away, 2),
+        when_local=e["when_local"].isoformat(),
+        watch_local=watch.isoformat(),
+        window_local=e.get("window_local"),
+        # Where the buttons go. cta opens the chart for the moment, framed on
+        # the thing; more opens the full list.
+        cta=dict(label="show me that sky", url=_event_url(e, r)),
+        more=dict(label="everything coming up",
+                  url=f"/{quote(r.place.slug)}/events"),
+    )
+
+
+def _event_line(e, r):
+    """One event as a table row: when, glyph, what, and where to look."""
+    when = f"{_event_date(e):%a %d %b}"
+    head = f"{e.get('glyph', ' ')} {e['headline']}"
+    tail = []
+    if e.get("alt") is not None and e.get("compass"):
+        tail.append(f"{e['alt']:.0f}° {e['compass']}")
+    if e.get("window_local"):
+        tail.append(f"best {e['window_local'][0]}-{e['window_local'][1]}")
+    if e.get("zhr"):
+        tail.append(f"up to {e['zhr']}/hr")
+    # sep_deg means two different things: how far apart a pair is (already in
+    # the headline, so repeating it gave "Moon and Venus 1.9° apart ... 1.9°
+    # apart") and how far an inner planet strays from the Sun, which the
+    # headline doesn't say and which is the whole point of the event.
+    if e["kind"] == "elongation" and e.get("sep_deg") is not None:
+        tail.append(f"{e['sep_deg']}° from the Sun")
+    return f"  {when:<11} {head:<34} {', '.join(tail)}".rstrip()
+
+
+def _event_url(e, r):
+    """The chart for the moment this event is worth looking at.
+
+    Not the event's own instant: a shower peaking at 04:10 wants the chart for
+    the middle of its window, and anything with a best moment wants that. The
+    compass bearing rides along as ?facing= so the chart opens pointed at the
+    thing rather than at a default panorama.
+    """
+    when = e.get("best_local") or e["when_local"]
+    url = f"/{quote(r.place.slug)}?t={when:%Y-%m-%dT%H:%M}"
+    # ?find= beats ?facing=: facing only points the chart the right way, find
+    # actually puts a crosshair on the thing. Clicking "Perseids" and getting
+    # an unmarked night chart was the whole complaint.
+    target = _find_target_for(e)
+    if target:
+        url += f"&find={quote(target)}"
+    elif e.get("compass"):
+        url += f"&facing={e['compass']}"
+    return url
+
+
+def _find_target_for(e):
+    """What ?find= should aim at for this event, or None.
+
+    A conjunction names two bodies; the fainter one is the one you need help
+    spotting, and framing it frames the pair anyway since they are within a
+    couple of degrees by definition.
+    """
+    kind = e["kind"]
+    if kind == "meteor_shower":
+        return e["name"]                     # resolve_target knows radiants
+    if kind in ("opposition", "elongation"):
+        return e.get("body")
+    if kind == "conjunction":
+        bodies = e.get("bodies") or []
+        return next((b for b in bodies if b != "Moon"), bodies[0] if bodies else None)
+    if kind == "moon_phase":
+        return "Moon"
+    if kind == "eclipse":
+        return "Moon" if "lunar" in e.get("eclipse_type", "") else "Sun"
+    return None
+
+
+def _event_rows(r, days, colour_free=False):
+    """Every line of the events view, once, as structured rows.
+
+    The text and HTML renderers both consume this, so the terminal list and
+    the clickable browser list cannot drift apart -- the same reason api.py
+    exists at all rather than the CLI and the server each composing their own.
+
+    Each row is (style, text, url). url is None for anything that isn't an
+    event you could open a chart for.
+    """
+    import textwrap
+    p = r.place
+    every = _events_for(r, days=days, visible_only=False)
+    here = [e for e in every if e["visible"] is not False]
+    not_here = [e for e in every if e["visible"] is False]
+
+    rows = [("blank", "", None)]
+    rows.append(("head",
+                 f"  {p.name}  {abs(p.lat):.2f}°{'N' if p.lat >= 0 else 'S'} "
+                 f"{abs(p.lon):.2f}°{'E' if p.lon >= 0 else 'W'}  ·  "
+                 f"next {days} days  ·  local time", None))
+    rows.append(("blank", "", None))
+
+    if not here:
+        rows.append(("mute", "  Nothing above the horizon here in the next "
+                             f"{days} days.", None))
+    for e in here:
+        rows.append(("event", _event_line(e, r), _event_url(e, r)))
+        note = e.get("moon_verdict") or e.get("note")
+        if note:
+            for l in textwrap.wrap(note, 62):
+                rows.append(("mute", f"  {'':<11} {l}", None))
+
+    if not_here:
+        rows.append(("blank", "", None))
+        rows.append(("mute", "  Happening, but not from here:", None))
+        for e in not_here:
+            txt = (f"{_event_date(e):%a %d %b}  {e['headline']}: "
+                   f"{e.get('reason', 'not visible')}")
+            for i, l in enumerate(textwrap.wrap(txt, 74)):
+                rows.append(("mute", ("  " if i == 0 else "  " + " " * 12) + l, None))
+
+    rows.append(("blank", "", None))
+    rows.append(("mute", "  Subscribe: add /events.ics to your calendar, or "
+                         "/events.rss to a reader.", None))
+    return rows, every
+
+
+def events_html(r, days=EVENTS_WINDOW_DAYS):
+    """Browser twin of the text list: every event opens the chart for the
+    moment it happens, in a new tab so the list stays put -- the same bargain
+    catalog_html() makes.
+
+    The row is wrapped whole, padding included, so the columns stay lined up
+    inside <pre> exactly as they do in a terminal.
+    """
+    style = {"head": C.HEAD, "event": EVENT_COL, "mute": C.MUTE}
+    rows, _ = _event_rows(r, days)
+    out = []
+    for kind, text, url in rows:
+        if kind == "blank":
+            out.append("")
+            continue
+        span = (f'<span style="color:{_ansi_hex(style[kind])}">'
+                f"{html.escape(text)}</span>")
+        if url:
+            out.append(f'<a href="{html.escape(url)}" target="_blank" '
+                       f'rel="noopener" title="Open the sky for this moment">'
+                       f"{span}</a>")
+        else:
+            out.append(span)
+    out.append("")
+    out.append(f'<span style="color:{_ansi_hex(C.MUTE)}">  Follow </span>'
+               f'<a href="https://bsky.app/profile/habibicode.bsky.social" '
+               f'target="_blank" rel="noopener">@habibicode</a>'
+               f'<span style="color:{_ansi_hex(C.MUTE)}"> for skymap.sh updates</span>')
+    return "\n".join(out)
+
+
+def _compose_events(r, next_only=False, days=EVENTS_WINDOW_DAYS):
+    """The full list for /{place}/events.
+
+    Events nobody here can see are kept, at the bottom, rather than dropped:
+    "the Geminids peak on the 14th but the radiant never rises here" is worth
+    saying out loud, and silently omitting it just looks like a gap.
+    """
+    p, c = r.place, r.color
+
+    if next_only:
+        # One line, nothing else, for a shell prompt or a MOTD. Empty output
+        # and exit 0 when there is nothing, so it composes into scripts.
+        line = events_teaser(r)
+        return Result((line.replace("Coming up: ", "") + "\n") if line else "",
+                      dict(place=p.name, next=line))
+
+    rows, every = _event_rows(r, days)
+    style = {"head": C.HEAD, "event": EVENT_COL, "mute": C.MUTE}
+    out = ["" if kind == "blank" else paint(text, style[kind], c)
+           for kind, text, _url in rows]
+    out += ["", _footer(p, c), ""]
+
+    data = dict(place=p.name, lat=p.lat, lon=p.lon, tz_offset=r.tz,
+                when_utc=r.when_utc.isoformat() + "Z", window_days=days,
+                card=events_card(r),
+                upcoming=[_event_json(e) for e in every])
+    return Result("\n".join(out), data)
+
+
+def _event_json(e):
+    """One event as plain JSON. Datetimes become ISO strings; everything else
+    is already a string, number or list."""
+    out = {}
+    for k, v in e.items():
+        out[k] = v.isoformat() if isinstance(v, dt.datetime) else v
+    return out
+
+
+# ---------------------------------------------------------------- feeds
+def _ics_escape(s):
+    return (s.replace("\\", "\\\\").replace(";", r"\;")
+             .replace(",", r"\,").replace("\n", r"\n"))
+
+
+def _ics_fold(line):
+    """RFC 5545 caps a content line at 75 octets and continues with a leading
+    space. Calendar clients genuinely reject over-long lines, so this is not
+    optional politeness."""
+    raw = line.encode("utf-8")
+    if len(raw) <= 73:
+        return line
+    out, chunk = [], b""
+    for ch in line:
+        b = ch.encode("utf-8")
+        if len(chunk) + len(b) > 73:
+            out.append(chunk.decode("utf-8"))
+            chunk = b" " + b
+        else:
+            chunk += b
+    out.append(chunk.decode("utf-8"))
+    return "\r\n".join(out)
+
+
+def events_ics(r, base_url="https://skymap.sh", days=EVENTS_WINDOW_DAYS):
+    """An iCalendar feed. This is what "subscribe" means to most people: it
+    lands in the calendar app they already look at, at the right local time."""
+    p = r.place
+    L = ["BEGIN:VCALENDAR", "VERSION:2.0",
+         "PRODID:-//skymap.sh//events//EN", "CALSCALE:GREGORIAN",
+         "METHOD:PUBLISH", f"X-WR-CALNAME:Sky events: {p.name}",
+         "X-WR-CALDESC:What's coming up in the sky above "
+         f"{p.name}, from skymap.sh"]
+    for e in _events_for(r, days=days, visible_only=True):
+        start, end = _ics_span(e)
+        # Floating local time (no Z, no TZID): the event is quoted in the
+        # place's own clock, and a floating time shows at that wall-clock
+        # reading whatever timezone the reader's device is in. Someone
+        # subscribed to Tokyo's feed wants Tokyo's hours.
+        L += ["BEGIN:VEVENT",
+              f"UID:{e['id']}@skymap.sh",
+              f"DTSTAMP:{r.when_utc:%Y%m%dT%H%M%S}Z",
+              f"DTSTART:{start:%Y%m%dT%H%M%S}",
+              f"DTEND:{end:%Y%m%dT%H%M%S}",
+              f"SUMMARY:{_ics_escape(_ics_summary(e))}",
+              f"DESCRIPTION:{_ics_escape(_ics_description(e, p, base_url))}",
+              f"URL:{base_url}/{quote(p.slug)}/events",
+              "END:VEVENT"]
+    L.append("END:VCALENDAR")
+    return "\r\n".join(_ics_fold(x) for x in L) + "\r\n"
+
+
+def _ics_span(e):
+    """(start, end) for a calendar entry.
+
+    Where there's a viewing window, the entry covers it: a reminder that fires
+    when the Perseid radiant is *highest* goes off at 04:50, by which point
+    you have missed most of the night. The window start is when to go outside.
+    Windows that run past midnight are already absolute datetimes, so an end
+    before the start just means the run crossed into the next day.
+    """
+    win = e.get("window_local")
+    best = e.get("best_local") or e["when_local"]
+    if not win:
+        return best, best + dt.timedelta(hours=1)
+    day = best.date()
+    start = dt.datetime.combine(day, dt.time.fromisoformat(win[0]))
+    end = dt.datetime.combine(day, dt.time.fromisoformat(win[1]))
+    # The window is quoted as two wall-clock times; if the second is earlier
+    # it belongs to the following morning.
+    if end <= start:
+        end += dt.timedelta(days=1)
+    # best_local sits inside the window by construction, so if the clock
+    # times put it outside, the whole run belongs to the previous evening.
+    if best < start:
+        start -= dt.timedelta(days=1)
+        end -= dt.timedelta(days=1)
+    return start, end
+
+
+def _ics_summary(e):
+    s = e["headline"]
+    if e.get("alt") is not None and e.get("compass"):
+        s += f", {e['alt']:.0f}° {e['compass']}"
+    return s
+
+
+def _ics_description(e, p, base_url):
+    bits = []
+    if e.get("window_local"):
+        bits.append(f"Best {e['window_local'][0]}–{e['window_local'][1]} local.")
+    if e.get("moon_verdict"):
+        bits.append(e["moon_verdict"][0].upper() + e["moon_verdict"][1:] + ".")
+    if e.get("note"):
+        bits.append(e["note"][0].upper() + e["note"][1:] + ".")
+    when = e.get("best_local") or e["when_local"]
+    bits.append(f"{base_url}/{quote(p.slug)}?t={when:%Y-%m-%dT%H:%M}")
+    return " ".join(bits)
+
+
+def events_rss(r, base_url="https://skymap.sh", days=EVENTS_WINDOW_DAYS):
+    """RSS 2.0. The one thing that has to be right is the guid: keyed on the
+    event, never on render time, or every reader re-flags every item on every
+    poll."""
+    p = r.place
+    esc = html.escape
+    items = []
+    for e in _events_for(r, days=days, visible_only=True):
+        when = e.get("best_local") or e["when_local"]
+        link = f"{base_url}/{quote(p.slug)}?t={when:%Y-%m-%dT%H:%M}"
+        desc = _ics_description(e, p, base_url)
+        # RFC 822 date, in the place's own offset rather than pretending UTC.
+        off = f"{'+' if r.tz >= 0 else '-'}{int(abs(r.tz)):02d}{int(abs(r.tz) % 1 * 60):02d}"
+        items.append(
+            "<item>"
+            f"<title>{esc(_ics_summary(e))}</title>"
+            f"<link>{esc(link)}</link>"
+            f"<guid isPermaLink=\"false\">{esc(e['id'])}</guid>"
+            f"<pubDate>{when:%a, %d %b %Y %H:%M:%S} {off}</pubDate>"
+            f"<description>{esc(desc)}</description>"
+            "</item>")
+    return ('<?xml version="1.0" encoding="UTF-8"?>\n'
+            '<rss version="2.0"><channel>'
+            f"<title>Sky events: {esc(p.name)}</title>"
+            f"<link>{esc(base_url)}/{quote(p.slug)}/events</link>"
+            f"<description>What's coming up in the sky above {esc(p.name)}."
+            "</description>"
+            f"<language>en</language>{''.join(items)}"
+            "</channel></rss>")
 
 
 # ---------------------------------------------------------------- animation
@@ -1060,15 +1652,27 @@ def _find_chart_only(r):
             shown_utc = w
             jd = julian(shown_utc); lst = (gmst_hours(jd) + p.lon / 15.0) % 24
             tgt = resolve_target(r.find, jd, p.lat, lst)
-    sp = r.span or 60.0
-    rng = 26.0
-    lo = max(0.0, min(90.0 - rng, tgt["alt"] - rng / 2))
+    # Same full-panorama-by-default framing as _compose_find, so a page and
+    # the PNG it links to never disagree about what the chart shows.
+    zoomed = r.span is not None
+    if zoomed:
+        rng = 26.0
+        lo = max(0.0, min(90.0 - rng, tgt["alt"] - rng / 2))
+        extra = dict(span=r.span, alt_lo=lo, alt_hi=lo + rng, width=r.width,
+                     mag_limit=5.0)
+    else:
+        sun_alt = altaz(*[sun(julian(shown_utc))[k] for k in ("ra", "dec")],
+                        p.lat, (gmst_hours(julian(shown_utc)) + p.lon / 15.0) % 24)[0]
+        extra = dict(span=360.0, height=_horizon_height(r),
+                     width=_effective_width(r),
+                     mag_limit=_fade_mag_limit(sun_alt))
+    sp = extra["span"]
     art, _st = render_linear(shown_utc, p.lat, p.lon, color=c, show_lines=r.lines,
-                             tle=r.tle, span=sp, alt_lo=lo, alt_hi=lo + rng,
-                             target=tgt, mag_limit=5.0, width=r.width)
+                             tle=r.tle, target=tgt, **extra)
     shown_local = shown_utc + dt.timedelta(hours=p.offset(shown_utc))
+    where = f"{int(sp)}° window" if zoomed else "full panorama"
     head = (f"  {p.name}   {shown_local:%d %b %Y %H:%M}   "
-            f"finding {tgt['name']}, {int(sp)}° window")
+            f"finding {tgt['name']}, {where}")
     return paint(head, C.HEAD, c) + "\n\n" + art
 
 
@@ -1474,6 +2078,10 @@ def header_html(path):
     return (f'<pre class="cta">curl skymap.sh{path}</pre>\n'
             f'<p class="t"><b>skymap.sh</b>\n'
             f'<a href="/">home</a> · <a href="/catalog">catalog</a> · <a href="/demo">demo</a> · '
+            # Bare /events, not /{place}/events: the nav is the same on every
+            # page, so it cannot carry a place. The route locates by IP the
+            # way a bare `curl skymap.sh` does.
+            f'<a href="/events">events</a> · '
             f'<a href="/help">help</a> · <a href="/legend">legend</a></p>')
 
 
@@ -1532,7 +2140,24 @@ PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
  @media (pointer:coarse) and (max-width:900px){{.mobile-only{{display:inline-block}}}}
 </style></head><body><div class="w">
 {header}
-{explore}<div class="toolbar"><div class="toolbar-left">{animate_btn}{quadrant_btn}</div><div class="toolbar-right">{sphere_btn}{extra}</div></div><pre id="chart-pre">{body}</pre>
+{explore}<!-- skymap:coming-up-card
+     Insertion point for the prominent "Coming up" card. Nothing renders it
+     yet -- the markup belongs to the web UI, built separately.
+
+     Data:  api.events_card(r) -> dict | None   (None on most nights)
+            also served as "card" on /{{place}}/events?format=json
+            and as "coming_up_card" on /{{place}}?format=json
+     Suggested element id:  coming-up
+     Suggested attribute:   data-urgency = tonight | soon | later
+     Fields marked [] are lists of {{label, value}} pairs.
+     Fields: id kind glyph eyebrow headline body detail[] moon_verdict note
+             urgency days_away when_local watch_local window_local cta more
+
+     It belongs here, above the toolbar and the chart, so it reads before the
+     sky rather than after it. Absent most nights on purpose: see
+     TEASER_HORIZON in events.py.
+-->
+<div class="toolbar"><div class="toolbar-left">{animate_btn}{quadrant_btn}</div><div class="toolbar-right">{sphere_btn}{extra}</div></div><pre id="chart-pre">{body}</pre>
 <p class="t" style="margin-top:18px">Created by <a href="https://x.com/habibicode">@habibicode</a>
 · <a href="https://github.com/HabibiCodeCH/skymap-sh">see the repo</a></p>
 <script>
@@ -1785,6 +2410,30 @@ SPHERE_PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
  #find-reticle .tick-top,#find-reticle .tick-bottom{{width:2px;height:14px;left:-1px}}
  #find-reticle .tick-left,#find-reticle .tick-right{{height:2px;width:14px;top:-1px}}
  .found-label span{{color:#ff87ff;font-weight:700}}
+ /* Orchid, matching the "Coming up:" line the text views use, so the two
+    read as the same feature. Only ever on screen for the handful of nights
+    a year a shower is actually running. */
+ .radiant-label span{{color:#ff9ae6;font-weight:700}}
+ /* bottom is set from JS to sit clear of #toolbar, whose height changes when
+    its buttons wrap to a second row on a narrow phone -- a fixed offset here
+    put this straight through the Labels/Deep sky row. */
+ #radiant-hud{{position:fixed;left:0;right:0;bottom:64px;text-align:center;
+              color:#ff9ae6;font-size:12px;padding:0 14px;pointer-events:none;
+              z-index:999;margin:0;text-shadow:0 0 6px #000,0 0 6px #000;
+              display:none}}
+ /* Only the text takes taps, not the full-width strip -- the strip sits over
+    the canvas, and swallowing drags there would break panning near the
+    bottom of the screen. */
+ #radiant-hud span{{pointer-events:auto;cursor:pointer;display:inline-block;
+                   border-bottom:1px dashed rgba(255,154,230,.55);
+                   padding-bottom:1px}}
+ #radiant-hud span:active{{color:#ffd0f4}}
+ #radiant-hud-cycle{{margin-left:8px;border:1px solid rgba(255,154,230,.5);
+                    border-radius:4px;padding:1px 6px;font-size:11px;
+                    white-space:nowrap}}
+ #radiant-hud-cycle[hidden]{{display:none}}
+ body.daytime #radiant-hud{{color:#8a2f74}}
+ body.daytime #radiant-hud span{{border-bottom-color:rgba(138,47,116,.55)}}
 </style></head><body>
 <div id="hud"><a href="/">&larr; {place_name}{home_suffix}</a><span id="heading"></span><span id="mode-label"></span></div>
 <div id="debug-hud"></div>
@@ -1807,6 +2456,7 @@ you're holding it; anywhere else, drag to look around.</p>
 </div>
 <p id="find-msg"></p>
 <div id="find-arrow">&gt;&gt;&gt;</div>
+<p id="radiant-hud"><span id="radiant-hud-text" role="button" tabindex="0"></span><span id="radiant-hud-cycle" role="button" tabindex="0" hidden></span></p>
 <div id="find-reticle">
 <div class="tick tick-top"></div>
 <div class="tick tick-bottom"></div>
@@ -1954,6 +2604,134 @@ function toVec(alt, az) {{
   var zc = -Math.cos(z) * Math.cos(a);
   return new THREE.Vector3(x, y, zc).multiplyScalar(RADIUS);
 }}
+
+// A meteor shower's radiant: the one thing this view can do that no flat
+// chart can, which is let you physically turn and face it. Drawn as a ring
+// rather than a glyph because a radiant is not an object -- there is nothing
+// at that point to see, it is the direction the meteors appear to come from,
+// and a ring around empty sky says that better than a dot would.
+//
+// Placed at the radiant's alt/az at the BEST moment tonight, not at this
+// instant: the radiant climbs through the night, and where to look when you
+// actually go outside is the useful answer. It is therefore a fixed marker,
+// not a live position, which is why nothing re-computes it on a timer.
+var RADIANT_RING_SEGMENTS = 64;
+var MARKER_COLOUR = 0xff9ae6;
+
+// A ring lying flat against the sphere at the given direction. Built in a
+// local frame around that direction so it reads as a circle from the middle
+// rather than an ellipse seen edge-on.
+function markerRing(centre, ringR, spokes) {{
+  var normal = centre.clone().normalize();
+  var up = Math.abs(normal.y) > 0.95 ? new THREE.Vector3(1, 0, 0)
+                                     : new THREE.Vector3(0, 1, 0);
+  var e1 = new THREE.Vector3().crossVectors(up, normal).normalize();
+  var e2 = new THREE.Vector3().crossVectors(normal, e1).normalize();
+  var pts = [];
+  for (var i = 0; i <= RADIANT_RING_SEGMENTS; i++) {{
+    var t = i / RADIANT_RING_SEGMENTS * Math.PI * 2;
+    pts.push(centre.clone()
+      .addScaledVector(e1, Math.cos(t) * ringR)
+      .addScaledVector(e2, Math.sin(t) * ringR));
+  }}
+  scene.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts),
+                           new THREE.LineBasicMaterial({{color: MARKER_COLOUR}})));
+  if (!spokes) return;
+  // Four short ticks pointing outward, the way meteors actually streak.
+  var segs = [];
+  for (var k = 0; k < 4; k++) {{
+    var t2 = k / 4 * Math.PI * 2 + Math.PI / 4;
+    var dir = e1.clone().multiplyScalar(Math.cos(t2))
+               .addScaledVector(e2, Math.sin(t2));
+    segs.push(centre.clone().addScaledVector(dir, ringR * 1.35),
+              centre.clone().addScaledVector(dir, ringR * 2.1));
+  }}
+  scene.add(new THREE.LineSegments(
+    new THREE.BufferGeometry().setFromPoints(segs),
+    new THREE.LineBasicMaterial({{color: MARKER_COLOUR}})));
+}}
+
+var MARKERS = [];
+var markerIndex = 0;
+
+function addMarkers(list) {{
+  if (!list || !list.length) return;
+  MARKERS = list;
+  list.forEach(function(m) {{
+    var centre = toVec(m.alt, m.az);
+    // A radiant is a direction with nothing at it, so it gets the big ring
+    // and the outward ticks. Everything else is an object already drawn on
+    // the sphere, so it gets a small ring around it: a highlight, not a
+    // second copy of the thing.
+    if (m.shape === 'radiant') markerRing(centre, RADIUS * 0.09, true);
+    else markerRing(centre, RADIUS * 0.045, false);
+    addLabel(m.glyph + ' ' + m.name, centre, 'radiant-label', 0);
+  }});
+  showMarker(0);
+  var hud = document.getElementById('radiant-hud');
+  if (hud) hud.style.display = 'block';
+  liftRadiantHud();
+}}
+
+function showMarker(i) {{
+  if (!MARKERS.length) return;
+  markerIndex = ((i % MARKERS.length) + MARKERS.length) % MARKERS.length;
+  var m = MARKERS[markerIndex];
+  var text = document.getElementById('radiant-hud-text');
+  var cyc = document.getElementById('radiant-hud-cycle');
+  if (text) text.textContent = m.caption + ' · tap to point me at it';
+  if (cyc) {{
+    // Hidden entirely at one marker -- a "1/1 ›" that does nothing is worse
+    // than no control. Two or more happens about ten nights a year.
+    cyc.hidden = MARKERS.length < 2;
+    cyc.textContent = (markerIndex + 1) + '/' + MARKERS.length + ' ›';
+  }}
+}}
+
+// Reuse the find machinery rather than a second kind of pointer: same arrow
+// while it's off screen, same reticle as it comes into view, same cancel
+// button. Nothing to look up -- we already know exactly where it is.
+function aimAtMarker() {{
+  var m = MARKERS[markerIndex];
+  if (!m) return;
+  findMsg.textContent = '';
+  findTarget = {{alt: m.alt, az: m.az,
+                name: m.shape === 'radiant' ? m.name + ' radiant' : m.name}};
+  findCancelBtn.hidden = false;
+}}
+
+(function() {{
+  var text = document.getElementById('radiant-hud-text');
+  var cyc = document.getElementById('radiant-hud-cycle');
+  if (text) {{
+    text.addEventListener('click', function(ev) {{ ev.preventDefault(); aimAtMarker(); }});
+    text.addEventListener('keydown', function(ev) {{
+      if (ev.key === 'Enter' || ev.key === ' ') {{ ev.preventDefault(); aimAtMarker(); }}
+    }});
+  }}
+  if (cyc) {{
+    cyc.addEventListener('click', function(ev) {{
+      ev.preventDefault();
+      ev.stopPropagation();      // cycling is not aiming
+      showMarker(markerIndex + 1);
+      liftRadiantHud();          // the caption length changes the wrap
+    }});
+  }}
+}})();
+
+// #toolbar wraps to a second row on a narrow phone, so its height is not
+// knowable from CSS -- measure it and sit the HUD above whatever it actually
+// is. Re-run on resize because rotating re-wraps it.
+function liftRadiantHud() {{
+  var hud = document.getElementById('radiant-hud');
+  var bar = document.getElementById('toolbar');
+  if (!hud || !bar || hud.style.display === 'none') return;
+  hud.style.bottom = (bar.offsetHeight + 12) + 'px';
+}}
+window.addEventListener('resize', liftRadiantHud);
+window.addEventListener('orientationchange', function() {{
+  setTimeout(liftRadiantHud, 200);
+}});
 
 // The horizon itself, alt=0 all the way round -- doesn't depend on the
 // fetch, so it's there immediately, marking where "up" (this observer's
@@ -2145,6 +2923,8 @@ fetch('/' + PLACE + '/sphere.json' + window.location.search).then(function(r) {{
     scene.add(flatColourPoints([b], b.name === 'Moon' ? 26 : 18));
     addLabel(b.name, toVec(b.alt, b.az), 'body-label', 0);
   }});
+
+  addMarkers(data.markers);
 
   var linePts = [];
   data.asterisms.forEach(function(con) {{

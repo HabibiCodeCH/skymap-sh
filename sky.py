@@ -47,6 +47,7 @@ def star_colour(ci):
     if ci < 1.00:             return "\033[38;5;222m"   # yellow
     return "\033[38;5;216m"                              # orange-red
 
+
 def paint(s, c, on=True):
     return f"{c}{s}{C.OFF}" if on else s
 
@@ -802,6 +803,26 @@ def resolve_target(name, jd, lat, lst):
                             ra=cra, dec=cdec,
                             lead=min(m for _r, _d, m in pts),
                             faint=max(m for _r, _d, m in pts))
+    # Meteor radiants. Only the position lives here -- showers.json is static
+    # RA/Dec, so this needs no import of events.py (which imports this module;
+    # the other direction would be a cycle). When a shower peaks is events.py's
+    # business; where to point is this one's.
+    #
+    # "Perseids", "Perseid" and "Perseids radiant" all resolve, because people
+    # type all three.
+    for sh in _load("showers.json"):
+        nm = sh["name"].lower()
+        if q in (nm, nm.rstrip("s"), nm + " radiant", nm.rstrip("s") + " radiant"):
+            ra, de = precess(sh["ra"], sh["dec"], jd)
+            a, z = altaz(ra, de, lat, lst)
+            return dict(name=sh["name"] + " radiant", alt=a, az=z,
+                        # A radiant is empty sky, so there is no magnitude to
+                        # give. 2.5 buys the nautical-dark answer out of
+                        # dark_enough(), which is the condition shower rates
+                        # are quoted under anyway.
+                        mag=2.5, kind="radiant", ra=sh["ra"], dec=sh["dec"],
+                        zhr=sh["zhr"])
+
     for o in _load("deepsky.json"):
         # o["n"] is already the best short label (Messier number, else a
         # hand-picked common name, else the NGC number itself -- see
@@ -1048,6 +1069,10 @@ def render_linear(when_utc, lat, lon, W=176, H=22, color=True, show_lines=True,
         # crossing this is, rather than always defaulting to South.
         span, centre, clamped = 360.0, (0.0 if lat < 0 else 180.0), ""
 
+    # Whether the CALLER cropped the altitude range, recorded before the
+    # defaults below overwrite the Nones -- the zenith inset needs to know,
+    # and by the time it is drawn these are always numbers.
+    alt_cropped = alt_lo is not None or alt_hi is not None
     alt_lo = 0.0 if alt_lo is None else float(alt_lo)
     alt_hi = float(alt_max) if alt_hi is None else float(alt_hi)
     alt_rng = alt_hi - alt_lo
@@ -1070,7 +1095,14 @@ def render_linear(when_utc, lat, lon, W=176, H=22, color=True, show_lines=True,
                 clamped = ""
                 quad_cells = []          # cropped -- no overlay grid on itself
 
-    if target is not None:                       # frame chosen by the object itself
+    # Frame chosen by the object itself -- but only when the caller actually
+    # asked for a crop. Re-centring a 60° window on the target is the whole
+    # point of a window; re-centring a full 360° sweep just rotates the sky,
+    # so every cardinal and every label lands somewhere different from the
+    # ordinary chart and the two stop being comparable. On a full panorama the
+    # crosshair marks the spot perfectly well without moving the horizon under
+    # it.
+    if target is not None and alt_cropped:
         W = 118
         span = float(req_span or 60.0)
         centre = float(target["az"])
@@ -1380,7 +1412,11 @@ def render_linear(when_utc, lat, lon, W=176, H=22, color=True, show_lines=True,
         # North -- centre itself now flips between N and S with hemisphere.
         ticks[W - 1] = "S" if centre == 0 else "N"
     out.append(paint(" " * LM + "".join(ticks).rstrip(), C.CARD, color))
-    if facing is None and target is None and quad_applied is None and inset:
+    # `target` used to disqualify the inset because find meant a 26° crop
+    # with no room for one. find now draws the full panorama, so what
+    # actually matters is whether the altitude range was cropped: an
+    # inset labelled 70-90° is a lie on a chart that stops at 40°.
+    if facing is None and not alt_cropped and quad_applied is None and inset:
         out.append("")
         out.extend(_zenith_inset(inset_items, alt_max, color, LM))
     st = dict(visible=visible, up=up, moon=mo, sun=su, lst=lst, jd=jd,

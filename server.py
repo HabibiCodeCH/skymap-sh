@@ -93,6 +93,16 @@ _finds = Counter()
 # _tally(), which sphere_page() never calls), so which cities people want
 # to actually look around in would otherwise be invisible.
 _sphere_places = Counter()
+# Same reasoning as _sphere_places: /events and its two feeds never go through
+# _tally(), so which cities people actually subscribe to would be invisible
+# without their own tally. A subscription is a much stronger signal than a
+# page view -- someone put it in their calendar.
+_events_places = Counter()
+# What the "Coming up" line actually promoted, and how often it was absent.
+# Page views tell you people opened the list; this tells you whether the
+# feature does anything on the pages nobody opened it from -- which is most
+# of them, since the teaser is meant to be missing on a quiet night.
+_events_teased = Counter()
 _referrers = Counter()
 _TOP_KEEP = 2000            # trim the long tail so the tables cannot grow forever
 
@@ -113,6 +123,8 @@ def _save_stats_state():
             json.dump(dict(started=STARTED, stat=dict(_stat),
                           places=dict(_places), finds=dict(_finds),
                           sphere_places=dict(_sphere_places),
+                          events_places=dict(_events_places),
+                          events_teased=dict(_events_teased),
                           referrers=dict(_referrers)), f)
         os.replace(tmp, STATS_STATE_FILE)   # atomic -- a crash mid-write
     except OSError:                          # can't leave a corrupt file
@@ -120,6 +132,18 @@ def _save_stats_state():
 
 
 def _load_stats_state():
+    """Restore the counters from disk, replacing whatever is in memory.
+
+    Replacing, not adding. Counter.update() adds, so loading twice doubled
+    every number and then persisted the doubled value on the way out. In
+    production there is one startup per process, so it never showed; under
+    pytest two TestClient context managers are two startups, and the doubling
+    compounded across runs until stats_state.json held 366-digit integers and
+    /stats died with OverflowError trying to format them.
+
+    "Restore from disk" replacing memory is also just the right meaning, and
+    it makes the function safe to call more than once.
+    """
     global STARTED
     try:
         with open(STATS_STATE_FILE) as f:
@@ -127,11 +151,13 @@ def _load_stats_state():
     except (OSError, json.JSONDecodeError, ValueError):
         return
     STARTED = data.get("started", STARTED)
-    _stat.update(data.get("stat", {}))
-    _places.update(data.get("places", {}))
-    _finds.update(data.get("finds", {}))
-    _sphere_places.update(data.get("sphere_places", {}))
-    _referrers.update(data.get("referrers", {}))
+    for counter, key in ((_stat, "stat"), (_places, "places"),
+                         (_finds, "finds"), (_sphere_places, "sphere_places"),
+                         (_events_places, "events_places"),
+                         (_events_teased, "events_teased"),
+                         (_referrers, "referrers")):
+        counter.clear()
+        counter.update(data.get(key, {}))
 
 
 # --- hourly history -----------------------------------------------------------
@@ -253,6 +279,17 @@ def _tally(r, daytime, hit, mode, status, data, colour=True, referrer=None):
     # "asked for it": how often a visitor's chart actually included a real pass.
     if data.get("iss_pass"):
         _stat["iss"] += 1
+    # Only charts carry coming_up at all, so this counts the pages the teaser
+    # was actually eligible to appear on -- the denominator that makes the
+    # "shown" number mean anything.
+    if "coming_up" in data:
+        if data["coming_up"]:
+            _stat["teaser:shown"] += 1
+            card = data.get("coming_up_card") or {}
+            if card.get("headline"):
+                _events_teased[card["headline"][:34]] += 1
+        else:
+            _stat["teaser:absent"] += 1
     # Every remaining request-shaping parameter, so /stats reflects the full
     # surface rather than just the ones that happened to get counters as they
     # shipped -- dso/quadrant landed with none at all until this pass.
@@ -310,6 +347,29 @@ def stats_text(n=50):
     if _stat["sphere"]:
         L.append(f"  {'sphere':12} {_stat['sphere']:>8,}  (see /stats/sphere)")
     L.append("")
+    if _stat["events"] or _stat["events.ics"] or _stat["events.rss"]:
+        L.append("what's coming up")
+        L.append(f"  {'page':12} {_stat['events']:>8,}")
+        # Feed pulls are the number worth watching: a page view is a glance,
+        # a subscription keeps costing a request an hour until it's cancelled.
+        L.append(f"  {'ics':12} {_stat['events.ics']:>8,}")
+        L.append(f"  {'rss':12} {_stat['events.rss']:>8,}")
+        if _stat["events_ip"]:
+            L.append(f"  {'via nav':12} {_stat['events_ip']:>8,}  "
+                     f"(bare /events, located by IP)")
+        if _events_places:
+            # Not "top places": test_server.py keys on that exact string to
+            # find the main table, and a second occurrence here shadowed it.
+            L.append(f"  by place ({len(_events_places):,} distinct)")
+            for name, c in _events_places.most_common(10):
+                L.append(f"    {name[:26]:26} {c:>8,}")
+        shown, absent = _stat["teaser:shown"], _stat["teaser:absent"]
+        if shown or absent:
+            L.append(f"  teaser       {shown:,} shown / {absent:,} quiet "
+                     f"({100*shown/(shown+absent):.0f}% of charts)")
+            for name, c in _events_teased.most_common(8):
+                L.append(f"    {name[:26]:26} {c:>8,}")
+        L.append("")
     pages = sorted(k for k in _stat if k.startswith("page:"))
     if pages:
         L.append("pages")
@@ -370,6 +430,13 @@ def stats_json(n=50):
         animate=_stat["animate"], animate_rejected=_stat["animate_rejected"],
         gif=_stat["gif"], gif_rejected=_stat["gif_rejected"], png=_stat["png"],
         sphere=_stat["sphere"],
+        events=dict(page=_stat["events"], ics=_stat["events.ics"],
+                    rss=_stat["events.rss"], via_nav=_stat["events_ip"],
+                    places_distinct=len(_events_places),
+                    top_places=dict(_events_places.most_common(n)),
+                    teaser_shown=_stat["teaser:shown"],
+                    teaser_absent=_stat["teaser:absent"],
+                    top_teased=dict(_events_teased.most_common(n))),
         views={k[5:]: v for k, v in _stat.items() if k.startswith("view:")},
         pages={k[5:]: v for k, v in _stat.items() if k.startswith("page:")},
         modes={k[5:]: v for k, v in _stat.items() if k.startswith("mode:")},
@@ -388,6 +455,9 @@ def stats_sphere_text(n=50):
     L = [f"skymap.sh: sphere stats ({_stat['sphere']:,} views, "
         f"{_stat['sphere_json']:,} data fetches, {_stat['mobile_redirect']:,} "
         f"mobile auto-redirects)", ""]
+    if _stat["sphere_radiant"]:
+        L.append(f"  {'radiant':12} {_stat['sphere_radiant']:>8,}  "
+                 f"(views on a night with a shower running)")
     sphere_os = sorted(k for k in _stat if k.startswith("sphere_os:"))
     if sphere_os:
         L.append("views by OS")
@@ -403,6 +473,7 @@ def stats_sphere_text(n=50):
 def stats_sphere_json(n=50):
     return dict(
         sphere=_stat["sphere"], sphere_json=_stat["sphere_json"],
+        sphere_radiant=_stat["sphere_radiant"],
         mobile_redirect=_stat["mobile_redirect"],
         by_os={k[10:]: v for k, v in _stat.items() if k.startswith("sphere_os:")},
         places_distinct=len(_sphere_places),
@@ -1152,6 +1223,12 @@ def robots():
         "Disallow: /stats\n"
         "Disallow: /*/sphere\n"
         "Disallow: /*/sphere.json\n"
+        # The events *page* is real content and stays indexable; the two
+        # feeds are the same facts in machine formats, so crawling them is
+        # duplicate content on a budget better spent elsewhere. Readers
+        # subscribing on a person's behalf ignore robots.txt anyway.
+        "Disallow: /*/events.ics\n"
+        "Disallow: /*/events.rss\n"
         "Sitemap: https://skymap.sh/sitemap.xml\n"
     )
 
@@ -1229,6 +1306,11 @@ def sphere_json(request: Req, place: str):
     r = _build(request, place)
     data = api._compose_sphere(r)
     _stat["sphere_json"] += 1
+    # How often anyone actually opens the 3D view on a night with a shower
+    # running -- the whole reason the radiant marker exists, and the only way
+    # to tell whether it's ever seen.
+    if data.get("markers"):
+        _stat["sphere_radiant"] += 1
     edge = DAY_EDGE if not r.night and api.is_daytime(r) else NIGHT_EDGE
     return JSONResponse(data, headers={
         "Cache-Control": f"public, max-age={edge // 4}, s-maxage={edge}"})
@@ -1253,6 +1335,118 @@ def sphere_page(request: Req, place: str):
                                   place_slug=p.slug, place_name=html.escape(p.name),
                                   home_suffix=" (my sky)" if home else "")
     return HTMLResponse(body, headers={"Cache-Control": "public, max-age=300"})
+
+
+# What's coming up changes on the scale of days, not the five minutes a star
+# chart does, so these get their own bucket. A day at the edge means a reader
+# polling hourly costs one origin render per city per day.
+EVENTS_EDGE = 86400
+
+
+def _events_headers():
+    return {"Cache-Control": f"public, max-age={EVENTS_EDGE // 4}, "
+                             f"s-maxage={EVENTS_EDGE}"}
+
+
+# Snapped to a ladder, not merely clamped. Clamping to 7-365 still leaves 359
+# distinct values, and the global scan is memoised on (date, days) -- so a
+# client walking ?days=30,31,32... got zero cache hits and 75 ms of origin
+# work every time, while minting a fresh CDN key on each request too. Seven
+# rungs is every window anyone actually wants and bounds both surfaces at
+# once, the same bargain ?t= (5-minute grain) and coordinates (0.1°) already
+# make. See "Bounding the cache-key surface" in DEPLOY.md.
+EVENTS_WINDOWS = (7, 14, 30, 60, 90, 180, 365)
+
+
+def _events_window(request: Req):
+    """?days=, snapped up to the next rung of EVENTS_WINDOWS."""
+    raw = request.query_params.get("days")
+    if not raw:
+        return api.EVENTS_WINDOW_DAYS
+    try:
+        want = max(7, min(365, int(raw)))
+    except ValueError:
+        return api.EVENTS_WINDOW_DAYS
+    return next(w for w in EVENTS_WINDOWS if w >= want)
+
+
+@app.get("/events", response_class=PlainTextResponse)
+def events_here(request: Req):
+    """What's coming up over wherever the visitor is.
+
+    The nav is identical on every page so it cannot carry a place, and this
+    is how the rest of the site already answers that: a bare `curl skymap.sh`
+    locates by IP, so a bare /events does too. Falls back to _build's usual
+    default when the CDN sends no coordinates.
+    """
+    _stat["events_ip"] += 1
+    return events_page(request, None)
+
+
+@app.get("/{place}/events.ics")
+def events_ics(request: Req, place: str):
+    if api.lookup_place(place) is None:
+        return PlainTextResponse("", status_code=404)
+    r = _build(request, place)
+    _stat["events.ics"] += 1
+    _events_places[r.place.slug] += 1
+    body = api.events_ics(r, base_url=str(request.base_url).rstrip("/"),
+                          days=_events_window(request))
+    return Response(body, media_type="text/calendar; charset=utf-8",
+                    headers=_events_headers() | {
+                        "Content-Disposition":
+                            f'inline; filename="skymap-{r.place.slug}.ics"'})
+
+
+@app.get("/{place}/events.rss")
+def events_rss(request: Req, place: str):
+    if api.lookup_place(place) is None:
+        return PlainTextResponse("", status_code=404)
+    r = _build(request, place)
+    _stat["events.rss"] += 1
+    _events_places[r.place.slug] += 1
+    body = api.events_rss(r, base_url=str(request.base_url).rstrip("/"),
+                          days=_events_window(request))
+    return Response(body, media_type="application/rss+xml; charset=utf-8",
+                    headers=_events_headers())
+
+
+@app.get("/{place}/events", response_class=PlainTextResponse)
+def events_page(request: Req, place: str | None):
+    if place is not None and api.lookup_place(place) is None:
+        return PlainTextResponse(UNKNOWN.format(q=place, did=api.suggest(place)),
+                                 status_code=404)
+    r = _build(request, place)
+    next_only = bool(request.query_params.get("next"))
+    _stat["events"] += 1
+    if next_only:
+        _stat["param:next"] += 1
+    # slug, not name: the no-place fallback is "Zurich" where a real lookup
+    # gives "Zürich", which split one city across two rows.
+    _events_places[r.place.slug] += 1
+    res = api._compose_events(r, next_only=next_only,
+                              days=_events_window(request))
+    kind, colour = _wants(request)
+    if kind == "json":
+        return JSONResponse(res.data, headers=_events_headers())
+    if next_only:
+        # Deliberately bare: this goes in a shell prompt or a MOTD, so no
+        # header, no nav, no footer. Empty body when nothing is coming, so
+        # `sky()` in a profile prints nothing rather than a blank box.
+        return PlainTextResponse(res.text, headers=_events_headers())
+    if kind == "html":
+        # events_html(), not ansi_to_html(res.text): the browser version wraps
+        # each event row in a link to the chart for that moment, which the
+        # ANSI text has no way to carry.
+        body = api.PAGE.format(
+            title=f"skymap.sh: what's coming up over {r.place.name}",
+            header=api.header_html(f"/{r.place.slug}/events"),
+            explore=api.EXPLORE,
+            body=api.events_html(r, days=_events_window(request)),
+            extra="", animate_btn="", quadrant_btn="", sphere_btn="")
+        return HTMLResponse(body, headers=_events_headers())
+    return PlainTextResponse(api.strip_ansi(res.text) if not colour else res.text,
+                             headers=_events_headers())
 
 
 @app.get("/{place}/horizon.png")
