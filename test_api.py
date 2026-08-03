@@ -540,9 +540,12 @@ class ControlsPanel(unittest.TestCase):
         # class="tries" is forced onto its own full-width line via CSS
         # (flex-basis:100%), which only puts it *below* the buttons if it's
         # last in DOM order -- earlier would push the buttons down instead.
+        # DRAWER_LINKS_HTML (catalog/demo/legend) also carries class="tries"
+        # and sits at the very top, so this looks for "Examples:" -- the
+        # text unique to the Examples section -- not the bare class.
         html = api.controls_html("EXPLORE_MARKER", "ANIMATE_MARKER",
                                   "QUADRANT_MARKER", "EXTRA_MARKER")
-        tries_pos = html.index('class="tries"')
+        tries_pos = html.index("Examples:")
         self.assertGreater(tries_pos, html.index("ANIMATE_MARKER"))
         self.assertGreater(tries_pos, html.index("QUADRANT_MARKER"))
         self.assertGreater(tries_pos, html.index("EXTRA_MARKER"))
@@ -632,15 +635,22 @@ class Drawer(unittest.TestCase):
         self.assertIn("SPHERE_MARKER", html)
         self.assertIn("EXTRA_MARKER", html)
 
-    def test_grouped_into_three_block_sections(self):
+    def test_grouped_into_four_block_sections(self):
+        # links (catalog/demo/legend), explore, actions, examples.
         html = api.controls_html("EXPLORE_MARKER", "ANIMATE_MARKER",
                                   "QUADRANT_MARKER", "SPHERE_MARKER", "EXTRA_MARKER")
-        self.assertEqual(html.count('class="drawer-section"'), 3)
+        self.assertEqual(html.count('class="drawer-section"'), 4)
+
+    def test_links_section_is_first(self):
+        html = api.controls_html("EXPLORE_MARKER", "ANIMATE_MARKER",
+                                  "QUADRANT_MARKER", "SPHERE_MARKER", "EXTRA_MARKER")
+        links_pos = html.index('href="/catalog"')
+        self.assertLess(links_pos, html.index("EXPLORE_MARKER"))
 
     def test_examples_is_the_last_section(self):
         html = api.controls_html("EXPLORE_MARKER", "ANIMATE_MARKER",
                                   "QUADRANT_MARKER", "SPHERE_MARKER", "EXTRA_MARKER")
-        tries_pos = html.index('class="tries"')
+        tries_pos = html.index("Examples:")
         self.assertGreater(tries_pos, html.index("ANIMATE_MARKER"))
         self.assertGreater(tries_pos, html.index("EXTRA_MARKER"))
 

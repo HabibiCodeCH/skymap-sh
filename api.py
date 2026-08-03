@@ -2657,12 +2657,15 @@ def header_html(value="", find_value=None):
             f'</form>'
             f'{findbar}'
             f'<p class="t nav-row"><span>'
-            f'<a href="/">home</a> · <a href="/catalog">catalog</a> · <a href="/demo">demo</a> · '
+            f'<a href="/">home</a> · '
             # Bare /events, not /{place}/events: the nav is the same on every
             # page, so it cannot carry a place. The route locates by IP the
             # way a bare `curl skymap.sh` does.
             f'<a href="/events">events</a> · '
-            f'<a href="/help">help</a> · <a href="/legend">legend</a> {SOCIAL_ICONS}'
+            # catalog/demo/legend moved into the drawer (see
+            # DRAWER_LINKS_HTML) -- less-used than events/help, and the nav
+            # row was the one thing on every page that couldn't collapse.
+            f'<a href="/help">help</a> {SOCIAL_ICONS}'
             f'<button type="button" class="drawer-trigger" id="drawer-trigger" '
             f'aria-expanded="false" aria-controls="drawer">☰</button>'
             f'</span></p></div>')
@@ -3643,6 +3646,16 @@ return false;">
 <button type="submit">go</button>
 </form>
 </div>
+"""
+
+# Moved out of the header's nav row and into the drawer, at the top --
+# catalog/demo/legend are less-used than events/help (which stayed in the
+# nav), and this was the one thing on every page that couldn't collapse.
+DRAWER_LINKS_HTML = """<p class="tries">
+<a href="/catalog">catalog</a> ·
+<a href="/demo">demo</a> ·
+<a href="/legend">legend</a>
+</p>
 """
 
 EXAMPLES_HTML = """<p class="tries">Examples:
@@ -4947,7 +4960,8 @@ def _controls_inner(explore, animate_btn, quadrant_btn, sphere_btn, extra):
     # means that section is never actually empty any more, so the old
     # :empty-collapses-it behaviour for non-chart pages no longer applies
     # (there's now always at least "reset" to show there).
-    return (f'<div class="drawer-section">{explore}</div>'
+    return (f'<div class="drawer-section">{DRAWER_LINKS_HTML}</div>'
+            f'<div class="drawer-section">{explore}</div>'
             f'<div class="drawer-section">{animate_btn}{quadrant_btn}{sphere_btn}{extra}'
             f'{RESET_HTML}</div>'
             f'<div class="drawer-section">{EXAMPLES_HTML}</div>')
