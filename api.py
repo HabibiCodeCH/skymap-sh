@@ -3257,6 +3257,14 @@ function skymapRenderGif(btn){{
     var complete=function(){{
       var v=q.value;
       if(!v){{ghost.textContent='';return;}}
+      // Typing "London" in full used to still ghost-suggest "derry" -- the
+      // exact match itself fails c.length>v.length (nothing left to add),
+      // so the next-longest candidate sharing that prefix (Londonderry) won
+      // instead, and Tab/-> turned a complete, correct search into the
+      // wrong city. An exact match means the search is already done.
+      if(matches.some(function(c){{return fold(c)===fold(v);}})){{
+        ghost.textContent='';return;
+      }}
       var hit=matches.find(function(c){{
         return fold(c).startsWith(fold(v))&&c.length>v.length;
       }});
