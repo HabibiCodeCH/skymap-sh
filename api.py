@@ -135,6 +135,41 @@ def suggest(spec, n=6):
             break
     return res
 
+
+COMPLETE_PREFIX_CAP = 24    # matches the client's own cap (SPEC-command-bar.md
+                            # #4) -- enforced again here since this is a public
+                            # endpoint, not just called from our own JS.
+
+
+def complete_cities(prefix, n=8):
+    """Up to n canonical city names whose normalized form starts with
+    prefix's normalized form, most populous first -- the command bar's
+    ghost-completion data source (GET /complete, SPEC-command-bar.md #4).
+
+    Deliberately narrower than suggest(): prefix-only (not suggest()'s
+    looser startswith-or-contains "did you mean" matching), and returns the
+    bare display name ("New York") rather than suggest()'s disambiguated
+    label ("New York, New York, United States") -- a ghost completion is a
+    plain continuation of what's already been typed, not a fresh answer.
+    Each _cities() bucket is already population-sorted (hits[0] is always
+    the most populous), so no per-candidate sort is needed, only across
+    buckets."""
+    key = norm_name(prefix)[:COMPLETE_PREFIX_CAP]
+    if len(key) < 2:
+        return []
+    out = []
+    for k, hits in _cities().items():
+        if k.startswith(key):
+            out.append((-hits[0][6], hits[0][7]))
+    out.sort()
+    seen, res = set(), []
+    for _pop, name in out:
+        if name not in seen:
+            seen.add(name); res.append(name)
+        if len(res) >= n:
+            break
+    return res
+
 def _nearest_city(lat, lon, prefer_radius_deg=0.5, max_radius_deg=5):
     """The well-known city near (lat, lon), or None beyond max_radius_deg (open
     ocean, poles). Used to give bare coordinates a real IANA timezone instead
@@ -150,8 +185,11 @@ def _nearest_city(lat, lon, prefer_radius_deg=0.5, max_radius_deg=5):
 
     Memoised per 0.1-degree cell: CF-IPLatitude/Longitude are already rounded
     that coarsely before this is called, so repeat visitors from the same area
-    cost a dict lookup, not a fresh scan."""
-    key = (round(lat, 1), round(lon, 1))
+    cost a dict lookup, not a fresh scan. Keyed on the radii too, not just the
+    cell -- every caller used the same defaults until _confident_nearby_city
+    started passing a tighter pair, and a bare (lat, lon) key would have
+    silently handed that call whichever radii happened to be cached first."""
+    key = (round(lat, 1), round(lon, 1), prefer_radius_deg, max_radius_deg)
     hit = _NEAREST_CACHE.get(key)
     if hit is not None:
         return hit or None
@@ -174,6 +212,18 @@ def _nearest_city(lat, lon, prefer_radius_deg=0.5, max_radius_deg=5):
         _NEAREST_CACHE.clear()
     _NEAREST_CACHE[key] = best
     return best
+
+
+def _confident_nearby_city(lat, lon):
+    """A well-known city close enough (~55 km, prefer_radius_deg's "most
+    populous within this ring" band) that showing its name in place of raw
+    coordinates is a claim worth making -- unlike _nearest_city's own
+    default up-to-~550 km fallback, which only ever backs a soft "near X"
+    hint (resolve_place, Place.near), not a stand-in identity. Collapses
+    both radii to the same tight value so a city 200 km away (real, but not
+    confidently "here") never qualifies."""
+    hit = _nearest_city(lat, lon, prefer_radius_deg=0.5, max_radius_deg=0.5)
+    return hit[7] if hit else None
 
 
 _NEAREST_CACHE = {}
@@ -733,10 +783,6 @@ def _dso_toggle_url(r):
     new_dso = not r.dso
     return f"/{r.place.slug}{_toggle_qs(r, dso=new_dso, force_dso_off=r.quadrant_requested and not new_dso)}"
 
-
-def _nolines_toggle_url(r):
-    """URL for the 'l' keyboard shortcut -- show or hide asterism lines."""
-    return f"/{r.place.slug}{_toggle_qs(r, nolines=r.lines)}"
 
 
 def _animate_gif_url(r):
@@ -1914,11 +1960,11 @@ OPTIONS
     skymap() { curl "skymap.sh/${1:-}?w=$(tput cols)"; }
 
 KEYBOARD (in a browser, on a chart page)
-  p      focus the place search        a   toggle animate
+  p/tab  focus the place search        a   toggle animate
   f      focus the find field          g   share as a GIF
   m      jump to my location           d   toggle quadrant grid + dso
   esc    cancel out of a field         z   zoom: pick a quadrant cell with
-  l      toggle asterism lines             arrow keys, enter to crop to it
+                                            arrow keys, enter to crop to it
 
 Stars: Yale Bright Star Catalogue. Planets: JPL approximate elements.
 Sun and Moon: Meeus. Satellites: CelesTrak.
@@ -2160,6 +2206,53 @@ def catalog_html():
     return "\n".join(L)
 
 
+# A generic outline-star for constellations -- the only _catalog_data()
+# group with no glyph of its own (catalog_text/catalog_html don't give them
+# one either), kept visually distinct from a named star's filled/magnitude
+# glyph and a planet's solid diamond.
+_ASTERISM_GLYPH = ("✧", "#8b949e")
+
+COMPLETE_OBJECT_CAP = 24   # same reasoning as COMPLETE_PREFIX_CAP
+
+
+def complete_objects(prefix, n=8):
+    """Up to n findable objects (solar system, named stars, deep sky,
+    constellations) matching prefix -- the find field's dropdown data
+    source (GET /complete/objects). Pulled from the same _catalog_data()
+    catalog_html() renders from, so a suggestion can't drift from what's
+    actually findable.
+
+    Matches the start of any word in the name, not just the whole string
+    (city-style prefix-only matching would miss "Big Dipper" on "dip"), and
+    is ranked solar system first, then brightest named star, then brightest
+    deep-sky object, then constellations alphabetically -- the order
+    _catalog_data() already returns each group in, concatenated."""
+    key = norm_name(prefix)[:COMPLETE_OBJECT_CAP]
+    if len(key) < 2:
+        return []
+
+    def word_match(name):
+        return any(norm_name(w).startswith(key) for w in name.split())
+
+    d = _catalog_data()
+    out = []
+    for _nm, display, glyph, glyph_c in d["solar_system"]:
+        if word_match(display):
+            out.append({"name": display, "glyph": glyph, "color": _ansi_hex(glyph_c)})
+    for s in d["named_stars"]:
+        if word_match(s["n"]):
+            out.append({"name": s["n"], "glyph": sky.glyph_for(s["m"]),
+                       "color": _ansi_hex(sky.star_colour(s.get("ci")))})
+    for o in d["named_dso"]:
+        if word_match(_dso_label(o)):
+            glyph, glyph_c = sky.DSO_GLYPH[o["t"]]
+            out.append({"name": o["n"], "glyph": glyph, "color": _ansi_hex(glyph_c)})
+    for nm in d["asterisms"]:
+        if word_match(nm):
+            out.append({"name": nm, "glyph": _ASTERISM_GLYPH[0], "color": _ASTERISM_GLYPH[1]})
+    return out[:n]
+
+
 # ---------------------------------------------------------------- ansi -> html
 ANSI = re.compile(r"\033\[(?:38;5;(\d+)|0)m")
 
@@ -2375,8 +2468,8 @@ SOCIAL_ICONS = (
 )
 
 
-def header_html(path):
-    """The cta line + nav, identical on every page -- one function so the
+def header_html(value="", find_value=None):
+    """The command bar + nav, identical on every page -- one function so the
     nav can never drift or reorder between routes the way six separate
     PAGE.format() call sites each re-deciding it independently did. "home"
     stays onscreen even on the home page itself -- consistent nav position
@@ -2386,10 +2479,56 @@ def header_html(path):
     folding them into the nav row keeps the same links without spending a
     whole extra row on them.
 
-    The cta line and the nav row share one flex row (.header-row) so the
-    nav sits inline with "$ curl ..." instead of wrapping to a line of its
-    own."""
-    return (f'<div class="header-row"><pre class="cta">curl skymap.sh{path}</pre>\n'
+    value is whatever belongs after "skymap.sh/" -- the current place's
+    display name on a chart page, or the bare page name ("catalog", "help",
+    ...) elsewhere, same as the old static "$ curl skymap.sh/<path>" chip
+    always showed. Keeping that on every page (rather than leaving it blank
+    off the chart view) is deliberate: it's still "curl skymap.sh/help", it
+    reads as editable and *curlable* everywhere, not just for places.
+    Real <input>, not decoration -- see PAGE's script for the auto-size/
+    click-to-focus/ghost-completion behaviour and _respond's ?q= handling
+    for the plain-HTML-forms fallback this degrades to without JS.
+
+    find_value=None (the default) omits the find field entirely -- every
+    page except the chart view, which passes r.find or "" here instead of
+    leaving it in the drawer (EXPLORE_DATETIME there has no #find of its
+    own). /stats showed find as the second-most-viewed feature behind the
+    chart itself, right after place -- worth the same prominence as place,
+    not buried behind the drawer toggle.
+
+    The command bar and the nav row share one flex row (.header-row) so the
+    nav sits inline with it instead of wrapping to a line of its own."""
+    findbar = ""
+    if find_value is not None:
+        findbar = (
+            f'<div class="findbar" id="findbar">'
+            f'<button type="button" class="find-trigger" id="find-trigger" '
+            f'aria-label="Find an object" aria-expanded="false" aria-controls="find-field">⌕</button>'
+            f'<span class="find-field" id="find-field">'
+            f'<span class="find-icon" aria-hidden="true">⌕</span>'
+            f'<input id="find" type="text" value="{html.escape(find_value)}" '
+            f'placeholder="Find (Venus, Big Dipper…)" autocomplete="off" '
+            f'role="combobox" aria-expanded="false" aria-controls="find-dropdown" '
+            f'aria-label="Find an object by name">'
+            f'<ul class="find-dropdown" id="find-dropdown" role="listbox" hidden></ul>'
+            f'</span></div>')
+    return (f'<div class="header-row">'
+            f'<form class="cmdbar" id="bar" method="get" action="/">'
+            f'<span class="prompt" aria-hidden="true">$</span>'
+            f'<span class="fixed" aria-hidden="true">'
+            f'<span class="curlword">curl </span>skymap.sh/</span>'
+            f'<span class="field">'
+            f'<input id="q" name="q" value="{html.escape(value)}" '
+            f'aria-label="City, or lat,lon" spellcheck="false" autocapitalize="off" '
+            f'autocorrect="off" autocomplete="off" enterkeyhint="go">'
+            f'<span class="ghosttext" id="ghost" aria-hidden="true"></span>'
+            f'<span class="measure" id="measure" aria-hidden="true"></span>'
+            f'</span>'
+            f'<span class="cursor" id="cur" aria-hidden="true"></span>'
+            f'<span class="grow"></span>'
+            f'<button type="button" class="copy" id="copy">⧉ copy</button>'
+            f'</form>'
+            f'{findbar}'
             f'<p class="t nav-row"><span>'
             f'<a href="/">home</a> · <a href="/catalog">catalog</a> · <a href="/demo">demo</a> · '
             # Bare /events, not /{place}/events: the nav is the same on every
@@ -2397,6 +2536,8 @@ def header_html(path):
             # way a bare `curl skymap.sh` does.
             f'<a href="/events">events</a> · '
             f'<a href="/help">help</a> · <a href="/legend">legend</a> {SOCIAL_ICONS}'
+            f'<button type="button" class="drawer-trigger" id="drawer-trigger" '
+            f'aria-expanded="false" aria-controls="drawer">☰</button>'
             f'</span></p></div>')
 
 
@@ -2406,6 +2547,20 @@ PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="description" content="The night sky above you, as plain text. curl skymap.sh">
 <link rel="icon" href="/favicon.ico" sizes="any">
 <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<script>
+// Feature-detection class, not a capability check -- the drawer's CSS (see
+// below) only turns into an off-canvas panel once this is present, so a
+// page with JS disabled falls back to every control simply being visible
+// inline, not hidden behind a trigger that does nothing. Deliberately up
+// here, before the page body exists to paint anything, not down with the rest of
+// the script by #chart-pre: on a real full-page navigation (e.g. clicking
+// "show quadrants", a plain link) the browser paints whatever HTML it's
+// parsed so far as it goes -- if this ran down there instead, the drawer's
+// un-enhanced, full-width, always-open state (including its full-width
+// "go" button) would flash on screen for a frame before the class landed
+// and CSS collapsed it back into the narrow hidden panel.
+document.documentElement.classList.add('js');
+</script>
 <style>
  body{{margin:0;background:#04060a;color:#c9d1d9;
       font-family:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
@@ -2423,8 +2578,7 @@ PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
           flex-wrap:wrap;gap:8px}}
  .header-row{{display:flex;justify-content:space-between;align-items:center;
              flex-wrap:wrap;gap:12px;margin:0 0 8px}}
- .header-row .cta{{margin:0}}
- .header-row .nav-row{{margin:0;flex:1}}
+ .header-row .nav-row{{margin:0;flex:1;min-width:0}}
  .social-icons{{display:inline-flex;gap:8px;margin-left:8px;vertical-align:middle}}
  .social-icons a{{color:#6e7681;display:inline-flex}}
  .social-icons a:hover{{color:#c9d1d9}}
@@ -2432,37 +2586,149 @@ PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
  a{{color:#87d7ff}}
  #chart-pre a{{color:#87d7ff;text-decoration:none}}
  #chart-pre a:hover{{text-decoration:underline}}
- .controls-row{{display:flex;flex-wrap:wrap;align-items:center;gap:10px 14px;margin:0 0 14px}}
- .ex{{display:contents}}
- .ex form{{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:0}}
+ /* Drawer (SPEC-command-bar.md #9, adapted: slide in from the right, no
+    backdrop, opened via header_html's #drawer-trigger next to the social
+    icons). The base rules here are deliberately just a plain, always-
+    visible block section -- see controls_html's docstring. Only once
+    PAGE's script adds .js to <html> do the fixed/off-canvas/hidden rules
+    below apply, so every control stays reachable with no JS at all. */
+ #drawer{{margin:0 0 14px}}
+ .drawer-section{{margin:0 0 16px;padding:0 0 16px;border-bottom:1px solid #30363d}}
+ .drawer-section:last-child{{margin:0;padding:0;border-bottom:0}}
+ .drawer-section:empty{{display:none}}
+ .drawer-trigger{{display:none}}
+ .js .drawer-trigger{{display:inline-flex;align-items:center;justify-content:center;
+                      background:#0d1117;border:1px solid #30363d;color:#ffd700;
+                      border-radius:4px;width:28px;height:28px;margin-left:8px;
+                      font-size:14px;line-height:1;cursor:pointer}}
+ .js .drawer-trigger:hover{{border-color:#ffd700}}
+ .drawer-close{{display:none}}
+ .js .drawer-close{{display:block;position:absolute;top:16px;right:16px;
+                    background:none;border:0;color:#ffd700;font-size:16px;
+                    line-height:1;padding:6px;cursor:pointer}}
+ .js .drawer-close:hover{{color:#fff}}
+ .js #drawer{{position:fixed;top:0;right:0;bottom:0;width:320px;max-width:90vw;
+             margin:0;padding:56px 16px 16px;background:#0d1117;
+             border-left:1px solid #30363d;overflow-y:auto;z-index:20;
+             transform:translateX(100%);transition:transform .2s ease}}
+ .js #drawer.open{{transform:translateX(0)}}
+ .ex{{display:block}}
+ .ex form{{display:flex;flex-direction:column;gap:8px;margin:0}}
  .ex input{{background:#0d1117;border:1px solid #30363d;color:#c9d1d9;
-           padding:6px 10px;border-radius:4px;font:inherit;font-size:12px}}
- .ex input#place{{width:170px}}
- .ex input#find{{width:190px}}
- .ex input#whenDate{{width:140px;color-scheme:dark}}
- .ex input#whenTime{{width:100px;color-scheme:dark}}
- .ex button{{background:#238636;border:0;color:#fff;padding:6px 14px;
-            border-radius:4px;font:inherit;font-size:12px;cursor:pointer}}
+           padding:6px 10px;border-radius:4px;font:inherit;font-size:12px;
+           width:100%;box-sizing:border-box}}
+ .ex input#whenDate,.ex input#whenTime{{color-scheme:dark}}
+ .ex-row{{display:flex;gap:8px}}
+ .ex-row input{{width:auto;flex:1;min-width:0}}
+ .ex button{{background:#238636;border:0;color:#fff;padding:8px 14px;
+            border-radius:4px;font:inherit;font-size:12px;cursor:pointer;
+            width:100%}}
  .ex button:hover{{background:#2ea043}}
- .tries{{color:#6e7681;font-size:12px;flex-basis:100%;margin:0}}
+ .tries{{color:#6e7681;font-size:12px;margin:0}}
  .tries a{{color:#87d7ff;text-decoration:none}}
  .tries a:hover{{text-decoration:underline}}
- .cta{{background:#0d1117;border:1px solid #30363d;border-radius:6px;
-      padding:10px 14px;margin:0 0 14px;color:#7ee787;font-size:13px;
-      display:inline-block}}
- .cta::before{{content:"$ ";color:#6e7681}}
- .toolbar-left{{display:contents}}
- .toolbar-right{{display:contents}}
- .toolbar-right a{{color:#ffd700;font-size:12px;text-decoration:none;white-space:nowrap}}
- .toolbar-right a:hover{{text-decoration:underline}}
- .animate-controls{{display:flex;align-items:center;gap:8px;flex-wrap:wrap}}
+ /* Command bar -- an inline-editable "$ curl skymap.sh/<place>" line.
+    Everything up to and including the "/" is fixed, decorative text; #q is
+    a real input laid out inline with it via the same monospace text
+    engine, so it never has to be kept in sync with an overlay. min-width:0
+    on .field/input (not this element -- see below) is required for flex
+    children to shrink/scroll instead of blowing out the row -- the default
+    flex min-width is auto, not 0. */
+ /* This is the page's main CTA -- it shouldn't visibly grow and shrink on
+    every keystroke (or every time a ghost completion of a different length
+    pops in or out from under the debounced /complete fetch). The min-width
+    floor absorbs that: .grow (a flex:1 spacer between the cursor and the
+    copy button) eats the slack whenever content is narrower than the
+    floor, pinning "copy" to the bar's right edge instead of letting the
+    whole bar visibly resize. min(560px,90vw) so it still fits a narrow
+    viewport instead of forcing horizontal overflow. */
+ /* height+box-sizing:border-box (not just matching padding) is what
+    actually guarantees .find-field below renders exactly this tall --
+    letting it emerge from padding+content, the original approach, is at
+    the mercy of font-metric/nested-element quirks that can differ by a
+    pixel or two between browsers. An explicit shared number on both
+    can't drift apart. */
+ .cmdbar{{display:inline-flex;align-items:center;background:#0d1117;
+         border:1px solid #30363d;border-radius:6px;padding:9px 12px;
+         margin:0;color:#7ee787;font-size:13px;cursor:text;
+         max-width:100%;min-width:min(560px,90vw);
+         box-sizing:border-box;height:45px}}
+ .cmdbar .prompt{{color:#6e7681;margin-right:6px}}
+ .cmdbar .fixed{{white-space:pre}}
+ .cmdbar .curlword{{color:#6e7681}}
+ .cmdbar .field{{display:inline-flex;min-width:0;max-width:100%}}
+ .cmdbar input{{background:transparent;border:0;color:#e6edf3;font:inherit;
+               padding:0;margin:0;min-width:0;max-width:100%;outline:none}}
+ .cmdbar .ghosttext{{color:#3d4451;white-space:pre;pointer-events:none}}
+ .cmdbar .measure{{position:absolute;visibility:hidden;white-space:pre;left:-9999px}}
+ .cmdbar .grow{{flex:1}}
+ .cmdbar .copy{{background:none;border:1px solid #30363d;color:#6e7681;
+               border-radius:4px;padding:4px 8px;margin-left:10px;
+               font:inherit;font-size:12px;cursor:pointer;white-space:nowrap}}
+ .cmdbar .copy:hover{{border-color:#7ee787;color:#7ee787}}
+ .cursor{{display:inline-block;width:.55em;height:1.15em;margin-left:1px;
+         background:#7ee787;vertical-align:-0.2em;
+         animation:blink 1.06s step-end infinite}}
+ .cmdbar.focused .cursor{{visibility:hidden;animation:none}}
+ @keyframes blink{{0%,50%{{opacity:1}}50.01%,100%{{opacity:0}}}}
+ @media (prefers-reduced-motion: reduce){{
+   .cursor{{animation:none;opacity:.55}}
+ }}
+ /* Find field -- promoted out of the drawer and next to the command bar on
+    the chart page only (header_html's find_value param), since /stats
+    showed find as the second-most-viewed feature after the chart itself.
+    Same visual language as .cmdbar (dark box, monospace) but its own
+    element, not fused into the "$ curl ..." line -- it isn't part of that
+    curlable command. Below findbar-collapse-width, .find-field hides and
+    .find-trigger (an icon button) takes its place; clicking it adds
+    .expanded, same show/hide pattern as the drawer trigger. */
+ .findbar{{display:inline-flex;align-items:center}}
+ .find-trigger{{display:none}}
+ /* Explicit height+box-sizing:border-box, matching .cmdbar exactly -- see
+    its comment above. */
+ .find-field{{display:inline-flex;align-items:center;position:relative;
+             background:#0d1117;border:1px solid #30363d;border-radius:6px;
+             padding:9px 12px;color:#8b949e;font-size:13px;
+             box-sizing:border-box;height:45px}}
+ .find-icon{{color:#6e7681;margin-right:6px}}
+ .find-field input{{background:transparent;border:0;color:#e6edf3;font:inherit;
+                    padding:0;margin:0;outline:none;width:210px;max-width:40vw}}
+ .find-field input::placeholder{{color:#6e7681}}
+ .find-dropdown{{position:absolute;top:100%;left:0;margin:4px 0 0;padding:4px;
+                 background:#0d1117;border:1px solid #30363d;border-radius:6px;
+                 min-width:220px;max-width:320px;max-height:280px;
+                 overflow-y:auto;z-index:30;list-style:none}}
+ .find-dropdown[hidden]{{display:none}}
+ .find-option{{display:flex;align-items:center;gap:8px;padding:6px 8px;
+              border-radius:4px;cursor:pointer;font-size:13px;color:#c9d1d9}}
+ .find-option .glyph{{width:1.2em;text-align:center;flex-shrink:0}}
+ .find-option:hover,.find-option.active{{background:#1c2128}}
+ @media (max-width:700px){{
+   .find-trigger{{display:inline-flex;align-items:center;justify-content:center;
+                 background:#0d1117;border:1px solid #30363d;color:#8b949e;
+                 border-radius:4px;width:28px;height:28px;margin-left:8px;
+                 font-size:14px;line-height:1;cursor:pointer}}
+   .find-trigger:hover{{border-color:#8b949e}}
+   .find-field{{display:none;flex-basis:100%;margin-top:8px}}
+   .findbar{{flex-wrap:wrap}}
+   .findbar.expanded .find-field{{display:inline-flex}}
+   .find-field input{{max-width:none;flex:1}}
+ }}
+ .animate-controls{{display:block;margin:0 0 8px}}
  .animate-btn{{background:#0d1117;border:1px solid #30363d;color:#ffd700;
-              padding:6px 12px;border-radius:4px;font:inherit;font-size:12px;
-              cursor:pointer;display:inline-block;text-decoration:none}}
+              padding:8px 12px;border-radius:4px;font:inherit;font-size:12px;
+              cursor:pointer;display:block;width:100%;box-sizing:border-box;
+              text-align:center;text-decoration:none;margin:0 0 8px}}
  .animate-btn:hover{{border-color:#ffd700;text-decoration:none}}
  .animate-btn:disabled{{opacity:.6;cursor:default}}
- .gif-group{{display:flex;flex-direction:column;gap:4px;align-items:flex-start}}
- .gif-status{{color:#6e7681;font-size:12px;white-space:nowrap}}
+ .share-row{{display:flex;gap:8px;margin:0 0 8px}}
+ .share-row .gif-group{{flex:1;margin:0}}
+ .share-row>.animate-btn{{flex:1;margin:0}}
+ .gif-group{{display:flex;flex-direction:column;gap:4px;margin:0 0 8px}}
+ .gif-group .animate-btn{{margin:0}}
+ .gif-status{{color:#6e7681;font-size:12px}}
+ .gif-status a{{color:#ffd700;text-decoration:none}}
+ .gif-status a:hover{{text-decoration:underline}}
  .mobile-only{{display:none}}
  @media (pointer:coarse) and (max-width:900px){{.mobile-only{{display:inline-block}}}}
  .kbd-hint{{position:fixed;left:0;right:0;bottom:0;margin:0;padding:9px 16px;
@@ -2471,7 +2737,7 @@ PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
  .kbd-hint kbd{{background:#04060a;border:1px solid #30363d;border-radius:3px;
               padding:0 5px;font-family:inherit;font-size:11px;color:#c9d1d9}}
  .quad-pick{{background:#ffff00;color:#000 !important;border-radius:2px}}
-</style></head><body><div class="w{wide_class}">
+</style></head><body>
 {header}
 <!-- skymap:coming-up-card
      Insertion point for the prominent "Coming up" card. Nothing renders it
@@ -2490,6 +2756,7 @@ PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
      sky rather than after it. Absent most nights on purpose: see
      TEASER_HORIZON in events.py.
 -->
+<div class="w{wide_class}">
 {controls}{shortcuts_hint}<pre id="chart-pre">{body}</pre>
 <script>
 (function(){{
@@ -2692,6 +2959,195 @@ function skymapRenderGif(btn){{
   }});
 }}
 (function(){{
+  // Command bar: auto-size (hidden-measure technique -- field-sizing:content
+  // isn't portable yet) + click-anywhere-to-focus, so the whole bar reads as
+  // one editable command line rather than decorative text bolted onto a
+  // separate input box, plus ghost-text completion against GET /complete
+  // (SPEC-command-bar.md #3-4). Present on every page (see header_html), so
+  // no page-specific gating here -- only the element lookups are null-safe.
+  var bar=document.getElementById('bar');
+  var q=document.getElementById('q');
+  var measure=document.getElementById('measure');
+  var ghost=document.getElementById('ghost');
+  var copyBtn=document.getElementById('copy');
+  if(bar&&q&&measure&&ghost){{
+    var size=function(){{
+      measure.textContent=q.value||'';
+      q.style.width=(measure.offsetWidth+2)+'px';
+    }};
+    var matches=[];
+    // Strips accents the same way api.py's norm_name does server-side --
+    // without this, plain toLowerCase() rejects the server's own correctly
+    // accent-folded matches: 'zürich'.startsWith('zur') is false in JS
+    // (ü !== u as characters), so typing the ASCII "zur" would never show
+    // the "ich" ghost for "Zürich" at all.
+    var fold=function(s){{return s.normalize('NFD').replace(/[\\u0300-\\u036f]/g,'').toLowerCase();}};
+    // Prefix match only, first (most populous) hit wins -- /complete
+    // already returns candidates ranked and prefix-filtered, this re-check
+    // is a staleness guard: a slow response for an earlier, shorter prefix
+    // can still land after the user's kept typing, and showing it then
+    // would ghost-suggest text that no longer applies. The user's own
+    // casing (and accents) are always kept in what's displayed -- "zur" +
+    // ghost "ich", never a correction to "Zürich".
+    var complete=function(){{
+      var v=q.value;
+      if(!v){{ghost.textContent='';return;}}
+      var hit=matches.find(function(c){{
+        return fold(c).startsWith(fold(v))&&c.length>v.length;
+      }});
+      ghost.textContent=hit?hit.slice(v.length):'';
+    }};
+    var completeAbort=null, completeTimer=null;
+    var fetchMatches=function(){{
+      if(completeAbort)completeAbort.abort();
+      var v=q.value.trim();
+      if(v.length<2){{matches=[];complete();return;}}
+      completeAbort=new AbortController();
+      fetch('/complete?q='+encodeURIComponent(v.toLowerCase().slice(0,24)),
+            {{signal:completeAbort.signal}})
+        .then(function(r){{return r.json();}})
+        .then(function(names){{matches=names;complete();}})
+        .catch(function(){{}});
+    }};
+    size();
+    q.addEventListener('input',function(e){{
+      size();
+      // Clear on Backspace before recomputing, so deleting never appears
+      // to re-suggest what was just removed.
+      if(e.inputType==='deleteContentBackward'){{matches=[];ghost.textContent='';}}
+      if(completeTimer)clearTimeout(completeTimer);
+      completeTimer=setTimeout(fetchMatches,120);
+    }});
+    q.addEventListener('keydown',function(e){{
+      if(!ghost.textContent)return;
+      var atEnd=q.selectionStart===q.value.length;
+      if(e.key==='Tab'||(e.key==='ArrowRight'&&atEnd)){{
+        e.preventDefault();
+        q.value+=ghost.textContent;
+        ghost.textContent='';
+        size();
+        q.setSelectionRange(q.value.length,q.value.length);
+      }}
+    }});
+    q.addEventListener('focus',function(){{bar.classList.add('focused');}});
+    q.addEventListener('blur',function(){{bar.classList.remove('focused');}});
+    bar.addEventListener('mousedown',function(e){{
+      if(copyBtn&&(e.target===copyBtn||copyBtn.contains(e.target)))return;
+      if(e.target!==q){{
+        e.preventDefault();
+        q.focus();
+        q.setSelectionRange(q.value.length,q.value.length);
+      }}
+    }});
+    // Enter in the command bar does exactly what "go" in the explore form
+    // does (SPEC-command-bar.md #7) -- rather than a second, separately
+    // maintained "just navigate to place" path that could drift from it
+    // (e.g. silently dropping find=/t= from the other fields), this
+    // delegates to that form's own onsubmit, which already reads #q. A
+    // visible ghost is accepted first: without this, pressing Enter on
+    // "zur" would submit the literal text "zur" (a 404 -- lookup_place
+    // does exact name matching, not prefix matching) even though the
+    // ghost "ich" made it look like "Zürich" was already typed.
+    bar.addEventListener('submit',function(e){{
+      e.preventDefault();
+      if(ghost.textContent){{
+        q.value+=ghost.textContent;
+        ghost.textContent='';
+        size();
+      }}
+      var exploreForm=document.getElementById('explore');
+      if(exploreForm){{
+        if(exploreForm.requestSubmit)exploreForm.requestSubmit();
+        else exploreForm.dispatchEvent(new Event('submit',{{cancelable:true}}));
+        return;
+      }}
+      // No find/date/time form on this page (e.g. /demo) to delegate to --
+      // still a real place to navigate to, so fall back to going there
+      // directly rather than Enter silently doing nothing.
+      if(q.value)location.href='/'+encodeURIComponent(q.value);
+    }});
+    // navigator.clipboard is HTTPS/localhost-only -- feature-detect and
+    // hide the button entirely where it's unavailable rather than wiring
+    // up a click that would just silently do nothing.
+    if(copyBtn){{
+      if(!navigator.clipboard){{
+        copyBtn.hidden=true;
+      }}else{{
+        var copyLabel=copyBtn.textContent;
+        var copyResetTimer=null;
+        copyBtn.addEventListener('click',function(){{
+          // Includes any accepted-but-not-yet-typed ghost completion --
+          // copying should grab the resolved command, not just what's
+          // literally been keyed in so far.
+          var place=q.value+ghost.textContent;
+          var path=place.includes(' ')?
+            "'skymap.sh/"+place+"'":'skymap.sh/'+place;
+          navigator.clipboard.writeText('curl '+path).then(function(){{
+            if(copyResetTimer)clearTimeout(copyResetTimer);
+            copyBtn.textContent='✓ copied';
+            copyResetTimer=setTimeout(function(){{
+              copyBtn.textContent=copyLabel;
+              copyResetTimer=null;
+            }},1400);
+          }}).catch(function(){{}});
+        }});
+      }}
+    }}
+  }}
+}})();
+(function(){{
+  // Drawer (SPEC-command-bar.md #9) -- present on every page (see
+  // header_html/controls_html), so no page-specific gating, only the
+  // element lookups are null-safe.
+  var trigger=document.getElementById('drawer-trigger');
+  var drawer=document.getElementById('drawer');
+  var closeBtn=document.getElementById('drawer-close');
+  if(!trigger||!drawer)return;
+  window.skymapCloseDrawer=function(){{
+    drawer.classList.remove('open');
+    trigger.setAttribute('aria-expanded','false');
+    trigger.textContent='☰';
+  }};
+  var openDrawer=function(){{
+    drawer.classList.add('open');
+    trigger.setAttribute('aria-expanded','true');
+    trigger.textContent='✕';
+  }};
+  trigger.addEventListener('click',function(){{
+    if(drawer.classList.contains('open'))window.skymapCloseDrawer();else openDrawer();
+  }});
+  if(closeBtn)closeBtn.addEventListener('click',window.skymapCloseDrawer);
+  // No backdrop (a deliberate choice -- the chart stays fully visible while
+  // the drawer is open), so a click anywhere outside it is what closes it
+  // instead.
+  document.addEventListener('mousedown',function(e){{
+    if(!drawer.classList.contains('open'))return;
+    if(drawer.contains(e.target)||e.target===trigger)return;
+    window.skymapCloseDrawer();
+  }});
+  // The command bar is the main way in and out of everywhere else on this
+  // page, so any click elsewhere -- the chart, a nav link, a toolbar
+  // button once its own click has done its thing -- hands focus straight
+  // back to it, ready to type. Not while the drawer's open, though: its
+  // own fields (find/date/time, go, share...) need to keep whatever focus
+  // clicking them gave, or they'd be unusable. Skips #q itself too, so
+  // clicking into the field to reposition the caret doesn't immediately
+  // get overridden by a fresh select-all. Also skips anything inside
+  // #findbar, same reasoning -- without this, clicking find-trigger to
+  // expand the field, or a dropdown suggestion, would immediately lose
+  // focus back to #q as the click bubbles up to this same listener.
+  var q=document.getElementById('q');
+  if(q){{
+    document.addEventListener('click',function(e){{
+      if(drawer.classList.contains('open')||e.target===q)return;
+      var findbarEl=document.getElementById('findbar');
+      if(findbarEl&&findbarEl.contains(e.target))return;
+      q.focus();
+      q.select();
+    }});
+  }}
+}})();
+(function(){{
   // Keyboard shortcuts -- ignored while typing in a field (except Escape,
   // which exists precisely to get you out of one), and while a modifier is
   // held, so this can't hijack a real browser/OS shortcut. KBD's keys are
@@ -2766,6 +3222,14 @@ function skymapRenderGif(btn){{
     if(e.metaKey||e.ctrlKey||e.altKey)return;
     var tag=(document.activeElement&&document.activeElement.tagName)||'';
     if(e.key==='Escape'){{
+      // Closing the drawer takes priority over blurring whatever's
+      // focused inside it -- one Escape dismisses the whole panel, not
+      // just whichever field happened to have focus.
+      var drawerEl=document.getElementById('drawer');
+      if(drawerEl&&drawerEl.classList.contains('open')&&window.skymapCloseDrawer){{
+        window.skymapCloseDrawer();
+        return;
+      }}
       var ae=document.activeElement;
       if(ae&&ae!==document.body){{ae.blur();return;}}
       if(pick.active){{stopPick();return;}}
@@ -2787,13 +3251,27 @@ function skymapRenderGif(btn){{
         return;
       }}
     }}
-    if(e.key==='p'){{
-      var place=document.getElementById('place');
+    if(e.key==='p'||e.key==='Tab'){{
+      // Tab reaches here at all only because of the guard just above --
+      // once focus is actually in #q (an INPUT), this whole branch is
+      // skipped and #q's own keydown handler owns Tab instead (accepting a
+      // ghost completion). Outside of an input/textarea/select, though,
+      // this does take over Tab's normal "move to the next focusable
+      // element" job -- pressing it while a button or link is focused jumps
+      // back into the command bar instead of advancing, same tradeoff the
+      // single-letter shortcuts (p/f/a/g/...) already accept everywhere
+      // else on this page.
+      var place=document.getElementById('q');
       if(place){{e.preventDefault();place.focus();place.select();}}
       return;
     }}
     if(e.key==='f'){{
       var find=document.getElementById('find');
+      // Below findbar-collapse-width the field starts display:none behind
+      // .find-trigger -- expand it first, or focus()/select() on a hidden
+      // input would silently no-op.
+      var findbar=document.getElementById('findbar');
+      if(findbar)findbar.classList.add('expanded');
       if(find){{e.preventDefault();find.focus();find.select();}}
       return;
     }}
@@ -2830,8 +3308,128 @@ function skymapRenderGif(btn){{
       return;
     }}
     if(e.key==='d'&&KBD.quadrant){{location.href=KBD.quadrant;return;}}
-    if(e.key==='l'&&KBD.nolines){{location.href=KBD.nolines;return;}}
   }});
+}})();
+(function(){{
+  // Find field -- live dropdown against GET /complete/objects, keyboard-
+  // navigable (SPEC-command-bar.md's ghost-completion pattern, but a real
+  // dropdown since object names aren't a simple continuation of what's
+  // typed the way a place ghost-completion is). Only present on the chart
+  // page (header_html's find_value param) -- null-safe so every other page
+  // just skips this whole IIFE. Deliberately after the keyboard-shortcuts
+  // IIFE above, not before it -- both handle 'Escape', and the global
+  // handler's drawer-priority behaviour is what should win a plain text
+  // search for "e.key==='Escape'" in the rendered page.
+  var findInput=document.getElementById('find');
+  var dropdown=document.getElementById('find-dropdown');
+  if(!findInput||!dropdown)return;
+  var trigger=document.getElementById('find-trigger');
+  var findbar=document.getElementById('findbar');
+  var items=[], active=-1, fetchAbort=null, fetchTimer=null;
+
+  function renderDropdown(){{
+    dropdown.innerHTML='';
+    if(!items.length){{dropdown.hidden=true;return;}}
+    items.forEach(function(it,i){{
+      var li=document.createElement('li');
+      li.className='find-option'+(i===active?' active':'');
+      li.setAttribute('role','option');
+      var glyph=document.createElement('span');
+      glyph.className='glyph';
+      glyph.style.color=it.color;
+      glyph.textContent=it.glyph;
+      var name=document.createElement('span');
+      name.textContent=it.name;
+      li.appendChild(glyph);
+      li.appendChild(name);
+      // mousedown (not click) fires before the input's blur, so selecting
+      // with the mouse doesn't race the blur-closes-dropdown handler below.
+      li.addEventListener('mousedown',function(e){{e.preventDefault();selectItem(it);}});
+      dropdown.appendChild(li);
+    }});
+    dropdown.hidden=false;
+  }}
+
+  function closeDropdown(){{
+    items=[];active=-1;
+    dropdown.hidden=true;
+    dropdown.innerHTML='';
+    findInput.setAttribute('aria-expanded','false');
+  }}
+
+  function selectItem(it){{
+    findInput.value=it.name;
+    closeDropdown();
+    var form=document.getElementById('explore');
+    if(form){{
+      if(form.requestSubmit)form.requestSubmit();
+      else form.dispatchEvent(new Event('submit',{{cancelable:true}}));
+    }}
+  }}
+
+  function fetchMatches(){{
+    if(fetchAbort)fetchAbort.abort();
+    var v=findInput.value.trim();
+    if(v.length<2){{closeDropdown();return;}}
+    fetchAbort=new AbortController();
+    fetch('/complete/objects?q='+encodeURIComponent(v),{{signal:fetchAbort.signal}})
+      .then(function(r){{return r.json();}})
+      .then(function(res){{
+        items=res;active=-1;
+        findInput.setAttribute('aria-expanded',items.length?'true':'false');
+        renderDropdown();
+      }})
+      .catch(function(){{}});
+  }}
+
+  findInput.addEventListener('input',function(){{
+    if(fetchTimer)clearTimeout(fetchTimer);
+    fetchTimer=setTimeout(fetchMatches,120);
+  }});
+  findInput.addEventListener('keydown',function(e){{
+    if(e.key==='ArrowDown'){{
+      if(!items.length)return;
+      e.preventDefault();
+      active=(active+1)%items.length;
+      renderDropdown();
+    }}else if(e.key==='ArrowUp'){{
+      if(!items.length)return;
+      e.preventDefault();
+      active=(active-1+items.length)%items.length;
+      renderDropdown();
+    }}else if(e.key==='Enter'){{
+      if(active>=0&&items[active]){{
+        e.preventDefault();
+        selectItem(items[active]);
+      }}
+      // No highlighted suggestion -- let the #explore form's own submit
+      // handle whatever's literally typed (resolve_target does its own
+      // case-insensitive matching server-side).
+    }}else if(e.key==='Escape'&&items.length){{
+      // Stops here rather than bubbling to the global Escape handler,
+      // which would blur the field entirely -- first Escape just closes
+      // the dropdown, matching the drawer's own priority-of-Escape order.
+      e.stopPropagation();
+      closeDropdown();
+    }}
+  }});
+  // Delayed so a dropdown-option mousedown (which calls preventDefault, but
+  // that doesn't stop the input from blurring) still gets its click handled
+  // before the dropdown disappears out from under it.
+  findInput.addEventListener('blur',function(){{setTimeout(closeDropdown,150);}});
+
+  if(trigger&&findbar){{
+    trigger.addEventListener('click',function(){{
+      findbar.classList.add('expanded');
+      findInput.focus();
+    }});
+    document.addEventListener('mousedown',function(e){{
+      if(!findbar.classList.contains('expanded'))return;
+      if(findbar.contains(e.target))return;
+      findbar.classList.remove('expanded');
+      closeDropdown();
+    }});
+  }}
 }})();
 </script>
 </div></body></html>"""
@@ -2844,12 +3442,19 @@ SHORTCUTS_HINT = (
     '<p class="kbd-hint">Keyboard: <kbd>p</kbd> place &middot; '
     '<kbd>f</kbd> find &middot; <kbd>m</kbd> my location &middot; '
     '<kbd>a</kbd> animate &middot; <kbd>g</kbd> gif &middot; <kbd>d</kbd> deep sky &middot; '
-    '<kbd>z</kbd> zoom &middot; <kbd>l</kbd> lines &middot; '
+    '<kbd>z</kbd> zoom &middot; '
     '<kbd>esc</kbd> cancel</p>'
 )
 
+# find/date/time/go, in the drawer -- used on every page except the chart
+# view, which instead gets EXPLORE_DATETIME below (find is promoted out of
+# the drawer and onto the header there, see header_html's find_value param).
+# document.getElementById('find') resolves to whichever #find happens to
+# exist on the page -- the drawer's own (here) or the header's promoted one
+# -- so this onsubmit logic never needs to know which one it is.
 EXPLORE = """<div class="ex">
-<form id="explore" onsubmit="var p=document.getElementById('place').value.trim();
+<form id="explore" onsubmit="var qEl=document.getElementById('q');
+var p=qEl?qEl.value.trim():'';
 var f=document.getElementById('find').value.trim();
 var wd=document.getElementById('whenDate').value;
 var wt=document.getElementById('whenTime').value;
@@ -2860,10 +3465,36 @@ if(f)q.push('find='+encodeURIComponent(f));
 if(t)q.push('t='+t);
 location.href='/'+(p?encodeURIComponent(p):'')+(q.length?'?'+q.join('&'):'');
 return false;">
-<input id="place" type="text" placeholder="city or lat,lon" autocomplete="off" value="{place}">
-<input id="find" type="text" placeholder="find (Venus, Big Dipper...)" autocomplete="off">
+<input id="find" type="text" placeholder="Find (Venus, Big Dipper...)" autocomplete="off">
+<div class="ex-row">
 <input id="whenDate" type="date" title="local date at that place (default: today)">
 <input id="whenTime" type="time" title="local time at that place (default: now)">
+</div>
+<button type="submit">go</button>
+</form>
+</div>
+"""
+
+# Chart-page twin of EXPLORE -- same onsubmit, but no #find input of its own
+# since the chart page's find field lives in the header instead (see
+# header_html's find_value param), right next to the place command bar.
+EXPLORE_DATETIME = """<div class="ex">
+<form id="explore" onsubmit="var qEl=document.getElementById('q');
+var p=qEl?qEl.value.trim():'';
+var f=document.getElementById('find').value.trim();
+var wd=document.getElementById('whenDate').value;
+var wt=document.getElementById('whenTime').value;
+var t=(wd&&wt)?(wd+'T'+wt):'';
+if(!p&&!f&&!t)return false;
+var q=[];
+if(f)q.push('find='+encodeURIComponent(f));
+if(t)q.push('t='+t);
+location.href='/'+(p?encodeURIComponent(p):'')+(q.length?'?'+q.join('&'):'');
+return false;">
+<div class="ex-row">
+<input id="whenDate" type="date" title="local date at that place (default: today)">
+<input id="whenTime" type="time" title="local time at that place (default: now)">
+</div>
 <button type="submit">go</button>
 </form>
 </div>
@@ -2880,6 +3511,12 @@ EXAMPLES_HTML = """<p class="tries">Examples:
 <a href="/-90,0">South Pole</a>
 </p>
 """
+
+# A plain, static link -- no per-request state, unlike animate_btn/sphere_btn
+# (which depend on r), so this doesn't need server.py plumbing at all. Lives
+# in the drawer's actions section on every page, not just the chart view --
+# "start over" is just as meaningful from /catalog or /help.
+RESET_HTML = '<a class="animate-btn" href="/">↺ reset skymap</a>'
 
 
 # Mobile-only, additive 3D view of the current sky -- reached from PAGE's
@@ -4156,25 +4793,39 @@ animate();
 
 
 def _controls_inner(explore, animate_btn, quadrant_btn, sphere_btn, extra):
-    # One flat flex-wrap row for the search form and every button -- .ex,
-    # .toolbar-left and .toolbar-right are all display:contents (see PAGE's
-    # CSS), so they become direct items of .controls-row instead of each
-    # wrapping as its own block. EXAMPLES_HTML comes last and is forced onto
-    # its own full-width line below all of that (.tries{{flex-basis:100%}}
-    # in PAGE's CSS) -- it has to be last in DOM order for the "below
-    # everything" part; a flex-basis:100% item earlier in the row would
-    # push whatever comes after it down instead. sphere_btn (mobile-only
-    # "View in 3D" link) sits before extra in toolbar-right, same order it
-    # was in before this row got merged with the search form.
-    return (f'<div class="controls-row">{explore}'
-            f'<div class="toolbar-left">{animate_btn}{quadrant_btn}</div>'
-            f'<div class="toolbar-right">{sphere_btn}{extra}</div>'
-            f'{EXAMPLES_HTML}</div>')
+    # Block layout, one section per group -- a ~320px drawer has no room
+    # for the old controls-row's inline flex-wrap, and grouped sections read
+    # far better stacked than crammed into one wrapping row anyway.
+    # sphere_btn (mobile-only "View in 3D" link) sits before extra, same
+    # order it's always been in; RESET_HTML comes last in the actions
+    # section, after the page-specific stuff, on every page -- which also
+    # means that section is never actually empty any more, so the old
+    # :empty-collapses-it behaviour for non-chart pages no longer applies
+    # (there's now always at least "reset" to show there).
+    return (f'<div class="drawer-section">{explore}</div>'
+            f'<div class="drawer-section">{animate_btn}{quadrant_btn}{sphere_btn}{extra}'
+            f'{RESET_HTML}</div>'
+            f'<div class="drawer-section">{EXAMPLES_HTML}</div>')
 
 
 def controls_html(explore, animate_btn="", quadrant_btn="", sphere_btn="", extra=""):
-    """Explore form + toolbar, always visible on every page including the
-    chart view -- animate_btn/quadrant_btn/sphere_btn/extra are "" on every
-    page except the chart, which is the only one that has anything to put
-    there."""
-    return _controls_inner(explore, animate_btn, quadrant_btn, sphere_btn, extra)
+    """The drawer's content -- explore form, toolbar, examples -- identical
+    on every page including the chart view (animate_btn/quadrant_btn/
+    sphere_btn/extra are "" on every page except the chart, which is the
+    only one that has anything to put there).
+
+    No-JS fallback is load-bearing, not decoration: without PAGE's script
+    adding the .js class to <html>, #drawer's CSS never applies the fixed/
+    off-canvas/hidden styling at all, so this just renders as a normal
+    visible block on the page -- every control still reachable, just not as
+    a slide-in panel. header_html's trigger button is hidden by the same
+    means (it would do nothing without the JS that drives it, and the
+    content it'd reveal is already on the page). #drawer-close (top-right,
+    inside the panel itself) is hidden the same way too -- it's a second,
+    more discoverable way to close it once open, not the only one (the
+    trigger itself, clicking outside, and Escape all already do it)."""
+    return (f'<div id="drawer">'
+            f'<button type="button" class="drawer-close" id="drawer-close" '
+            f'aria-label="Close">✕</button>'
+            f'{_controls_inner(explore, animate_btn, quadrant_btn, sphere_btn, extra)}'
+            f'</div>')

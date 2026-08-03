@@ -48,6 +48,166 @@ class NearestCity(unittest.TestCase):
         second = api._nearest_city(46.20, 6.10)
         self.assertEqual(first, second)
 
+    def test_cache_does_not_leak_between_different_radii(self):
+        # Regression: the memo cache used to key on (lat, lon) alone, so
+        # whichever radii combination ran first for a cell silently answered
+        # every later call for that same cell, radii ignored.
+        lat, lon = 51.0, -60.0   # far enough from anything for a tight max
+                                 # radius to plausibly miss while a wide one
+                                 # (Canada's east coast) still hits.
+        wide = api._nearest_city(lat, lon, prefer_radius_deg=0.5, max_radius_deg=5)
+        tight = api._nearest_city(lat, lon, prefer_radius_deg=0.5, max_radius_deg=0.5)
+        if wide is not None:
+            self.assertIsNone(tight)
+
+
+class ConfidentNearbyCity(unittest.TestCase):
+    """_confident_nearby_city backs the browser-only redirect from raw
+    coordinates to a city name (server.py's _respond) -- unlike
+    _nearest_city's own up-to-~550 km fallback (a soft "near X" hint, never
+    an identity claim), this only ever returns a city close enough (~55 km)
+    that swapping the coordinates for its name is still an honest thing to
+    show in the URL bar and search field."""
+
+    def test_confident_when_squarely_in_a_city(self):
+        self.assertEqual(api._confident_nearby_city(46.20, 6.15), "Geneva")
+
+    def test_still_confident_a_little_off_centre(self):
+        self.assertEqual(api._confident_nearby_city(46.25, 6.20), "Geneva")
+
+    def test_none_far_from_any_city(self):
+        # Mid-Atlantic -- _nearest_city's wider fallback might still name
+        # something an ocean away; this must not.
+        self.assertIsNone(api._confident_nearby_city(30.0, -40.0))
+
+    def test_none_at_the_pole(self):
+        self.assertIsNone(api._confident_nearby_city(90.0, 0.0))
+
+
+class CompleteCities(unittest.TestCase):
+    """complete_cities backs the command bar's ghost completion (GET
+    /complete, SPEC-command-bar.md #4) -- narrower than suggest(): prefix
+    only, bare display names, most populous first."""
+
+    def test_ranks_by_population_not_alphabetically(self):
+        # Newcastle < New York alphabetically, but New York is a much
+        # bigger city -- the whole point of ranking by population.
+        res = api.complete_cities("new")
+        self.assertEqual(res[0], "New York")
+
+    def test_case_insensitive(self):
+        self.assertEqual(api.complete_cities("NEW")[0], "New York")
+
+    def test_accent_folded(self):
+        # "zur" has to reach "Zürich" despite the umlaut.
+        self.assertIn("Zürich", api.complete_cities("zur"))
+
+    def test_prefix_only_not_contains(self):
+        # suggest()'s looser startswith-or-contains match is deliberately
+        # not used here -- "ork" must not surface "New York".
+        self.assertNotIn("New York", api.complete_cities("ork"))
+
+    def test_returns_bare_names_not_disambiguated_labels(self):
+        for name in api.complete_cities("gene"):
+            self.assertNotIn(",", name)
+
+    def test_capped_at_n(self):
+        self.assertLessEqual(len(api.complete_cities("a", n=3)), 3)
+
+    def test_no_duplicate_names(self):
+        res = api.complete_cities("san")
+        self.assertEqual(len(res), len(set(res)))
+
+    def test_short_prefix_returns_nothing(self):
+        self.assertEqual(api.complete_cities("n"), [])
+        self.assertEqual(api.complete_cities(""), [])
+
+    def test_unknown_prefix_returns_nothing(self):
+        self.assertEqual(api.complete_cities("xyzzynonexistent"), [])
+
+    def test_oversized_prefix_is_capped_not_scanned_in_full(self):
+        # A pathologically long ?q= must not turn this into an unbounded
+        # scan -- it's truncated to COMPLETE_PREFIX_CAP first.
+        long_prefix = "new" + "x" * 100
+        self.assertEqual(api.complete_cities(long_prefix), [])
+
+
+class CompleteObjects(unittest.TestCase):
+    """complete_objects backs the find field's dropdown (GET
+    /complete/objects) -- same _catalog_data() /catalog renders from, so a
+    suggestion can't drift from what's actually findable."""
+
+    def test_finds_a_planet(self):
+        res = api.complete_objects("ven")
+        self.assertTrue(any(o["name"] == "Venus" for o in res))
+
+    def test_finds_a_named_star(self):
+        res = api.complete_objects("veg")
+        self.assertTrue(any(o["name"] == "Vega" for o in res))
+
+    def test_matches_a_later_word_not_just_the_start(self):
+        # "Big Dipper" should surface on "dip", not just "big".
+        res = api.complete_objects("dip")
+        self.assertTrue(any(o["name"] == "Big Dipper" for o in res))
+
+    def test_case_insensitive(self):
+        self.assertTrue(any(o["name"] == "Venus" for o in api.complete_objects("VEN")))
+
+    def test_each_result_has_a_glyph_and_colour(self):
+        for o in api.complete_objects("ven"):
+            self.assertIn("glyph", o)
+            self.assertTrue(o["color"].startswith("#"))
+
+    def test_capped_at_n(self):
+        self.assertLessEqual(len(api.complete_objects("a", n=3)), 3)
+
+    def test_short_prefix_returns_nothing(self):
+        self.assertEqual(api.complete_objects("v"), [])
+        self.assertEqual(api.complete_objects(""), [])
+
+    def test_unknown_prefix_returns_nothing(self):
+        self.assertEqual(api.complete_objects("xyzzynonexistent"), [])
+
+    def test_oversized_prefix_is_capped_not_scanned_in_full(self):
+        long_prefix = "ven" + "x" * 100
+        self.assertEqual(api.complete_objects(long_prefix), [])
+
+
+class HeaderFindField(unittest.TestCase):
+    """header_html's find_value param -- None (every page but the chart
+    view) omits the find field entirely; a string (possibly empty, the
+    chart view) renders it pre-filled."""
+
+    def test_find_value_none_omits_the_field(self):
+        self.assertNotIn('id="find"', api.header_html("Zurich"))
+        self.assertNotIn('id="findbar"', api.header_html("Zurich"))
+
+    def test_find_value_present_renders_the_field(self):
+        html_out = api.header_html("Zurich", find_value="")
+        self.assertIn('id="find"', html_out)
+        self.assertIn('id="find-dropdown"', html_out)
+
+    def test_find_value_is_prefilled_and_escaped(self):
+        html_out = api.header_html("Zurich", find_value='<script>Venus')
+        self.assertIn('value="&lt;script&gt;Venus"', html_out)
+
+
+class ExploreVariants(unittest.TestCase):
+    """EXPLORE (every page but the chart view) keeps its own #find input in
+    the drawer; EXPLORE_DATETIME (the chart view) doesn't, since that page
+    gets a promoted #find in the header instead."""
+
+    def test_explore_has_a_find_input(self):
+        self.assertIn('id="find"', api.EXPLORE)
+
+    def test_explore_datetime_has_no_find_input(self):
+        self.assertNotIn('id="find"', api.EXPLORE_DATETIME)
+
+    def test_explore_datetime_still_has_date_time_and_go(self):
+        self.assertIn('id="whenDate"', api.EXPLORE_DATETIME)
+        self.assertIn('id="whenTime"', api.EXPLORE_DATETIME)
+        self.assertIn('id="explore"', api.EXPLORE_DATETIME)
+
 
 class ResolvePlaceFallback(unittest.TestCase):
     def test_bare_coordinates_keep_the_coordinates_as_name(self):
@@ -311,10 +471,6 @@ class KeyboardShortcutToggleUrls(unittest.TestCase):
         r = self._request(width=170, panel=True)
         self.assertIn("panel=1", api._quadrant_grid_url(r))
 
-    def test_nolines_toggle_preserves_panel(self):
-        r = self._request(width=170, panel=True)
-        self.assertIn("panel=1", api._nolines_toggle_url(r))
-
     def test_dso_toggle_preserves_panel(self):
         r = self._request(width=170, panel=True)
         self.assertIn("panel=1", api._dso_toggle_url(r))
@@ -366,19 +522,6 @@ class KeyboardShortcutToggleUrls(unittest.TestCase):
         r = self._request()
         self.assertNotIn("nodso", api._quadrant_toggle_url(r))
 
-    def test_nolines_toggle_hides_lines(self):
-        r = self._request()
-        self.assertEqual(api._nolines_toggle_url(r), f"/Zurich?{self.T}&nolines=1")
-
-    def test_nolines_toggle_shows_lines_again(self):
-        r = self._request(lines=False)
-        self.assertEqual(api._nolines_toggle_url(r), f"/Zurich?{self.T}")
-
-    def test_nolines_toggle_preserves_an_explicitly_picked_time(self):
-        r = self._request()
-        self.assertIn(self.T, api._nolines_toggle_url(r))
-
-
 class ControlsPanel(unittest.TestCase):
     """controls_html renders the explore form + toolbar directly, no panel
     wrapper and no toggle -- always visible on every page, chart included."""
@@ -405,9 +548,129 @@ class ControlsPanel(unittest.TestCase):
         self.assertGreater(tries_pos, html.index("EXTRA_MARKER"))
 
     def test_header_has_no_toggle(self):
-        html = api.header_html("/Zurich")
+        html = api.header_html("Zurich")
         self.assertIn('class="t nav-row"', html)
         self.assertNotIn("controls-toggle", html)
+
+
+class CommandBar(unittest.TestCase):
+    """header_html renders the "$ curl skymap.sh/<value>" command bar --
+    everything up to and including the "/" is fixed decorative text, #q is
+    the one real, editable input. Replaces both the old static cta chip and
+    EXPLORE's separate #place field (SPEC-command-bar.md)."""
+
+    def test_value_prefills_the_input(self):
+        html = api.header_html("Geneva")
+        self.assertIn('id="q"', html)
+        self.assertIn('value="Geneva"', html)
+
+    def test_value_is_html_escaped(self):
+        html = api.header_html('<script>alert(1)</script>')
+        self.assertNotIn("<script>alert(1)</script>", html)
+        self.assertIn("&lt;script&gt;", html)
+
+    def test_default_value_is_empty(self):
+        html = api.header_html()
+        self.assertIn('value=""', html)
+
+    def test_fixed_prefix_reads_as_a_curl_command(self):
+        html = api.header_html("Geneva")
+        self.assertIn('<span class="curlword">curl </span>skymap.sh/', html)
+
+    def test_form_has_a_real_action_for_the_no_js_fallback(self):
+        html = api.header_html("Geneva")
+        self.assertIn('<form class="cmdbar" id="bar" method="get" action="/">', html)
+
+    def test_decorative_chrome_is_aria_hidden(self):
+        html = api.header_html("Geneva")
+        self.assertIn('<span class="prompt" aria-hidden="true">', html)
+        self.assertIn('<span class="fixed" aria-hidden="true">', html)
+        self.assertIn('<span class="cursor" id="cur" aria-hidden="true">', html)
+
+    def test_the_input_itself_has_a_real_label(self):
+        # The screen-reader experience should be one labelled text input --
+        # everything else in the bar is aria-hidden (see above).
+        html = api.header_html("Geneva")
+        self.assertIn('aria-label="City, or lat,lon"', html)
+
+    def test_ios_autocorrect_and_autocapitalize_are_off(self):
+        # Mandatory per the spec -- iOS otherwise rewrites a meaningful
+        # fraction of real city names.
+        html = api.header_html("Geneva")
+        self.assertIn('autocapitalize="off"', html)
+        self.assertIn('autocorrect="off"', html)
+
+    def test_no_leftover_place_input_anywhere(self):
+        html = api.header_html("Geneva") + api.EXPLORE
+        self.assertNotIn('id="place"', html)
+
+    def test_drawer_trigger_sits_after_the_social_icons(self):
+        html = api.header_html("Geneva")
+        self.assertGreater(html.index('id="drawer-trigger"'), html.index("social-icons"))
+
+    def test_drawer_trigger_starts_closed(self):
+        html = api.header_html("Geneva")
+        self.assertIn('aria-expanded="false"', html)
+        self.assertIn('aria-controls="drawer"', html)
+
+
+class Drawer(unittest.TestCase):
+    """controls_html renders the drawer (SPEC-command-bar.md #9, adapted:
+    right-side slide-in, no backdrop) -- find/date/time/go, the toolbar,
+    and Examples, grouped into block-stacked sections. No-JS fallback is
+    load-bearing (see the function's own docstring): the server-rendered
+    HTML carries no hidden/inline-style state of its own, so every control
+    stays reachable without PAGE's script ever running."""
+
+    def test_wraps_content_in_the_drawer_container(self):
+        html = api.controls_html("EXPLORE_MARKER", "ANIMATE_MARKER",
+                                  "QUADRANT_MARKER", "SPHERE_MARKER", "EXTRA_MARKER")
+        self.assertIn('<div id="drawer">', html)
+        self.assertIn("EXPLORE_MARKER", html)
+        self.assertIn("ANIMATE_MARKER", html)
+        self.assertIn("QUADRANT_MARKER", html)
+        self.assertIn("SPHERE_MARKER", html)
+        self.assertIn("EXTRA_MARKER", html)
+
+    def test_grouped_into_three_block_sections(self):
+        html = api.controls_html("EXPLORE_MARKER", "ANIMATE_MARKER",
+                                  "QUADRANT_MARKER", "SPHERE_MARKER", "EXTRA_MARKER")
+        self.assertEqual(html.count('class="drawer-section"'), 3)
+
+    def test_examples_is_the_last_section(self):
+        html = api.controls_html("EXPLORE_MARKER", "ANIMATE_MARKER",
+                                  "QUADRANT_MARKER", "SPHERE_MARKER", "EXTRA_MARKER")
+        tries_pos = html.index('class="tries"')
+        self.assertGreater(tries_pos, html.index("ANIMATE_MARKER"))
+        self.assertGreater(tries_pos, html.index("EXTRA_MARKER"))
+
+    def test_no_hidden_state_baked_into_the_server_render(self):
+        # The whole no-JS fallback depends on this -- if the server ever
+        # rendered #drawer pre-hidden (an inline style, a "closed" class),
+        # everything inside it would be unreachable without JS.
+        html = api.controls_html("EXPLORE_MARKER")
+        self.assertNotIn("hidden", html)
+        self.assertNotIn("style=", html)
+
+    def test_sphere_btn_comes_before_extra_in_the_actions_section(self):
+        html = api.controls_html("EXPLORE_MARKER", "ANIMATE_MARKER",
+                                  "QUADRANT_MARKER", "SPHERE_MARKER", "EXTRA_MARKER")
+        self.assertLess(html.index("SPHERE_MARKER"), html.index("EXTRA_MARKER"))
+
+    def test_close_button_is_the_first_thing_in_the_drawer(self):
+        html = api.controls_html("EXPLORE_MARKER")
+        self.assertLess(html.index('id="drawer-close"'), html.index("EXPLORE_MARKER"))
+
+    def test_reset_link_present_even_with_no_chart_specific_buttons(self):
+        # "start over" has to work from /catalog, /help etc too, where
+        # animate_btn/quadrant_btn/sphere_btn/extra are all "".
+        html = api.controls_html("EXPLORE_MARKER")
+        self.assertIn('<a class="animate-btn" href="/">↺ reset skymap</a>', html)
+
+    def test_reset_link_comes_after_the_page_specific_actions(self):
+        html = api.controls_html("EXPLORE_MARKER", "ANIMATE_MARKER",
+                                  "QUADRANT_MARKER", "SPHERE_MARKER", "EXTRA_MARKER")
+        self.assertGreater(html.index("reset skymap"), html.index("EXTRA_MARKER"))
 
 
 class FindOnThePngExport(unittest.TestCase):
