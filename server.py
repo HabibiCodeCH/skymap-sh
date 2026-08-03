@@ -1584,19 +1584,31 @@ async def _animate(base_r, hours, base_url, is_ui=False):
 def _respond(request: Req, place: str | None):
     mode, colour = _wants(request)
     q = request.query_params
-    if place and mode == "html":
+    if mode == "html":
         # A browser landing on raw coordinates (the 'm' keyboard shortcut's
         # precise GPS fix, an old bookmarked link, someone pasting lat,lon
-        # into the search box) gets bounced to the nearby city's own name
-        # instead -- both the URL bar and the search field then read
-        # "Geneva", not "46.20,6.20". curl/JSON keep the exact coordinates
-        # verbatim: redirecting there would silently break anyone scripting
-        # against a specific lat/lon, and there's no URL bar to tidy up.
-        # Terminal-mode ?animate= not excluded here -- it's already the same
-        # story either way, since this only ever fires when mode=="html".
-        m = api.LATLON.match(place)
-        if m:
-            lat, lon = float(m.group(1)), float(m.group(2))
+        # into the search box, or the CDN's own IP geolocation on a bare
+        # domain landing) gets bounced to the nearby city's own name instead
+        # -- both the URL bar and the search field then read "Geneva", not
+        # "46.20,6.20". curl/JSON keep the exact coordinates verbatim:
+        # redirecting there would silently break anyone scripting against a
+        # specific lat/lon, and there's no URL bar to tidy up. Terminal-mode
+        # ?animate= not excluded here -- it's already the same story either
+        # way, since this only ever fires when mode=="html".
+        latlon = None
+        if place:
+            m = api.LATLON.match(place)
+            if m:
+                latlon = float(m.group(1)), float(m.group(2))
+        else:
+            # place is None on the bare domain -- _geo(request) is the same
+            # CDN IP-geolocation fallback api.Request falls back to for
+            # rendering, so without this branch a visitor landing on "/" in
+            # the middle of Geneva saw raw coordinates on first load and
+            # only got "Geneva" after clicking m or navigating elsewhere.
+            latlon = _geo(request)
+        if latlon:
+            lat, lon = latlon
             if -90 <= lat <= 90 and -180 <= lon <= 180:
                 city = api._confident_nearby_city(lat, lon)
                 if city:
@@ -1607,7 +1619,12 @@ def _respond(request: Req, place: str | None):
                     # to this at the edge, and a visitor who hit these exact
                     # coordinates before this redirect existed (or before
                     # today's deploy) keeps getting served that stale,
-                    # un-redirected response indefinitely.
+                    # un-redirected response indefinitely. Even more load-
+                    # bearing here than the explicit-coordinate case: this
+                    # redirect is keyed off *this visitor's* IP, so caching
+                    # it at all would bounce every later visitor sharing
+                    # that edge cache entry to Geneva regardless of where
+                    # they actually are.
                     return RedirectResponse(f"/{quote(city)}{qs}", status_code=302,
                                            headers={"Cache-Control": "no-store"})
     if place and api.lookup_place(place) is None:

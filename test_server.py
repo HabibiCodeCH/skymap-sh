@@ -2678,5 +2678,54 @@ class CoordinatesRedirectToNearbyCity(unittest.TestCase):
         self.assertIn('value="Geneva"', resp.text)
 
 
+class BareDomainGeoRedirectsToNearbyCity(unittest.TestCase):
+    """The explicit /lat,lon redirect above only ever fires when the URL
+    path itself is coordinates -- landing on the bare domain builds a Place
+    from the CDN's IP-geolocation headers instead (_geo(request) in
+    server.py), a completely separate branch that never got the same
+    city-name swap. A visitor opening skymap.sh from inside Geneva saw raw
+    coordinates on first load and only got "Geneva" after clicking m or
+    navigating somewhere else -- the exact bug this project's coordinate
+    work was originally asked to fix, just left open on this one path."""
+
+    GENEVA = {"cf-iplatitude": "46.20", "cf-iplongitude": "6.15"}
+    MID_ATLANTIC = {"cf-iplatitude": "30.0", "cf-iplongitude": "-40.0"}
+
+    def setUp(self):
+        client_cm = TestClient(server.app)
+        self.client = client_cm.__enter__()
+        self.addCleanup(client_cm.__exit__, None, None, None)
+        server._cache.clear()
+
+    def test_root_with_cdn_geo_headers_redirects_to_the_city_name(self):
+        resp = self.client.get("/", headers={**BROWSER, **self.GENEVA},
+                               follow_redirects=False)
+        self.assertEqual(resp.status_code, 302)
+        self.assertEqual(resp.headers["location"], "/Geneva")
+
+    def test_root_redirect_is_not_cached_at_the_edge(self):
+        # This one's even more load-bearing than the /lat,lon case: the
+        # redirect is keyed off *this visitor's* IP, so caching it at all
+        # would bounce every later visitor sharing that edge cache entry to
+        # Geneva regardless of where they actually are.
+        resp = self.client.get("/", headers={**BROWSER, **self.GENEVA},
+                               follow_redirects=False)
+        self.assertEqual(resp.headers.get("cache-control"), "no-store")
+
+    def test_root_without_geo_headers_is_not_redirected(self):
+        resp = self.client.get("/", headers=BROWSER, follow_redirects=False)
+        self.assertEqual(resp.status_code, 200)
+
+    def test_root_geo_headers_far_from_any_city_are_not_redirected(self):
+        resp = self.client.get("/", headers={**BROWSER, **self.MID_ATLANTIC},
+                               follow_redirects=False)
+        self.assertEqual(resp.status_code, 200)
+
+    def test_terminal_mode_keeps_the_literal_coordinates(self):
+        resp = self.client.get("/", headers={**TERMINAL, **self.GENEVA})
+        self.assertEqual(resp.status_code, 200)
+        self.assertNotIn("Location", resp.headers)
+
+
 if __name__ == "__main__":
     unittest.main()
