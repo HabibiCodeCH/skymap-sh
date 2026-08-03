@@ -2110,8 +2110,13 @@ def stats(request: Req):
             f'<span id="live-legend">{html.escape(_map_legend())}</span>')
         controls = api.controls_html(api.EXPLORE, extra=api.stats_live_html(
             [api._xterm_hex(n) for n in MAP_RAMP], MAP_SIZES, MAP_DOT, MAP_FLASH_DOT))
+        # w-wide, the same opt-out the chart page uses: the map is 216 columns
+        # and the default 1200px column is about 182, so /stats spent its whole
+        # life with a scrollbar under the widest thing on it. Per page, so
+        # nothing else moves -- prose pages keep the 1200px measure that makes
+        # them readable.
         page = api.PAGE.format(title="skymap.sh: stats", header=api.header_html("stats"),
-                               controls=controls, wide_class="", fit_width="null",
+                               controls=controls, wide_class=" w-wide", fit_width="null",
                                coming_up_card="",
                                body=body, kbd_urls="{}", shortcuts_hint="")
         return HTMLResponse(page, headers=headers)

@@ -1711,11 +1711,33 @@ class AutoFitWidth(unittest.TestCase):
         self.assertIn("var FIT_W=110;", resp.text)
 
     def test_non_chart_pages_opt_out(self):
-        for path in ("/catalog", "/legend", "/help", "/stats"):
+        # /stats is no longer in this list -- see the test below. Everything
+        # here is prose, and prose keeps the 1200px measure.
+        for path in ("/catalog", "/legend", "/help"):
             resp = self.client.get(path, headers=BROWSER)
             self.assertIn('class="w"', resp.text, path)
             self.assertNotIn('class="w w-wide"', resp.text, path)
             self.assertIn("var FIT_W=null;", resp.text, path)
+
+    def test_stats_goes_wide_for_the_map_and_nothing_else_follows_it(self):
+        # The world map is 216 columns and the default column is about 182,
+        # so /stats had a scrollbar under the widest thing on the page. It
+        # takes the same opt-out the chart page uses -- but per page, so the
+        # prose pages above must not move with it.
+        resp = self.client.get("/stats", headers=BROWSER)
+        self.assertIn('class="w w-wide"', resp.text)
+        # Wide layout only. Auto-fit rewrites the chart to the window width,
+        # which is a chart-page trick and has nothing to do with this.
+        self.assertIn("var FIT_W=null;", resp.text)
+        home = self.client.get("/Zurich?t=2026-07-30T23:00", headers=BROWSER)
+        self.assertNotIn(" w-wide-stats", home.text)   # no second mechanism
+
+    def test_the_map_still_fits_the_page_it_widened_for(self):
+        # 216 columns of 11px monospace is ~1,426px, plus 32px of body
+        # padding. Regenerating worldmap.json wider than this puts the
+        # scrollbar straight back.
+        _rows, w, _h, _top, _bot = server._load_worldmap()
+        self.assertLessEqual(w, 216)
 
     def test_js_reserves_panel_width_and_can_request_panel(self):
         # Doesn't execute the JS -- just guards against the reservation

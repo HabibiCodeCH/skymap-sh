@@ -36,7 +36,12 @@ SRC, OUT = "countries.geo.json", "worldmap.json"
 # rows as columns. Going much below this closes the Mediterranean and the
 # Gulf of Mexico back up, which is the whole reason the mask comes from real
 # coastlines rather than city positions.
-WIDTH, HEIGHT = 185, 47
+# 216 columns is what /stats can show without a horizontal scrollbar: the page
+# opts out of the 1200px column there (.w-wide), so the limit is the window
+# itself, and 216 chars of 11px monospace come to about 1,426px plus the 32px
+# the body pads with. Wider than that and the map -- the widest thing on the
+# page by a long way -- starts pulling a scrollbar under everything else.
+WIDTH, HEIGHT = 216, 55
 LAT_TOP, LAT_BOT = 83.0, -56.0
 LAND, SEA = "#", " "
 
