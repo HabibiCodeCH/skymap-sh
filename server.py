@@ -1146,17 +1146,21 @@ def catalog(request: Req):
 
 @app.get("/healthz", response_class=PlainTextResponse)
 def healthz():
+    # no-store, like /stats. Without a Cache-Control header Cloudflare applies
+    # its own default TTL and cached this: a post-deploy check came back
+    # cf-cache-status HIT reporting a TLE age four days out of date while
+    # origin was serving 0.0h. A health endpoint that can lie about whether
+    # the deploy landed is worse than no health endpoint.
     p = app.state.tle
     total = _hits + _misses
-    return PlainTextResponse(
-        f"ok stars={len(sky._load('stars.json'))} "
-        f"asterisms={len(sky._load('asterisms.json'))} "
-        f"deepsky={len(sky._load('deepsky.json'))} "
-        f"tle={'%.1fh' % (tle.age(p)/3600) if p else 'none'} "
-        f"cache={len(_cache)}/{CACHE_MAX} "
-        f"hitrate={100*_hits/total:.1f}% ({_hits}/{total}) "
-        f"nv={api.nv_stats()}\n" if total else
-        f"ok cache empty\n")
+    body = (f"ok stars={len(sky._load('stars.json'))} "
+            f"asterisms={len(sky._load('asterisms.json'))} "
+            f"deepsky={len(sky._load('deepsky.json'))} "
+            f"tle={'%.1fh' % (tle.age(p)/3600) if p else 'none'} "
+            f"cache={len(_cache)}/{CACHE_MAX} "
+            f"hitrate={100*_hits/total:.1f}% ({_hits}/{total}) "
+            f"nv={api.nv_stats()}\n") if total else "ok cache empty\n"
+    return PlainTextResponse(body, headers={"Cache-Control": "no-store"})
 
 
 @app.get("/stats", response_class=PlainTextResponse)
