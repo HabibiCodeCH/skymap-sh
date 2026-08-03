@@ -389,11 +389,70 @@ def test_card_served_on_both_payloads(client):
     assert k["coming_up_card"]["id"] == j["card"]["id"]
 
 
-def test_page_carries_the_marker_but_renders_no_card(client):
-    """The UI is built separately; this only reserves the spot."""
+def test_page_carries_the_marker(client):
     body = client.get("/Zurich", headers=BROWSER).text
     assert "skymap:coming-up-card" in body
-    assert "<section" not in body          # nothing rendered there yet
+
+
+def test_coming_up_card_html_is_empty_string_for_none():
+    assert api.coming_up_card_html(None) == ""
+
+
+def test_coming_up_card_html_renders_the_real_thing():
+    html_out = api.coming_up_card_html(api.events_card(_req()))
+    assert 'id="coming-up"' in html_out
+    assert 'data-urgency="soon"' in html_out
+    assert 'data-id="shower-perseids-20260813"' in html_out
+    assert "Perseids" in html_out
+    assert '<a class="cu-cta" href="/Zurich?t=' in html_out
+    assert 'id="coming-up-dismiss"' in html_out
+
+
+def test_coming_up_card_html_escapes_the_body():
+    card = api.events_card(_req())
+    card["body"] = "<script>alert(1)</script>"
+    html_out = api.coming_up_card_html(card)
+    assert "<script>alert(1)</script>" not in html_out
+    assert "&lt;script&gt;" in html_out
+
+
+def test_coming_up_card_html_has_no_second_cta(client):
+    # "everything coming up" was dropped from the one-line card -- /events
+    # is already one click away via the nav, and a second link fights the
+    # "as tight as possible, one line" ask.
+    html_out = api.coming_up_card_html(api.events_card(_req()))
+    assert "everything coming up" not in html_out
+
+
+def test_chart_page_renders_the_card_when_one_is_due(client):
+    body = client.get("/Zurich?t=2026-08-11T23:00", headers=BROWSER).text
+    assert 'id="coming-up"' in body
+    assert "Perseids" in body
+
+
+def test_chart_page_renders_nothing_on_a_quiet_night(client):
+    body = client.get("/Zurich?t=2026-06-01T23:00", headers=BROWSER).text
+    assert 'id="coming-up"' not in body
+
+
+def test_find_view_still_gets_the_card(client):
+    # _compose_find doesn't set coming_up_card on its own Result -- the
+    # chart route calls events_card(r) fresh, independent of which compose
+    # function ran, so find shouldn't lose the homepage highlight.
+    body = client.get("/Zurich?t=2026-08-11T23:00&find=Venus", headers=BROWSER).text
+    assert 'id="coming-up"' in body
+
+
+def test_non_chart_pages_never_show_the_card(client):
+    for path in ("/catalog", "/legend", "/help", "/stats", "/Zurich/events"):
+        body = client.get(path, headers=BROWSER).text
+        assert 'id="coming-up"' not in body, path
+
+
+def test_dismiss_is_wired_to_localstorage_keyed_on_id(client):
+    body = client.get("/Zurich?t=2026-08-11T23:00", headers=BROWSER).text
+    assert "localStorage.getItem('skymap-cu-dismissed')" in body
+    assert "localStorage.setItem('skymap-cu-dismissed'" in body
 
 
 def test_events_is_in_the_nav(client):

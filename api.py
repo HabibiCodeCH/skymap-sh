@@ -1311,10 +1311,11 @@ def _event_date(e):
 
 
 # ---------------------------------------------------------------- card payload
-# Data for the prominent "Coming up" card on a place page. Deliberately data
-# only: nothing here renders HTML, and PAGE does not include the card. The
-# markup lives in the web UI, which is being built separately -- see the
-# <!-- skymap:coming-up-card --> marker in PAGE for where it goes.
+# Data for the prominent "Coming up" card on a place page. events_card()
+# itself stays data-only (also served as "card" on /{place}/events?
+# format=json and "coming_up_card" on /{place}?format=json) -- the actual
+# markup is coming_up_card_html() below, rendered at the
+# <!-- skymap:coming-up-card --> marker in PAGE.
 #
 # events_card() returns None on most nights, which is the point: the card is
 # meant to mean something when it appears. See TEASER_HORIZON in events.py for
@@ -1385,6 +1386,53 @@ def events_card(r):
         cta=dict(label="show me that sky", url=_event_url(e, r)),
         more=dict(label="everything coming up",
                   url=f"/{quote(r.place.slug)}/events"),
+    )
+
+
+def coming_up_card_html(card):
+    """The homepage highlight at the <!-- skymap:coming-up-card --> marker
+    in PAGE -- "" when card is None (most nights), which the marker's own
+    :empty-ish placement in PAGE just renders as nothing.
+
+    One line, deliberately tight: glyph, the same one-sentence body the CLI
+    teaser uses (already reads as "<headline> <eyebrow phrase>, <facts>", so
+    a separate headline would just repeat itself), a single CTA (straight to
+    the framed chart -- "everything coming up" is one click away via the nav
+    now anyway), and a dismiss button. Color rides entirely on --cu-accent,
+    set per data-urgency in CSS -- retune the three hex values there, not
+    here.
+
+    Dismiss is real, not just decorative: keyed on card["id"] (stable
+    across renders, shared with the ICS UID/RSS GUID) in localStorage, so
+    dismissing "Perseids peak" doesn't come back on refresh, but a
+    different event next week does. No server round-trip -- there's
+    nothing here a signed-out visitor's browser can't remember on its own.
+    The inline <script> right after the div (not PAGE's big shared one)
+    is deliberate: it runs the instant it's parsed, before anything below
+    it paints, so a dismissed card is gone before it would otherwise flash
+    on screen -- same reasoning as the .js-class script at the top of
+    <head>."""
+    if card is None:
+        return ""
+    return (
+        f'<div class="coming-up" id="coming-up" data-urgency="{html.escape(card["urgency"])}" '
+        f'data-id="{html.escape(card["id"])}">'
+        f'<span class="cu-glyph" aria-hidden="true">{card["glyph"]}</span>'
+        f'<span class="cu-body">{html.escape(card["body"])}</span>'
+        f'<a class="cu-cta" href="{html.escape(card["cta"]["url"])}">{html.escape(card["cta"]["label"])}</a>'
+        f'<button type="button" class="cu-dismiss" id="coming-up-dismiss" '
+        f'aria-label="Dismiss">✕</button>'
+        f'</div>'
+        f'<script>(function(){{'
+        f"var el=document.getElementById('coming-up');"
+        f"if(!el)return;"
+        f"if(localStorage.getItem('skymap-cu-dismissed')===el.dataset.id){{el.remove();return;}}"
+        f"var btn=document.getElementById('coming-up-dismiss');"
+        f"if(btn)btn.addEventListener('click',function(){{"
+        f"localStorage.setItem('skymap-cu-dismissed',el.dataset.id);"
+        f"el.remove();"
+        f"}});"
+        f'}})();</script>'
     )
 
 
@@ -2748,25 +2796,34 @@ document.documentElement.classList.add('js');
  .kbd-hint kbd{{background:#04060a;border:1px solid #30363d;border-radius:3px;
               padding:0 5px;font-family:inherit;font-size:11px;color:#c9d1d9}}
  .quad-pick{{background:#ffff00;color:#000 !important;border-radius:2px}}
+ /* Coming-up card -- one line, full width, colour entirely from
+    --cu-accent so retuning per urgency is a one-line change per bucket,
+    not a rule rewrite. .cu-body ellipsizes rather than wraps: "tight,
+    one line" holds at any viewport width instead of degrading to two. */
+ .coming-up{{display:flex;align-items:center;gap:10px;padding:8px 14px;
+            margin:0 0 12px;background:#0d1117;border:1px solid #30363d;
+            border-left:3px solid var(--cu-accent,#ff87ff);border-radius:6px;
+            font-size:12.5px}}
+ .coming-up[data-urgency="tonight"]{{--cu-accent:#ffd700}}
+ .coming-up[data-urgency="soon"]{{--cu-accent:#ff87ff}}
+ .coming-up[data-urgency="later"]{{--cu-accent:#a186a6}}
+ .cu-glyph{{color:var(--cu-accent,#ff87ff);flex-shrink:0}}
+ .cu-body{{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;
+          white-space:nowrap;color:#8b949e}}
+ .cu-cta{{color:var(--cu-accent,#ff87ff);text-decoration:none;
+         white-space:nowrap;flex-shrink:0}}
+ .cu-cta:hover{{text-decoration:underline}}
+ .cu-dismiss{{background:none;border:0;color:#6e7681;cursor:pointer;
+             font-size:13px;line-height:1;padding:2px 4px;flex-shrink:0}}
+ .cu-dismiss:hover{{color:#c9d1d9}}
 </style></head><body>
 {header}
 <!-- skymap:coming-up-card
-     Insertion point for the prominent "Coming up" card. Nothing renders it
-     yet -- the markup belongs to the web UI, built separately.
-
-     Data:  api.events_card(r) -> dict | None   (None on most nights)
-            also served as "card" on /{{place}}/events?format=json
-            and as "coming_up_card" on /{{place}}?format=json
-     Suggested element id:  coming-up
-     Suggested attribute:   data-urgency = tonight | soon | later
-     Fields marked [] are lists of {{label, value}} pairs.
-     Fields: id kind glyph eyebrow headline body detail[] moon_verdict note
-             urgency days_away when_local watch_local window_local cta more
-
-     It belongs here, above the drawer and the chart, so it reads before the
-     sky rather than after it. Absent most nights on purpose: see
-     TEASER_HORIZON in events.py.
--->
+     api.coming_up_card_html(api.events_card(r)) -- "" (renders nothing) on
+     most nights, see TEASER_DAYS in events.py. Above the drawer and the
+     chart deliberately, so it reads before the sky rather than after it.
+     Chart-page only; every other PAGE.format() call site passes "". -->
+{coming_up_card}
 <div class="w{wide_class}">
 {controls}{shortcuts_hint}<pre id="chart-pre">{body}</pre>
 <script>
