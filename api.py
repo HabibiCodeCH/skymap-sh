@@ -471,13 +471,23 @@ def _compose_find(r):
     if zoomed:
         rng = 26.0
         lo = max(0.0, min(90.0 - rng, tgt["alt"] - rng / 2))
-        extra = dict(span=r.span, alt_lo=lo, alt_hi=lo + rng, width=r.width)
+        extra = dict(span=r.span, alt_lo=lo, alt_hi=lo + rng, width=r.width,
+                     mag_limit=5.0)
     else:
+        # The same cutoff the ordinary night chart uses, not the crop's 5.0.
+        # That extra magnitude existed to fill a 60-degree window; across the
+        # whole sky it is 775 stars where the regular view draws 287, so find
+        # came out denser than the chart it is meant to help you read, and the
+        # crosshair had to fight all of it. Clicking find should give you the
+        # sky you already know with a mark on it.
+        sun_alt = altaz(*[sun(julian(shown_utc))[k] for k in ("ra", "dec")],
+                        p.lat, (gmst_hours(julian(shown_utc)) + p.lon / 15.0) % 24)[0]
         extra = dict(span=360.0, height=_horizon_height(r),
-                     width=_effective_width(r))
+                     width=_effective_width(r),
+                     mag_limit=_fade_mag_limit(sun_alt))
     sp = extra["span"]
     art, st = render_linear(shown_utc, p.lat, p.lon, color=c, show_lines=r.lines,
-                            tle=r.tle, target=tgt, mag_limit=5.0, **extra)
+                            tle=r.tle, target=tgt, **extra)
     shown_local = shown_utc + dt.timedelta(hours=p.offset(shown_utc))
     guide = find_text(tgt, st["visible"], p.lat)
 
@@ -1564,13 +1574,17 @@ def _find_chart_only(r):
     if zoomed:
         rng = 26.0
         lo = max(0.0, min(90.0 - rng, tgt["alt"] - rng / 2))
-        extra = dict(span=r.span, alt_lo=lo, alt_hi=lo + rng, width=r.width)
+        extra = dict(span=r.span, alt_lo=lo, alt_hi=lo + rng, width=r.width,
+                     mag_limit=5.0)
     else:
+        sun_alt = altaz(*[sun(julian(shown_utc))[k] for k in ("ra", "dec")],
+                        p.lat, (gmst_hours(julian(shown_utc)) + p.lon / 15.0) % 24)[0]
         extra = dict(span=360.0, height=_horizon_height(r),
-                     width=_effective_width(r))
+                     width=_effective_width(r),
+                     mag_limit=_fade_mag_limit(sun_alt))
     sp = extra["span"]
     art, _st = render_linear(shown_utc, p.lat, p.lon, color=c, show_lines=r.lines,
-                             tle=r.tle, target=tgt, mag_limit=5.0, **extra)
+                             tle=r.tle, target=tgt, **extra)
     shown_local = shown_utc + dt.timedelta(hours=p.offset(shown_utc))
     where = f"{int(sp)}° window" if zoomed else "full panorama"
     head = (f"  {p.name}   {shown_local:%d %b %Y %H:%M}   "

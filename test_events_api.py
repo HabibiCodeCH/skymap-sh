@@ -178,6 +178,26 @@ def test_event_link_crosshairs_the_thing():
     assert "find=Perseids" in row, row
 
 
+def test_find_is_no_denser_than_the_ordinary_chart():
+    """find used mag_limit 5.0 to fill its 60° crop. Once the crop went, that
+    put 775 stars across the whole sky where the regular view draws 287, and
+    the crosshair had to fight all of them."""
+    when = dt.datetime(2026, 8, 13, 2, 0)
+    plain = api.compose(_req(when=when)).text
+    found = api.compose(_req(when=when, find="Perseids")).text
+    assert plain.count("·") > 0
+    # Same star glyph budget, give or take the crosshair's own arms.
+    assert found.count("·") <= plain.count("·") * 1.15, (
+        found.count("·"), plain.count("·"))
+
+
+def test_zoomed_find_keeps_the_denser_field():
+    """A 26° band needs the extra magnitude or it looks empty."""
+    when = dt.datetime(2026, 8, 13, 2, 0)
+    zoomed = api.compose(_req(when=when, find="Perseids", span=60)).text
+    assert "60° window" in zoomed
+
+
 def test_conjunction_link_aims_at_the_fainter_body():
     """Moon and Mercury: the Moon needs no help being found."""
     h = api.events_html(_req(), days=20)
