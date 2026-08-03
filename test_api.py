@@ -417,6 +417,69 @@ class StripFooterLine(unittest.TestCase):
         self.assertEqual(stripped, original[:-2])
 
 
+class StripDuplicateUiLines(unittest.TestCase):
+    """strip_duplicate_ui_lines removes prose that now duplicates real UI
+    (the coming-up card, the drawer's PNG button) -- used only by server.py's
+    HTML branch, so curl/JSON/PNG output keeps every line."""
+
+    WHEN = dt.datetime(2026, 8, 11, 23, 0)   # two nights before the Perseid peak
+
+    def _req(self, **kw):
+        kw.setdefault("when", self.WHEN)
+        return api.Request(place="Zurich", color=False, **kw)
+
+    def test_removes_coming_up_even_when_it_wrapped_to_two_lines(self):
+        r = self._req()
+        res = api.compose(r)
+        self.assertIn("Coming up:", res.text)   # sanity: the teaser is there
+        stripped = api.strip_duplicate_ui_lines(res.text, r, res, "http://x")
+        self.assertNotIn("Coming up:", stripped)
+        self.assertNotIn("Perseids", stripped)
+
+    def test_removes_the_png_share_line_with_base_url_substituted(self):
+        r = self._req()
+        res = api.compose(r)
+        page_text = res.text.replace("{base_url}", "http://x")
+        stripped = api.strip_duplicate_ui_lines(page_text, r, res, "http://x")
+        self.assertNotIn("Share as a PNG", stripped)
+
+    def test_wrong_base_url_fails_to_match_and_leaves_the_line(self):
+        # Guards the bug this function had while being built: _png_url(r)
+        # on its own still has the bare {base_url} placeholder, which
+        # would never match an already-substituted line -- the base_url
+        # passed in here MUST be the same one already baked into text.
+        r = self._req()
+        res = api.compose(r)
+        page_text = res.text.replace("{base_url}", "http://real-host")
+        stripped = api.strip_duplicate_ui_lines(page_text, r, res, "http://wrong-host")
+        self.assertIn("Share as a PNG", stripped)
+
+    def test_removes_see_tonight_on_the_daytime_view_only(self):
+        r = self._req(when=dt.datetime(2026, 8, 11, 13, 0))
+        res = api.compose(r)
+        self.assertIn("See tonight's chart now", res.text)
+        stripped = api.strip_duplicate_ui_lines(res.text, r, res, "http://x")
+        self.assertNotIn("See tonight's chart now", stripped)
+
+    def test_quiet_night_has_nothing_to_strip_for_coming_up_but_still_strips_png(self):
+        # No event due -- res.data["coming_up"] is None, so that half is a
+        # no-op -- but every view still has its own PNG share line, which
+        # should still come out regardless of whether there's an event.
+        r = self._req(when=dt.datetime(2026, 6, 1, 23, 0))
+        res = api.compose(r)
+        self.assertNotIn("Coming up:", res.text)
+        page_text = res.text.replace("{base_url}", "http://x")
+        stripped = api.strip_duplicate_ui_lines(page_text, r, res, "http://x")
+        self.assertNotIn("Share as a PNG", stripped)
+
+    def test_no_op_on_find_view_which_has_neither_line(self):
+        r = self._req(find="Venus")
+        res = api.compose(r)
+        page_text = res.text.replace("{base_url}", "http://x")
+        stripped = api.strip_duplicate_ui_lines(page_text, r, res, "http://x")
+        self.assertEqual(stripped, page_text)
+
+
 class KeyboardShortcutToggleUrls(unittest.TestCase):
     """The d/l/q keyboard shortcuts and the quadrant button all navigate to
     one of these -- each should flip exactly the one thing it's for and

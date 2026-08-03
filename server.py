@@ -1764,12 +1764,19 @@ def _respond(request: Req, place: str | None):
         # both genuinely close -- an eclipse and a shower peak a day apart,
         # say -- gets both, cycled, not just whichever ranks higher.
         coming_up_card = api.coming_up_card_html(api.events_cards(r))
+        # strip_duplicate_ui_lines: the prose repeats itself once real UI
+        # exists for the same thing -- Coming up (the card above), Share
+        # as a PNG (the drawer button), See tonight's chart now (a curl
+        # command, odd to hand a browser reader who can just click). CLI/
+        # JSON/PNG output is untouched -- both strips only run on the copy
+        # of page_text that becomes this HTML response.
+        html_text = api.strip_duplicate_ui_lines(page_text, r, res, base_url)
         body = api.PAGE.format(title=f"skymap.sh: {r.place.name}",
                                header=header, controls=controls,
                                wide_class=" w-wide" if fits_width else "",
                                fit_width=fit_width, coming_up_card=coming_up_card,
                                kbd_urls=json.dumps(kbd), shortcuts_hint=api.SHORTCUTS_HINT,
-                               body=api.ansi_to_html(api.strip_footer_line(page_text)))
+                               body=api.ansi_to_html(api.strip_footer_line(html_text)))
         return HTMLResponse(body, status_code=res.status, headers=headers)
     text = page_text if colour else api.strip_ansi(page_text)
     return PlainTextResponse(text, status_code=res.status, headers=headers)

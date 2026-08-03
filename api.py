@@ -441,6 +441,68 @@ def strip_footer_line(text):
     return "\n".join(out)
 
 
+def _strip_prose_block(text, raw_sentence, wrap_width=76, prefix="  "):
+    """Removes one logical sentence from an already-composed render, even
+    though textwrap.wrap() may have split it across several physical lines
+    with no blank line in between (unlike strip_footer_line's target, this
+    can run right up against the next sentence) -- reconstructs the same
+    wrap independently to know exactly how many lines to drop, then matches
+    on strip_ansi'd content so colour doesn't matter. raw_sentence already
+    including its own "  " prefix (never wrapped, e.g. the PNG share line)
+    should pass prefix="" -- wrap_width is irrelevant there since
+    textwrap.wrap on a string with no spaces to break at just returns it
+    whole either way, but skipping it avoids the pretence. No-op (returns
+    text unchanged) if raw_sentence is falsy or the block isn't present --
+    find/disc views don't have every line every other view does."""
+    if not raw_sentence:
+        return text
+    import textwrap
+    target = [prefix + w for w in textwrap.wrap(raw_sentence, wrap_width)] \
+        if prefix else [raw_sentence]
+    if not target:
+        return text
+    lines = text.split("\n")
+    n = len(target)
+    for i in range(len(lines) - n + 1):
+        if all(strip_ansi(lines[i + j]) == target[j] for j in range(n)):
+            return "\n".join(lines[:i] + lines[i + n:])
+    return text
+
+
+def strip_duplicate_ui_lines(text, r, res, base_url):
+    """Removes prose lines that duplicate a real UI element elsewhere on
+    the browser page -- used only by server.py's HTML branch, same "post-
+    process after the shared compose()" reasoning as strip_footer_line
+    (see its docstring), for the same reason: curl/JSON/PNG output must
+    keep every line, only the browser page has the duplicate.
+
+    - "Coming up: ..." duplicates the coming-up card at the top of the page.
+    - "Share as a PNG: <url>" duplicates the drawer's own share button.
+    - "See tonight's chart now: curl '...'" (daytime view only) hands a
+      browser reader a shell command to run themselves, when they can just
+      click through instead -- useful on a terminal, odd on a page.
+
+    res.data carries everything needed to reconstruct each one exactly as
+    composed: "coming_up" is the already-built teaser sentence, and
+    "first_stars" (present only on the daytime view) is first's local ISO
+    timestamp with the same tz offset baked in that built the original
+    line, so re-parsing it reproduces tl without recomputing sun_events.
+    base_url must be the same real host text already substituted into
+    text's own {base_url} placeholders (server.py's page_text) -- _png_url
+    on its own still has the bare placeholder in it, which would never
+    match the already-substituted line actually sitting in text."""
+    text = _strip_prose_block(text, res.data.get("coming_up"))
+    png_url = _png_url(r).replace("{base_url}", base_url)
+    text = _strip_prose_block(text, f"  Share as a PNG: {png_url}", prefix="")
+    first_stars = res.data.get("first_stars")
+    if first_stars:
+        tl = dt.datetime.fromisoformat(first_stars)
+        text = _strip_prose_block(
+            text, f"See tonight's chart now:  "
+                  f"curl 'skymap.sh/{r.place.slug}?t={tl:%Y-%m-%dT%H:%M}'")
+    return text
+
+
 def _bodies_json(st):
     out = []
     for b in st["up"]:
