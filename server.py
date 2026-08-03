@@ -1759,8 +1759,11 @@ def _respond(request: Req, place: str | None):
         # doesn't set coming_up_card (find already answers "what's worth
         # looking at"), but the card is a homepage highlight, not tied to
         # whichever view composed this particular render. scan_global() is
-        # memoised per UTC day, so a second call here is cheap.
-        coming_up_card = api.coming_up_card_html(api.events_card(r))
+        # memoised per UTC day, so a second call here is cheap. Plural
+        # (events_cards, not events_card): the odd night two things are
+        # both genuinely close -- an eclipse and a shower peak a day apart,
+        # say -- gets both, cycled, not just whichever ranks higher.
+        coming_up_card = api.coming_up_card_html(api.events_cards(r))
         body = api.PAGE.format(title=f"skymap.sh: {r.place.name}",
                                header=header, controls=controls,
                                wide_class=" w-wide" if fits_width else "",

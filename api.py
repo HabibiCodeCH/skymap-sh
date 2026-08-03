@@ -1249,17 +1249,10 @@ def _when_words(e, r):
     return f"on {watch:%a %d %b}"
 
 
-def events_teaser(r):
-    """One line for the bottom of a chart, or None if nothing is close.
-
-    Absent most of the time on purpose. A line that is always there stops
-    being read; a line that shows up only when the Perseids are two nights
-    out is the reason someone comes back.
-    """
-    e = ev_mod.next_event(r.place.lat, r.place.lon, r.tz, now_utc=r.when_utc,
-                          within_days=TEASER_DAYS)
-    if e is None:
-        return None
+def _event_teaser_text(e, r):
+    """One sentence for a single event -- shared by events_teaser() (the
+    single top event) and _event_card_from() (any event in events_cards()'s
+    list, not necessarily the top-ranked one)."""
     when = _when_words(e, r)
     if e["kind"] == "meteor_shower":
         bits = [f"{e['name']} peak {when}"]
@@ -1288,6 +1281,20 @@ def events_teaser(r):
     if e["kind"] == "elongation":
         return f"Coming up: {e['headline']} {when}, {e['note']}."
     return f"Coming up: {e['headline']} {when}."
+
+
+def events_teaser(r):
+    """One line for the bottom of a chart, or None if nothing is close.
+
+    Absent most of the time on purpose. A line that is always there stops
+    being read; a line that shows up only when the Perseids are two nights
+    out is the reason someone comes back.
+    """
+    e = ev_mod.next_event(r.place.lat, r.place.lon, r.tz, now_utc=r.when_utc,
+                          within_days=TEASER_DAYS)
+    if e is None:
+        return None
+    return _event_teaser_text(e, r)
 
 
 def _event_date(e):
@@ -1333,19 +1340,13 @@ def _card_urgency(days_away):
     return "later"
 
 
-def events_card(r):
-    """The next thing worth a card on this place's page, or None.
-
-    A flat dict, ready to hand to a template. Everything the card might want
-    is precomputed here rather than left as raw event fields, so the UI never
-    has to reimplement the "which night does this belong to" or "is the Moon
-    in the way" reasoning that the text views already do.
-    """
-    e = ev_mod.next_event(r.place.lat, r.place.lon, r.tz, now_utc=r.when_utc,
-                          within_days=TEASER_DAYS)
-    if e is None:
-        return None
-
+def _event_card_from(e, r):
+    """A flat dict, ready to hand to a template, for one event -- shared by
+    events_card() (the single top event) and events_cards() (any event in
+    its ranked list). Everything the card might want is precomputed here
+    rather than left as raw event fields, so the UI never has to reimplement
+    the "which night does this belong to" or "is the Moon in the way"
+    reasoning that the text views already do."""
     watch = e.get("best_local") or e["when_local"]
     days_away = (e["when_utc"] - r.when_utc).total_seconds() / 86400
 
@@ -1372,7 +1373,7 @@ def events_card(r):
         eyebrow=_when_words(e, r),
         headline=e["headline"],
         # One sentence, the same wording the terminal views use.
-        body=(events_teaser(r) or "").replace("Coming up: ", ""),
+        body=_event_teaser_text(e, r).replace("Coming up: ", ""),
         detail=detail,
         moon_verdict=e.get("moon_verdict"),
         note=e.get("note"),
@@ -1389,10 +1390,28 @@ def events_card(r):
     )
 
 
-def coming_up_card_html(card):
+def events_card(r):
+    """The next thing worth a card on this place's page, or None."""
+    e = ev_mod.next_event(r.place.lat, r.place.lon, r.tz, now_utc=r.when_utc,
+                          within_days=TEASER_DAYS)
+    return _event_card_from(e, r) if e is not None else None
+
+
+def events_cards(r, n=3):
+    """Up to n cards, most interesting first -- the coming-up card's
+    cycling data source for the (rare, maybe ten nights a year) case where
+    more than one thing is genuinely close, e.g. a partial eclipse and a
+    meteor shower peak a day apart. [] on a quiet night, same as
+    events_card() returning None."""
+    evs = ev_mod.next_events(r.place.lat, r.place.lon, r.tz, now_utc=r.when_utc,
+                             within_days=TEASER_DAYS, n=n)
+    return [_event_card_from(e, r) for e in evs]
+
+
+def coming_up_card_html(cards):
     """The homepage highlight at the <!-- skymap:coming-up-card --> marker
-    in PAGE -- "" when card is None (most nights), which the marker's own
-    :empty-ish placement in PAGE just renders as nothing.
+    in PAGE -- "" when cards is empty (most nights), which the marker's own
+    placement in PAGE just renders as nothing.
 
     One line, deliberately tight: glyph, the same one-sentence body the CLI
     teaser uses (already reads as "<headline> <eyebrow phrase>, <facts>", so
@@ -1402,35 +1421,84 @@ def coming_up_card_html(card):
     set per data-urgency in CSS -- retune the three hex values there, not
     here.
 
-    Dismiss is real, not just decorative: keyed on card["id"] (stable
-    across renders, shared with the ICS UID/RSS GUID) in localStorage, so
-    dismissing "Perseids peak" doesn't come back on refresh, but a
-    different event next week does. No server round-trip -- there's
-    nothing here a signed-out visitor's browser can't remember on its own.
-    The inline <script> right after the div (not PAGE's big shared one)
-    is deliberate: it runs the instant it's parsed, before anything below
-    it paints, so a dismissed card is gone before it would otherwise flash
-    on screen -- same reasoning as the .js-class script at the top of
-    <head>."""
-    if card is None:
+    cards can hold more than one (events_cards()'s ranked list, capped) for
+    the rare night two things are both genuinely close -- a partial eclipse
+    and a meteor shower peak a day apart, say. A "›" chevron cycles between
+    them client-side, same pattern as the 3D sphere's radiant HUD
+    (#radiant-hud-cycle): hidden entirely at one card, "1/2 ›" otherwise.
+    cards[0] renders server-side so a no-JS visitor still sees the top one
+    (just can't cycle or dismiss it -- both are inherently client-only
+    state); the rest ride along as inline JSON for the cycle handler.
+
+    Dismiss is real, not just decorative: keyed on each card's own id
+    (stable across renders, shared with the ICS UID/RSS GUID) in
+    localStorage, so dismissing "Perseids peak" doesn't come back on
+    refresh, but a different event next week does, and dismissing it while
+    cycled to it doesn't take a still-relevant eclipse with it. No server
+    round-trip -- there's nothing here a signed-out visitor's browser can't
+    remember on its own. The inline <script> right after the div (not
+    PAGE's big shared one) is deliberate: it runs the instant it's parsed,
+    before anything below it paints, so an already-dismissed top card is
+    gone before it would otherwise flash on screen -- same reasoning as the
+    .js-class script at the top of <head>."""
+    if not cards:
         return ""
+    first = cards[0]
+    payload = json.dumps([
+        dict(id=c["id"], glyph=c["glyph"], body=c["body"], urgency=c["urgency"],
+             cta=c["cta"]) for c in cards
+    ]).replace("</", "<\\/")   # a body/label can't smuggle a </script> close
     return (
-        f'<div class="coming-up" id="coming-up" data-urgency="{html.escape(card["urgency"])}" '
-        f'data-id="{html.escape(card["id"])}">'
-        f'<span class="cu-glyph" aria-hidden="true">{card["glyph"]}</span>'
-        f'<span class="cu-body">{html.escape(card["body"])}</span>'
-        f'<a class="cu-cta" href="{html.escape(card["cta"]["url"])}">{html.escape(card["cta"]["label"])}</a>'
+        f'<div class="coming-up" id="coming-up" data-urgency="{html.escape(first["urgency"])}" '
+        f'data-id="{html.escape(first["id"])}">'
+        f'<span class="cu-glyph" id="cu-glyph" aria-hidden="true">{first["glyph"]}</span>'
+        f'<span class="cu-body" id="cu-body">{html.escape(first["body"])}</span>'
+        f'<a class="cu-cta" id="cu-cta" href="{html.escape(first["cta"]["url"])}">'
+        f'{html.escape(first["cta"]["label"])}</a>'
+        f'<span class="cu-cycle" id="cu-cycle" role="button" tabindex="0" hidden></span>'
         f'<button type="button" class="cu-dismiss" id="coming-up-dismiss" '
         f'aria-label="Dismiss">✕</button>'
         f'</div>'
         f'<script>(function(){{'
         f"var el=document.getElementById('coming-up');"
         f"if(!el)return;"
-        f"if(localStorage.getItem('skymap-cu-dismissed')===el.dataset.id){{el.remove();return;}}"
+        f"var CARDS={payload};"
+        f"var KEY='skymap-cu-dismissed';"
+        f"var dismissed;"
+        f"try{{dismissed=JSON.parse(localStorage.getItem(KEY)||'[]');}}catch(e){{dismissed=[];}}"
+        f"CARDS=CARDS.filter(function(c){{return dismissed.indexOf(c.id)===-1;}});"
+        f"if(!CARDS.length){{el.remove();return;}}"
+        f"var idx=0;"
+        f"var glyphEl=document.getElementById('cu-glyph');"
+        f"var bodyEl=document.getElementById('cu-body');"
+        f"var ctaEl=document.getElementById('cu-cta');"
+        f"var cycleEl=document.getElementById('cu-cycle');"
+        f"function render(){{"
+        f"var c=CARDS[idx];"
+        f"el.dataset.urgency=c.urgency;"
+        f"el.dataset.id=c.id;"
+        f"glyphEl.textContent=c.glyph;"
+        f"bodyEl.textContent=c.body;"
+        f"ctaEl.textContent=c.cta.label;"
+        f"ctaEl.href=c.cta.url;"
+        # Hidden at one card, same "a 1/1 that does nothing is worse than
+        # no control" reasoning as the sphere's own chevron.
+        f"cycleEl.hidden=CARDS.length<2;"
+        f"cycleEl.textContent=(idx+1)+'/'+CARDS.length+' \\u203a';"
+        f"}}"
+        f"render();"
+        f"cycleEl.addEventListener('click',function(){{"
+        f"idx=(idx+1)%CARDS.length;"
+        f"render();"
+        f"}});"
         f"var btn=document.getElementById('coming-up-dismiss');"
         f"if(btn)btn.addEventListener('click',function(){{"
-        f"localStorage.setItem('skymap-cu-dismissed',el.dataset.id);"
-        f"el.remove();"
+        f"dismissed.push(CARDS[idx].id);"
+        f"try{{localStorage.setItem(KEY,JSON.stringify(dismissed));}}catch(e){{}}"
+        f"CARDS.splice(idx,1);"
+        f"if(!CARDS.length){{el.remove();return;}}"
+        f"idx=idx%CARDS.length;"
+        f"render();"
         f"}});"
         f'}})();</script>'
     )
@@ -2813,6 +2881,15 @@ document.documentElement.classList.add('js');
  .cu-cta{{color:var(--cu-accent,#ff87ff);text-decoration:none;
          white-space:nowrap;flex-shrink:0}}
  .cu-cta:hover{{text-decoration:underline}}
+ /* Same chevron the sphere's radiant HUD cycles multiple markers with
+    (#radiant-hud-cycle) -- one pattern for "more than one thing, one
+    line of room". [hidden] (not display:none) since JS is what decides
+    whether more than one dismissal-filtered card is actually left. */
+ .cu-cycle{{border:1px solid var(--cu-accent,#ff87ff);border-radius:4px;
+           padding:1px 6px;font-size:11px;color:var(--cu-accent,#ff87ff);
+           cursor:pointer;white-space:nowrap;flex-shrink:0;opacity:.75}}
+ .cu-cycle:hover{{opacity:1}}
+ .cu-cycle[hidden]{{display:none}}
  .cu-dismiss{{background:none;border:0;color:#6e7681;cursor:pointer;
              font-size:13px;line-height:1;padding:2px 4px;flex-shrink:0}}
  .cu-dismiss:hover{{color:#c9d1d9}}

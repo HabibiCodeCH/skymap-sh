@@ -799,27 +799,40 @@ def active_shower(lat, lon, tz_offset, now_utc=None, before=2.0, after=2.0):
     return None
 
 
-def next_event(lat, lon, tz_offset, now_utc=None, within_days=14,
-               horizons=TEASER_HORIZON):
-    """The single most interesting thing coming up, or None.
-
-    Not simply the nearest: a first-quarter Moon three days out should not
-    bury a meteor shower peaking in four. Rank by how much someone would
-    actually want to know, then break ties by date.
+def _ranked_upcoming(lat, lon, tz_offset, now_utc, within_days, horizons):
+    """Shared by next_event/next_events: what's upcoming, most interesting
+    first. Not simply nearest -- a first-quarter Moon three days out should
+    not bury a meteor shower peaking in four. Rank by how much someone
+    would actually want to know, then break ties by date.
 
     horizons=None considers everything inside within_days, which is what the
-    full list wants; the default applies the per-kind cutoffs above, which is
-    what the one-line teaser wants.
-    """
+    full list wants; the default (TEASER_HORIZON) applies the per-kind
+    cutoffs above, which is what the one-line teaser/card wants."""
     now = now_utc or dt.datetime.utcnow().replace(microsecond=0)
     evs = upcoming(lat, lon, tz_offset, now, days=within_days, visible_only=True)
     if horizons is not None:
         evs = [e for e in evs
                if e["kind"] in horizons
                and (e["when_utc"] - now).total_seconds() / 86400 <= horizons[e["kind"]]]
-    if not evs:
-        return None
-    return max(evs, key=lambda e: (_interest(e), -e["when_utc"].timestamp()))
+    evs.sort(key=lambda e: (_interest(e), -e["when_utc"].timestamp()), reverse=True)
+    return evs
+
+
+def next_event(lat, lon, tz_offset, now_utc=None, within_days=14,
+               horizons=TEASER_HORIZON):
+    """The single most interesting thing coming up, or None."""
+    evs = _ranked_upcoming(lat, lon, tz_offset, now_utc, within_days, horizons)
+    return evs[0] if evs else None
+
+
+def next_events(lat, lon, tz_offset, now_utc=None, within_days=14,
+                horizons=TEASER_HORIZON, n=3):
+    """Like next_event(), but the top n by the same ranking -- the coming-up
+    card's cycling data source for the (rare, maybe ten nights a year) case
+    where more than one thing is genuinely close, e.g. a partial eclipse and
+    a meteor shower peak a day apart. Capped at n so the card never has to
+    cycle through the whole two-week horizon."""
+    return _ranked_upcoming(lat, lon, tz_offset, now_utc, within_days, horizons)[:n]
 
 
 # How much a given event earns its place on a page that is mostly a star

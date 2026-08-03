@@ -442,6 +442,35 @@ def test_next_event_returns_none_when_nothing_is_close():
     assert n is None or n["when_utc"] <= dt.datetime(2026, 8, 2)
 
 
+def test_next_events_top_pick_matches_next_event():
+    now = dt.datetime(2026, 8, 11, 23, 0)
+    top = events.next_event(*ZURICH, now_utc=now, within_days=14)
+    plural = events.next_events(*ZURICH, now_utc=now, within_days=14)
+    assert plural[0] == top
+
+
+def test_next_events_surfaces_a_close_second_thing():
+    # The 12 Aug 2026 partial eclipse and the Perseid peak are less than a
+    # day apart here -- next_event() alone only returns the shower (it
+    # narrowly outranks the eclipse's _interest() score), so a lone-winner
+    # API would silently drop the eclipse from a page shown two nights out.
+    evs = events.next_events(*ZURICH, now_utc=dt.datetime(2026, 8, 11, 23, 0),
+                             within_days=14)
+    kinds = {e["kind"] for e in evs}
+    assert "meteor_shower" in kinds and "eclipse" in kinds
+
+
+def test_next_events_capped_at_n():
+    evs = events.next_events(*ZURICH, now_utc=dt.datetime(2026, 8, 11, 23, 0),
+                             within_days=14, n=1)
+    assert len(evs) == 1
+
+
+def test_next_events_returns_empty_list_when_nothing_is_close():
+    evs = events.next_events(*ZURICH, now_utc=dt.datetime(2026, 8, 1), within_days=1)
+    assert evs == [] or all(e["when_utc"] <= dt.datetime(2026, 8, 2) for e in evs)
+
+
 def test_equator_sees_both_northern_and_southern_radiants():
     evs = events.upcoming(*NAIROBI, now_utc=dt.datetime(2026, 1, 1), days=365,
                           visible_only=True)
