@@ -782,6 +782,25 @@ class FindOnThePngExport(unittest.TestCase):
         self.assertIn("ANDROMEDA GALAXY", page.text.upper())
         self.assertIn("ANDROMEDA GALAXY", png_art.upper())
 
+    def test_the_png_is_the_horizon_view_and_nothing_under_it(self):
+        # Every other branch of compose_chart_only passes inset=False; this
+        # one relied on render_linear's default, which is on. A shared find
+        # PNG came out with a zenith inset stacked under the horizon that no
+        # other PNG has.
+        when = dt.datetime(2026, 7, 30, 22, 0)
+        for find in ("M31", "Vega", "Jupiter"):
+            art = api.compose_chart_only(api.Request(place="Zurich", when=when,
+                                                     find=find, color=False))
+            self.assertNotIn("zenith", art, find)
+        # and the plain export it is meant to match still has none either
+        plain = api.compose_chart_only(api.Request(place="Zurich", when=when,
+                                                   color=False))
+        self.assertNotIn("zenith", plain)
+        # while the page both of them come from keeps its inset
+        page = api.compose(api.Request(place="Zurich", when=when, find="M31",
+                                       color=False))
+        self.assertIn("zenith", page.text)
+
     def test_chart_only_falls_back_to_the_plain_chart_for_an_unknown_target(self):
         r = api.Request(place="Zurich", when=dt.datetime(2026, 7, 30, 22, 0), find="Not A Real Thing")
         # Should not raise, and should still produce a real chart rather

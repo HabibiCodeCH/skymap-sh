@@ -2055,8 +2055,12 @@ def _find_chart_only(r):
                      line_limit=_fade_mag_limit(sun_alt),
                      bodies=_fade_visible_bodies(sun_alt, jd_shown) | {"Sun", "Moon"})
     sp = extra["span"]
+    # inset=False like every other branch of compose_chart_only. render_linear
+    # defaults it on, and this one call site never said otherwise, so the
+    # shared PNG for a ?find= view carried a zenith inset under the horizon
+    # that no other PNG has -- the one thing the export is meant to leave out.
     art, _st = render_linear(shown_utc, p.lat, p.lon, color=c, show_lines=r.lines,
-                             tle=r.tle, target=tgt, **extra)
+                             tle=r.tle, target=tgt, inset=False, **extra)
     shown_local = shown_utc + dt.timedelta(hours=p.offset(shown_utc))
     where = f"{int(sp)}° window" if zoomed else "full panorama"
     head = (f"  {p.name}   {shown_local:%d %b %Y %H:%M}   "
