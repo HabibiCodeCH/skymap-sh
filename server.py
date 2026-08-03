@@ -2319,12 +2319,13 @@ def events_page(request: Req, place: str | None):
         # events_html(), not ansi_to_html(res.text): the browser version wraps
         # each event row in a link to the chart for that moment, which the
         # ANSI text has no way to carry.
+        controls = api.controls_html(api.EXPLORE)
         body = api.PAGE.format(
             title=f"skymap.sh: what's coming up over {r.place.name}",
-            header=api.header_html(f"/{r.place.slug}/events"),
-            explore=api.EXPLORE,
+            header=api.header_html(f"{r.place.slug}/events"),
+            controls=controls, wide_class="", fit_width="null",
             body=api.events_html(r, days=_events_window(request)),
-            extra="", animate_btn="", quadrant_btn="", sphere_btn="")
+            kbd_urls="{}", shortcuts_hint="")
         return HTMLResponse(body, headers=_events_headers())
     return PlainTextResponse(api.strip_ansi(res.text) if not colour else res.text,
                              headers=_events_headers())
