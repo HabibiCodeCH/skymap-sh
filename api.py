@@ -2794,14 +2794,22 @@ document.documentElement.classList.add('js');
  .w{{max-width:1200px;margin:0 auto}}
  .w-wide{{max-width:none}}
  pre{{margin:0;font-size:11px;line-height:1.22;overflow-x:auto;font-variant-ligatures:none}}
- /* Bigger than the generic pre{{}} above -- scoped to the chart page only
-    (catalog/help/legend/stats stay at 11px), not a blanket change. Chart
-    height is invariant to this: the auto-fit JS measures #chart-pre's own
-    font size to pick column count, and the row count is always cols/
+ /* Bigger than the generic pre{{}} above -- meant to be scoped to the chart
+    page only, but #chart-pre is the *same id* every page's <pre> uses, so
+    a bare #chart-pre selector here was never actually scoped at all --
+    it silently bumped catalog/help/legend/stats too (the /stats live map
+    included, whose ASCII grid is a fixed character count: a bigger font
+    made it wider in pixels, which is what pushed it past the 1200px .w
+    cap into a horizontal scroll that didn't exist at 11px).
+    .kbd-hint ~ #chart-pre instead: SHORTCUTS_HINT (the "Keyboard: ..."
+    bar, .kbd-hint) is only ever non-empty on the chart route, so this
+    selector is what "chart page only" actually meant to say. Chart height
+    is invariant to this: the auto-fit JS measures #chart-pre's own font
+    size to pick column count, and the row count is always cols/
     HORIZON_COLS_PER_ROW, so a bigger font just means fewer, taller
     cells -- same total pixel height either way. Only the fixed-line-count
     prose below the chart actually grows, which is the whole point. */
- #chart-pre{{font-size:13px}}
+ .kbd-hint ~ #chart-pre{{font-size:13px}}
  .t{{color:#6e7681;font-size:12px;margin:0 0 18px}}
  .nav-row{{display:flex;justify-content:flex-end;align-items:center;
           flex-wrap:wrap;gap:8px}}
