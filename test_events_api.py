@@ -206,6 +206,49 @@ def test_find_keeps_the_zenith_inset():
     assert "zenith 70-90°" in found
 
 
+def _cardinal_row(text):
+    return next((l for l in text.split("\n") if " NE " in l and " SE " in l), None)
+
+
+def test_find_does_not_rotate_the_sky():
+    """render_linear re-centred the panorama on the target, which is the whole
+    point of a 60° window and pure damage on a 360° sweep: it spun the sky so
+    every cardinal and every label landed somewhere else than on the ordinary
+    chart, and the two stopped being comparable at a glance."""
+    when = dt.datetime(2026, 8, 3, 3, 46)
+    plain = api.strip_ansi(api.compose(_req(place="New York", when=when)).text)
+    found = api.strip_ansi(api.compose(_req(place="New York", when=when,
+                                            find="Neptune")).text)
+    assert _cardinal_row(plain) == _cardinal_row(found)
+
+
+def test_find_moves_nothing_but_its_own_target():
+    when = dt.datetime(2026, 8, 3, 3, 46)
+
+    def cols(text):
+        out = {}
+        for line in text.split("\n"):
+            for m in re.finditer(r"[A-Z][A-Za-z]{3,}", line):
+                out.setdefault(m.group(), m.start())
+        return out
+
+    a = cols(api.strip_ansi(api.compose(_req(place="New York", when=when)).text))
+    b = cols(api.strip_ansi(api.compose(_req(place="New York", when=when,
+                                             find="Neptune")).text))
+    moved = [k for k in set(a) & set(b) if a[k] != b[k]]
+    # Neptune itself is relabelled to NEPTUNE at the crosshair; nothing else
+    # in the sky should have shifted a column.
+    assert moved in ([], ["Neptune"]), moved
+
+
+def test_cropped_find_still_centres_on_the_target():
+    """A 60° window exists to put the thing in the middle."""
+    when = dt.datetime(2026, 8, 3, 3, 46)
+    zoomed = api.strip_ansi(api.compose(_req(place="New York", when=when,
+                                             find="Neptune", span=60)).text)
+    assert _cardinal_row(zoomed) is None       # too narrow to span NE..SE
+
+
 def test_cropped_find_still_has_no_inset():
     """An inset labelled 70-90° is a lie on a chart that stops at 40°."""
     when = dt.datetime(2026, 8, 4, 3, 38)

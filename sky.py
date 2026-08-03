@@ -1095,7 +1095,14 @@ def render_linear(when_utc, lat, lon, W=176, H=22, color=True, show_lines=True,
                 clamped = ""
                 quad_cells = []          # cropped -- no overlay grid on itself
 
-    if target is not None:                       # frame chosen by the object itself
+    # Frame chosen by the object itself -- but only when the caller actually
+    # asked for a crop. Re-centring a 60° window on the target is the whole
+    # point of a window; re-centring a full 360° sweep just rotates the sky,
+    # so every cardinal and every label lands somewhere different from the
+    # ordinary chart and the two stop being comparable. On a full panorama the
+    # crosshair marks the spot perfectly well without moving the horizon under
+    # it.
+    if target is not None and alt_cropped:
         W = 118
         span = float(req_span or 60.0)
         centre = float(target["az"])
