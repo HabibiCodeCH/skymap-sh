@@ -478,7 +478,9 @@ def scan_global(start_utc, days=90):
     return sorted(evs, key=lambda e: e["when_utc"])
 
 
-@lru_cache(maxsize=8)
+# Room for every rung of server.py's EVENTS_WINDOWS ladder plus a day
+# rollover, so a UTC midnight never evicts the whole table at once.
+@lru_cache(maxsize=16)
 def _scan_cached(day_ordinal, days):
     start = dt.datetime.fromordinal(day_ordinal)
     return tuple(scan_global(start, days))

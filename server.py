@@ -98,6 +98,11 @@ _sphere_places = Counter()
 # without their own tally. A subscription is a much stronger signal than a
 # page view -- someone put it in their calendar.
 _events_places = Counter()
+# What the "Coming up" line actually promoted, and how often it was absent.
+# Page views tell you people opened the list; this tells you whether the
+# feature does anything on the pages nobody opened it from -- which is most
+# of them, since the teaser is meant to be missing on a quiet night.
+_events_teased = Counter()
 _referrers = Counter()
 _TOP_KEEP = 2000            # trim the long tail so the tables cannot grow forever
 
@@ -119,6 +124,7 @@ def _save_stats_state():
                           places=dict(_places), finds=dict(_finds),
                           sphere_places=dict(_sphere_places),
                           events_places=dict(_events_places),
+                          events_teased=dict(_events_teased),
                           referrers=dict(_referrers)), f)
         os.replace(tmp, STATS_STATE_FILE)   # atomic -- a crash mid-write
     except OSError:                          # can't leave a corrupt file
@@ -148,6 +154,7 @@ def _load_stats_state():
     for counter, key in ((_stat, "stat"), (_places, "places"),
                          (_finds, "finds"), (_sphere_places, "sphere_places"),
                          (_events_places, "events_places"),
+                         (_events_teased, "events_teased"),
                          (_referrers, "referrers")):
         counter.clear()
         counter.update(data.get(key, {}))
@@ -272,6 +279,17 @@ def _tally(r, daytime, hit, mode, status, data, colour=True, referrer=None):
     # "asked for it": how often a visitor's chart actually included a real pass.
     if data.get("iss_pass"):
         _stat["iss"] += 1
+    # Only charts carry coming_up at all, so this counts the pages the teaser
+    # was actually eligible to appear on -- the denominator that makes the
+    # "shown" number mean anything.
+    if "coming_up" in data:
+        if data["coming_up"]:
+            _stat["teaser:shown"] += 1
+            card = data.get("coming_up_card") or {}
+            if card.get("headline"):
+                _events_teased[card["headline"][:34]] += 1
+        else:
+            _stat["teaser:absent"] += 1
     # Every remaining request-shaping parameter, so /stats reflects the full
     # surface rather than just the ones that happened to get counters as they
     # shipped -- dso/quadrant landed with none at all until this pass.
@@ -345,6 +363,12 @@ def stats_text(n=50):
             L.append(f"  by place ({len(_events_places):,} distinct)")
             for name, c in _events_places.most_common(10):
                 L.append(f"    {name[:26]:26} {c:>8,}")
+        shown, absent = _stat["teaser:shown"], _stat["teaser:absent"]
+        if shown or absent:
+            L.append(f"  teaser       {shown:,} shown / {absent:,} quiet "
+                     f"({100*shown/(shown+absent):.0f}% of charts)")
+            for name, c in _events_teased.most_common(8):
+                L.append(f"    {name[:26]:26} {c:>8,}")
         L.append("")
     pages = sorted(k for k in _stat if k.startswith("page:"))
     if pages:
@@ -409,7 +433,10 @@ def stats_json(n=50):
         events=dict(page=_stat["events"], ics=_stat["events.ics"],
                     rss=_stat["events.rss"], via_nav=_stat["events_ip"],
                     places_distinct=len(_events_places),
-                    top_places=dict(_events_places.most_common(n))),
+                    top_places=dict(_events_places.most_common(n)),
+                    teaser_shown=_stat["teaser:shown"],
+                    teaser_absent=_stat["teaser:absent"],
+                    top_teased=dict(_events_teased.most_common(n))),
         views={k[5:]: v for k, v in _stat.items() if k.startswith("view:")},
         pages={k[5:]: v for k, v in _stat.items() if k.startswith("page:")},
         modes={k[5:]: v for k, v in _stat.items() if k.startswith("mode:")},
@@ -1321,17 +1348,26 @@ def _events_headers():
                              f"s-maxage={EVENTS_EDGE}"}
 
 
+# Snapped to a ladder, not merely clamped. Clamping to 7-365 still leaves 359
+# distinct values, and the global scan is memoised on (date, days) -- so a
+# client walking ?days=30,31,32... got zero cache hits and 75 ms of origin
+# work every time, while minting a fresh CDN key on each request too. Seven
+# rungs is every window anyone actually wants and bounds both surfaces at
+# once, the same bargain ?t= (5-minute grain) and coordinates (0.1°) already
+# make. See "Bounding the cache-key surface" in DEPLOY.md.
+EVENTS_WINDOWS = (7, 14, 30, 60, 90, 180, 365)
+
+
 def _events_window(request: Req):
-    """?days=, clamped. Bounded here so a client can't mint unbounded cache
-    entries with ?days=1, ?days=2, ?days=3 -- the same free-cache-miss guard
-    ?w= and ?t= already get in api.Request."""
+    """?days=, snapped up to the next rung of EVENTS_WINDOWS."""
     raw = request.query_params.get("days")
     if not raw:
         return api.EVENTS_WINDOW_DAYS
     try:
-        return max(7, min(365, int(raw)))
+        want = max(7, min(365, int(raw)))
     except ValueError:
         return api.EVENTS_WINDOW_DAYS
+    return next(w for w in EVENTS_WINDOWS if w >= want)
 
 
 @app.get("/events", response_class=PlainTextResponse)
@@ -1353,7 +1389,7 @@ def events_ics(request: Req, place: str):
         return PlainTextResponse("", status_code=404)
     r = _build(request, place)
     _stat["events.ics"] += 1
-    _events_places[r.place.name] += 1
+    _events_places[r.place.slug] += 1
     body = api.events_ics(r, base_url=str(request.base_url).rstrip("/"),
                           days=_events_window(request))
     return Response(body, media_type="text/calendar; charset=utf-8",
@@ -1368,7 +1404,7 @@ def events_rss(request: Req, place: str):
         return PlainTextResponse("", status_code=404)
     r = _build(request, place)
     _stat["events.rss"] += 1
-    _events_places[r.place.name] += 1
+    _events_places[r.place.slug] += 1
     body = api.events_rss(r, base_url=str(request.base_url).rstrip("/"),
                           days=_events_window(request))
     return Response(body, media_type="application/rss+xml; charset=utf-8",
@@ -1385,7 +1421,9 @@ def events_page(request: Req, place: str | None):
     _stat["events"] += 1
     if next_only:
         _stat["param:next"] += 1
-    _events_places[r.place.name] += 1
+    # slug, not name: the no-place fallback is "Zurich" where a real lookup
+    # gives "Zürich", which split one city across two rows.
+    _events_places[r.place.slug] += 1
     res = api._compose_events(r, next_only=next_only,
                               days=_events_window(request))
     kind, colour = _wants(request)

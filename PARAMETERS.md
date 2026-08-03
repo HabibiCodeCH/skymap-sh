@@ -148,7 +148,7 @@ which is genuinely better for something low in a crowded field.
 |---|---|
 | `--events` / `/{place}/events` | the next 90 days, in local time |
 | `--next` / `?next=1` | one bare line, or nothing |
-| `--days=20` / `?days=20` | a different window; clamped to 7–365 |
+| `--days=20` / `?days=20` | a different window; snaps up to 7, 14, 30, 60, 90, 180 or 365 |
 | `/{place}/events.ics` | an iCalendar feed to subscribe to |
 | `/{place}/events.rss` | the same as RSS |
 | `--events --json` / `?format=json` | structured, under `upcoming` |

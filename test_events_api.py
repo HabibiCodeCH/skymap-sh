@@ -408,6 +408,54 @@ def test_bare_events_locates_by_ip(client):
     assert server._stat["events_ip"] == before + 1
 
 
+def test_stats_tracks_whether_the_teaser_fires(client):
+    """Page views say people opened the list. This says whether the feature
+    does anything on the pages nobody opened it from, which is most of them."""
+    server._stat["teaser:shown"] = 0
+    server._stat["teaser:absent"] = 0
+    client.get("/Zurich?t=2026-08-11T23:00", headers=CURL)   # Perseids two nights out
+    client.get("/Zurich?t=2026-01-20T23:00", headers=CURL)   # quiet
+    assert server._stat["teaser:shown"] >= 1
+    assert server._stat["teaser:absent"] >= 1
+    text = client.get("/stats", headers=CURL).text
+    assert "teaser" in text and "% of charts" in text
+    j = client.get("/stats?format=json", headers=CURL).json()["events"]
+    assert {"teaser_shown", "teaser_absent", "top_teased"} <= set(j)
+
+
+def test_stats_records_what_was_teased(client):
+    client.get("/Zurich?t=2026-08-11T23:00", headers=CURL)
+    assert any("Perseids" in k for k in server._events_teased), dict(server._events_teased)
+
+
+def test_events_places_keyed_on_slug_not_display_name(client):
+    """The no-place fallback is named "Zurich" where a real lookup gives
+    "Zürich", which split one city across two rows."""
+    # Starts from the persisted stats file, which may still hold name-keyed
+    # rows written before this change, so clear before asserting.
+    saved = server._events_places.copy()
+    server._events_places.clear()
+    try:
+        client.get("/Zurich/events", headers=CURL)
+        client.get("/events", headers=CURL)
+        assert "Zürich" not in server._events_places
+        assert "Zurich" in server._events_places
+    finally:
+        server._events_places.clear()
+        server._events_places.update(saved)
+
+
+def test_days_snaps_to_a_ladder(client):
+    """Clamping alone left 359 distinct values against an 8-entry memo, so a
+    client walking ?days= got zero cache hits and 75 ms of origin work each
+    time, plus a fresh CDN key. See "Bounding the cache-key surface"."""
+    got = {client.get(f"/Zurich/events?format=json&days={d}",
+                      headers=CURL).json()["window_days"]
+           for d in (1, 8, 20, 45, 100, 200, 9999)}
+    assert got <= set(server.EVENTS_WINDOWS), got
+    assert len(got) <= len(server.EVENTS_WINDOWS)
+
+
 # ---------------------------------------------------------------- ICS
 def test_ics_is_well_formed():
     ics = api.events_ics(_req(), days=30)
