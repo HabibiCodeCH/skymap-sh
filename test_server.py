@@ -146,12 +146,24 @@ class GifButtonAlwaysVisible(unittest.TestCase):
         self.assertIn("if(gifBtn)skymapPollGifCapacity(gifBtn);", resp.text)
 
     def test_animate_no_longer_kicks_off_the_poll_itself(self):
-        # Regression guard against double-polling (two setInterval loops on
-        # one button) if this ever gets called from both places again.
+        # Regression guard against double-polling (two poll calls on one
+        # button) if this ever gets called from both places again.
         resp = self.client.get("/Ibiza", headers=BROWSER)
         animate_fn = resp.text.split("function skymapAnimate(btn){")[1]
         animate_fn = animate_fn.split("\nfunction skymapPollGifCapacity")[0]
         self.assertNotIn("skymapPollGifCapacity(gifBtn)", animate_fn)
+
+    def test_capacity_poll_is_a_single_check_not_a_repeating_timer(self):
+        # Used to also setInterval(poll,4000) for as long as the tab stayed
+        # open, which cost every visitor ~15 rate-limited requests a minute
+        # just for having a chart page open -- a real contributor to normal
+        # visitors ("land, click, refresh") hitting the rate limit. A stale
+        # capacity read is harmless (skymapRenderGif already catches a 503
+        # on click), so one check on page load is enough.
+        resp = self.client.get("/Ibiza", headers=BROWSER)
+        poll_fn = resp.text.split("function skymapPollGifCapacity(gifBtn){")[1]
+        poll_fn = poll_fn.split("\nfunction skymapRenderGif")[0]
+        self.assertNotIn("setInterval", poll_fn)
 
 
 class StatsPagesInBrowser(unittest.TestCase):
