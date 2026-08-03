@@ -2561,6 +2561,71 @@ SPHERE_PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
  #radiant-hud-cycle[hidden]{{display:none}}
  body.daytime #radiant-hud{{color:#8a2f74}}
  body.daytime #radiant-hud span{{border-bottom-color:rgba(138,47,116,.55)}}
+ /* Red mode (the Red button). This page is meant to be held up at the sky
+    outdoors, where its normal white-and-blue undoes the dark adaptation
+    that takes about 20 minutes of standing outside to build. Rods, the
+    cells night vision actually runs on, barely respond to long
+    wavelengths, so deep red at low intensity costs far less of it -- the
+    same reason observatories and cockpits are lit red.
+    Deliberately last in this stylesheet: these share specificity with the
+    body.daytime rules above and need to win against them, since red mode
+    stays on if someone opens the page again in daylight.
+    The 3D scene is recoloured object by object in JS instead (paintScene
+    below), not with a CSS filter over the canvas -- a filter is one line
+    but costs a full-screen composite every frame on exactly the hardware
+    least able to spare it. */
+    Everything painted straight onto the sky is :not(.daytime) below. Red
+    mode dulls the daytime dome but doesn't get rid of it, and red text on
+    that broad red field is unreadable at any weight -- worse with the
+    glow, which only ever existed for contrast against a black sky. In
+    daylight these rules stand down and the black-on-bright treatment
+    body.daytime already uses takes over, refined just below. The chrome
+    with its own dark background (toolbar, inputs, overlay) is unaffected
+    by the dome and stays red in both. */
+ body.night:not(.daytime) #hud{{color:#8c2a20;background:none}}
+ body.night:not(.daytime) #hud a{{color:#c9382a}}
+ body.night:not(.daytime) #heading{{color:#a83224}}
+ body.night #debug-hud{{color:#c9382a}}
+ body.night:not(.daytime) .sky-label span{{color:#c0362a;text-shadow:0 0 4px #000,0 0 4px #000}}
+ body.night:not(.daytime) .con-label span{{color:#8f2b20}}
+ body.night:not(.daytime) .dso-label span{{color:#a8352a}}
+ body.night:not(.daytime) .body-label span{{color:#e0533a}}
+ body.night:not(.daytime) .found-label span{{color:#e0533a}}
+ body.night:not(.daytime) .radiant-label span{{color:#c9382a}}
+ /* Red mode in daylight. Two body classes beats the one in the plain
+    body.daytime rules above, so this wins without depending on source
+    order. Black and greys, ranked the way the night palette ranks them:
+    planets darkest and boldest, then stars, then the fainter deep-sky and
+    constellation labels. No glow anywhere -- a black halo on a red field
+    just smears. */
+ body.night.daytime .sky-label span{{color:#1c1c1c;text-shadow:none}}
+ body.night.daytime .con-label span{{color:#4a4a4a}}
+ body.night.daytime .dso-label span{{color:#3d3d3d}}
+ body.night.daytime .body-label span{{color:#0a0a0a}}
+ body.night.daytime .found-label span{{color:#000}}
+ body.night.daytime .radiant-label span{{color:#1c1c1c}}
+ body.night.daytime #radiant-hud{{color:#1c1c1c;text-shadow:none}}
+ body.night.daytime #radiant-hud span{{border-bottom-color:rgba(28,28,28,.55)}}
+ body.night.daytime #find-msg,body.night.daytime #find-arrow{{color:#111;
+              text-shadow:none}}
+ body.night.daytime #find-reticle .tick{{background:#111;box-shadow:none}}
+ body.night #toolbar{{background:linear-gradient(rgba(6,2,2,0),rgba(6,2,2,.85) 65%)}}
+ body.night .toggle-btn{{background:#0d0505;border-color:#4d140f;color:#8c2a20}}
+ body.night .toggle-btn.on{{color:#e0533a;border-color:#7a1f14}}
+ body.night #find-input,body.night #place-input{{background:#0d0505;
+              border-color:#4d140f;color:#c0362a}}
+ body.night #find-input::placeholder,body.night #place-input::placeholder{{color:#6b1d13}}
+ body.night #find-form button,body.night #place-form button{{background:#7a1f14;color:#f0a08f}}
+ body.night #find-cancel{{background:#4d140f !important}}
+ body.night #find-msg,body.night #find-arrow{{color:#d1452f}}
+ body.night #find-reticle .tick{{background:#e0533a}}
+ body.night #radiant-hud{{color:#c9382a}}
+ body.night #radiant-hud span{{border-bottom-color:rgba(201,56,42,.55)}}
+ body.night #radiant-hud span:active{{color:#f0a08f}}
+ body.night #overlay{{background:rgba(6,2,2,.94)}}
+ body.night #enable{{background:#7a1f14;color:#f0a08f}}
+ body.night #enable:hover{{background:#8f2619}}
+ body.night #status{{color:#8c2a20}}
 </style></head><body>
 <div id="hud"><a href="/">&larr; {place_name}{home_suffix}</a><span id="heading"></span><span id="mode-label"></span></div>
 <div id="debug-hud"></div>
@@ -2575,6 +2640,7 @@ you're holding it; anywhere else, drag to look around.</p>
 </form>
 <button id="labels-toggle" class="toggle-btn on">Labels</button>
 <button id="dso-toggle" class="toggle-btn">Deep sky</button>
+<button id="night-toggle" class="toggle-btn" title="Red light: keeps your night vision">Red</button>
 <form id="find-form" autocomplete="off">
 <input id="find-input" type="text" placeholder="Find (Venus, Vega...)">
 <button type="submit">Find</button>
@@ -3020,6 +3086,106 @@ function updateSkyDome(sunAlt) {{
   scene.add(skyDome);
 }}
 
+// Red mode. See the body.night rules in the stylesheet for why red, and
+// for why the DOM half is done there while the scene is done here.
+//
+// Remembered across visits: someone who turned this on is outside in the
+// dark, and making them find the button again every time they reopen the
+// page defeats the point of it. localStorage throws outright in Safari's
+// private mode rather than failing soft, hence the try/catch on both ends.
+var nightOn = false;
+try {{ nightOn = localStorage.getItem('skymap.red') === '1'; }} catch (e) {{}}
+
+// Red mode is darker as well as redder -- dark adaptation is spent on
+// total light too, not only on wavelength.
+var NIGHT_DIM = 0.85;
+function redify(c) {{
+  var lum = 0.2126 * c.r + 0.7152 * c.g + 0.0722 * c.b;
+  c.setRGB(lum * NIGHT_DIM, lum * NIGHT_DIM * 0.09, lum * NIGHT_DIM * 0.03);
+}}
+
+// Red mode is a filter over the real colours, never a replacement for
+// them: whatever an object would be in normal mode is remembered the
+// first time it's seen, and every repaint maps from that. Mapping from
+// whatever was last drawn would compound red on red on every toggle.
+function setTrueColor(mat, hex) {{
+  mat.userData.trueColor = hex;
+  mat.color.setHex(hex);
+  if (nightOn) redify(mat.color);
+}}
+
+function paintScene() {{
+  scene.traverse(function(o) {{
+    var mat = o.material;
+    // A vertexColors material keeps material.color at plain white, as a
+    // multiplier over the per-star colours handled just below -- mapping
+    // that white to red as well would apply the filter twice.
+    if (mat && mat.color && !mat.vertexColors) {{
+      if (mat.userData.trueColor === undefined) mat.userData.trueColor = mat.color.getHex();
+      mat.color.setHex(mat.userData.trueColor);
+      if (nightOn) redify(mat.color);
+    }}
+    var geo = o.geometry;
+    var attr = geo && geo.getAttribute ? geo.getAttribute('color') : null;
+    if (!attr) return;
+    if (!geo.userData.trueColor) geo.userData.trueColor = attr.array.slice();
+    var src = geo.userData.trueColor, arr = attr.array;
+    for (var i = 0; i < arr.length; i += 3) {{
+      if (nightOn) {{
+        var lum = 0.2126 * src[i] + 0.7152 * src[i + 1] + 0.0722 * src[i + 2];
+        arr[i] = lum * NIGHT_DIM;
+        arr[i + 1] = lum * NIGHT_DIM * 0.09;
+        arr[i + 2] = lum * NIGHT_DIM * 0.03;
+      }} else {{
+        arr[i] = src[i]; arr[i + 1] = src[i + 1]; arr[i + 2] = src[i + 2];
+      }}
+    }}
+    attr.needsUpdate = true;
+  }});
+  document.body.classList.toggle('night', nightOn);
+  _paintedChildren = scene.children.length;
+}}
+
+// Scene objects arrive at four unrelated moments: the first fetch, the
+// deep sky toggle's own fetch, a find marker landing, and a time-scrub
+// reload. Watching the child count in animate() catches all of them for
+// one integer compare per frame, which beats threading a repaint call
+// through every call site that ever adds something and quietly missing
+// the one added next year.
+var _paintedChildren = -1;
+
+var nightBtn = document.getElementById('night-toggle');
+nightBtn.classList.toggle('on', nightOn);
+nightBtn.addEventListener('click', function() {{
+  nightOn = !nightOn;
+  this.classList.toggle('on', nightOn);
+  try {{ localStorage.setItem('skymap.red', nightOn ? '1' : '0'); }} catch (e) {{}}
+  paintScene();
+}});
+paintScene();   // sets body.night now, before any of the sky has loaded
+
+// The phone locking itself every 30 seconds while you hold it up at the
+// sky is the single most annoying thing it can do to this page. Chrome on
+// Android and Safari 16.4+ have the Wake Lock API; everywhere else the
+// request rejects and the page carries on exactly as before.
+var _wakeLock = null;
+function requestWakeLock() {{
+  if (!('wakeLock' in navigator) || _wakeLock) return;
+  navigator.wakeLock.request('screen').then(function(wl) {{
+    _wakeLock = wl;
+    wl.addEventListener('release', function() {{ _wakeLock = null; }});
+  }}).catch(function() {{}});
+}}
+// A lock is dropped, not paused, the moment the page stops being visible,
+// and is never restored on its own -- without this it would survive
+// exactly one tab switch and then silently stop working for the rest of
+// the session.
+document.addEventListener('visibilitychange', function() {{
+  if (document.visibilityState === 'visible') requestWakeLock();
+}});
+enableBtn.addEventListener('click', requestWakeLock);
+requestWakeLock();
+
 fetch('/' + PLACE + '/sphere.json' + window.location.search).then(function(r) {{
   if (!r.ok) throw new Error('sphere.json ' + r.status);
   return r.json();
@@ -3441,7 +3607,10 @@ function updateFindArrow() {{
     var foundLabel = addLabel(findTarget.name, v, 'found-label', 0);
     var foundName = findTarget.name;
     setTimeout(function() {{
-      foundPoint.material.color.set('#ffffff');
+      // Via setTrueColor, not material.color directly: in red mode a raw
+      // white here would be the one bright white dot on an otherwise red
+      // screen, five seconds after every successful find.
+      setTrueColor(foundPoint.material, 0xffffff);
       removeLabel(foundLabel);
       if (findMsg.textContent === '✓ Found: ' + foundName + '!') findMsg.textContent = '';
     }}, 5000);
@@ -3537,6 +3706,7 @@ function animate() {{
   // camera every frame via labelRenderer.render() below), and its sort +
   // per-pair overlap check over every labeled object was real, continuous
   // GC pressure that added up over a long session.
+  if (scene.children.length !== _paintedChildren) paintScene();
   var throttleTick = mode && ++_frame % 4 === 0;
   if (throttleTick) updateHeading();
   updateFindArrow();

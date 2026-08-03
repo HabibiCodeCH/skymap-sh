@@ -1420,6 +1420,85 @@ class SpherePage(unittest.TestCase):
         self.assertNotIn("DEADZONE_DEG", resp.text)
         self.assertNotIn("function deadzone(", resp.text)
 
+    def test_red_mode_is_a_button_and_is_off_until_someone_presses_it(self):
+        # Red mode exists because the page gets used outdoors after dark,
+        # but it stays opt-in: it repaints the entire sky, and springing
+        # that on anyone who happens to open the page at night would be a
+        # far bigger surprise than the brightness it fixes.
+        resp = self.client.get("/Zurich/sphere", headers=BROWSER)
+        self.assertIn('<button id="night-toggle" class="toggle-btn"', resp.text)
+        # class="toggle-btn on" would mean pre-enabled, the thing this
+        # test exists to prevent.
+        self.assertNotIn('id="night-toggle" class="toggle-btn on"', resp.text)
+        self.assertIn("var nightOn = false;", resp.text)
+        # The only thing allowed to turn it on at load is the visitor's own
+        # remembered choice -- never sun_alt, never the clock.
+        self.assertIn("localStorage.getItem('skymap.red') === '1'", resp.text)
+
+    def test_red_mode_in_daylight_writes_names_in_black_not_red(self):
+        # Red mode dulls the daytime sky dome but doesn't remove it, so the
+        # background stays a broad red field. Red labels on it were
+        # unreadable, and the glow behind them (there for contrast against
+        # a black sky) smeared rather than helped. Anything painted
+        # straight onto the sky stands down in daylight and hands over to
+        # black and greys instead.
+        resp = self.client.get("/Zurich/sphere", headers=BROWSER)
+        self.assertIn("body.night:not(.daytime) .sky-label span", resp.text)
+        self.assertIn("body.night.daytime .sky-label span{color:#1c1c1c;text-shadow:none}",
+                      resp.text)
+        # Two body classes, so it wins over the plain body.daytime rules
+        # without depending on where it sits in the stylesheet.
+        for sel in ("body.night.daytime .con-label span",
+                    "body.night.daytime .body-label span",
+                    "body.night.daytime #find-reticle .tick"):
+            self.assertIn(sel, resp.text)
+
+    def test_red_mode_maps_from_true_colours_not_the_last_ones_drawn(self):
+        # Toggling red on, off and on again must land back on the same
+        # colours. Mapping from whatever is currently on the material
+        # instead of from the remembered original compounds the filter on
+        # every toggle, and the sky creeps darker each time.
+        resp = self.client.get("/Zurich/sphere", headers=BROWSER)
+        self.assertIn("mat.userData.trueColor === undefined", resp.text)
+        self.assertIn("geo.userData.trueColor = attr.array.slice()", resp.text)
+        # The find marker's five-second fade to white is the one place that
+        # used to set a colour behind paintScene's back.
+        self.assertIn("setTrueColor(foundPoint.material, 0xffffff);", resp.text)
+
+    def test_red_mode_skips_vertex_colour_materials(self):
+        # Stars carry their colour per vertex and leave material.color at
+        # white as a multiplier. Redifying that white as well multiplies
+        # the filter in twice and the stars come out near black.
+        resp = self.client.get("/Zurich/sphere", headers=BROWSER)
+        self.assertIn("if (mat && mat.color && !mat.vertexColors) {", resp.text)
+
+    def test_red_mode_repaints_objects_that_arrive_after_the_toggle(self):
+        # Deep sky objects, find markers and time-scrub reloads all land in
+        # the scene long after red mode was switched on. Without this they
+        # come in at full brightness against an otherwise red sky.
+        resp = self.client.get("/Zurich/sphere", headers=BROWSER)
+        self.assertIn("if (scene.children.length !== _paintedChildren) paintScene();",
+                      resp.text)
+
+    def test_red_mode_recolours_the_scene_rather_than_filtering_the_canvas(self):
+        # A CSS filter over the canvas is the one-line version of this and
+        # costs a full-screen composite pass every frame on a phone. The
+        # scene is recoloured once per toggle instead.
+        resp = self.client.get("/Zurich/sphere", headers=BROWSER)
+        self.assertNotIn("filter:hue-rotate", resp.text)
+        self.assertNotIn("filter: hue-rotate", resp.text)
+        self.assertNotIn("canvas{filter", resp.text)
+
+    def test_sphere_page_holds_a_screen_wake_lock(self):
+        # Held up at the sky outdoors, the phone auto-locking mid-session
+        # is the worst thing it can do to this page.
+        resp = self.client.get("/Zurich/sphere", headers=BROWSER)
+        self.assertIn("navigator.wakeLock.request('screen')", resp.text)
+        # A wake lock is dropped rather than paused whenever the page stops
+        # being visible and is never restored on its own -- without the
+        # re-request it survives exactly one interruption.
+        self.assertIn("document.visibilityState === 'visible'", resp.text)
+
     def test_sphere_page_404s_for_unknown_place(self):
         resp = self.client.get("/Nowhereville/sphere", headers=BROWSER)
         self.assertEqual(resp.status_code, 404)
