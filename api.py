@@ -1677,8 +1677,12 @@ def _event_rows(r, days, colour_free=False):
                 rows.append(("mute", ("  " if i == 0 else "  " + " " * 12) + l, None))
 
     rows.append(("blank", "", None))
-    rows.append(("mute", "  Subscribe: add /events.ics to your calendar, or "
-                         "/events.rss to a reader.", None))
+    # Bare /events.ics defaults away from p (Zurich, or whoever's IP hits it
+    # next) -- carrying the slug is what makes "subscribe" actually mean
+    # "subscribe to events here" rather than "subscribe to events wherever
+    # this URL happens to resolve to later."
+    rows.append(("mute", f"  Subscribe: add /{p.slug}/events.ics to your "
+                         f"calendar, or /{p.slug}/events.rss to a reader.", None))
     return rows, every
 
 

@@ -2727,5 +2727,63 @@ class BareDomainGeoRedirectsToNearbyCity(unittest.TestCase):
         self.assertNotIn("Location", resp.headers)
 
 
+class OtherPlaceRoutesAlsoRedirectCoordinates(unittest.TestCase):
+    """The coordinates-to-city bounce lived only in _respond (the main chart
+    route) -- /events and /sphere resolve a place through the same
+    _build/resolve_place path but never got the same treatment, so a browser
+    on /46.20,6.15/events or /46.20,6.15/sphere still saw raw coordinates
+    everywhere the main chart already said "Geneva". Extracted into
+    _nearby_city_for_redirect precisely so a fourth route doesn't repeat
+    this gap."""
+
+    def setUp(self):
+        client_cm = TestClient(server.app)
+        self.client = client_cm.__enter__()
+        self.addCleanup(client_cm.__exit__, None, None, None)
+        server._cache.clear()
+
+    def test_events_page_redirects_to_the_city_name(self):
+        resp = self.client.get("/46.20,6.15/events", headers=BROWSER,
+                               follow_redirects=False)
+        self.assertEqual(resp.status_code, 302)
+        self.assertEqual(resp.headers["location"], "/Geneva/events")
+
+    def test_events_redirect_is_not_cached_at_the_edge(self):
+        resp = self.client.get("/46.20,6.15/events", headers=BROWSER,
+                               follow_redirects=False)
+        self.assertEqual(resp.headers.get("cache-control"), "no-store")
+
+    def test_bare_events_with_cdn_geo_headers_redirects_to_the_city_name(self):
+        resp = self.client.get(
+            "/events", headers={**BROWSER, "cf-iplatitude": "46.20",
+                                "cf-iplongitude": "6.15"},
+            follow_redirects=False)
+        self.assertEqual(resp.status_code, 302)
+        self.assertEqual(resp.headers["location"], "/Geneva/events")
+
+    def test_events_terminal_mode_keeps_the_literal_coordinates(self):
+        resp = self.client.get("/46.20,6.15/events", headers=TERMINAL)
+        self.assertEqual(resp.status_code, 200)
+        self.assertNotIn("Location", resp.headers)
+
+    def test_sphere_page_redirects_to_the_city_name(self):
+        resp = self.client.get("/46.20,6.15/sphere", headers=BROWSER,
+                               follow_redirects=False)
+        self.assertEqual(resp.status_code, 302)
+        self.assertEqual(resp.headers["location"], "/Geneva/sphere")
+
+    def test_sphere_redirect_is_not_cached_at_the_edge(self):
+        resp = self.client.get("/46.20,6.15/sphere", headers=BROWSER,
+                               follow_redirects=False)
+        self.assertEqual(resp.headers.get("cache-control"), "no-store")
+
+    def test_sphere_redirect_preserves_the_query_string(self):
+        resp = self.client.get("/46.20,6.15/sphere?t=2026-07-30T23:00",
+                               headers=BROWSER, follow_redirects=False)
+        self.assertEqual(resp.status_code, 302)
+        self.assertEqual(resp.headers["location"],
+                         "/Geneva/sphere?t=2026-07-30T23:00")
+
+
 if __name__ == "__main__":
     unittest.main()
