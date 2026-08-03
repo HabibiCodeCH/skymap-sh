@@ -1640,52 +1640,57 @@ async def _animate(base_r, hours, base_url, is_ui=False):
         _animate_active -= 1
 
 
+def _nearby_city_for_redirect(request: Req, place: str | None, mode: str):
+    """The city name a browser landing on raw coordinates should be bounced
+    to instead, or None if there's nothing to redirect. Coordinates can come
+    from the URL path itself (an explicit /lat,lon, the 'm' keyboard
+    shortcut's real GPS fix, a bookmarked link, someone pasting lat,lon into
+    the search box) or, when place is None, the CDN's own IP geolocation on
+    a bare landing (_geo, the same fallback api.Request uses to render).
+
+    curl/JSON/ICS/RSS callers keep the exact coordinates verbatim --
+    redirecting those would silently break anyone scripting or subscribing
+    against a specific lat/lon, and there's no URL bar to tidy up there, so
+    every caller of this must gate on mode == "html" itself before using it.
+    """
+    if mode != "html":
+        return None
+    if place:
+        m = api.LATLON.match(place)
+        if not m:
+            return None
+        lat, lon = float(m.group(1)), float(m.group(2))
+    else:
+        latlon = _geo(request)
+        if not latlon:
+            return None
+        lat, lon = latlon
+    if not (-90 <= lat <= 90 and -180 <= lon <= 180):
+        return None
+    return api._confident_nearby_city(lat, lon)
+
+
 def _respond(request: Req, place: str | None):
     mode, colour = _wants(request)
     q = request.query_params
-    if mode == "html":
-        # A browser landing on raw coordinates (the 'm' keyboard shortcut's
-        # precise GPS fix, an old bookmarked link, someone pasting lat,lon
-        # into the search box, or the CDN's own IP geolocation on a bare
-        # domain landing) gets bounced to the nearby city's own name instead
-        # -- both the URL bar and the search field then read "Geneva", not
-        # "46.20,6.20". curl/JSON keep the exact coordinates verbatim:
-        # redirecting there would silently break anyone scripting against a
-        # specific lat/lon, and there's no URL bar to tidy up. Terminal-mode
-        # ?animate= not excluded here -- it's already the same story either
-        # way, since this only ever fires when mode=="html".
-        latlon = None
-        if place:
-            m = api.LATLON.match(place)
-            if m:
-                latlon = float(m.group(1)), float(m.group(2))
-        else:
-            # place is None on the bare domain -- _geo(request) is the same
-            # CDN IP-geolocation fallback api.Request falls back to for
-            # rendering, so without this branch a visitor landing on "/" in
-            # the middle of Geneva saw raw coordinates on first load and
-            # only got "Geneva" after clicking m or navigating elsewhere.
-            latlon = _geo(request)
-        if latlon:
-            lat, lon = latlon
-            if -90 <= lat <= 90 and -180 <= lon <= 180:
-                city = api._confident_nearby_city(lat, lon)
-                if city:
-                    _stat["geo_redirect"] += 1
-                    qs = f"?{request.url.query}" if request.url.query else ""
-                    # no-store, like /healthz -- without an explicit
-                    # Cache-Control, Cloudflare applies its own default TTL
-                    # to this at the edge, and a visitor who hit these exact
-                    # coordinates before this redirect existed (or before
-                    # today's deploy) keeps getting served that stale,
-                    # un-redirected response indefinitely. Even more load-
-                    # bearing here than the explicit-coordinate case: this
-                    # redirect is keyed off *this visitor's* IP, so caching
-                    # it at all would bounce every later visitor sharing
-                    # that edge cache entry to Geneva regardless of where
-                    # they actually are.
-                    return RedirectResponse(f"/{quote(city)}{qs}", status_code=302,
-                                           headers={"Cache-Control": "no-store"})
+    # A browser landing on raw coordinates gets bounced to the nearby city's
+    # own name instead -- both the URL bar and the search field then read
+    # "Geneva", not "46.20,6.20".
+    city = _nearby_city_for_redirect(request, place, mode)
+    if city:
+        _stat["geo_redirect"] += 1
+        qs = f"?{request.url.query}" if request.url.query else ""
+        # no-store, like /healthz -- without an explicit Cache-Control,
+        # Cloudflare applies its own default TTL to this at the edge, and a
+        # visitor who hit these exact coordinates before this redirect
+        # existed (or before today's deploy) keeps getting served that
+        # stale, un-redirected response indefinitely. Even more load-bearing
+        # when place is None (the bare-domain, IP-geolocation case): this
+        # redirect is keyed off *this visitor's* IP, so caching it at all
+        # would bounce every later visitor sharing that edge cache entry to
+        # Geneva regardless of where they actually are.
+        return RedirectResponse(f"/{quote(city)}{qs}", status_code=302,
+                               headers={"Cache-Control": "no-store"})
     if place and api.lookup_place(place) is None:
         near = api.suggest(place)
         did = ("\n  Did you mean:\n" + "".join(f"    {n}\n" for n in near)
@@ -2301,6 +2306,17 @@ def sphere_json(request: Req, place: str):
 
 @app.get("/{place}/sphere", response_class=HTMLResponse)
 def sphere_page(request: Req, place: str):
+    # This route is always HTML (response_class=HTMLResponse), so the same
+    # coordinates-to-city bounce the main chart route does always applies
+    # here too -- /46.20,6.10/sphere used to show the raw coordinates in the
+    # title and the 3D view's own header, where /Geneva/sphere already said
+    # "Geneva".
+    city = _nearby_city_for_redirect(request, place, "html")
+    if city:
+        _stat["geo_redirect"] += 1
+        qs = f"?{request.url.query}" if request.url.query else ""
+        return RedirectResponse(f"/{quote(city)}/sphere{qs}", status_code=302,
+                               headers={"Cache-Control": "no-store"})
     p = api.lookup_place(place)
     if p is None:
         return PlainTextResponse("Not found.\n", status_code=404)
@@ -2415,6 +2431,19 @@ def events_rss(request: Req, place: str | None):
 
 @app.get("/{place}/events", response_class=PlainTextResponse)
 def events_page(request: Req, place: str | None):
+    kind, colour = _wants(request)
+    # Same bounce-to-city-name the main chart route does -- this route
+    # resolves coordinates through the same _build/resolve_place path, which
+    # keeps coordinates as the display name by design, so without this an
+    # /events page reached via raw coordinates (or a bare /events landing by
+    # IP) showed "46.20,6.10" everywhere the main chart already says
+    # "Geneva".
+    city = _nearby_city_for_redirect(request, place, kind)
+    if city:
+        _stat["geo_redirect"] += 1
+        qs = f"?{request.url.query}" if request.url.query else ""
+        return RedirectResponse(f"/{quote(city)}/events{qs}", status_code=302,
+                               headers={"Cache-Control": "no-store"})
     if place is not None and api.lookup_place(place) is None:
         return PlainTextResponse(UNKNOWN.format(q=place, did=api.suggest(place)),
                                  status_code=404)
@@ -2428,7 +2457,6 @@ def events_page(request: Req, place: str | None):
     _events_places[r.place.slug] += 1
     res = api._compose_events(r, next_only=next_only,
                               days=_events_window(request))
-    kind, colour = _wants(request)
     if kind == "json":
         return JSONResponse(res.data, headers=_events_headers())
     if next_only:

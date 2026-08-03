@@ -114,6 +114,16 @@ def test_events_list_shows_invisible_ones_separately():
     assert "Perseids" in text
 
 
+def test_subscribe_line_carries_the_place():
+    # Used to be bare "/events.ics", which defaults away from this place
+    # (to Zurich, or whoever's IP hits it next) -- so "subscribe" silently
+    # meant "subscribe to events wherever this URL happens to resolve to
+    # later," not "subscribe to events here."
+    text = api._compose_events(_req(place="Tokyo"), days=30).text
+    assert "/Tokyo/events.ics" in text
+    assert "/Tokyo/events.rss" in text
+
+
 def test_shower_is_filed_under_the_evening_not_the_peak_instant():
     """The 2026 Perseid maximum is 13 Aug 02:10 UT, so dating the row by the
     peak put it on Thursday the 13th while every almanac says the 12th. Same
