@@ -2069,10 +2069,13 @@ def stats_daily(request: Req):
     headers = {"Cache-Control": "no-store"}
     mode, _colour = _wants(request)
     if mode == "html":
+        controls = api.controls_html(api.EXPLORE)
         body = api.PAGE.format(title="skymap.sh: daily stats",
-                               header=api.header_html("/stats/daily"),
-                               explore=api.EXPLORE, body=html.escape(stats_daily_text(days)),
-                               extra="", animate_btn="", quadrant_btn="", sphere_btn="")
+                               header=api.header_html("stats/daily"),
+                               controls=controls, wide_class="", fit_width="null",
+                               coming_up_card="",
+                               body=html.escape(stats_daily_text(days)),
+                               kbd_urls="{}", shortcuts_hint="")
         return HTMLResponse(body, headers=headers)
     return PlainTextResponse(stats_daily_text(days), headers=headers)
 

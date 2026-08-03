@@ -26,6 +26,21 @@ def client():
         yield c
 
 
+@pytest.fixture(autouse=True)
+def _reset_rate_limit():
+    # Same reasoning as test_server.py's fixture of the same name: one
+    # shared token bucket per client IP across the whole process, and
+    # TestClient requests all land on the same synthetic IP -- without
+    # this, cumulative requests from earlier test files in the same pytest
+    # run (this file collects before test_server.py alphabetically, so it
+    # never benefits from that file's own rate-limit-raising setUpModule)
+    # drain the bucket before this file's own tests get to it, failing them
+    # with 429s that have nothing to do with what they're actually testing.
+    server._buckets.clear()
+    server._stats_buckets.clear()
+    yield
+
+
 def _req(place="Zurich", when=WHEN, **kw):
     return api.Request(place=place, when=when, color=False, **kw)
 

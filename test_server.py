@@ -1116,12 +1116,18 @@ class LiveMap(unittest.TestCase):
         self.assertIn(server.MAP_FLASH_DOT, body)
 
     def test_polling_starts_after_the_dots_exist(self):
-        # The script is injected into the toolbar, which the parser reaches
+        # The script is injected into the drawer, which the parser reaches
         # before the <pre> holding the map. Starting immediately would find
         # no dots and never poll at all.
         body = self.client.get("/stats", headers=BROWSER).text
         self.assertIn("DOMContentLoaded", body)
-        self.assertLess(body.index("stats/live?since="), body.index('id="d'))
+        # id="d\d+_\d+", not just 'id="d' -- the header's own #drawer-
+        # trigger/#drawer-close also start with "d" and sit earlier still,
+        # which isn't the same "before the map" this test actually cares
+        # about.
+        first_dot = re.search(r'id="d\d+_\d+"', body)
+        self.assertIsNotNone(first_dot, "no map dot found in the response")
+        self.assertLess(body.index("stats/live?since="), first_dot.start())
 
     def test_the_slot_marker_never_reaches_a_reader(self):
         for body in (self.client.get("/stats", headers=TERMINAL).text,
