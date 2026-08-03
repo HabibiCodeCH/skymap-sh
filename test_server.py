@@ -390,6 +390,13 @@ class HourlyReferrers(unittest.TestCase):
     def setUp(self):
         self._orig_hour_stat = server._hour_stat.copy()
         self.addCleanup(self._restore)
+        # An empty log of its own. These tests seed the hour in progress and
+        # assert on the exact counts they seeded; same-hour rows are summed
+        # now, so anything another test left in the shared log would be added
+        # to theirs and the numbers would depend on test order.
+        orig_log = server.HOURLY_LOG
+        self.addCleanup(setattr, server, "HOURLY_LOG", orig_log)
+        server.HOURLY_LOG = os.path.join(tempfile.mkdtemp(), "hourly.jsonl")
 
     def _restore(self):
         server._hour_stat.clear()
@@ -487,6 +494,154 @@ class HourlyReferrers(unittest.TestCase):
         server._hour_stat.update({"requests": 1, "hit": 1, "miss": 0, "day": 0, "night": 1})
         data = server.stats_hourly_json()
         self.assertEqual(data["hours"][-1]["top_referrers"], {})
+
+
+class HourlyLogLosesNothing(unittest.TestCase):
+    """/stats' header counts every request; the charts count what reached the
+    hourly log. They used to disagree by a wide margin -- 730 against 544 over
+    the same 51 h on production -- because two things never got written."""
+
+    def setUp(self):
+        self._log = server.HOURLY_LOG
+        self.addCleanup(setattr, server, "HOURLY_LOG", self._log)
+        server.HOURLY_LOG = os.path.join(tempfile.mkdtemp(), "hourly.jsonl")
+        self._stat = server._stat.copy()
+        self._hour_stat = server._hour_stat.copy()
+        self._hour_key = server._hour_key
+        self.addCleanup(self._restore)
+        server._hour_stat.clear()
+
+    def _restore(self):
+        server._hour_stat.clear()
+        server._hour_stat.update(self._hour_stat)
+        server._stat.clear()
+        server._stat.update(self._stat)
+        server._hour_key = self._hour_key
+
+    def _rows(self):
+        return server._read_hourly_history(days=1)
+
+    def test_shutdown_writes_the_hour_in_progress(self):
+        # A deploy is `systemctl restart`, which is a SIGTERM and a shutdown
+        # handler. Only _roll_hour used to write, so everything tallied since
+        # the last o'clock went in the bin -- and a day of several deploys
+        # threw away several part-hours of real traffic.
+        server._hour_key = dt.datetime.utcnow().strftime("%Y-%m-%dT%H:00")
+        server._hour_stat.update({"requests": 7, "hit": 3, "miss": 4,
+                                  "day": 2, "night": 5})
+        server._save_on_exit()
+        rows = self._rows()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["requests"], 7)
+        self.assertEqual(rows[0]["hour"], server._hour_key)
+
+    def test_shutting_down_twice_does_not_write_the_hour_twice(self):
+        # One process shuts down once, but two TestClient context managers in
+        # one pytest run are two shutdowns, and a doubled hour is worse than
+        # a missing one -- it reads as real traffic.
+        server._hour_key = dt.datetime.utcnow().strftime("%Y-%m-%dT%H:00")
+        server._hour_stat.update({"requests": 4, "hit": 4, "miss": 0,
+                                  "day": 4, "night": 0})
+        server._save_on_exit()
+        server._save_on_exit()
+        self.assertEqual(len(self._rows()), 1)
+
+    def test_the_table_shows_a_restarted_hour_once(self):
+        # Two log lines for one hour is now the normal shape of a deploy.
+        # Listed line by line the table showed that hour twice, each with a
+        # slice of its traffic and a hit% taken against the slice.
+        hour = "2026-08-02T09:00"
+        rows = [dict(hour=hour, requests=6, hit=6, miss=0, day=6, night=0,
+                     top_referrers={"bsky.app": 4}),
+                dict(hour=hour, requests=4, hit=1, miss=3, day=4, night=0,
+                     top_referrers={"bsky.app": 1, "reddit.com": 2}),
+                dict(hour="2026-08-02T10:00", requests=2, hit=1, miss=1,
+                     day=2, night=0)]
+        merged = server._merge_hour_rows(rows)
+        self.assertEqual([m["hour"] for m in merged], [hour, "2026-08-02T10:00"])
+        self.assertEqual(merged[0]["requests"], 10)
+        self.assertEqual(merged[0]["hit"], 7)
+        self.assertEqual(merged[0]["top_referrers"], {"bsky.app": 5, "reddit.com": 2})
+
+    def test_the_two_halves_of_a_restarted_hour_add_up(self):
+        # The restart splits one hour across two rows. _dense_hours has always
+        # summed same-hour rows for exactly this case; this is the half that
+        # was missing.
+        hour = dt.datetime.utcnow().strftime("%Y-%m-%dT%H:00")
+        server._hour_key = hour
+        server._hour_stat.update({"requests": 6, "hit": 6, "miss": 0,
+                                  "day": 6, "night": 0})
+        server._save_on_exit()                      # first process goes down
+        server._hour_stat.update({"requests": 5, "hit": 5, "miss": 0,
+                                  "day": 5, "night": 0})
+        server._save_on_exit()                      # the next one finishes it
+        dense = server._dense_hours(self._rows(), 2)
+        self.assertEqual(sum(h["requests"] for h in dense), 11)
+
+
+class NotFoundsAreCountedSeparately(unittest.TestCase):
+    """A request for a place that doesn't exist bypasses _tally, so it landed
+    in the header's total and in no chart, ever. It gets its own field rather
+    than being folded into `requests`: it is neither a cache hit nor a miss
+    and happens neither by day nor by night, so counting it as a request
+    would skew every ratio taken against one."""
+
+    def setUp(self):
+        client_cm = TestClient(server.app)
+        self.client = client_cm.__enter__()
+        self.addCleanup(client_cm.__exit__, None, None, None)
+        self._hour_stat = server._hour_stat.copy()
+        self._hour_key = server._hour_key
+        self.addCleanup(self._restore)
+        server._hour_stat.clear()
+
+    def _restore(self):
+        server._hour_stat.clear()
+        server._hour_stat.update(self._hour_stat)
+        server._hour_key = self._hour_key
+
+    def test_an_unknown_place_lands_in_notfound_not_in_requests(self):
+        before = server._stat["requests"]
+        resp = self.client.get("/Nowhereville", headers=TERMINAL)
+        self.assertEqual(resp.status_code, 404)
+        self.assertEqual(server._hour_stat["notfound"], 1)
+        self.assertEqual(server._hour_stat["requests"], 0)
+        # Still in the running total, which is what makes the two
+        # reconcilable: header requests == log requests + log notfounds.
+        self.assertEqual(server._stat["requests"], before + 1)
+
+    def test_a_404_advances_the_hour_before_counting_itself(self):
+        # This path never goes through _tally, so nothing else here rolls the
+        # hour. Without the roll a 404 arriving in a quiet stretch is filed
+        # under whatever hour the last real request was in.
+        stale = (dt.datetime.utcnow() - dt.timedelta(hours=3)).strftime("%Y-%m-%dT%H:00")
+        server._hour_key = stale
+        self.client.get("/Nowhereville", headers=TERMINAL)
+        self.assertNotEqual(server._hour_key, stale)
+        self.assertEqual(server._hour_key,
+                         dt.datetime.utcnow().strftime("%Y-%m-%dT%H:00"))
+
+    def test_notfound_reaches_the_log_the_charts_and_the_tables(self):
+        server._hour_key = dt.datetime.utcnow().strftime("%Y-%m-%dT%H:00")
+        server._hour_stat.update({"requests": 2, "hit": 2, "miss": 0,
+                                  "day": 2, "night": 0, "notfound": 3})
+        self.assertEqual(server.stats_hourly_json()["hours"][-1]["notfound"], 3)
+        self.assertIn("404", server.stats_hourly_text())
+        self.assertIn("404", server.stats_daily_text())
+        self.assertEqual(server.stats_daily_json()["days"][-1]["notfound"], 3)
+
+    def test_an_hour_with_no_404s_keeps_the_key_out_of_the_log(self):
+        # The log is never trimmed, so a key on every line of it is a cost
+        # paid forever for a field most hours have nothing to say about.
+        orig = server.HOURLY_LOG
+        self.addCleanup(setattr, server, "HOURLY_LOG", orig)
+        server.HOURLY_LOG = os.path.join(tempfile.mkdtemp(), "hourly.jsonl")
+        hour = dt.datetime.utcnow().strftime("%Y-%m-%dT%H:00")
+        server._flush_hour(hour, server.Counter({"requests": 1, "hit": 1}))
+        rows = server._read_hourly_history(days=1)
+        self.assertNotIn("notfound", rows[0])
+        # and a reader still gets a number for it
+        self.assertEqual(server._dense_hours(rows, 1)[-1]["notfound"], 0)
 
 
 class PlaintextCharts(unittest.TestCase):

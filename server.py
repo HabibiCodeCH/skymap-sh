@@ -219,6 +219,11 @@ def _flush_hour(hour_key, hstat):
         return
     row = dict(hour=hour_key, requests=hstat["requests"], hit=hstat["hit"],
               miss=hstat["miss"], day=hstat["day"], night=hstat["night"])
+    # Only when there were any, the same way top_referrers is written. Most
+    # hours have none, and a key repeated on every line of a file that is
+    # never trimmed is a cost with no reader.
+    if hstat["notfound"]:
+        row["notfound"] = hstat["notfound"]
     top_ref = _top_hour_referrers(hstat)
     if top_ref:
         row["top_referrers"] = top_ref
@@ -266,6 +271,7 @@ def _hourly_rows(days):
         rows = rows + [dict(hour=_hour_key, requests=_hour_stat["requests"],
                             hit=_hour_stat["hit"], miss=_hour_stat["miss"],
                             day=_hour_stat["day"], night=_hour_stat["night"],
+                            notfound=_hour_stat["notfound"],
                             top_referrers=_top_hour_referrers(_hour_stat))]
     return rows
 
@@ -284,7 +290,43 @@ CHART_DAYS = 30
 CHART_PAD = 7               # width of the y-axis label gutter
 _BLOCKS = " ▁▂▃▄▅▆▇█"
 _SPARK = "▁▂▃▄▅▆▇█"
-_ZERO_FILL = ("requests", "hit", "miss", "day", "night")
+# notfound rides alongside requests rather than inside it. A request for a
+# place that doesn't exist isn't a cache hit or a miss and has no day or
+# night, so folding it into `requests` would leave every ratio taken against
+# it slightly wrong. Kept separate, the header's running total reconciles
+# exactly: its request count is the log's requests plus its notfounds.
+_ZERO_FILL = ("requests", "hit", "miss", "day", "night", "notfound")
+
+
+def _merge_hour_rows(rows):
+    """One entry per hour, summed, oldest first.
+
+    The charts have always summed same-hour rows; the table underneath them
+    listed the log line by line, which was fine while an hour could only
+    produce one. Now that a restart flushes the hour it was in, a deploy
+    leaves two lines for that hour -- the part before it and the part after
+    -- and the table would show the hour twice, each time with a slice of
+    its traffic and a hit% taken against that slice."""
+    merged = {}
+    for r in rows:
+        m = merged.setdefault(r["hour"], dict(hour=r["hour"]))
+        for k in _ZERO_FILL:
+            m[k] = m.get(k, 0) + r.get(k, 0)
+        refs = r.get("top_referrers")
+        if refs:
+            acc = m.setdefault("top_referrers", {})
+            for dom, n in refs.items():
+                acc[dom] = acc.get(dom, 0) + n
+    out = []
+    for key in sorted(merged):
+        m = merged[key]
+        if m.get("top_referrers"):
+            # Two halves of an hour bring up to five domains each; the cap is
+            # what the rest of the code expects a row to carry.
+            m["top_referrers"] = dict(sorted(m["top_referrers"].items(),
+                                             key=lambda kv: -kv[1])[:HOURLY_TOP_REFERRERS])
+        out.append(m)
+    return out
 
 
 def _dense_hours(rows, hours, end=None):
@@ -1154,7 +1196,7 @@ def _idle_gap(prev_hour, hour):
 
 
 def stats_hourly_text(days=7, hours=None):
-    rows = _hourly_rows(days)
+    rows = _merge_hour_rows(_hourly_rows(days))
     if not rows:
         return "skymap.sh: hourly stats\n\nno data yet (first hour still in progress)\n"
     # The chart spans the window the caller asked for, zero-filled, so it
@@ -1164,8 +1206,8 @@ def stats_hourly_text(days=7, hours=None):
     L += _chart_block(_dense_hours(rows, hours), _hour_tick, "hour", f"{hours} h",
                       tick_every=_hour_tick_every)
     L += ["",
-        f"{'hour (UTC)':17} {'requests':>9} {'hit%':>6} {'day':>6} {'night':>6}  "
-        f"{'top referrer':24}"]
+        f"{'hour (UTC)':17} {'requests':>9} {'hit%':>6} {'day':>6} {'night':>6} "
+        f"{'404':>5}  {'top referrer':24}"]
     prev = None
     for row in rows:
         if prev:
@@ -1176,8 +1218,11 @@ def stats_hourly_text(days=7, hours=None):
         req = row["requests"] or 1
         hitpct = 100 * row["hit"] / req
         current = "  (in progress)" if row["hour"] == _hour_key and row is rows[-1] else ""
+        # Blank rather than 0: most hours have none, and a column of zeroes
+        # is harder to scan past than an empty one.
+        nf = f"{row['notfound']:,}" if row.get("notfound") else ""
         L.append(f"{row['hour']:17} {row['requests']:>9,} {hitpct:>5.1f}% "
-                f"{row['day']:>6,} {row['night']:>6,}  "
+                f"{row['day']:>6,} {row['night']:>6,} {nf:>5}  "
                 f"{_hour_top_referrer_str(row):24}{current}")
     L += _referrer_grid(rows)
     return "\n".join(L) + "\n"
@@ -1192,7 +1237,7 @@ def stats_daily_text(days=CHART_DAYS):
     L += _chart_block(entries, _day_tick, "day", f"{days} d", width=2)
     L += ["",
         f"{'day (UTC)':12} {'requests':>9} {'hit%':>6} {'day':>7} {'night':>7} "
-        f"{'hours':>6}"]
+        f"{'404':>5} {'hours':>6}"]
     for e in entries:
         # Every day in the window gets a row, including the empty ones. A
         # daily table is 30 lines at most, so unlike the hourly one there is
@@ -1200,9 +1245,10 @@ def stats_daily_text(days=CHART_DAYS):
         # no requests gets `-` for hit%, not 0.0% -- there is no ratio to
         # take, same rule the sparklines use.
         hit = (f"{100 * e['hit'] / e['requests']:.1f}%" if e["requests"] else "-")
+        nf = f"{e['notfound']:,}" if e["notfound"] else ""
         L.append(f"{e['date']:12} {e['requests']:>9,} "
                  f"{hit:>6} {e['day']:>7,} {e['night']:>7,} "
-                 f"{e['hours']:>6,}")
+                 f"{nf:>5} {e['hours']:>6,}")
     L.append("")
     L.append("`hours` is how many hours of that day the log recorded at all -- "
              "fewer than 24")
@@ -1344,7 +1390,20 @@ def _save_on_exit():
     # `systemctl restart` (a normal deploy) sends SIGTERM first, so this is
     # the common case that actually matters -- the hourly-boundary save
     # covers crashes/kills that skip shutdown handling entirely.
-    _save_stats_state()
+    #
+    # The hour in progress goes out with it. Only _roll_hour used to write
+    # to the log, so everything tallied since the last o'clock died with the
+    # process: the cumulative counters survived in the state file and the
+    # charts quietly lost that stretch, which on a day of several deploys
+    # added up to hours of missing traffic. _dense_hours has always summed
+    # duplicate rows for the same hour precisely so this could happen -- the
+    # next process flushes the rest of that hour when it rolls.
+    global _hour_stat
+    _flush_hour(_hour_key, _hour_stat)   # saves the cumulative state too
+    # Cleared so a second shutdown can't write the same hour twice. One
+    # process only shuts down once; two TestClient context managers in one
+    # pytest run are two startups and two shutdowns.
+    _hour_stat = Counter()
 
 
 def _wants(request: Req):
@@ -1631,7 +1690,12 @@ def _respond(request: Req, place: str | None):
         near = api.suggest(place)
         did = ("\n  Did you mean:\n" + "".join(f"    {n}\n" for n in near)
                if near else "")
+        # _roll_hour first: this path never goes through _tally, so nothing
+        # else here advances the hour, and without it a 404 arriving in a
+        # quiet stretch lands in whatever hour the last real request was in.
+        _roll_hour()
         _stat["requests"] += 1; _stat["status:404"] += 1; _stat[f"mode:{mode}"] += 1
+        _hour_stat["notfound"] += 1
         msg = UNKNOWN.format(q=place[:60], did=did)
         if mode == "json":
             return JSONResponse({"error": "unknown_place", "query": place,
