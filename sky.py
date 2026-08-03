@@ -47,16 +47,6 @@ def star_colour(ci):
     if ci < 1.00:             return "\033[38;5;222m"   # yellow
     return "\033[38;5;216m"                              # orange-red
 
-# Backdrop stars: same glyph, dimmer ink. A terminal has no alpha channel, so
-# "lower opacity" is a colour nearer the background.
-#
-# 243 is chosen to sit in the gap: the altitude grid is 234, the horizon 239
-# and the quadrant grid 240, while real stars run 252-255 plus their hues.
-# That leaves these clearly brighter than the chart's furniture and clearly
-# dimmer than a star you are meant to notice. 238 was the first attempt and
-# was wrong twice over -- darker than the horizon rule, and already spoken
-# for by the zenith marker.
-DIM_STAR = "\033[38;5;243m"
 
 def paint(s, c, on=True):
     return f"{c}{s}{C.OFF}" if on else s
@@ -1052,7 +1042,7 @@ def render_linear(when_utc, lat, lon, W=176, H=22, color=True, show_lines=True,
                   mag_limit=4.0, line_limit=None, tle=None, alt_max=70, facing=None, span=None,
                   alt_lo=None, alt_hi=None, target=None, overlay=None,
                   bodies=None, inset=True, width=None, height=None, dso_limit=None,
-                  quadrant=None, quadrants=False, dim_below=None):
+                  quadrant=None, quadrants=False):
     """Horizon panorama. facing=None gives the full 360 deg sweep; facing='SW'
     gives a window centred there, which is narrow enough to be undistorted."""
     req_span = span                    # the else-branch below clobbers `span`
@@ -1079,6 +1069,10 @@ def render_linear(when_utc, lat, lon, W=176, H=22, color=True, show_lines=True,
         # crossing this is, rather than always defaulting to South.
         span, centre, clamped = 360.0, (0.0 if lat < 0 else 180.0), ""
 
+    # Whether the CALLER cropped the altitude range, recorded before the
+    # defaults below overwrite the Nones -- the zenith inset needs to know,
+    # and by the time it is drawn these are always numbers.
+    alt_cropped = alt_lo is not None or alt_hi is not None
     alt_lo = 0.0 if alt_lo is None else float(alt_lo)
     alt_hi = float(alt_max) if alt_hi is None else float(alt_hi)
     alt_rng = alt_hi - alt_lo
@@ -1271,14 +1265,10 @@ def render_linear(when_utc, lat, lon, W=176, H=22, color=True, show_lines=True,
         if a <= 0:
             continue
         visible.append((s, a, z))
-        # Same glyph either way -- only the ink changes. A star past dim_below
-        # is backdrop: there to give the sky depth, not to be read.
-        faint = dim_below is not None and s["m"] > dim_below
-        col = DIM_STAR if faint else star_colour(s.get("ci"))
         if a > alt_hi:
-            inset_items.append((a, z, glyph_for(s["m"]), col, None))
+            inset_items.append((a, z, glyph_for(s["m"]), star_colour(s.get("ci")), None))
         else:
-            place(z, a, glyph_for(s["m"]), col, over=s["m"] < 2.0 and not faint)
+            place(z, a, glyph_for(s["m"]), star_colour(s.get("ci")), over=s["m"] < 2.0)
 
     dso = deepsky_visible(dso_limit, jd, lat, lst)
     for o, a, z in dso:
@@ -1415,7 +1405,11 @@ def render_linear(when_utc, lat, lon, W=176, H=22, color=True, show_lines=True,
         # North -- centre itself now flips between N and S with hemisphere.
         ticks[W - 1] = "S" if centre == 0 else "N"
     out.append(paint(" " * LM + "".join(ticks).rstrip(), C.CARD, color))
-    if facing is None and target is None and quad_applied is None and inset:
+    # `target` used to disqualify the inset because find meant a 26° crop
+    # with no room for one. find now draws the full panorama, so what
+    # actually matters is whether the altitude range was cropped: an
+    # inset labelled 70-90° is a lie on a chart that stops at 40°.
+    if facing is None and not alt_cropped and quad_applied is None and inset:
         out.append("")
         out.extend(_zenith_inset(inset_items, alt_max, color, LM))
     st = dict(visible=visible, up=up, moon=mo, sun=su, lst=lst, jd=jd,

@@ -179,41 +179,40 @@ def test_event_link_crosshairs_the_thing():
     assert "find=Perseids" in row, row
 
 
-def test_find_keeps_the_faint_stars_but_dims_them():
-    """The full mag-5 field gives the sky depth; inking everything past the
-    ordinary cutoff in grey stops it competing with the crosshair. Same
-    glyphs throughout -- a terminal has no alpha channel."""
-    when = dt.datetime(2026, 8, 13, 2, 0)
-    found = api.compose(api.Request(place="Zurich", when=when, color=True,
-                                    find="Perseids")).text
-    plain = api.compose(api.Request(place="Zurich", when=when, color=True)).text
-    dim = found.count(sky.DIM_STAR)
-    assert dim > 200, f"only {dim} dimmed stars"
-    # The ordinary chart draws no backdrop tier at all.
-    assert plain.count(sky.DIM_STAR) == 0
-    # And the extra stars really are there, not just recoloured survivors.
-    assert len(api.strip_ansi(found)) > 0
+def test_find_looks_like_the_ordinary_chart():
+    """Same instant, same sky, plus a crosshair.
+
+    Two attempts at making find "richer" both made it read as a different
+    chart instead of the familiar one with a mark on it: mag_limit 5.0 put
+    775 stars where the normal view has 287, and drawing the extra 488 as dim
+    backdrop was worse, because mag 4-5 is 63% of the field so most of the sky
+    went grey and took the colour and size variety with it.
+    """
+    when = dt.datetime(2026, 8, 4, 3, 38)      # dark, Vega well up: no time shift
+    plain = api.strip_ansi(api.compose(_req(place="New York", when=when)).text)
+    found = api.strip_ansi(api.compose(_req(place="New York", when=when,
+                                            find="Vega")).text)
+    dots = lambda s: len(re.findall("·", s))
+    # Within the crosshair's own footprint of each other.
+    assert abs(dots(found) - dots(plain)) < 30, (dots(found), dots(plain))
 
 
-def test_dimmed_stars_sit_between_the_furniture_and_the_real_stars():
-    """Three tiers have to stay separable: the chart's furniture (altitude
-    grid 234, horizon 239, quadrant grid 240), the backdrop stars, and the
-    stars you are meant to notice (252+)."""
-    import re as _re
-    num = lambda s: int(_re.search(r"38;5;(\d+)m", s).group(1))
-    dim = num(sky.DIM_STAR)
-    assert num(sky.C.HOR) < dim < num(sky.star_colour(None)), dim
-    assert dim > 240, "must clear the quadrant grid"
+def test_find_keeps_the_zenith_inset():
+    """`target` used to disqualify the inset, which was right when find meant
+    a 26° crop with no room for one and wrong once it drew the full sky."""
+    when = dt.datetime(2026, 8, 4, 3, 38)
+    found = api.strip_ansi(api.compose(_req(place="New York", when=when,
+                                            find="Vega")).text)
+    assert "zenith 70-90°" in found
 
 
-def test_zoomed_find_keeps_the_denser_field_undimmed():
-    """A 26° band needs the extra magnitude at full brightness or it looks
-    empty, which is what the crop was for."""
-    when = dt.datetime(2026, 8, 13, 2, 0)
-    zoomed = api.compose(api.Request(place="Zurich", when=when, color=True,
-                                     find="Perseids", span=60)).text
-    assert "60° window" in api.strip_ansi(zoomed)
-    assert zoomed.count(sky.DIM_STAR) == 0
+def test_cropped_find_still_has_no_inset():
+    """An inset labelled 70-90° is a lie on a chart that stops at 40°."""
+    when = dt.datetime(2026, 8, 4, 3, 38)
+    zoomed = api.strip_ansi(api.compose(_req(place="New York", when=when,
+                                             find="Vega", span=60)).text)
+    assert "zenith 70-90°" not in zoomed
+    assert "60° window" in zoomed
 
 
 def test_conjunction_link_aims_at_the_fainter_body():

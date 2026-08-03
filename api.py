@@ -474,17 +474,18 @@ def _compose_find(r):
         extra = dict(span=r.span, alt_lo=lo, alt_hi=lo + rng, width=r.width,
                      mag_limit=5.0)
     else:
-        # Draw the full magnitude-5 field, but ink everything past the
-        # ordinary chart's cutoff in the dim grey. The extra ~490 stars still
-        # give the sky its depth; they just stop competing with the crosshair,
-        # which is what made the undimmed version feel crowded. Same glyphs
-        # throughout -- a terminal has no alpha, so this is the nearest thing
-        # to turning the opacity down.
+        # Exactly what the ordinary chart draws, plus a crosshair. Nothing
+        # else: two passes at making find "richer" both made it read as a
+        # different chart rather than the familiar one with a mark on it.
+        # mag_limit 5.0 put 775 stars where the normal view has 287; drawing
+        # the extra 488 as dim backdrop was worse still, because mag 4-5 is
+        # 63% of the whole field, so most of the sky went grey and the colour
+        # and size variety that makes the chart readable disappeared with it.
         sun_alt = altaz(*[sun(julian(shown_utc))[k] for k in ("ra", "dec")],
                         p.lat, (gmst_hours(julian(shown_utc)) + p.lon / 15.0) % 24)[0]
         extra = dict(span=360.0, height=_horizon_height(r),
                      width=_effective_width(r),
-                     mag_limit=5.0, dim_below=_fade_mag_limit(sun_alt))
+                     mag_limit=_fade_mag_limit(sun_alt))
     sp = extra["span"]
     art, st = render_linear(shown_utc, p.lat, p.lon, color=c, show_lines=r.lines,
                             tle=r.tle, target=tgt, **extra)
@@ -1581,7 +1582,7 @@ def _find_chart_only(r):
                         p.lat, (gmst_hours(julian(shown_utc)) + p.lon / 15.0) % 24)[0]
         extra = dict(span=360.0, height=_horizon_height(r),
                      width=_effective_width(r),
-                     mag_limit=5.0, dim_below=_fade_mag_limit(sun_alt))
+                     mag_limit=_fade_mag_limit(sun_alt))
     sp = extra["span"]
     art, _st = render_linear(shown_utc, p.lat, p.lon, color=c, show_lines=r.lines,
                              tle=r.tle, target=tgt, **extra)
