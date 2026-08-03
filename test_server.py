@@ -2012,6 +2012,17 @@ class GhostCompletionWiring(unittest.TestCase):
         self.assertIn("e.key==='Tab'", resp.text)
         self.assertIn("e.key==='ArrowRight'&&atEnd", resp.text)
 
+    def test_an_exact_match_suppresses_the_ghost(self):
+        # Typing "London" in full used to still ghost-suggest "derry":
+        # the exact match itself fails the c.length>v.length check (nothing
+        # left to add), so the next-longest candidate sharing that prefix
+        # (Londonderry) won instead, and Tab/-> turned a complete, correct
+        # search into the wrong city.
+        resp = self.client.get("/Zurich", headers=BROWSER)
+        complete_fn = resp.text.split("var complete=function(){")[1]
+        complete_fn = complete_fn.split("var completeAbort=null")[0]
+        self.assertIn("fold(c)===fold(v)", complete_fn)
+
 
 class DrawerWiring(unittest.TestCase):
     """The drawer trigger + toggle/outside-click/Escape JS (SPEC-command-
