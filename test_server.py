@@ -899,6 +899,37 @@ class LiveMap(unittest.TestCase):
         self.assertEqual(flash[busy], len(server.MAP_RAMP) - 1)
         self.assertGreater(flash[busy], flash[quiet])
 
+    def test_the_poll_carries_the_two_lines_that_go_stale_fastest(self):
+        # Finished strings, not numbers: the server owns the wording and the
+        # arithmetic, and the page only swaps text.
+        server._geo_hits.update({"47,9": 5, "-34,151": 2})
+        server._places.update({"Zurich": 5, "Sydney": 2})
+        server._heat_cache = (0.0, None, None)
+        d = server.stats_live_json(0.0)
+        self.assertEqual(d["head"], server._headline())
+        self.assertIn("requests over", d["head"])
+        self.assertIn("2 distinct location(s)", d["legend"])
+        self.assertIn("busiest: Zurich (", d["legend"])
+        # The raw numbers were here first and stay for anything scripting it.
+        self.assertEqual(d["distinct"], 2)
+
+    def test_the_page_ships_the_same_two_lines_the_poll_will_replace(self):
+        # If the ids or the wording drift apart, the first poll silently
+        # rewrites nothing and the numbers quietly stop moving.
+        server._geo_hits.update({"47,9": 3})
+        server._places.update({"Zurich": 3})
+        server._heat_cache = (0.0, None, None)
+        body = self.client.get("/stats", headers=BROWSER).text
+        self.assertIn('<span id="live-head">skymap.sh:', body)
+        self.assertIn('<span id="live-legend">1 distinct location(s)', body)
+        for el in ("live-head", "live-legend"):
+            self.assertIn(f"retext('{el}'", body)
+        # curl gets the lines themselves, no markers and no spans.
+        text = self.client.get("/stats", headers=TERMINAL).text
+        self.assertIn("skymap.sh:", text)
+        self.assertIn("distinct location(s)", text)
+        self.assertNotIn("live-head", text)
+
     def test_the_buffer_forgets_the_oldest(self):
         cap = server._geo_recent.maxlen
         for i in range(cap + 50):
@@ -976,7 +1007,7 @@ class LiveMap(unittest.TestCase):
         server._geo_hits.update({"47,9": 3})
         server._heat_cache = (0.0, None, None)
         html_body = self.client.get("/stats", headers=BROWSER).text
-        self.assertRegex(html_body, r'class="d h\d" id="d\d+_\d+"')
+        self.assertRegex(html_body, r'class="d h\d s\d" id="d\d+_\d+"')
         self.assertIn("/stats/live?since=", html_body)
         text = self.client.get("/stats", headers=TERMINAL).text
         self.assertNotIn("<i ", text)
@@ -989,6 +1020,26 @@ class LiveMap(unittest.TestCase):
         self.assertNotIn('style="color:#', server._map_html())
         for i in range(len(server.MAP_RAMP)):
             self.assertIn(f".h{i}{{color:", body)
+
+    def test_a_busier_cell_gets_a_bigger_dot_as_well_as_a_warmer_one(self):
+        # Size doubles up on colour: on a map this dense a warm dot is easy
+        # to lose among its neighbours, a bigger one less so.
+        body = self.client.get("/stats", headers=BROWSER).text
+        for i, s in enumerate(server.MAP_SIZES):
+            self.assertIn(f".s{i}{{--s:{s:g}}}", body)
+        # Land nobody has asked from is nearly every dot on the map, and
+        # swelling those would drown out the few that mean something.
+        self.assertEqual(server.MAP_SIZES[0], 1.0)
+        self.assertEqual(list(server.MAP_SIZES), sorted(server.MAP_SIZES))
+        self.assertEqual(len(server.MAP_SIZES), len(server.MAP_RAMP))
+
+    def test_a_dot_settles_back_to_the_size_its_total_deserves(self):
+        # The flash used to leave an inline colour behind, which only worked
+        # because size wasn't in play. Both now ride on the level classes,
+        # so the settle has to put both back.
+        body = self.client.get("/stats", headers=BROWSER).text
+        self.assertIn("e.className = 'd h' + l + ' s' + l;", body)
+        self.assertNotIn("e.style.color", body)
 
     def test_dots_are_pinned_to_one_character_so_the_flash_cannot_shift_them(self):
         # The flash swaps in a wider glyph. Without a fixed advance width

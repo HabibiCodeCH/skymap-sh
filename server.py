@@ -581,6 +581,16 @@ MAP_DOT = "·"
 # on a plain "·" is easy to miss. It only differs in the browser; the text
 # map has no animation to swap anything for.
 MAP_FLASH_DOT = "•"
+# How big each ramp step's dot is drawn in the browser, as a multiplier on the
+# glyph. Size says the same thing colour does, which is the point: on a map
+# this dense, a warm dot two shades along is easy to lose against its
+# neighbours, and a bigger one isn't. Level 0 is land nobody has asked from
+# and stays at 1 -- that's nearly every dot on the map, and swelling those
+# would drown out the handful that mean something.
+# Browser only. A terminal can't scale a character, and the wider glyphs that
+# could stand in for size (●, ◉) are double-width in enough terminals to
+# break the map's alignment where it matters most.
+MAP_SIZES = (1.0, 1.15, 1.35, 1.55, 1.75, 1.95, 2.2)
 _worldmap = None
 
 
@@ -734,7 +744,8 @@ def _map_html():
             if ch == " " and (r, c) not in heat:
                 out.append(" ")
                 continue
-            out.append(f'<i class="d h{shade(r, c)}" id="d{r}_{c}">'
+            i = shade(r, c)
+            out.append(f'<i class="d h{i} s{i}" id="d{r}_{c}">'
                        f'{MAP_DOT}</i>')
         out.append("\n")
     return "".join(out).rstrip("\n")
@@ -745,9 +756,28 @@ def _map_html():
 # never collide with real content, and curl never sees it -- the text path
 # renders the real map straight in.
 MAP_SLOT = "\x00worldmap\x00"
+# The same trick for the two lines /stats/live can keep current: the top line
+# and the tail of the map's legend. Unlike MAP_SLOT these go through
+# ansi_to_html on the way -- a NUL survives escaping untouched -- and the
+# route swaps in a span the poll can address afterwards.
+HEAD_SLOT = "\x00headline\x00"
+LEGEND_SLOT = "\x00maplegend\x00"
 
 
-def _map_block(body=None):
+def _map_legend():
+    """The tail of the map's legend line: how many distinct places have asked
+    and which one asks most. Its own function because /stats/live sends the
+    finished string rather than the numbers -- both move as requests land,
+    and rebuilding the sentence in JS is a second copy of the wording to keep
+    in sync for nothing."""
+    busiest = ""
+    if _places:
+        name, c = _places.most_common(1)[0]
+        busiest = f"   busiest: {name} ({c:,})"
+    return f"{len(_geo_hits):,} distinct location(s){busiest}"
+
+
+def _map_block(body=None, slots=False):
     """Title, map, and a legend naming the busiest place, or nothing at all
     when there is no map file and no traffic to draw on it."""
     if not _load_worldmap():
@@ -757,11 +787,8 @@ def _map_block(body=None):
         return []
     L = ["WHERE REQUESTS COME FROM", ""] + body + [""]
     ramp = "".join(f"\033[38;5;{n}m{MAP_DOT}\033[0m" for n in MAP_RAMP)
-    busiest = ""
-    if _places:
-        name, c = _places.most_common(1)[0]
-        busiest = f"   busiest: {name} ({c:,})"
-    L.append(f"quiet {ramp} busy   {len(_geo_hits):,} distinct location(s){busiest}")
+    tail = LEGEND_SLOT if slots else _map_legend()
+    L.append(f"quiet {ramp} busy   {tail}")
     return L
 
 
@@ -857,14 +884,25 @@ def _tally(r, daytime, hit, mode, status, data, colour=True, referrer=None):
             del _geo_hits[k]
 
 
-def stats_text(n=50, map_slot=False):
-    """map_slot leaves MAP_SLOT where the map goes instead of drawing it, so
-    the HTML route can splice in its per-dot version. The text path never
-    passes it and never sees the marker."""
+def _headline():
+    """The top line of /stats. Its own function for the same reason
+    _map_legend is: /stats/live sends the whole line back on every poll. The
+    count moves, and so do the two figures derived from it -- updating only
+    the count in place would leave a page claiming 4,000 requests at a rate
+    that was true a hundred requests ago."""
     up = time.time() - STARTED
     req = _stat["requests"] or 1
-    L = [f"skymap.sh: {req:,} requests over {up/3600:.1f} h "
-         f"({req/max(up,1)*60:.1f}/min)", ""]
+    return (f"skymap.sh: {req:,} requests over {up/3600:.1f} h "
+            f"({req/max(up,1)*60:.1f}/min)")
+
+
+def stats_text(n=50, map_slot=False):
+    """map_slot leaves MAP_SLOT where the map goes instead of drawing it, so
+    the HTML route can splice in its per-dot version -- and leaves HEAD_SLOT
+    and LEGEND_SLOT for the two lines the browser keeps current. The text
+    path never passes it and never sees the markers."""
+    req = _stat["requests"] or 1
+    L = [HEAD_SLOT if map_slot else _headline(), ""]
     # Charts first. The counters below are a running total with no time axis
     # of their own, so they can't answer "is it growing" -- which is usually
     # the first thing anyone opening this page wants to know.
@@ -878,7 +916,7 @@ def stats_text(n=50, map_slot=False):
     L += _side_by_side(hourly, daily)
     L += ["", f"{gut}sparklines: cache hit % (latest) and night share of "
               f"the window", ""]
-    mapped = _map_block([MAP_SLOT] if map_slot else None)
+    mapped = _map_block([MAP_SLOT] if map_slot else None, slots=map_slot)
     if mapped:
         L += mapped + ["", ""]
     L.append(f"cache      {_stat['hit']:,} hit / {_stat['miss']:,} miss "
@@ -1188,8 +1226,14 @@ def stats_live_json(since=0.0):
             if cell:
                 cells.add(cell)
         flash = [[r, c, shade(r, c)] for r, c in sorted(cells)]
+    # head and legend are the two lines the page can keep current without
+    # redrawing anything: finished strings, because the server is the one
+    # that owns their wording and their arithmetic. The raw numbers stay
+    # alongside them -- they were here first and anything scripting this
+    # endpoint wants those, not a sentence.
     return dict(now=now, flash=flash, requests=_stat["requests"],
-                distinct=len(_geo_hits))
+                distinct=len(_geo_hits), head=_headline(),
+                legend=_map_legend())
 
 
 def stats_daily_json(days=CHART_DAYS):
@@ -1839,11 +1883,20 @@ def stats(request: Req):
         before, _slot, after = stats_text(map_slot=True).partition(MAP_SLOT)
         body = (api.ansi_to_html(before) + _map_html()
                 + api.ansi_to_html(after))
+        # The two lines /stats/live keeps current. They ride through the
+        # escaping as markers and come out as spans the poll can find, so
+        # the numbers at the top of the page and under the map stop being a
+        # snapshot of whenever the tab was opened.
+        body = body.replace(
+            HEAD_SLOT, f'<span id="live-head">{html.escape(_headline())}</span>')
+        body = body.replace(
+            LEGEND_SLOT,
+            f'<span id="live-legend">{html.escape(_map_legend())}</span>')
         page = api.PAGE.format(title="skymap.sh: stats", header=api.header_html("/stats"),
                                explore=api.EXPLORE, body=body,
                                extra=api.stats_live_html(
                                    [api._xterm_hex(n) for n in MAP_RAMP],
-                                   MAP_DOT, MAP_FLASH_DOT),
+                                   MAP_SIZES, MAP_DOT, MAP_FLASH_DOT),
                                animate_btn="",
                                quadrant_btn="", sphere_btn="")
         return HTMLResponse(page, headers=headers)

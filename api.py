@@ -2077,34 +2077,50 @@ def strip_ansi(text):
 # each one white-hot, then lets the transition carry it back to whatever the
 # heat ramp says its running total deserves. The flash says "just now"; the
 # resting colour still says "in total", so neither lies about the other.
-def stats_live_html(ramp_hex, dot, flash_dot, tick_ms=3000):
+#
+# The same poll refreshes the two lines that go stale fastest -- the request
+# count at the top and the location tally under the map. The charts and the
+# counters below them don't move: they are text the server drew, and redrawing
+# them means shipping the whole block again for numbers that mostly crawl.
+def stats_live_html(ramp_hex, sizes, dot, flash_dot, tick_ms=3000):
     """The live map's style and script.
 
-    ramp_hex is the heat ramp as hex, in order, and the two glyphs come from
-    the caller too -- server.py owns MAP_RAMP and MAP_DOT, and a second copy
-    of either here is a second thing to keep in sync.
+    ramp_hex is the heat ramp as hex and sizes is the matching scale per
+    step, both in order, and the two glyphs come from the caller too --
+    server.py owns MAP_RAMP, MAP_SIZES and MAP_DOT, and a second copy of any
+    of them here is a second thing to keep in sync.
 
     Every dot is an inline-block exactly 1ch wide. That is what makes the
     glyph swap safe: a bullet is a wider glyph than a middle dot in most
     fonts, and without a pinned advance width one flashing dot would shove
-    the rest of its row sideways. The scale on top is a transform, which by
-    definition takes no part in layout."""
+    the rest of its row sideways. Both scales on top of that -- the resting
+    one for how busy the cell is, and the flash -- are transforms, which by
+    definition take no part in layout.
+
+    The two multiply rather than one replacing the other, so a flash is
+    always a jump up from wherever that dot sits. Capped, because 1.9x on
+    top of the busiest resting size is a blob rather than a dot."""
     levels = "\n".join(f" .h{i}{{color:{c}}}" for i, c in enumerate(ramp_hex))
+    steps = "\n".join(f" .s{i}{{--s:{s:g}}}" for i, s in enumerate(sizes))
     return ("<style>\n"
             " .d{display:inline-block;width:1ch;vertical-align:baseline;"
             "text-align:center;font-style:normal;\n"
+            "     transform:scale(min(var(--s,1) * var(--f,1), 2.9));\n"
             "     transition:color 1.4s ease-out,text-shadow 1.4s ease-out,"
             "transform 1.4s ease-out}\n"
             f"{levels}\n"
+            f"{steps}\n"
             " .d.hot{color:#fff !important;"
             "text-shadow:0 0 7px #fff,0 0 14px #ffc400,0 0 22px #ff6d00;\n"
-            "        transform:scale(1.9);transition:none}\n"
+            "        --f:1.9;transition:none}\n"
             " @media (prefers-reduced-motion:reduce){\n"
-            "   .d,.d.hot{transition:none;transform:none;text-shadow:none}\n"
+            # The size ramp stays: it says how busy a cell is, and holding
+            # still at a size is not motion. Only the flash's jump goes.
+            "   .d,.d.hot{transition:none;text-shadow:none}\n"
+            "   .d.hot{--f:1}\n"
             " }\n"
             "</style>\n"
             "<script>\n(function(){\n"
-            f"  var ramp = {json.dumps(list(ramp_hex))};\n"
             f"  var tick = {int(tick_ms)};\n"
             # ensure_ascii=False so the glyphs read as themselves rather than
             # as \u escapes. The page is utf-8 and declares it.
@@ -2115,7 +2131,7 @@ def stats_live_html(ramp_hex, dot, flash_dot, tick_ms=3000):
     for (var i = 0; i < cells.length; i++){
       var el = document.getElementById('d' + cells[i][0] + '_' + cells[i][1]);
       if (!el) continue;
-      var rest = ramp[cells[i][2]] || ramp[0];
+      var lvl = cells[i][2] || 0;
       // Drop the class and force a reflow before re-adding it. Without that
       // gap a cell that keeps getting hits never restarts its animation --
       // the class is already there, so nothing changes.
@@ -2123,20 +2139,35 @@ def stats_live_html(ramp_hex, dot, flash_dot, tick_ms=3000):
       void el.offsetWidth;
       el.textContent = FLASH;
       el.classList.add('hot');
-      (function(e, c){
+      (function(e, l){
         setTimeout(function(){
-          e.classList.remove('hot');   // transition carries it back down
-          e.style.color = c;           // to whatever the total now deserves
+          // Both level classes at once, which drops 'hot' with them: the
+          // transition then carries colour and size together back to
+          // whatever the running total now deserves.
+          e.className = 'd h' + l + ' s' + l;
           e.textContent = DOT;
         }, 400);
-      })(el, rest);
+      })(el, lvl);
     }
+  }
+  // The two lines the poll can keep current: the count at the top of the
+  // page and the tally under the map. The server sends them finished, so
+  // this only swaps text -- everything else on /stats (the charts, the
+  // counters, the tables) stays the snapshot the page was built from.
+  function retext(id, s){
+    var el = document.getElementById(id);
+    if (el && s && el.textContent !== s) el.textContent = s;
+  }
+  function relabel(d){
+    retext('live-head', d.head);
+    retext('live-legend', d.legend);
   }
   function poll(){
     if (document.hidden){ setTimeout(poll, tick); return; }
     fetch('/stats/live?since=' + since, {cache: 'no-store'})
       .then(function(r){ return r.json(); })
-      .then(function(d){ since = d.now; dead = 0; paint(d.flash || []); })
+      .then(function(d){ since = d.now; dead = 0; paint(d.flash || []);
+                         relabel(d); })
       .catch(function(){
         // Back off rather than keep hammering a server already unhappy.
         dead++;
@@ -2151,7 +2182,7 @@ def stats_live_html(ramp_hex, dot, flash_dot, tick_ms=3000):
     // clock, then start showing flashes from there.
     fetch('/stats/live?since=0', {cache: 'no-store'})
       .then(function(r){ return r.json(); })
-      .then(function(d){ since = d.now; })
+      .then(function(d){ since = d.now; relabel(d); })
       .catch(function(){})
       .then(function(){ setTimeout(poll, tick); });
   }
