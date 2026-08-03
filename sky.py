@@ -47,6 +47,17 @@ def star_colour(ci):
     if ci < 1.00:             return "\033[38;5;222m"   # yellow
     return "\033[38;5;216m"                              # orange-red
 
+# Backdrop stars: same glyph, dimmer ink. A terminal has no alpha channel, so
+# "lower opacity" is a colour nearer the background.
+#
+# 243 is chosen to sit in the gap: the altitude grid is 234, the horizon 239
+# and the quadrant grid 240, while real stars run 252-255 plus their hues.
+# That leaves these clearly brighter than the chart's furniture and clearly
+# dimmer than a star you are meant to notice. 238 was the first attempt and
+# was wrong twice over -- darker than the horizon rule, and already spoken
+# for by the zenith marker.
+DIM_STAR = "\033[38;5;243m"
+
 def paint(s, c, on=True):
     return f"{c}{s}{C.OFF}" if on else s
 
@@ -1041,7 +1052,7 @@ def render_linear(when_utc, lat, lon, W=176, H=22, color=True, show_lines=True,
                   mag_limit=4.0, line_limit=None, tle=None, alt_max=70, facing=None, span=None,
                   alt_lo=None, alt_hi=None, target=None, overlay=None,
                   bodies=None, inset=True, width=None, height=None, dso_limit=None,
-                  quadrant=None, quadrants=False):
+                  quadrant=None, quadrants=False, dim_below=None):
     """Horizon panorama. facing=None gives the full 360 deg sweep; facing='SW'
     gives a window centred there, which is narrow enough to be undistorted."""
     req_span = span                    # the else-branch below clobbers `span`
@@ -1260,10 +1271,14 @@ def render_linear(when_utc, lat, lon, W=176, H=22, color=True, show_lines=True,
         if a <= 0:
             continue
         visible.append((s, a, z))
+        # Same glyph either way -- only the ink changes. A star past dim_below
+        # is backdrop: there to give the sky depth, not to be read.
+        faint = dim_below is not None and s["m"] > dim_below
+        col = DIM_STAR if faint else star_colour(s.get("ci"))
         if a > alt_hi:
-            inset_items.append((a, z, glyph_for(s["m"]), star_colour(s.get("ci")), None))
+            inset_items.append((a, z, glyph_for(s["m"]), col, None))
         else:
-            place(z, a, glyph_for(s["m"]), star_colour(s.get("ci")), over=s["m"] < 2.0)
+            place(z, a, glyph_for(s["m"]), col, over=s["m"] < 2.0 and not faint)
 
     dso = deepsky_visible(dso_limit, jd, lat, lst)
     for o, a, z in dso:

@@ -12,6 +12,7 @@ from starlette.testclient import TestClient
 import api
 import cli
 import server
+import sky
 
 WHEN = dt.datetime(2026, 8, 11, 23, 0)      # two nights before the Perseid peak
 QUIET = dt.datetime(2026, 6, 1, 23, 0)
@@ -178,24 +179,41 @@ def test_event_link_crosshairs_the_thing():
     assert "find=Perseids" in row, row
 
 
-def test_find_is_no_denser_than_the_ordinary_chart():
-    """find used mag_limit 5.0 to fill its 60° crop. Once the crop went, that
-    put 775 stars across the whole sky where the regular view draws 287, and
-    the crosshair had to fight all of them."""
+def test_find_keeps_the_faint_stars_but_dims_them():
+    """The full mag-5 field gives the sky depth; inking everything past the
+    ordinary cutoff in grey stops it competing with the crosshair. Same
+    glyphs throughout -- a terminal has no alpha channel."""
     when = dt.datetime(2026, 8, 13, 2, 0)
-    plain = api.compose(_req(when=when)).text
-    found = api.compose(_req(when=when, find="Perseids")).text
-    assert plain.count("·") > 0
-    # Same star glyph budget, give or take the crosshair's own arms.
-    assert found.count("·") <= plain.count("·") * 1.15, (
-        found.count("·"), plain.count("·"))
+    found = api.compose(api.Request(place="Zurich", when=when, color=True,
+                                    find="Perseids")).text
+    plain = api.compose(api.Request(place="Zurich", when=when, color=True)).text
+    dim = found.count(sky.DIM_STAR)
+    assert dim > 200, f"only {dim} dimmed stars"
+    # The ordinary chart draws no backdrop tier at all.
+    assert plain.count(sky.DIM_STAR) == 0
+    # And the extra stars really are there, not just recoloured survivors.
+    assert len(api.strip_ansi(found)) > 0
 
 
-def test_zoomed_find_keeps_the_denser_field():
-    """A 26° band needs the extra magnitude or it looks empty."""
+def test_dimmed_stars_sit_between_the_furniture_and_the_real_stars():
+    """Three tiers have to stay separable: the chart's furniture (altitude
+    grid 234, horizon 239, quadrant grid 240), the backdrop stars, and the
+    stars you are meant to notice (252+)."""
+    import re as _re
+    num = lambda s: int(_re.search(r"38;5;(\d+)m", s).group(1))
+    dim = num(sky.DIM_STAR)
+    assert num(sky.C.HOR) < dim < num(sky.star_colour(None)), dim
+    assert dim > 240, "must clear the quadrant grid"
+
+
+def test_zoomed_find_keeps_the_denser_field_undimmed():
+    """A 26° band needs the extra magnitude at full brightness or it looks
+    empty, which is what the crop was for."""
     when = dt.datetime(2026, 8, 13, 2, 0)
-    zoomed = api.compose(_req(when=when, find="Perseids", span=60)).text
-    assert "60° window" in zoomed
+    zoomed = api.compose(api.Request(place="Zurich", when=when, color=True,
+                                     find="Perseids", span=60)).text
+    assert "60° window" in api.strip_ansi(zoomed)
+    assert zoomed.count(sky.DIM_STAR) == 0
 
 
 def test_conjunction_link_aims_at_the_fainter_body():

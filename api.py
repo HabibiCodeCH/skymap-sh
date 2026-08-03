@@ -474,17 +474,17 @@ def _compose_find(r):
         extra = dict(span=r.span, alt_lo=lo, alt_hi=lo + rng, width=r.width,
                      mag_limit=5.0)
     else:
-        # The same cutoff the ordinary night chart uses, not the crop's 5.0.
-        # That extra magnitude existed to fill a 60-degree window; across the
-        # whole sky it is 775 stars where the regular view draws 287, so find
-        # came out denser than the chart it is meant to help you read, and the
-        # crosshair had to fight all of it. Clicking find should give you the
-        # sky you already know with a mark on it.
+        # Draw the full magnitude-5 field, but ink everything past the
+        # ordinary chart's cutoff in the dim grey. The extra ~490 stars still
+        # give the sky its depth; they just stop competing with the crosshair,
+        # which is what made the undimmed version feel crowded. Same glyphs
+        # throughout -- a terminal has no alpha, so this is the nearest thing
+        # to turning the opacity down.
         sun_alt = altaz(*[sun(julian(shown_utc))[k] for k in ("ra", "dec")],
                         p.lat, (gmst_hours(julian(shown_utc)) + p.lon / 15.0) % 24)[0]
         extra = dict(span=360.0, height=_horizon_height(r),
                      width=_effective_width(r),
-                     mag_limit=_fade_mag_limit(sun_alt))
+                     mag_limit=5.0, dim_below=_fade_mag_limit(sun_alt))
     sp = extra["span"]
     art, st = render_linear(shown_utc, p.lat, p.lon, color=c, show_lines=r.lines,
                             tle=r.tle, target=tgt, **extra)
@@ -1581,7 +1581,7 @@ def _find_chart_only(r):
                         p.lat, (gmst_hours(julian(shown_utc)) + p.lon / 15.0) % 24)[0]
         extra = dict(span=360.0, height=_horizon_height(r),
                      width=_effective_width(r),
-                     mag_limit=_fade_mag_limit(sun_alt))
+                     mag_limit=5.0, dim_below=_fade_mag_limit(sun_alt))
     sp = extra["span"]
     art, _st = render_linear(shown_utc, p.lat, p.lon, color=c, show_lines=r.lines,
                              tle=r.tle, target=tgt, **extra)
