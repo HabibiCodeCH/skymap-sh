@@ -807,7 +807,27 @@ def _compose_sphere(r):
         bodies=bodies_json,
         moon=dict(phase=phase_name(mo["age"]), illum=round(mo["illum"] * 100),
                   alt=round(mo["alt"], 1), az=round(mo["az"], 1), compass=compass(mo["az"])),
+        # The one thing this view can do that no chart can: point your actual
+        # body at the radiant. Null on all but a handful of nights a year.
+        radiant=_radiant_json(r),
     )
+
+
+def _radiant_json(r):
+    """The active meteor shower's radiant, ready to place on the sphere, or
+    None. Uses the radiant's alt/az at the best moment tonight rather than at
+    the instant of the request -- the radiant climbs through the night, and
+    the useful answer is where to look when you actually go out."""
+    sh = ev_mod.active_shower(r.place.lat, r.place.lon, r.tz, now_utc=r.when_utc)
+    if sh is None:
+        return None
+    return dict(name=sh["name"], alt=sh["alt"], az=sh["az"],
+                compass=sh.get("compass"), zhr=sh.get("zhr"),
+                peak_local=sh["when_local"].isoformat(),
+                best_local=(sh["best_local"].isoformat() if sh.get("best_local") else None),
+                window_local=sh.get("window_local"),
+                moon_verdict=sh.get("moon_verdict"),
+                note=sh.get("note"), glyph="☄")
 
 
 # ---------------------------------------------------------------- daytime
@@ -1029,9 +1049,25 @@ def events_teaser(r):
     return f"Coming up: {e['headline']} {when}."
 
 
+def _event_date(e):
+    """The date to file an event under: the evening you go outside, not the
+    instant it peaks.
+
+    The 2026 Perseid maximum is 13 Aug 02:10 UT, so dating the row by the peak
+    put it on Thursday the 13th while every almanac says the 12th. Both are
+    describing the same night -- the peak falls in the small hours -- and the
+    night is what a reader is planning around. Where there's a viewing window,
+    _ics_span already works out which evening it starts on, so the list and
+    the calendar entry agree by construction.
+    """
+    if e.get("window_local"):
+        return _ics_span(e)[0]
+    return e["when_local"]
+
+
 def _event_line(e, r):
     """One event as a table row: when, glyph, what, and where to look."""
-    when = f"{e['when_local']:%a %d %b}"
+    when = f"{_event_date(e):%a %d %b}"
     head = f"{e.get('glyph', ' ')} {e['headline']}"
     tail = []
     if e.get("alt") is not None and e.get("compass"):
@@ -2097,6 +2133,15 @@ SPHERE_PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
  #find-reticle .tick-top,#find-reticle .tick-bottom{{width:2px;height:14px;left:-1px}}
  #find-reticle .tick-left,#find-reticle .tick-right{{height:2px;width:14px;top:-1px}}
  .found-label span{{color:#ff87ff;font-weight:700}}
+ /* Orchid, matching the "Coming up:" line the text views use, so the two
+    read as the same feature. Only ever on screen for the handful of nights
+    a year a shower is actually running. */
+ .radiant-label span{{color:#ff9ae6;font-weight:700}}
+ #radiant-hud{{position:fixed;left:0;right:0;bottom:64px;text-align:center;
+              color:#ff9ae6;font-size:12px;padding:0 14px;pointer-events:none;
+              z-index:999;margin:0;text-shadow:0 0 6px #000,0 0 6px #000;
+              display:none}}
+ body.daytime #radiant-hud{{color:#8a2f74}}
 </style></head><body>
 <div id="hud"><a href="/">&larr; {place_name}{home_suffix}</a><span id="heading"></span><span id="mode-label"></span></div>
 <div id="debug-hud"></div>
@@ -2119,6 +2164,7 @@ you're holding it; anywhere else, drag to look around.</p>
 </div>
 <p id="find-msg"></p>
 <div id="find-arrow">&gt;&gt;&gt;</div>
+<p id="radiant-hud"></p>
 <div id="find-reticle">
 <div class="tick tick-top"></div>
 <div class="tick tick-bottom"></div>
@@ -2265,6 +2311,67 @@ function toVec(alt, az) {{
   var y = Math.sin(a);
   var zc = -Math.cos(z) * Math.cos(a);
   return new THREE.Vector3(x, y, zc).multiplyScalar(RADIUS);
+}}
+
+// A meteor shower's radiant: the one thing this view can do that no flat
+// chart can, which is let you physically turn and face it. Drawn as a ring
+// rather than a glyph because a radiant is not an object -- there is nothing
+// at that point to see, it is the direction the meteors appear to come from,
+// and a ring around empty sky says that better than a dot would.
+//
+// Placed at the radiant's alt/az at the BEST moment tonight, not at this
+// instant: the radiant climbs through the night, and where to look when you
+// actually go outside is the useful answer. It is therefore a fixed marker,
+// not a live position, which is why nothing re-computes it on a timer.
+var RADIANT_RING_SEGMENTS = 64;
+function addRadiant(rad) {{
+  var centre = toVec(rad.alt, rad.az);
+  var colour = 0xff9ae6;
+
+  // Build the ring in a local frame around the radiant direction, then
+  // orient it so it lies flat against the sphere and reads as a circle from
+  // the middle rather than an ellipse edge-on.
+  var normal = centre.clone().normalize();
+  var up = Math.abs(normal.y) > 0.95 ? new THREE.Vector3(1, 0, 0)
+                                     : new THREE.Vector3(0, 1, 0);
+  var e1 = new THREE.Vector3().crossVectors(up, normal).normalize();
+  var e2 = new THREE.Vector3().crossVectors(normal, e1).normalize();
+  var ringR = RADIUS * 0.09;
+  var pts = [];
+  for (var i = 0; i <= RADIANT_RING_SEGMENTS; i++) {{
+    var t = i / RADIANT_RING_SEGMENTS * Math.PI * 2;
+    pts.push(centre.clone()
+      .addScaledVector(e1, Math.cos(t) * ringR)
+      .addScaledVector(e2, Math.sin(t) * ringR));
+  }}
+  var ring = new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts),
+                            new THREE.LineBasicMaterial({{color: colour}}));
+  scene.add(ring);
+
+  // Four short ticks pointing outward, the direction meteors actually streak.
+  var spokes = [];
+  for (var k = 0; k < 4; k++) {{
+    var t2 = k / 4 * Math.PI * 2 + Math.PI / 4;
+    var dir = e1.clone().multiplyScalar(Math.cos(t2))
+               .addScaledVector(e2, Math.sin(t2));
+    spokes.push(centre.clone().addScaledVector(dir, ringR * 1.35),
+                centre.clone().addScaledVector(dir, ringR * 2.1));
+  }}
+  scene.add(new THREE.LineSegments(
+    new THREE.BufferGeometry().setFromPoints(spokes),
+    new THREE.LineBasicMaterial({{color: colour}})));
+
+  addLabel(rad.glyph + ' ' + rad.name, centre, 'radiant-label', 0);
+
+  var hud = document.getElementById('radiant-hud');
+  if (hud) {{
+    var bits = [rad.name + ' radiant'];
+    if (rad.window_local) bits.push('best ' + rad.window_local[0] + '-' + rad.window_local[1]);
+    if (rad.zhr) bits.push('up to ' + rad.zhr + '/hr');
+    if (rad.moon_verdict) bits.push(rad.moon_verdict);
+    hud.textContent = bits.join(' · ');
+    hud.style.display = 'block';
+  }}
 }}
 
 // The horizon itself, alt=0 all the way round -- doesn't depend on the
@@ -2457,6 +2564,8 @@ fetch('/' + PLACE + '/sphere.json' + window.location.search).then(function(r) {{
     scene.add(flatColourPoints([b], b.name === 'Moon' ? 26 : 18));
     addLabel(b.name, toVec(b.alt, b.az), 'body-label', 0);
   }});
+
+  if (data.radiant) addRadiant(data.radiant);
 
   var linePts = [];
   data.asterisms.forEach(function(con) {{

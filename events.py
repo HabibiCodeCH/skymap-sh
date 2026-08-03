@@ -667,6 +667,9 @@ def localise(ev, lat, lon, tz_offset):
     e["visible"] = True
     e["best_local"] = _local(from_julian(bjd), tz_offset)
     e["alt"] = round(alt, 1)
+    # Raw degrees as well as the compass point: the text views want "NE", the
+    # 3D sphere needs a number to put the marker at.
+    e["az"] = round(az, 1)
     e["compass"] = compass(az)
 
     win = _dark_window(jd, ra, dec, lat, lon, mag, min_alt, bjd)
@@ -734,6 +737,37 @@ TEASER_HORIZON = {
     "elongation": 7,
     "conjunction": 3,
 }
+
+
+def active_shower(lat, lon, tz_offset, now_utc=None, before=2.0, after=2.0):
+    """The shower worth pointing at right now, or None.
+
+    Not upcoming(): that only looks forward, and a shower that peaked last
+    night is still the reason to go outside tonight. Rates fall off either
+    side of the peak rather than switching off, so the window straddles it.
+
+    Returns the localised event, with alt/az of the radiant already worked
+    out, or None if nothing is active or the radiant never clears the
+    horizon in a dark enough sky.
+    """
+    now = now_utc or dt.datetime.utcnow().replace(microsecond=0)
+    start = now - dt.timedelta(days=before)
+    span = int(before + after) + 2
+    best = None
+    for e in scan_global(start, span):
+        if e["kind"] != "meteor_shower":
+            continue
+        days = (e["when_utc"] - now).total_seconds() / 86400
+        if not -before <= days <= after:
+            continue
+        loc = localise(e, lat, lon, tz_offset)
+        if not loc["visible"]:
+            continue
+        # Closest to peak wins when two overlap, which the Taurids and
+        # Leonids manage most Novembers.
+        if best is None or abs(days) < abs(best[0]):
+            best = (days, loc)
+    return best[1] if best else None
 
 
 def next_event(lat, lon, tz_offset, now_utc=None, within_days=14,

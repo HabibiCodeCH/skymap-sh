@@ -96,6 +96,28 @@ def test_events_list_shows_invisible_ones_separately():
     assert "Perseids" in text
 
 
+def test_shower_is_filed_under_the_evening_not_the_peak_instant():
+    """The 2026 Perseid maximum is 13 Aug 02:10 UT, so dating the row by the
+    peak put it on Thursday the 13th while every almanac says the 12th. Same
+    night — the peak is in the small hours — and the night is what a reader
+    plans around."""
+    text = api._compose_events(_req(), days=14).text
+    line = [l for l in text.split("\n") if "Perseids" in l][0]
+    assert "Wed 12 Aug" in line, line
+    assert "22:10" in line                      # the window starts that evening
+
+
+def test_list_date_and_calendar_entry_agree():
+    """Both go through _ics_span, so they cannot drift apart."""
+    ics = api.events_ics(_req(), days=14)
+    block = [b for b in ics.split("BEGIN:VEVENT") if "Perseids" in b][0]
+    start = re.search(r"DTSTART:(\d{8})", block).group(1)
+    line = [l for l in api._compose_events(_req(), days=14).text.split("\n")
+            if "Perseids" in l][0]
+    assert start == "20260812"
+    assert "12 Aug" in line
+
+
 def test_separation_is_not_printed_twice():
     """The headline already says "Moon and Venus 1.9° apart"; the detail
     column used to repeat it."""
@@ -208,6 +230,71 @@ def test_rss_pubdate_carries_the_places_own_offset():
     xml = api.events_rss(_req(place="Tokyo"), days=30)
     dates = re.findall(r"<pubDate>([^<]+)</pubDate>", xml)
     assert dates and all(d.endswith("+0900") for d in dates), dates[:3]
+
+
+# ---------------------------------------------------------------- sphere radiant
+PEAK_NIGHT = dt.datetime(2026, 8, 13, 1, 0)
+
+
+def test_sphere_carries_the_radiant_on_a_shower_night():
+    rad = api._compose_sphere(_req(when=PEAK_NIGHT))["radiant"]
+    assert rad and rad["name"] == "Perseids"
+    assert rad["compass"] in ("N", "NNE", "NE", "ENE")
+    assert 0 < rad["alt"] <= 90
+    assert 0 <= rad["az"] < 360
+    assert rad["zhr"] == 100
+
+
+def test_sphere_radiant_is_null_on_an_ordinary_night():
+    """Null on all but a handful of nights a year, or the marker means
+    nothing when it does appear."""
+    assert api._compose_sphere(_req(when=dt.datetime(2026, 9, 20, 23, 0)))["radiant"] is None
+
+
+def test_sphere_radiant_survives_the_night_after_the_peak():
+    """Rates fall off either side of maximum rather than switching off, and
+    upcoming() only looks forward, so active_shower straddles the peak."""
+    after = api._compose_sphere(_req(when=dt.datetime(2026, 8, 14, 23, 0)))["radiant"]
+    assert after and after["name"] == "Perseids"
+
+
+def test_sphere_radiant_absent_where_the_radiant_never_rises():
+    assert api._compose_sphere(_req(place="Sydney", when=PEAK_NIGHT))["radiant"] is None
+
+
+def test_sphere_radiant_uses_the_best_moment_not_the_request_instant():
+    """The radiant climbs through the night; where to look when you go out is
+    the useful answer, so the marker must not move with the clock."""
+    a = api._compose_sphere(_req(when=dt.datetime(2026, 8, 12, 21, 0)))["radiant"]
+    b = api._compose_sphere(_req(when=dt.datetime(2026, 8, 13, 2, 0)))["radiant"]
+    assert abs(a["alt"] - b["alt"]) < 1.0
+    assert abs(a["az"] - b["az"]) < 1.0
+
+
+def test_sphere_radiant_json_is_serialisable():
+    import json
+    json.dumps(api._compose_sphere(_req(when=PEAK_NIGHT)))
+
+
+def test_sphere_page_has_the_radiant_drawing_code(client):
+    body = client.get("/Zurich/sphere",
+                      headers={"User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0)"}).text
+    for token in ("addRadiant", "radiant-hud", "radiant-label", "data.radiant"):
+        assert token in body, token
+
+
+def test_sphere_json_route_includes_radiant(client):
+    j = client.get("/Zurich/sphere.json?t=2026-08-13T01:00").json()
+    assert "radiant" in j
+
+
+def test_stats_counts_radiant_nights(client):
+    """Standing rule: a new thing on a route ships with its counter."""
+    before = server._stat["sphere_radiant"]
+    client.get("/Zurich/sphere.json?t=2026-08-13T01:00")
+    assert server._stat["sphere_radiant"] == before + 1
+    client.get("/Zurich/sphere.json?t=2026-09-20T23:00")
+    assert server._stat["sphere_radiant"] == before + 1     # quiet night, no bump
 
 
 # ---------------------------------------------------------------- routes

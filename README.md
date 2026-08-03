@@ -21,7 +21,9 @@ domain). `?quadrant=A` crops the chart to one lettered cell instead of the
 whole sky, letters are marked on the chart to pick from.
 
 On a phone, an additive 3D sky sphere is one tap away: look around by
-moving the phone, at `/{place}/sphere`.
+moving the phone, at `/{place}/sphere`. On the handful of nights a year a
+meteor shower is running, it marks the radiant so you can physically turn and
+face it.
 
 `/{place}/events` is what's coming up over that place in the next 90 days:
 meteor showers with the radiant's altitude and whether the Moon is in the way,

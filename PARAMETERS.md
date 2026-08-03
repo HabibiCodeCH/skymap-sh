@@ -216,6 +216,15 @@ absent most nights on purpose: a shower is worth flagging a fortnight out, the
 Moon passing Jupiter only the night before, and moon phases never, since there
 is one every 7.4 days and a line that is always there stops being read.
 
+On a shower night the sphere marks the radiant: a ring around empty sky (a
+radiant is a direction, not an object, so there is nothing there to draw) with
+four ticks pointing the way meteors streak, the shower's name, and a line
+across the bottom with the window, the rate and what the Moon is doing. It sits
+at the radiant's altitude at the *best* moment that night rather than at the
+moment you loaded the page, because the radiant climbs through the night and
+where to look when you actually go out is the useful answer. Absent on all but
+a handful of nights a year, and absent anywhere the radiant never rises.
+
 JSON keys, events view: `place lat lon tz_offset when_utc window_days upcoming`,
 where each entry in `upcoming` has `kind name headline id when_utc when_local
 visible` plus whatever that kind carries — `alt compass window_local zhr
@@ -265,6 +274,9 @@ at all.
 | `/stats` | what people ask for: top cities, top finds, top referrers, views, cache hit rate |
 | `/stats?format=json` | the same, structured |
 | `/{place}/sphere` | mobile-only 3D sky sphere, look around by tilting the phone |
+| `/{place}/events` | what's coming up over that place, next 90 days |
+| `/{place}/events.ics` | iCalendar feed of the same |
+| `/{place}/events.rss` | RSS feed of the same |
 | `/{place}/sphere.json` | the same sky as stars/asterisms/deep-sky/bodies with resolved alt/az, for the 3D view |
 | `/robots.txt` | allow all |
 | unknown place | 404 with near misses |

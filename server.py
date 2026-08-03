@@ -425,6 +425,9 @@ def stats_sphere_text(n=50):
     L = [f"skymap.sh: sphere stats ({_stat['sphere']:,} views, "
         f"{_stat['sphere_json']:,} data fetches, {_stat['mobile_redirect']:,} "
         f"mobile auto-redirects)", ""]
+    if _stat["sphere_radiant"]:
+        L.append(f"  {'radiant':12} {_stat['sphere_radiant']:>8,}  "
+                 f"(views on a night with a shower running)")
     sphere_os = sorted(k for k in _stat if k.startswith("sphere_os:"))
     if sphere_os:
         L.append("views by OS")
@@ -440,6 +443,7 @@ def stats_sphere_text(n=50):
 def stats_sphere_json(n=50):
     return dict(
         sphere=_stat["sphere"], sphere_json=_stat["sphere_json"],
+        sphere_radiant=_stat["sphere_radiant"],
         mobile_redirect=_stat["mobile_redirect"],
         by_os={k[10:]: v for k, v in _stat.items() if k.startswith("sphere_os:")},
         places_distinct=len(_sphere_places),
@@ -1272,6 +1276,11 @@ def sphere_json(request: Req, place: str):
     r = _build(request, place)
     data = api._compose_sphere(r)
     _stat["sphere_json"] += 1
+    # How often anyone actually opens the 3D view on a night with a shower
+    # running -- the whole reason the radiant marker exists, and the only way
+    # to tell whether it's ever seen.
+    if data.get("radiant"):
+        _stat["sphere_radiant"] += 1
     edge = DAY_EDGE if not r.night and api.is_daytime(r) else NIGHT_EDGE
     return JSONResponse(data, headers={
         "Cache-Control": f"public, max-age={edge // 4}, s-maxage={edge}"})
