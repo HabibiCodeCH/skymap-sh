@@ -1062,7 +1062,11 @@ def _event_date(e):
     """
     if e.get("window_local"):
         return _ics_span(e)[0]
-    return e["when_local"]
+    # Same rule without a window: a conjunction whose closest approach falls
+    # at 08:05 is watched the evening before, and _event_url sends you to that
+    # evening's chart. The row has to be dated the same, or the list says the
+    # 16th while its own link opens the 15th.
+    return e.get("best_local") or e["when_local"]
 
 
 def _event_line(e, r):
@@ -1085,6 +1089,100 @@ def _event_line(e, r):
     return f"  {when:<11} {head:<34} {', '.join(tail)}".rstrip()
 
 
+def _event_url(e, r):
+    """The chart for the moment this event is worth looking at.
+
+    Not the event's own instant: a shower peaking at 04:10 wants the chart for
+    the middle of its window, and anything with a best moment wants that. The
+    compass bearing rides along as ?facing= so the chart opens pointed at the
+    thing rather than at a default panorama.
+    """
+    when = e.get("best_local") or e["when_local"]
+    url = f"/{quote(r.place.slug)}?t={when:%Y-%m-%dT%H:%M}"
+    if e.get("compass"):
+        url += f"&facing={e['compass']}"
+    return url
+
+
+def _event_rows(r, days, colour_free=False):
+    """Every line of the events view, once, as structured rows.
+
+    The text and HTML renderers both consume this, so the terminal list and
+    the clickable browser list cannot drift apart -- the same reason api.py
+    exists at all rather than the CLI and the server each composing their own.
+
+    Each row is (style, text, url). url is None for anything that isn't an
+    event you could open a chart for.
+    """
+    import textwrap
+    p = r.place
+    every = _events_for(r, days=days, visible_only=False)
+    here = [e for e in every if e["visible"] is not False]
+    not_here = [e for e in every if e["visible"] is False]
+
+    rows = [("blank", "", None)]
+    rows.append(("head",
+                 f"  {p.name}  {abs(p.lat):.2f}°{'N' if p.lat >= 0 else 'S'} "
+                 f"{abs(p.lon):.2f}°{'E' if p.lon >= 0 else 'W'}  ·  "
+                 f"next {days} days  ·  local time", None))
+    rows.append(("blank", "", None))
+
+    if not here:
+        rows.append(("mute", "  Nothing above the horizon here in the next "
+                             f"{days} days.", None))
+    for e in here:
+        rows.append(("event", _event_line(e, r), _event_url(e, r)))
+        note = e.get("moon_verdict") or e.get("note")
+        if note:
+            for l in textwrap.wrap(note, 62):
+                rows.append(("mute", f"  {'':<11} {l}", None))
+
+    if not_here:
+        rows.append(("blank", "", None))
+        rows.append(("mute", "  Happening, but not from here:", None))
+        for e in not_here:
+            txt = (f"{_event_date(e):%a %d %b}  {e['headline']}: "
+                   f"{e.get('reason', 'not visible')}")
+            for i, l in enumerate(textwrap.wrap(txt, 74)):
+                rows.append(("mute", ("  " if i == 0 else "  " + " " * 12) + l, None))
+
+    rows.append(("blank", "", None))
+    rows.append(("mute", "  Subscribe: add /events.ics to your calendar, or "
+                         "/events.rss to a reader.", None))
+    return rows, every
+
+
+def events_html(r, days=EVENTS_WINDOW_DAYS):
+    """Browser twin of the text list: every event opens the chart for the
+    moment it happens, in a new tab so the list stays put -- the same bargain
+    catalog_html() makes.
+
+    The row is wrapped whole, padding included, so the columns stay lined up
+    inside <pre> exactly as they do in a terminal.
+    """
+    style = {"head": C.HEAD, "event": EVENT_COL, "mute": C.MUTE}
+    rows, _ = _event_rows(r, days)
+    out = []
+    for kind, text, url in rows:
+        if kind == "blank":
+            out.append("")
+            continue
+        span = (f'<span style="color:{_ansi_hex(style[kind])}">'
+                f"{html.escape(text)}</span>")
+        if url:
+            out.append(f'<a href="{html.escape(url)}" target="_blank" '
+                       f'rel="noopener" title="Open the sky for this moment">'
+                       f"{span}</a>")
+        else:
+            out.append(span)
+    out.append("")
+    out.append(f'<span style="color:{_ansi_hex(C.MUTE)}">  Follow </span>'
+               f'<a href="https://bsky.app/profile/habibicode.bsky.social" '
+               f'target="_blank" rel="noopener">@habibicode</a>'
+               f'<span style="color:{_ansi_hex(C.MUTE)}"> for skymap.sh updates</span>')
+    return "\n".join(out)
+
+
 def _compose_events(r, next_only=False, days=EVENTS_WINDOW_DAYS):
     """The full list for /{place}/events.
 
@@ -1093,7 +1191,6 @@ def _compose_events(r, next_only=False, days=EVENTS_WINDOW_DAYS):
     saying out loud, and silently omitting it just looks like a gap.
     """
     p, c = r.place, r.color
-    every = _events_for(r, days=days, visible_only=False)
 
     if next_only:
         # One line, nothing else, for a shell prompt or a MOTD. Empty output
@@ -1102,35 +1199,10 @@ def _compose_events(r, next_only=False, days=EVENTS_WINDOW_DAYS):
         return Result((line.replace("Coming up: ", "") + "\n") if line else "",
                       dict(place=p.name, next=line))
 
-    here = [e for e in every if e["visible"] is not False]
-    not_here = [e for e in every if e["visible"] is False]
-
-    head = (f"  {p.name}  {abs(p.lat):.2f}°{'N' if p.lat >= 0 else 'S'} "
-            f"{abs(p.lon):.2f}°{'E' if p.lon >= 0 else 'W'}  ·  "
-            f"next {days} days  ·  local time")
-    out = ["", paint(head, C.HEAD, c), ""]
-    if not here:
-        out.append(paint("  Nothing above the horizon here in the next "
-                         f"{days} days.", C.MUTE, c))
-    import textwrap
-    for e in here:
-        out.append(paint(_event_line(e, r), EVENT_COL, c))
-        note = e.get("moon_verdict") or e.get("note")
-        if note:
-            # Hang the note under the headline column so it reads as a
-            # continuation of the row rather than a new one. The eclipse notes
-            # in particular run well past 80 columns unwrapped.
-            for l in textwrap.wrap(note, 62):
-                out.append(paint(f"  {'':<11} {l}", C.MUTE, c))
-    if not_here:
-        out += ["", paint("  Happening, but not from here:", C.MUTE, c)]
-        for e in not_here:
-            txt = (f"{e['when_local']:%a %d %b}  {e['headline']}: "
-                   f"{e.get('reason', 'not visible')}")
-            for i, l in enumerate(textwrap.wrap(txt, 74)):
-                out.append(paint(("  " if i == 0 else "  " + " " * 12) + l, C.MUTE, c))
-    out += ["", paint("  Subscribe: add /events.ics to your calendar, or "
-                      "/events.rss to a reader.", C.MUTE, c)]
+    rows, every = _event_rows(r, days)
+    style = {"head": C.HEAD, "event": EVENT_COL, "mute": C.MUTE}
+    out = ["" if kind == "blank" else paint(text, style[kind], c)
+           for kind, text, _url in rows]
     out += ["", _footer(p, c), ""]
 
     data = dict(place=p.name, lat=p.lat, lon=p.lon, tz_offset=r.tz,
@@ -2137,11 +2209,22 @@ SPHERE_PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
     read as the same feature. Only ever on screen for the handful of nights
     a year a shower is actually running. */
  .radiant-label span{{color:#ff9ae6;font-weight:700}}
+ /* bottom is set from JS to sit clear of #toolbar, whose height changes when
+    its buttons wrap to a second row on a narrow phone -- a fixed offset here
+    put this straight through the Labels/Deep sky row. */
  #radiant-hud{{position:fixed;left:0;right:0;bottom:64px;text-align:center;
               color:#ff9ae6;font-size:12px;padding:0 14px;pointer-events:none;
               z-index:999;margin:0;text-shadow:0 0 6px #000,0 0 6px #000;
               display:none}}
+ /* Only the text takes taps, not the full-width strip -- the strip sits over
+    the canvas, and swallowing drags there would break panning near the
+    bottom of the screen. */
+ #radiant-hud span{{pointer-events:auto;cursor:pointer;display:inline-block;
+                   border-bottom:1px dashed rgba(255,154,230,.55);
+                   padding-bottom:1px}}
+ #radiant-hud span:active{{color:#ffd0f4}}
  body.daytime #radiant-hud{{color:#8a2f74}}
+ body.daytime #radiant-hud span{{border-bottom-color:rgba(138,47,116,.55)}}
 </style></head><body>
 <div id="hud"><a href="/">&larr; {place_name}{home_suffix}</a><span id="heading"></span><span id="mode-label"></span></div>
 <div id="debug-hud"></div>
@@ -2164,7 +2247,7 @@ you're holding it; anywhere else, drag to look around.</p>
 </div>
 <p id="find-msg"></p>
 <div id="find-arrow">&gt;&gt;&gt;</div>
-<p id="radiant-hud"></p>
+<p id="radiant-hud"><span id="radiant-hud-text" role="button" tabindex="0"></span></p>
 <div id="find-reticle">
 <div class="tick tick-top"></div>
 <div class="tick tick-bottom"></div>
@@ -2364,15 +2447,46 @@ function addRadiant(rad) {{
   addLabel(rad.glyph + ' ' + rad.name, centre, 'radiant-label', 0);
 
   var hud = document.getElementById('radiant-hud');
-  if (hud) {{
+  var hudText = document.getElementById('radiant-hud-text');
+  if (hud && hudText) {{
     var bits = [rad.name + ' radiant'];
     if (rad.window_local) bits.push('best ' + rad.window_local[0] + '-' + rad.window_local[1]);
     if (rad.zhr) bits.push('up to ' + rad.zhr + '/hr');
     if (rad.moon_verdict) bits.push(rad.moon_verdict);
-    hud.textContent = bits.join(' · ');
+    hudText.textContent = bits.join(' · ') + ' · tap to point me at it';
     hud.style.display = 'block';
+    liftRadiantHud();
+
+    // Reuse the find machinery rather than a second kind of pointer: same
+    // arrow when it's off screen, same reticle as it comes into view, same
+    // cancel button. The radiant is not a catalogue object so there is
+    // nothing to look up -- we already know exactly where it is.
+    var aim = function(ev) {{
+      if (ev) ev.preventDefault();
+      findMsg.textContent = '';
+      findTarget = {{alt: rad.alt, az: rad.az, name: rad.name + ' radiant'}};
+      findCancelBtn.hidden = false;
+    }};
+    hudText.addEventListener('click', aim);
+    hudText.addEventListener('keydown', function(ev) {{
+      if (ev.key === 'Enter' || ev.key === ' ') aim(ev);
+    }});
   }}
 }}
+
+// #toolbar wraps to a second row on a narrow phone, so its height is not
+// knowable from CSS -- measure it and sit the HUD above whatever it actually
+// is. Re-run on resize because rotating re-wraps it.
+function liftRadiantHud() {{
+  var hud = document.getElementById('radiant-hud');
+  var bar = document.getElementById('toolbar');
+  if (!hud || !bar || hud.style.display === 'none') return;
+  hud.style.bottom = (bar.offsetHeight + 12) + 'px';
+}}
+window.addEventListener('resize', liftRadiantHud);
+window.addEventListener('orientationchange', function() {{
+  setTimeout(liftRadiantHud, 200);
+}});
 
 // The horizon itself, alt=0 all the way round -- doesn't depend on the
 // fetch, so it's there immediately, marking where "up" (this observer's

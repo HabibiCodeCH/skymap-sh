@@ -2,6 +2,8 @@
 feeds, the routes and the CLI flags."""
 import datetime as dt
 import re
+import shutil
+import subprocess
 import xml.etree.ElementTree as ET
 
 import pytest
@@ -158,6 +160,86 @@ def test_json_datetimes_are_strings():
     json.dumps(data)                              # must not raise
 
 
+# ---------------------------------------------------------------- clickable HTML
+def test_events_html_links_every_event_to_its_own_chart():
+    h = api.events_html(_req(), days=20)
+    links = re.findall(r'<a href="(/Zurich\?t=[^"]+)"', h)
+    assert len(links) >= 6
+    for href in links:
+        assert re.search(r"t=\d{4}-\d{2}-\d{2}T\d{2}:\d{2}", href), href
+
+
+def test_event_link_faces_the_right_way():
+    """The chart opens pointed at the thing, not at a default panorama."""
+    h = api.events_html(_req(), days=20)
+    row = [l for l in h.split("\n") if "Perseids" in l][0]
+    assert "facing=NE" in row, row
+
+
+def test_event_link_uses_the_best_moment_not_the_instant():
+    h = api.events_html(_req(), days=20)
+    row = [l for l in h.split("\n") if "Perseids" in l][0]
+    assert "t=2026-08-13T04:50" in row, row
+
+
+def test_row_date_and_its_own_link_land_on_the_same_night():
+    """The list said "Sun 16 Aug" while its link opened the 15th, because the
+    date came from the event instant and the href from the best moment.
+
+    Same *night*, not same date: a row dated 12 Aug legitimately links to
+    13 Aug 04:50, because a night crosses midnight. The noon boundary is the
+    same one _when_words uses to decide "tonight".
+    """
+    h = api.events_html(_req(), days=40)
+    checked = 0
+    for row in h.split("\n"):
+        m = re.search(r'href="/Zurich\?t=(\d{4}-\d{2}-\d{2}T\d{2}:\d{2})', row)
+        d = re.search(r">\s*\w{3} (\d{2}) (\w{3})", row)
+        if not m or not d:
+            continue
+        link = dt.datetime.fromisoformat(m.group(1))
+        row_day = int(d.group(1))
+        # Two kinds of row, and both are legitimate:
+        #   an instant (a phase, an equinox) is dated by its calendar date;
+        #   a viewing session is dated by the night it belongs to, which can
+        #   run past midnight into the next date.
+        # A link must land on one or the other, never on some third day.
+        same_date = link.day == row_day
+        same_night = (link - dt.timedelta(hours=12)).day == row_day
+        assert same_date or same_night, f"{row}\nlink {link}, row says {row_day}"
+        checked += 1
+    assert checked >= 6, "no linked rows found to check"
+
+
+def test_events_html_escapes_and_opens_in_a_new_tab():
+    h = api.events_html(_req(), days=20)
+    assert 'target="_blank"' in h and 'rel="noopener"' in h
+    assert "<script" not in h
+
+
+def test_events_html_columns_line_up_with_the_text_version():
+    """The anchor wraps the whole padded row, so <pre> alignment survives."""
+    import re as _re
+    text = api._compose_events(_req(), days=20).text.split("\n")
+    html_rows = [_re.sub(r"<[^>]+>", "", l) for l in
+                 api.events_html(_req(), days=20).split("\n")]
+    import html as _h
+    html_rows = [_h.unescape(l) for l in html_rows]
+    for line in text:
+        if "Perseids" in line or "New Moon" in line:
+            assert line in html_rows, line
+
+
+def test_events_route_serves_links_to_a_browser(client):
+    body = client.get("/Zurich/events?days=20", headers=BROWSER).text
+    assert 'href="/Zurich?t=' in body
+
+
+def test_curl_gets_no_html(client):
+    body = client.get("/Zurich/events?days=20", headers=CURL).text
+    assert "<a href" not in body
+
+
 # ---------------------------------------------------------------- ICS
 def test_ics_is_well_formed():
     ics = api.events_ics(_req(), days=30)
@@ -281,6 +363,25 @@ def test_sphere_page_has_the_radiant_drawing_code(client):
                       headers={"User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0)"}).text
     for token in ("addRadiant", "radiant-hud", "radiant-label", "data.radiant"):
         assert token in body, token
+
+
+@pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
+def test_sphere_page_javascript_parses():
+    """A syntax error anywhere in this script kills the entire sphere page,
+    which has happened before (874cbdf's parent line of work). Nothing else in
+    the suite would notice, because the server happily serves broken JS with a
+    200. Parse-only, no execution -- there is no DOM here."""
+    page = api.SPHERE_PAGE.format(title="t", place_slug="Zurich",
+                                  place_name="Zürich", home_suffix="")
+    js = re.search(r'<script type="module">(.*?)</script>', page, re.S).group(1)
+    js = re.sub(r"^\s*import .*$", "", js, flags=re.M)     # bare specifiers
+    out = subprocess.run(
+        ["node", "-e",
+         "const s=require('fs').readFileSync(process.argv[1],'utf8');"
+         "require('vm').compileFunction(s,[],{});console.log('OK')",
+         "/dev/stdin"],
+        input=js, capture_output=True, text=True)
+    assert "OK" in out.stdout, out.stderr[:600]
 
 
 def test_sphere_json_route_includes_radiant(client):
