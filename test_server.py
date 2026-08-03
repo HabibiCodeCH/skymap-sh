@@ -707,6 +707,90 @@ class WorldMap(unittest.TestCase):
         heat = server._map_heat(w, h, top, bot)
         self.assertEqual(sum(heat.values()), 3)
 
+    def test_traffic_over_water_still_gets_a_dot(self):
+        # Reykjavik, Valletta and Honolulu all land on cells the mask calls
+        # sea -- the polygons are simplified and an island can be smaller
+        # than a two-degree cell. Skipping them made a third of real traffic
+        # invisible, so a cell with requests is drawn whether or not the
+        # mask agrees there is land under it.
+        rows, w, h, top, bot = server._load_worldmap()
+        land = {(r, c) for r, row in enumerate(rows)
+                for c, ch in enumerate(row) if ch != " "}
+        sea = next((r, c) for r in range(h) for c in range(w)
+                   if (r, c) not in land)
+        lat = top - (sea[0] + 0.5) * (top - bot) / h
+        lon = -180 + (sea[1] + 0.5) * 360 / w
+        server._geo_hits.update({f"{round(lat)},{round(lon)}": 9})
+        server._heat_cache = (0.0, None, None)
+        cell = server._map_cell(round(lat), round(lon), w, h, top, bot)
+        line = server.api.strip_ansi(server._world_map()[cell[0]])
+        self.assertEqual(line[cell[1]], server.MAP_DOT)
+        self.assertIn(f'id="d{cell[0]}_{cell[1]}"', server._map_html())
+
+    def test_empty_ocean_is_still_empty(self):
+        # Only cells with traffic; the rest of the sea stays background.
+        server._geo_hits.update({"47,9": 4})
+        server._heat_cache = (0.0, None, None)
+        plain = [server.api.strip_ansi(r) for r in server._world_map()]
+        _rows, w, h, top, bot = server._load_worldmap()
+        r, c = server._map_cell(0.0, -150.0, w, h, top, bot)   # mid-Pacific
+        self.assertTrue(len(plain[r]) <= c or plain[r][c] == " ")
+
+    def test_a_named_city_lands_on_the_map_like_a_coordinate(self):
+        # Both go through r.place, so the map never sees the difference
+        # between /Tokyo and /35.69,139.69.
+        client = TestClient(server.app)
+        with client:
+            server._geo_hits.clear()
+            client.get("/Tokyo", headers=TERMINAL)
+            by_name = dict(server._geo_hits)
+            server._geo_hits.clear()
+            client.get("/35.69,139.69", headers=TERMINAL)
+            by_coords = dict(server._geo_hits)
+        self.assertTrue(by_name)
+        self.assertEqual(set(by_name), set(by_coords))
+
+    def test_the_ramp_spreads_even_when_one_cell_dominates(self):
+        # A log scale collapses here: with a busiest of 300, cells on 5 and
+        # on 1 both land on the palest step and the map is one red dot in a
+        # field of white. Ranking uses the whole ramp whatever the spread.
+        server._geo_hits.update({"47,9": 300, "36,140": 6, "52,0": 5,
+                                 "41,-74": 4, "-12,-77": 3, "60,11": 3,
+                                 "30,31": 2, "-34,151": 1})
+        server._heat_cache = (0.0, None, None)
+        _rows, w, h, top, bot = server._load_worldmap()
+        shade, _heat = server._map_shader(w, h, top, bot)
+        got = {}
+        for key, n in server._geo_hits.items():
+            lat, lon = (float(v) for v in key.split(","))
+            got[n] = shade(*server._map_cell(lat, lon, w, h, top, bot))
+        self.assertEqual(got[300], len(server.MAP_RAMP) - 1)   # busiest is red
+        self.assertGreaterEqual(len(set(got.values())), 5)     # ramp is used
+        # Monotonic: more requests never gets a cooler colour.
+        ordered = [got[n] for n in sorted(got)]
+        self.assertEqual(ordered, sorted(ordered))
+
+    def test_equal_counts_get_equal_colours(self):
+        # Ranking runs over distinct values, not over cells, so a tie cannot
+        # straddle a colour boundary.
+        server._geo_hits.update({"47,9": 50, "36,140": 7, "52,0": 7,
+                                 "41,-74": 7, "-34,151": 1})
+        server._heat_cache = (0.0, None, None)
+        _rows, w, h, top, bot = server._load_worldmap()
+        shade, _heat = server._map_shader(w, h, top, bot)
+        tied = [shade(*server._map_cell(float(k.split(",")[0]),
+                                        float(k.split(",")[1]), w, h, top, bot))
+                for k in ("36,140", "52,0", "41,-74")]
+        self.assertEqual(len(set(tied)), 1)
+
+    def test_a_single_busy_cell_is_the_maximum(self):
+        server._geo_hits.update({"47,9": 12})
+        server._heat_cache = (0.0, None, None)
+        _rows, w, h, top, bot = server._load_worldmap()
+        shade, _heat = server._map_shader(w, h, top, bot)
+        self.assertEqual(shade(*server._map_cell(47.0, 9.0, w, h, top, bot)),
+                         len(server.MAP_RAMP) - 1)
+
     def test_busier_places_get_a_warmer_colour(self):
         server._geo_hits.update({"47,9": 5000, "-34,151": 5})
         text = "\n".join(server._world_map())

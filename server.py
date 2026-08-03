@@ -636,12 +636,12 @@ def _world_map():
     if not loaded:
         return []
     rows, w, h, lat_top, lat_bot = loaded
-    shade = _map_shader(w, h, lat_top, lat_bot)
+    shade, heat = _map_shader(w, h, lat_top, lat_bot)
     out = []
     for r, row in enumerate(rows):
         line, pen = [], None
         for c, ch in enumerate(row):
-            if ch == " ":
+            if ch == " " and (r, c) not in heat:
                 # Close the colour before a run of ocean so the escape codes
                 # don't outnumber the dots.
                 if pen is not None:
@@ -680,17 +680,36 @@ def _cached_heat(w, h, lat_top, lat_bot):
 
 
 def _map_shader(w, h, lat_top, lat_bot):
-    """(row, col) -> index into MAP_RAMP. Shared so the text map and the
-    browser's map cannot drift apart on what colour a cell should be."""
-    heat, top = _cached_heat(w, h, lat_top, lat_bot)
-    scale = math.log1p(top) if top else 1
+    """((row, col) -> index into MAP_RAMP, the heat itself). Shared so the
+    text map and the browser's map cannot drift apart on what colour a cell
+    should be.
+
+    Colour goes by rank, not by value. A log scale still collapses when one
+    cell dwarfs the rest: with a busiest of 300, a cell on 5 and a cell on 1
+    both land on the palest step, and the map reads as one red dot in a sea
+    of white. Ranking spreads whatever spread exists, so the ramp is always
+    fully used and neighbouring cells stay distinguishable.
+
+    The trade is that a colour no longer means an absolute number -- 5 and 6
+    requests can be different colours on a quiet map. That is the right way
+    round for a map whose job is "where is the traffic", and the actual
+    counts are in the table below it. Equal counts always get equal colours,
+    which is why the ranking runs over distinct values rather than cells."""
+    heat, _top = _cached_heat(w, h, lat_top, lat_bot)
+    counts = sorted({n for n in heat.values() if n})
+    if not counts:
+        rank = {}
+    elif len(counts) == 1:
+        # One busy cell and nothing else. It is the maximum, so it is red.
+        rank = {counts[0]: len(MAP_RAMP) - 1}
+    else:
+        span = len(counts) - 1
+        rank = {n: 1 + round(i / span * (len(MAP_RAMP) - 2))
+                for i, n in enumerate(counts)}
 
     def shade(r, c):
-        n = heat.get((r, c), 0)
-        return (0 if not n else
-                min(len(MAP_RAMP) - 1,
-                    1 + int(math.log1p(n) / scale * (len(MAP_RAMP) - 2))))
-    return shade
+        return rank.get(heat.get((r, c), 0), 0)
+    return shade, heat
 
 
 def _map_html():
@@ -708,11 +727,11 @@ def _map_html():
     if not loaded:
         return ""
     rows, w, h, lat_top, lat_bot = loaded
-    shade = _map_shader(w, h, lat_top, lat_bot)
+    shade, heat = _map_shader(w, h, lat_top, lat_bot)
     out = []
     for r, row in enumerate(rows):
         for c, ch in enumerate(row):
-            if ch == " ":
+            if ch == " " and (r, c) not in heat:
                 out.append(" ")
                 continue
             out.append(f'<i class="d h{shade(r, c)}" id="d{r}_{c}">'
@@ -1160,7 +1179,7 @@ def stats_live_json(since=0.0):
     flash = []
     if loaded:
         _rows, w, h, lat_top, lat_bot = loaded
-        shade = _map_shader(w, h, lat_top, lat_bot)
+        shade, _heat = _map_shader(w, h, lat_top, lat_bot)
         cells = set()
         for at, lat, lon in _geo_recent:
             if at <= since:
