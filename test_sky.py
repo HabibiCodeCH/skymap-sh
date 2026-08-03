@@ -8,6 +8,24 @@ import datetime as dt
 import sky
 
 
+class SidePanelDefaultIsOff(unittest.TestCase):
+    """render_linear's side_panel param defaults to False -- every caller
+    that doesn't know about it (the CLI included) must keep drawing the
+    zenith inset inline below the sweep, exactly as before this existed."""
+
+    def test_default_appends_the_inset_inline_and_exposes_no_zenith_lines(self):
+        art, st = sky.render_linear(dt.datetime(2026, 7, 30, 22, 0), 47.3769, 8.5417)
+        self.assertIn("zenith 70-90", art)
+        self.assertIsNone(st["zenith_lines"])
+
+    def test_side_panel_true_pulls_the_inset_out_instead(self):
+        art, st = sky.render_linear(dt.datetime(2026, 7, 30, 22, 0), 47.3769, 8.5417,
+                                    side_panel=True)
+        self.assertNotIn("zenith 70-90", art)
+        self.assertIsNotNone(st["zenith_lines"])
+        self.assertTrue(any("zenith 70-90" in l for l in st["zenith_lines"]))
+
+
 class IssDarknessCheck(unittest.TestCase):
     def test_no_daylight_passes_reported(self):
         """Every point in every returned pass must have the observer's own sky

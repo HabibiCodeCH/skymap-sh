@@ -279,11 +279,18 @@ def resolve_place(spec, fallback=None):
 class Request:
     def __init__(self, place=None, when=None, view="horizon", facing=None, span=None,
                  find=None, iss=False, lines=True, color=True, fallback=None,
-                 tle=None, now=None, night=False, width=None, dso=False, quadrant=None):
+                 tle=None, now=None, night=False, width=None, dso=False, quadrant=None,
+                 nodso=False, panel=False):
         self.place = resolve_place(place, fallback)
         self.view, self.facing, self.span = view, facing, span
         self.find, self.iss, self.lines, self.color = find, iss, lines, color
         self.night = night
+        # ?panel=1 -- put the zenith inset + prose text beside the horizon
+        # chart instead of below it. Never inferred from width: the browser
+        # auto-fit JS is the only thing that ever sets this, so a CLI/curl
+        # request at any width renders exactly as it always has unless
+        # someone explicitly asks for it too.
+        self.panel = panel
         # Bounded to a single letter (or None) here, before it ever reaches a
         # cache key -- otherwise arbitrary ?quadrant= garbage would each mint
         # its own cache entry, the same free-cache-miss surface ?w= and ?t=
@@ -303,8 +310,12 @@ class Request:
         # letter is picked (bare ?quadrant, showing the grid to choose from).
         # That's why this checks the *raw* argument (quadrant is not None)
         # rather than self.quadrant -- a blank or not-yet-chosen quadrant
-        # request should still switch dso on.
-        self.dso = dso or (quadrant is not None)
+        # request should still switch dso on. ?nodso=1 is the explicit
+        # opt-out of that implication -- crop to the quadrant grid without
+        # the deep-sky overlay, used by the 'd' keyboard shortcut to stay
+        # independently toggleable even while the grid is up.
+        self.nodso = nodso
+        self.dso = (dso or (quadrant is not None)) and not nodso
         self.tle = tle
         # clamped once, here, so it's already canonical by the time it ever
         # reaches a cache key -- otherwise every distinct raw ?w= value before
@@ -336,7 +347,8 @@ class Request:
         r2.find, r2.iss, r2.lines, r2.color = None, False, self.lines, self.color
         r2.night, r2.tle, r2.width = self.night, None, self.width
         r2.dso, r2.quadrant = self.dso, self.quadrant
-        r2.quadrant_requested = self.quadrant_requested
+        r2.quadrant_requested, r2.nodso = self.quadrant_requested, self.nodso
+        r2.panel = self.panel
         r2.when_utc = when_utc
         r2.when_local = when_utc + dt.timedelta(hours=self.place.offset(when_utc))
         r2.tz = self.place.offset(when_utc)
@@ -354,6 +366,29 @@ def _footer(p, c):
     return (paint("  Follow ", C.MUTE, c) +
             paint("@habibicode", "\033[38;5;117m", c) +
             paint(" for skymap.sh updates", C.MUTE, c))
+
+
+def strip_footer_line(text):
+    """Removes _footer's "Follow @habibicode..." line from an already-
+    composed render -- used only by server.py's HTML branch. compose()'s
+    output is cached once and reused for every output mode (plain-text,
+    JSON, HTML, PNG -- see server.py's _cached docstring), so this can't
+    live inside compose() itself without splitting that cache in two; doing
+    it here, after the shared render, keeps curl/CLI output unchanged and
+    only touches what the browser actually receives. The header's nav row
+    carries the same invitation as icon links instead (see header_html)."""
+    marker = _footer(None, False)
+    lines = text.split("\n")
+    out, skip_blank = [], False
+    for line in lines:
+        if strip_ansi(line) == marker:
+            skip_blank = True
+            continue
+        if skip_blank and line == "":
+            skip_blank = False
+            continue
+        out.append(line)
+    return "\n".join(out)
 
 
 def _bodies_json(st):
@@ -621,22 +656,87 @@ def _png_url(r):
     return f"{{base_url}}/{r.place.slug}/horizon.png{qs}"
 
 
-def _quadrant_toggle_url(r):
-    """Toggle URL for the quadrant grid button: adds a bare ?quadrant (no
-    letter chosen yet) when it's not currently on, or drops it (and the dso
-    it auto-enabled) when it is. facing/span/night/w carried over either
-    way, same as _png_url, so toggling doesn't reset the rest of the view
-    the visitor is already looking at. Relative: same-origin navigation, no
-    base_url substitution needed."""
+def _toggle_qs(r, night=None, nolines=None, dso=None, quadrant_requested=None,
+                force_dso_off=False):
+    """Query string for the current view with one or more flags overridden --
+    shared basis for every toggle link (the quadrant button, and the d/l
+    keyboard shortcuts). facing/span/w/panel/t always carry over, same
+    reasoning as _png_url: toggling one thing shouldn't reset the rest of
+    the view already on screen -- panel in particular, since dropping it
+    silently moved the zenith inset from beside the chart to below it the
+    instant any of these shortcuts fired on an auto-fit-widened page. t=
+    only when it was actually picked (r.when_explicit), same as _png_url,
+    so the default link keeps tracking whatever's current. Doesn't carry
+    find=, matching the quadrant button's existing behaviour these
+    shortcuts extend.
+
+    force_dso_off writes an explicit ?nodso=1 alongside ?quadrant -- not used
+    by any keyboard shortcut ('d' controls dso and the grid together now),
+    but kept as a manual/CLI-only escape hatch: crop to a quadrant without
+    the deep-sky overlay. Plain `dso` being false isn't enough to trigger it:
+    that's also the ordinary resolved state of a fresh quadrant toggle, which
+    should keep the normal implied-on default, not silently opt out of it."""
+    night = r.night if night is None else night
+    nolines = (not r.lines) if nolines is None else nolines
+    dso = r.dso if dso is None else dso
+    quadrant_requested = r.quadrant_requested if quadrant_requested is None else quadrant_requested
     q = []
     if r.facing: q.append(f"facing={r.facing}")
     if r.span: q.append(f"span={r.span:g}")
-    if r.night: q.append("night=1")
+    if night: q.append("night=1")
     if r.width: q.append(f"w={int(r.width)}")
-    if not r.quadrant_requested:
+    if r.panel: q.append("panel=1")
+    if r.when_explicit: q.append(f"t={r.when_local:%Y-%m-%dT%H:%M}")
+    if quadrant_requested:
         q.append("quadrant")
-    qs = ("?" + "&".join(q)) if q else ""
+        if force_dso_off: q.append("nodso=1")
+    elif dso:
+        q.append("dso=1")
+    if nolines: q.append("nolines=1")
+    return ("?" + "&".join(q)) if q else ""
+
+
+def _quadrant_toggle_url(r):
+    """Toggle URL for the 'd' keyboard shortcut (and the quadrant button):
+    adds a bare ?quadrant (no letter chosen yet) when it's not currently on,
+    or drops it (and the dso it auto-enabled) when it is -- quadrant and dso
+    move together as one unit, there's no independent dso-only toggle in the
+    keyboard layer (see _dso_toggle_url for the manual/CLI-only escape
+    hatch). dso is forced False here either way -- this link never writes an
+    explicit dso=1 of its own, whether turning the grid on (quadrant alone
+    auto-enables dso server-side, no need to spell it out) or off (dropping
+    the grid should drop the dso it implied, not carry over r.dso's still-
+    true resolved value from before the toggle). Never writes nodso=1
+    either -- toggling the grid itself always resets to the normal
+    implied-dso default."""
+    qs = _toggle_qs(r, quadrant_requested=not r.quadrant_requested, dso=False)
     return f"/{r.place.slug}{qs}"
+
+
+def _quadrant_grid_url(r):
+    """URL that always lands on the bare lettered grid (?quadrant, no
+    specific cell), regardless of the current state -- used by the 'z'
+    (zoom) shortcut to get there from anywhere (grid off, or already zoomed
+    into one cell) before the arrow-key/enter cell picker takes over
+    client-side. Unlike _quadrant_toggle_url this never turns the grid off:
+    it's a "go here" link, not a toggle."""
+    return f"/{r.place.slug}{_toggle_qs(r, quadrant_requested=True)}"
+
+
+def _dso_toggle_url(r):
+    """Independent dso-only toggle -- no longer bound to a keyboard
+    shortcut ('d' now controls dso and the quadrant grid together, see
+    _quadrant_toggle_url), kept for manual/CLI use via ?nodso=1. With the
+    grid up, dso is force-implied True by default, so turning it off has to
+    write ?nodso=1 to actually stick (see _toggle_qs); turning it back on
+    just drops that override."""
+    new_dso = not r.dso
+    return f"/{r.place.slug}{_toggle_qs(r, dso=new_dso, force_dso_off=r.quadrant_requested and not new_dso)}"
+
+
+def _nolines_toggle_url(r):
+    """URL for the 'l' keyboard shortcut -- show or hide asterism lines."""
+    return f"/{r.place.slug}{_toggle_qs(r, nolines=r.lines)}"
 
 
 def _animate_gif_url(r):
@@ -681,7 +781,7 @@ def _compose_sky(r):
                                 # crash with a KeyError.
                                 bodies=_fade_visible_bodies(sun_alt, jd) | {"Sun", "Moon"},
                                 dso_limit=dso_limit, quadrant=r.quadrant,
-                                quadrants=r.quadrant_requested)
+                                quadrants=r.quadrant_requested, side_panel=r.panel)
         quad_bit = f", quadrant {st['quad_applied']}" if st.get("quad_applied") else ""
         # a quadrant crop replaces the zenith inset (there's no room, and no
         # need -- the crop already narrows the view), so the header must stop
@@ -694,38 +794,57 @@ def _compose_sky(r):
                 f"horizon panorama, 0-70° + zenith inset{quad_bit}")
 
     head = _horizon_head(r, mode)
-    prose = sky_read(st, p.name, r.when_local, f"UTC{r.tz:+g}", p.lat)
+    # Panel mode still wraps wide -- prose sits in its own full-width block
+    # below the chart+zenith row (see the side_panel branch below), not
+    # squeezed into the zenith's ~30-column-wide column, so there's no
+    # reason to wrap it any narrower than the chart itself.
+    prose = sky_read(st, p.name, r.when_local, f"UTC{r.tz:+g}", p.lat,
+                     wrap_width=_effective_width(r) if r.panel else 76)
 
-    out = ["", paint(head, C.HEAD, c), "", art, ""]
-    out += [paint("  " + l, C.LABEL, c) for l in prose.split("\n")[1:]]
+    right = [paint("  " + l, C.LABEL, c) for l in prose.split("\n")[1:]]
     tr = st.get("track")
     if tr:
         pk = max(tr, key=lambda x: x[1])
-        out.append(paint(f"  Pass: rises {compass(tr[0][2])} +{tr[0][0]:.0f} min, "
-                         f"peaks {pk[1]:.0f}° in the {compass(pk[2])}, "
-                         f"sets {compass(tr[-1][2])} +{tr[-1][0]:.0f} min.",
-                         "\033[38;5;48m", c))
+        right.append(paint(f"  Pass: rises {compass(tr[0][2])} +{tr[0][0]:.0f} min, "
+                           f"peaks {pk[1]:.0f}° in the {compass(pk[2])}, "
+                           f"sets {compass(tr[-1][2])} +{tr[-1][0]:.0f} min.",
+                           "\033[38;5;48m", c))
     elif st.get("iss_err"):
-        out.append(paint(f"  ISS: {st['iss_err']}", C.MUTE, c))
+        right.append(paint(f"  ISS: {st['iss_err']}", C.MUTE, c))
     if r.dso:
-        out.append(paint(f"  {DSO_LEGEND}", C.MUTE, c))
+        right.append(paint(f"  {DSO_LEGEND}", C.MUTE, c))
     if st.get("quad_error"):
-        out.append(paint(f"  Unknown quadrant '{st['quad_error']}' -- showing the full view.",
-                         C.MUTE, c))
+        right.append(paint(f"  Unknown quadrant '{st['quad_error']}' -- showing the full view.",
+                           C.MUTE, c))
     if st.get("quad_cells"):
         letters = [cell["letter"] for cell in st["quad_cells"]]
-        out.append(paint(f"  Quadrants {letters[0]}-{letters[-1]} are marked on the chart. "
-                         f"To zoom in, rerun adding ?quadrant={letters[0]} "
-                         f"(or --quadrant={letters[0]} on the CLI).", C.MUTE, c))
+        right.append(paint(f"  Quadrants {letters[0]}-{letters[-1]} are marked on the chart. "
+                           f"To zoom in, rerun adding ?quadrant={letters[0]} "
+                           f"(or --quadrant={letters[0]} on the CLI).", C.MUTE, c))
     teaser = events_teaser(r)
     if teaser:
         import textwrap
-        out += [paint("  " + l, EVENT_COL, c) for l in textwrap.wrap(teaser, 76)]
+        right += [paint("  " + l, EVENT_COL, c) for l in textwrap.wrap(teaser, 76)]
     # {base_url} is a literal placeholder -- api.py doesn't know its own
     # host, server.py substitutes the real one on the way out, on both
     # cache hits and misses, so a cached render never leaks whatever host
     # first produced it.
-    out.append(paint(f"  Share as a PNG: {_png_url(r)}", SUN_COL, c))
+    right.append(paint(f"  Share as a PNG: {_png_url(r)}", SUN_COL, c))
+
+    if r.panel:
+        # zenith_lines is None when this view has no inset at all (facing=,
+        # target=, or a quadrant crop already applied) -- st.get, not
+        # st[...], since disc view's own st dict never has this key. Only
+        # the zenith rides beside the chart; prose goes in its own
+        # full-width block below, same as the non-panel layout, so it never
+        # gets squeezed into the zenith's narrow column.
+        zenith = st.get("zenith_lines") or []
+        out = ["", paint(head, C.HEAD, c), ""]
+        out += _side_by_side(art.split("\n"), zenith)
+        out += [""] + right
+    else:
+        out = ["", paint(head, C.HEAD, c), "", art, ""]
+        out += right
     out += ["", _footer(p, c), ""]
 
     mo, su = st["moon"], st["sun"]
@@ -1783,7 +1902,8 @@ OPTIONS
   ?dso=1                overlay galaxies, nebulae and clusters to mag 11 (Revised NGC)
   ?quadrant=A           crop to one lettered cell of the horizon view --
                         letters are marked on the chart, rerun adding the
-                        one you want to zoom in (horizon view only)
+                        one you want to zoom in (horizon view only, also
+                        turns on ?dso=1 unless ?nodso=1 is added too)
   ?format=json          the same facts, structured
   ?plain=1              no ANSI colour
   ?w=100                render at N columns wide instead of the default
@@ -1792,6 +1912,13 @@ OPTIONS
 
   Fit any terminal automatically, add to your shell profile:
     skymap() { curl "skymap.sh/${1:-}?w=$(tput cols)"; }
+
+KEYBOARD (in a browser, on a chart page)
+  p      focus the place search        a   toggle animate
+  f      focus the find field          g   share as a GIF
+  m      jump to my location           d   toggle quadrant grid + dso
+  esc    cancel out of a field         z   zoom: pick a quadrant cell with
+  l      toggle asterism lines             arrow keys, enter to crop to it
 
 Stars: Yale Bright Star Catalogue. Planets: JPL approximate elements.
 Sun and Moon: Meeus. Satellites: CelesTrak.
@@ -2196,20 +2323,81 @@ def stats_live_html(ramp_hex, sizes, dot, flash_dot, tick_ms=3000):
 </script>""")
 
 
+def _side_by_side(left_lines, right_lines, gap=3):
+    """Zip two blocks of (possibly ANSI-coloured) text lines into one,
+    left padded to its own widest *visible* line (ANSI colour codes add
+    invisible characters, so padding on raw string length would misalign
+    the right column). Uneven heights are fine -- the shorter block just
+    leaves blank space in its column past its own last line."""
+    left_width = max((len(strip_ansi(l)) for l in left_lines), default=0)
+    out = []
+    for i in range(max(len(left_lines), len(right_lines))):
+        l = left_lines[i] if i < len(left_lines) else ""
+        r = right_lines[i] if i < len(right_lines) else ""
+        if r:
+            pad = left_width - len(strip_ansi(l))
+            out.append(l + " " * (pad + gap) + r)
+        else:
+            out.append(l)
+    return out
+
+
+# Official brand marks (GitHub, Reddit, Bluesky, X), inline so this stays a
+# dependency-free single file -- no icon package, no external request. Same
+# links the old "Created by @habibicode · see the repo" footer line pointed
+# at, plus the community's new Reddit and Bluesky homes; that line only ever
+# existed on the web page (never part of the shared chart text CLI/curl
+# see), so any of this moving/changing doesn't touch CLI output.
+# Path data fetched verbatim from Simple Icons (cdn.jsdelivr.net/npm/simple-
+# icons/icons/{name}.svg) -- hand-transcribing SVG path data from memory is
+# exactly how you get a silently-corrupted icon (two numbers running
+# together at a line break, missing a separator), so every path here was
+# copied from the real file, not retyped.
+_GITHUB_PATH = "M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61C4.422 18.07 3.633 17.7 3.633 17.7c-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12"
+_REDDIT_PATH = "M12 0C5.373 0 0 5.373 0 12c0 3.314 1.343 6.314 3.515 8.485l-2.286 2.286C.775 23.225 1.097 24 1.738 24H12c6.627 0 12-5.373 12-12S18.627 0 12 0Zm4.388 3.199c1.104 0 1.999.895 1.999 1.999 0 1.105-.895 2-1.999 2-.946 0-1.739-.657-1.947-1.539v.002c-1.147.162-2.032 1.15-2.032 2.341v.007c1.776.067 3.4.567 4.686 1.363.473-.363 1.064-.58 1.707-.58 1.547 0 2.802 1.254 2.802 2.802 0 1.117-.655 2.081-1.601 2.531-.088 3.256-3.637 5.876-7.997 5.876-4.361 0-7.905-2.617-7.998-5.87-.954-.447-1.614-1.415-1.614-2.538 0-1.548 1.255-2.802 2.803-2.802.645 0 1.239.218 1.712.585 1.275-.79 2.881-1.291 4.64-1.365v-.01c0-1.663 1.263-3.034 2.88-3.207.188-.911.993-1.595 1.959-1.595Zm-8.085 8.376c-.784 0-1.459.78-1.506 1.797-.047 1.016.64 1.429 1.426 1.429.786 0 1.371-.369 1.418-1.385.047-1.017-.553-1.841-1.338-1.841Zm7.406 0c-.786 0-1.385.824-1.338 1.841.047 1.017.634 1.385 1.418 1.385.785 0 1.473-.413 1.426-1.429-.046-1.017-.721-1.797-1.506-1.797Zm-3.703 4.013c-.974 0-1.907.048-2.77.135-.147.015-.241.168-.183.305.483 1.154 1.622 1.964 2.953 1.964 1.33 0 2.47-.81 2.953-1.964.057-.137-.037-.29-.184-.305-.863-.087-1.795-.135-2.769-.135Z"
+_BLUESKY_PATH = "M5.202 2.857C7.954 4.922 10.913 9.11 12 11.358c1.087-2.247 4.046-6.436 6.798-8.501C20.783 1.366 24 .213 24 3.883c0 .732-.42 6.156-.667 7.037-.856 3.061-3.978 3.842-6.755 3.37 4.854.826 6.089 3.562 3.422 6.299-5.065 5.196-7.28-1.304-7.847-2.97-.104-.305-.152-.448-.153-.327 0-.121-.05.022-.153.327-.568 1.666-2.782 8.166-7.847 2.97-2.667-2.737-1.432-5.473 3.422-6.3-2.777.473-5.899-.308-6.755-3.369C.42 10.04 0 4.615 0 3.883c0-3.67 3.217-2.517 5.202-1.026"
+_X_PATH = "M14.234 10.162 22.977 0h-2.072l-7.591 8.824L7.251 0H.258l9.168 13.343L.258 24H2.33l8.016-9.318L16.749 24h6.993zm-2.837 3.299-.929-1.329L3.076 1.56h3.182l5.965 8.532.929 1.329 7.754 11.09h-3.182z"
+
+
+def _social_icon(href, label, path):
+    return (f'<a href="{href}" aria-label="{label}" title="{label}">'
+            f'<svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor">'
+            f'<path d="{path}"/></svg></a>')
+
+
+SOCIAL_ICONS = (
+    '<span class="social-icons">'
+    + _social_icon("https://github.com/HabibiCodeCH/skymap-sh", "See the repo on GitHub", _GITHUB_PATH)
+    + _social_icon("https://www.reddit.com/r/skymap/", "Join r/skymap on Reddit", _REDDIT_PATH)
+    + _social_icon("https://bsky.app/profile/skymap.sh", "Follow on Bluesky", _BLUESKY_PATH)
+    + _social_icon("https://x.com/habibicode", "Follow on X", _X_PATH)
+    + '</span>'
+)
+
+
 def header_html(path):
     """The cta line + nav, identical on every page -- one function so the
     nav can never drift or reorder between routes the way six separate
     PAGE.format() call sites each re-deciding it independently did. "home"
     stays onscreen even on the home page itself -- consistent nav position
-    beats not linking to the page you're already on."""
-    return (f'<pre class="cta">curl skymap.sh{path}</pre>\n'
-            f'<p class="t"><b>skymap.sh</b>\n'
+    beats not linking to the page you're already on. Social icons (GitHub,
+    Reddit, Bluesky, X) sit right after "legend" -- the GitHub/X pair used
+    to be a separate "Created by ... see the repo" line below the chart;
+    folding them into the nav row keeps the same links without spending a
+    whole extra row on them.
+
+    The cta line and the nav row share one flex row (.header-row) so the
+    nav sits inline with "$ curl ..." instead of wrapping to a line of its
+    own."""
+    return (f'<div class="header-row"><pre class="cta">curl skymap.sh{path}</pre>\n'
+            f'<p class="t nav-row"><span>'
             f'<a href="/">home</a> · <a href="/catalog">catalog</a> · <a href="/demo">demo</a> · '
             # Bare /events, not /{place}/events: the nav is the same on every
             # page, so it cannot carry a place. The route locates by IP the
             # way a bare `curl skymap.sh` does.
             f'<a href="/events">events</a> · '
-            f'<a href="/help">help</a> · <a href="/legend">legend</a></p>')
+            f'<a href="/help">help</a> · <a href="/legend">legend</a> {SOCIAL_ICONS}'
+            f'</span></p></div>')
 
 
 PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
@@ -2221,16 +2409,32 @@ PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
 <style>
  body{{margin:0;background:#04060a;color:#c9d1d9;
       font-family:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
-      padding:24px 16px 48px;-webkit-font-smoothing:antialiased}}
+      /* Bottom padding only needs to clear .kbd-hint's own fixed bar
+         (~33px) plus a little breathing room -- it used to be 64px, nearly
+         double that, which on a page short enough to not otherwise need
+         scrolling was exactly enough overflow to force a few px of
+         vertical scroll anyway. */
+      padding:24px 16px 40px;-webkit-font-smoothing:antialiased}}
  .w{{max-width:1200px;margin:0 auto}}
+ .w-wide{{max-width:none}}
  pre{{margin:0;font-size:11px;line-height:1.22;overflow-x:auto;font-variant-ligatures:none}}
  .t{{color:#6e7681;font-size:12px;margin:0 0 18px}}
- .t b{{color:#c9d1d9;font-weight:600}}
+ .nav-row{{display:flex;justify-content:flex-end;align-items:center;
+          flex-wrap:wrap;gap:8px}}
+ .header-row{{display:flex;justify-content:space-between;align-items:center;
+             flex-wrap:wrap;gap:12px;margin:0 0 8px}}
+ .header-row .cta{{margin:0}}
+ .header-row .nav-row{{margin:0;flex:1}}
+ .social-icons{{display:inline-flex;gap:8px;margin-left:8px;vertical-align:middle}}
+ .social-icons a{{color:#6e7681;display:inline-flex}}
+ .social-icons a:hover{{color:#c9d1d9}}
+ .social-icons svg{{display:block}}
  a{{color:#87d7ff}}
  #chart-pre a{{color:#87d7ff;text-decoration:none}}
  #chart-pre a:hover{{text-decoration:underline}}
- .ex{{margin:0 0 18px}}
- .ex form{{display:flex;gap:8px;flex-wrap:wrap;margin:0 0 10px}}
+ .controls-row{{display:flex;flex-wrap:wrap;align-items:center;gap:10px 14px;margin:0 0 14px}}
+ .ex{{display:contents}}
+ .ex form{{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:0}}
  .ex input{{background:#0d1117;border:1px solid #30363d;color:#c9d1d9;
            padding:6px 10px;border-radius:4px;font:inherit;font-size:12px}}
  .ex input#place{{width:170px}}
@@ -2240,18 +2444,15 @@ PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
  .ex button{{background:#238636;border:0;color:#fff;padding:6px 14px;
             border-radius:4px;font:inherit;font-size:12px;cursor:pointer}}
  .ex button:hover{{background:#2ea043}}
- .ex .tries{{color:#6e7681;font-size:12px;margin:0}}
- .ex .tries a{{color:#87d7ff;text-decoration:none}}
- .ex .tries a:hover{{text-decoration:underline}}
+ .tries{{color:#6e7681;font-size:12px;flex-basis:100%;margin:0}}
+ .tries a{{color:#87d7ff;text-decoration:none}}
+ .tries a:hover{{text-decoration:underline}}
  .cta{{background:#0d1117;border:1px solid #30363d;border-radius:6px;
       padding:10px 14px;margin:0 0 14px;color:#7ee787;font-size:13px;
       display:inline-block}}
  .cta::before{{content:"$ ";color:#6e7681}}
- .toolbar{{display:flex;justify-content:space-between;align-items:center;
-          flex-wrap:wrap;gap:10px;margin:0 0 14px}}
- .toolbar-left{{display:flex;align-items:center;gap:10px;flex-wrap:wrap}}
- .toolbar-right{{display:flex;align-items:flex-start;gap:10px;flex-wrap:wrap;
-                padding-top:6px}}
+ .toolbar-left{{display:contents}}
+ .toolbar-right{{display:contents}}
  .toolbar-right a{{color:#ffd700;font-size:12px;text-decoration:none;white-space:nowrap}}
  .toolbar-right a:hover{{text-decoration:underline}}
  .animate-controls{{display:flex;align-items:center;gap:8px;flex-wrap:wrap}}
@@ -2260,14 +2461,19 @@ PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
               cursor:pointer;display:inline-block;text-decoration:none}}
  .animate-btn:hover{{border-color:#ffd700;text-decoration:none}}
  .animate-btn:disabled{{opacity:.6;cursor:default}}
- .animate-btn[hidden]{{display:none}}
  .gif-group{{display:flex;flex-direction:column;gap:4px;align-items:flex-start}}
  .gif-status{{color:#6e7681;font-size:12px;white-space:nowrap}}
  .mobile-only{{display:none}}
  @media (pointer:coarse) and (max-width:900px){{.mobile-only{{display:inline-block}}}}
-</style></head><body><div class="w">
+ .kbd-hint{{position:fixed;left:0;right:0;bottom:0;margin:0;padding:9px 16px;
+           text-align:center;background:#0d1117;border-top:1px solid #30363d;
+           color:#6e7681;font-size:11.5px;z-index:10}}
+ .kbd-hint kbd{{background:#04060a;border:1px solid #30363d;border-radius:3px;
+              padding:0 5px;font-family:inherit;font-size:11px;color:#c9d1d9}}
+ .quad-pick{{background:#ffff00;color:#000 !important;border-radius:2px}}
+</style></head><body><div class="w{wide_class}">
 {header}
-{explore}<!-- skymap:coming-up-card
+<!-- skymap:coming-up-card
      Insertion point for the prominent "Coming up" card. Nothing renders it
      yet -- the markup belongs to the web UI, built separately.
 
@@ -2280,14 +2486,91 @@ PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
      Fields: id kind glyph eyebrow headline body detail[] moon_verdict note
              urgency days_away when_local watch_local window_local cta more
 
-     It belongs here, above the toolbar and the chart, so it reads before the
+     It belongs here, above the drawer and the chart, so it reads before the
      sky rather than after it. Absent most nights on purpose: see
      TEASER_HORIZON in events.py.
 -->
-<div class="toolbar"><div class="toolbar-left">{animate_btn}{quadrant_btn}</div><div class="toolbar-right">{sphere_btn}{extra}</div></div><pre id="chart-pre">{body}</pre>
-<p class="t" style="margin-top:18px">Created by <a href="https://x.com/habibicode">@habibicode</a>
-· <a href="https://github.com/HabibiCodeCH/skymap-sh">see the repo</a></p>
+{controls}{shortcuts_hint}<pre id="chart-pre">{body}</pre>
 <script>
+(function(){{
+  // Auto-fit the horizon panorama to the real browser width -- the server
+  // always renders at a fixed column count (DEFAULT_HORIZON_WIDTH) unless
+  // ?w= says otherwise, so on a wide desktop window that default leaves the
+  // chart much narrower than the space available. FIT_W is null on every
+  // page/view this doesn't apply to (see server.py's fits_width). Snapped to
+  // steps of 10 columns and clamped to [60,220] -- matches the server's own
+  // clamp (Request.__init__) and keeps ?w= from becoming a distinct cache
+  // key per visitor's exact pixel width (server._cache_key includes it).
+  var FIT_W={fit_width};
+  if(FIT_W===null)return;
+  var pre=document.getElementById('chart-pre');
+  var w=document.querySelector('.w');
+  if(!pre||!w)return;
+  // Returns null on anything that makes fitting meaningless (no charWidth
+  // to measure against) rather than {{cols:FIT_W,...}} -- callers treat
+  // null as "leave the current width alone", not "reset to the default".
+  function computeFit(){{
+    var preStyle=getComputedStyle(pre);
+    var probe=document.createElement('span');
+    probe.style.position='absolute';
+    probe.style.visibility='hidden';
+    probe.style.whiteSpace='pre';
+    // The `font` shorthand can compute to "" in some browsers (its value
+    // isn't always expressible as a shorthand), which silently no-ops the
+    // assignment and leaves the probe on the page's default font instead
+    // of the chart's actual monospace one -- wildly overstating char width
+    // and making auto-fit ask for far fewer columns than the screen can
+    // hold. Longhand properties don't have that failure mode.
+    probe.style.fontFamily=preStyle.fontFamily;
+    probe.style.fontSize=preStyle.fontSize;
+    probe.textContent=new Array(101).join('0');
+    document.body.appendChild(probe);
+    var charWidth=probe.getBoundingClientRect().width/100;
+    document.body.removeChild(probe);
+    if(!charWidth)return null;
+    // If there's room for a sensible chart *and* a side panel (the zenith
+    // inset only -- prose renders full-width below, see api.py's
+    // _side_by_side/PANEL_COLS), reserve PANEL_COLS+GAP_COLS for it and
+    // ask for panel=1 too -- otherwise the full width goes to the chart
+    // alone. 40 covers the inset's own 21 columns plus room for a body
+    // name tacked on beside it (longest is "Rigil Kentaurus").
+    var PANEL_COLS=40,GAP_COLS=3,MIN_MAIN=60;
+    var totalCols=Math.floor(w.getBoundingClientRect().width/charWidth);
+    var wantPanel=totalCols>=(MIN_MAIN+GAP_COLS+PANEL_COLS);
+    var mainRaw=wantPanel?totalCols-GAP_COLS-PANEL_COLS:totalCols;
+    var cols=Math.max(60,Math.min(220,Math.round(mainRaw/10)*10));
+    return {{cols:cols,wantPanel:wantPanel}};
+  }}
+  // force=true (used on resize) applies even when the URL already has an
+  // explicit ?w= -- a width fitted (or pinned) at load time otherwise sticks
+  // forever, so shrinking the window after a wide auto-fit left the chart
+  // stuck too wide for its new container, forcing horizontal scroll instead
+  // of ever re-fitting down. Without force, an incoming ?w= link is left
+  // alone on first paint, same as always -- only a live resize overrides it.
+  function applyFit(force){{
+    var params=new URLSearchParams(location.search);
+    if(!force&&params.has('w'))return;
+    var fit=computeFit();
+    if(!fit)return;
+    // On first load (not force), compare against the server-rendered
+    // default (FIT_W, no panel) -- skip the reload entirely when that
+    // default already happens to be correct. On a live resize, compare
+    // against whatever's actually in the URL right now instead, since
+    // that's the width the page is currently stuck at.
+    var curCols=force?parseInt(params.get('w'),10):FIT_W;
+    var curPanel=force?params.has('panel'):false;
+    if(curCols===fit.cols&&curPanel===fit.wantPanel)return;
+    params.set('w',fit.cols);
+    if(fit.wantPanel)params.set('panel','1');else params.delete('panel');
+    location.replace(location.pathname+'?'+params.toString());
+  }}
+  applyFit(false);
+  var resizeTimer=null;
+  window.addEventListener('resize',function(){{
+    if(resizeTimer)clearTimeout(resizeTimer);
+    resizeTimer=setTimeout(function(){{applyFit(true);}},400);
+  }});
+}})();
 function xtermHex(n){{
   n=parseInt(n,10);
   if(n<16){{
@@ -2322,15 +2605,13 @@ function ansiToHtml(text){{
 }}
 function skymapAnimate(btn){{
   // Live preview plays right in the chart itself from the same streaming
-  // ?animate= text the CLI uses. The "Share as a GIF" button appears the
-  // moment the preview starts, but rendering only actually happens if it's
-  // clicked -- see skymapRenderGif -- since that's real Pillow work, not
-  // free to do for every single viewer.
+  // ?animate= text the CLI uses. "Share as a GIF" is visible the whole
+  // time (see skymapPollGifCapacity, kicked off on page load) -- rendering
+  // only actually happens if it's clicked -- see skymapRenderGif -- since
+  // that's real Pillow work, not free to do for every single viewer.
   var liveUrl=btn.getAttribute('data-live-url');
-  var gifBtn=document.getElementById('gif-btn');
   var pre=document.getElementById('chart-pre');
   btn.disabled=true;btn.textContent='animating…';
-  if(gifBtn){{gifBtn.hidden=false;skymapPollGifCapacity(gifBtn);}}
   fetch(liveUrl).then(function(resp){{
     var reader=resp.body.getReader();
     var decoder=new TextDecoder();
@@ -2410,9 +2691,162 @@ function skymapRenderGif(btn){{
     btn.disabled=false;
   }});
 }}
+(function(){{
+  // Keyboard shortcuts -- ignored while typing in a field (except Escape,
+  // which exists precisely to get you out of one), and while a modifier is
+  // held, so this can't hijack a real browser/OS shortcut. KBD's keys are
+  // only ever set by server.py where the corresponding toggle is actually
+  // meaningful for the current view (e.g. all of them are omitted on the
+  // Sun's-arc day view, where dso/nolines/quadrant don't apply) -- a
+  // missing key here is exactly what makes the shortcut silently no-op
+  // rather than needing every page to special-case which keys apply.
+  var KBD={kbd_urls};
+  // Fixed 4x3 layout, matches sky.py's quadrant_grid() -- always these 12
+  // cells in this order, regardless of facing/span, so no server round trip
+  // is needed to know the picker's shape.
+  var GRID=[['A','B','C','D'],['E','F','G','H'],['I','J','K','L']];
+  var pick={{active:false,row:0,col:0}};
+  var hintEl=document.querySelector('.kbd-hint');
+  var hintHTML=hintEl?hintEl.innerHTML:null;
+  var hintRestoreTimer=null;
+  // Transient status in the same spot as the keyboard hint itself (e.g.
+  // "Locating..." / a geolocation error) instead of an alert() -- restores
+  // the real hint text after ms, clearing any earlier pending restore so
+  // two flashes in quick succession don't stomp on each other.
+  function flashHint(msg,ms){{
+    if(!hintEl)return;
+    if(hintRestoreTimer)clearTimeout(hintRestoreTimer);
+    hintEl.innerHTML=msg;
+    hintRestoreTimer=setTimeout(function(){{
+      if(hintHTML!==null)hintEl.innerHTML=hintHTML;
+      hintRestoreTimer=null;
+    }},ms||4000);
+  }}
+  // Share as a GIF is visible from the start now (not just after clicking
+  // animate) -- greys itself out here the same way it always has whenever
+  // the server's at its concurrent-render cap. Null-safe: only present on
+  // chart pages.
+  var gifBtn=document.getElementById('gif-btn');
+  if(gifBtn)skymapPollGifCapacity(gifBtn);
+  // color:#ffff00 is the one ANSI colour (sky.py's QL / api.py's QUAD_C,
+  // 256-colour 226) used exclusively for quadrant-grid letters -- nothing
+  // else in the chart ever renders with it, so it doubles as a reliable way
+  // to find the 12 grid-letter glyphs without the server tagging them.
+  function quadSpans(){{
+    var spans={{}}, all=document.querySelectorAll('#chart-pre span');
+    for(var i=0;i<all.length;i++){{
+      var s=all[i];
+      if(s.style.color==='rgb(255, 255, 0)'&&/^[A-L]$/.test(s.textContent))spans[s.textContent]=s;
+    }}
+    return spans;
+  }}
+  function paintPick(){{
+    var spans=quadSpans(), old=document.querySelector('.quad-pick');
+    if(old)old.classList.remove('quad-pick');
+    var span=spans[GRID[pick.row][pick.col]];
+    if(span)span.classList.add('quad-pick');
+  }}
+  function startPick(){{
+    pick.active=true;pick.row=0;pick.col=0;
+    paintPick();
+    if(hintEl)hintEl.innerHTML='Pick a quadrant: ←↑→↓ move &middot; '+
+      '<kbd>enter</kbd> zoom in &middot; <kbd>esc</kbd> cancel';
+  }}
+  function stopPick(){{
+    pick.active=false;
+    var old=document.querySelector('.quad-pick');
+    if(old)old.classList.remove('quad-pick');
+    if(hintEl&&hintHTML!==null)hintEl.innerHTML=hintHTML;
+  }}
+  if(location.hash==='#pick'&&Object.keys(quadSpans()).length>0){{
+    startPick();
+    history.replaceState(null,'',location.pathname+location.search);
+  }}
+  document.addEventListener('keydown', function(e){{
+    if(e.metaKey||e.ctrlKey||e.altKey)return;
+    var tag=(document.activeElement&&document.activeElement.tagName)||'';
+    if(e.key==='Escape'){{
+      var ae=document.activeElement;
+      if(ae&&ae!==document.body){{ae.blur();return;}}
+      if(pick.active){{stopPick();return;}}
+      var q=new URLSearchParams(location.search).get('quadrant');
+      if(q&&KBD.grid){{location.href=KBD.grid;return;}}
+      return;
+    }}
+    if(tag==='INPUT'||tag==='TEXTAREA'||tag==='SELECT')return;
+    if(pick.active){{
+      if(e.key==='ArrowLeft'){{e.preventDefault();pick.col=Math.max(0,pick.col-1);paintPick();return;}}
+      if(e.key==='ArrowRight'){{e.preventDefault();pick.col=Math.min(3,pick.col+1);paintPick();return;}}
+      if(e.key==='ArrowUp'){{e.preventDefault();pick.row=Math.max(0,pick.row-1);paintPick();return;}}
+      if(e.key==='ArrowDown'){{e.preventDefault();pick.row=Math.min(2,pick.row+1);paintPick();return;}}
+      if(e.key==='Enter'){{
+        e.preventDefault();
+        var params=new URLSearchParams(location.search);
+        params.set('quadrant', GRID[pick.row][pick.col]);
+        location.href=location.pathname+'?'+params.toString();
+        return;
+      }}
+    }}
+    if(e.key==='p'){{
+      var place=document.getElementById('place');
+      if(place){{e.preventDefault();place.focus();place.select();}}
+      return;
+    }}
+    if(e.key==='f'){{
+      var find=document.getElementById('find');
+      if(find){{e.preventDefault();find.focus();find.select();}}
+      return;
+    }}
+    if(e.key==='m'){{
+      e.preventDefault();
+      if(!navigator.geolocation){{
+        flashHint('Geolocation is not available in this browser.');
+        return;
+      }}
+      flashHint('Locating…',15000);
+      navigator.geolocation.getCurrentPosition(function(pos){{
+        var lat=pos.coords.latitude.toFixed(4);
+        var lon=pos.coords.longitude.toFixed(4);
+        location.href='/'+lat+','+lon;
+      }},function(err){{
+        flashHint('Could not get your location'+(err&&err.message?': '+err.message:'')+'.');
+      }},{{timeout:10000}});
+      return;
+    }}
+    if(e.key==='a'){{
+      var ab=document.getElementById('animate-btn');
+      if(ab&&!ab.disabled)ab.click();
+      return;
+    }}
+    if(e.key==='g'){{
+      var gb=document.getElementById('gif-btn');
+      if(gb&&!gb.disabled)gb.click();
+      return;
+    }}
+    if(e.key==='z'){{
+      if(pick.active)return;
+      if(Object.keys(quadSpans()).length>0){{startPick();return;}}
+      if(KBD.grid){{location.href=KBD.grid+'#pick';}}
+      return;
+    }}
+    if(e.key==='d'&&KBD.quadrant){{location.href=KBD.quadrant;return;}}
+    if(e.key==='l'&&KBD.nolines){{location.href=KBD.nolines;return;}}
+  }});
+}})();
 </script>
 </div></body></html>"""
 
+
+# Only shown on an actual chart page (server.py passes "" everywhere else) --
+# most of these keys are no-ops on /catalog, /legend etc. anyway, so a hint
+# there would be more confusing than helpful.
+SHORTCUTS_HINT = (
+    '<p class="kbd-hint">Keyboard: <kbd>p</kbd> place &middot; '
+    '<kbd>f</kbd> find &middot; <kbd>m</kbd> my location &middot; '
+    '<kbd>a</kbd> animate &middot; <kbd>g</kbd> gif &middot; <kbd>d</kbd> deep sky &middot; '
+    '<kbd>z</kbd> zoom &middot; <kbd>l</kbd> lines &middot; '
+    '<kbd>esc</kbd> cancel</p>'
+)
 
 EXPLORE = """<div class="ex">
 <form id="explore" onsubmit="var p=document.getElementById('place').value.trim();
@@ -2432,7 +2866,10 @@ return false;">
 <input id="whenTime" type="time" title="local time at that place (default: now)">
 <button type="submit">go</button>
 </form>
-<p class="tries">Examples:
+</div>
+"""
+
+EXAMPLES_HTML = """<p class="tries">Examples:
 <a href="/Nairobi">Nairobi</a> ·
 <a href="/Tokyo">Tokyo</a> ·
 <a href="/London">London</a> ·
@@ -2442,7 +2879,6 @@ return false;">
 <a href="/90,0">North Pole</a> ·
 <a href="/-90,0">South Pole</a>
 </p>
-</div>
 """
 
 
@@ -3717,3 +4153,28 @@ function animate() {{
 animate();
 </script>
 </body></html>"""
+
+
+def _controls_inner(explore, animate_btn, quadrant_btn, sphere_btn, extra):
+    # One flat flex-wrap row for the search form and every button -- .ex,
+    # .toolbar-left and .toolbar-right are all display:contents (see PAGE's
+    # CSS), so they become direct items of .controls-row instead of each
+    # wrapping as its own block. EXAMPLES_HTML comes last and is forced onto
+    # its own full-width line below all of that (.tries{{flex-basis:100%}}
+    # in PAGE's CSS) -- it has to be last in DOM order for the "below
+    # everything" part; a flex-basis:100% item earlier in the row would
+    # push whatever comes after it down instead. sphere_btn (mobile-only
+    # "View in 3D" link) sits before extra in toolbar-right, same order it
+    # was in before this row got merged with the search form.
+    return (f'<div class="controls-row">{explore}'
+            f'<div class="toolbar-left">{animate_btn}{quadrant_btn}</div>'
+            f'<div class="toolbar-right">{sphere_btn}{extra}</div>'
+            f'{EXAMPLES_HTML}</div>')
+
+
+def controls_html(explore, animate_btn="", quadrant_btn="", sphere_btn="", extra=""):
+    """Explore form + toolbar, always visible on every page including the
+    chart view -- animate_btn/quadrant_btn/sphere_btn/extra are "" on every
+    page except the chart, which is the only one that has anything to put
+    there."""
+    return _controls_inner(explore, animate_btn, quadrant_btn, sphere_btn, extra)

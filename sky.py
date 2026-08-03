@@ -523,7 +523,7 @@ def render(when_utc, lat, lon, height=34, color=True, show_lines=True, mag_limit
 
 
 # ---------------------------------------------------------------- text read
-def sky_read(st, place, when_local, tzname, lat=0.0):
+def sky_read(st, place, when_local, tzname, lat=0.0, wrap_width=76):
     mo, su = st["moon"], st["sun"]
     L = []
     L.append(f"{place} · {when_local:%a %d %b %Y %H:%M} {tzname}")
@@ -558,7 +558,7 @@ def sky_read(st, place, when_local, tzname, lat=0.0):
     import textwrap
     out = []
     for p in L:
-        out.extend(textwrap.wrap(p, 76) or [""])
+        out.extend(textwrap.wrap(p, wrap_width) or [""])
     return "\n".join(out)
 
 def compass(az):
@@ -1042,9 +1042,15 @@ def render_linear(when_utc, lat, lon, W=176, H=22, color=True, show_lines=True,
                   mag_limit=4.0, line_limit=None, tle=None, alt_max=70, facing=None, span=None,
                   alt_lo=None, alt_hi=None, target=None, overlay=None,
                   bodies=None, inset=True, width=None, height=None, dso_limit=None,
-                  quadrant=None, quadrants=False):
+                  quadrant=None, quadrants=False, side_panel=False):
     """Horizon panorama. facing=None gives the full 360 deg sweep; facing='SW'
-    gives a window centred there, which is narrow enough to be undistorted."""
+    gives a window centred there, which is narrow enough to be undistorted.
+
+    side_panel=True pulls the zenith inset out of the returned text (nothing
+    appended below the sweep) and hands its lines back via st['zenith_lines']
+    instead, for a caller that wants to lay it out beside the chart rather
+    than under it. Default False keeps every existing caller (the CLI
+    included) byte-identical."""
     req_span = span                    # the else-branch below clobbers `span`
     if facing is not None:
         # Rows are capped at 46 so output stays a sane height. Below ~90 deg of
@@ -1416,13 +1422,17 @@ def render_linear(when_utc, lat, lon, W=176, H=22, color=True, show_lines=True,
     # with no room for one. find now draws the full panorama, so what
     # actually matters is whether the altitude range was cropped: an
     # inset labelled 70-90° is a lie on a chart that stops at 40°.
+    zenith_lines = None
     if facing is None and not alt_cropped and quad_applied is None and inset:
-        out.append("")
-        out.extend(_zenith_inset(inset_items, alt_max, color, LM))
+        zenith_lines = _zenith_inset(inset_items, alt_max, color, 0 if side_panel else LM)
+        if not side_panel:
+            out.append("")
+            out.extend(zenith_lines)
     st = dict(visible=visible, up=up, moon=mo, sun=su, lst=lst, jd=jd,
               track=track, iss_err=iss_err, top3=top3, span=span, clamped=clamped,
               cons=[c["con"]["name"] for c in chosen],
-              quad_cells=quad_cells, quad_applied=quad_applied, quad_error=quad_error)
+              quad_cells=quad_cells, quad_applied=quad_applied, quad_error=quad_error,
+              zenith_lines=zenith_lines if side_panel else None)
     return "\n".join(out), st
 
 

@@ -13,6 +13,7 @@ import tempfile
 import time
 import unittest
 
+import pytest
 from starlette.testclient import TestClient
 
 import server
@@ -38,6 +39,17 @@ def setUpModule():
     server.BURST = 1_000_000
     server.STATS_RATE = 1_000_000
     server.STATS_BURST = 1_000_000
+
+
+@pytest.fixture(autouse=True)
+def _reset_rate_limit():
+    # server.ratelimit shares one token bucket per client IP across the
+    # whole process -- TestClient requests all land on the same synthetic
+    # IP, so without this the bucket drains as the suite grows and later
+    # tests start failing with 429s that have nothing to do with what
+    # they're actually testing.
+    server._buckets.clear()
+    yield
 
 
 class AnimateBrowserVsTerminal(unittest.TestCase):
@@ -85,6 +97,22 @@ class AnimateBrowserVsTerminal(unittest.TestCase):
         self.assertIsNotNone(m)
         self.assertIn("t=2026-08-12T18:00", m.group(1))
 
+    def test_animate_button_carries_the_current_chart_width(self):
+        # Without this, clicking animate on an auto-fit-widened page (say
+        # ?w=220) replaces the chart with frames rendered at the narrower
+        # DEFAULT_HORIZON_WIDTH fallback -- a visible shrink the instant the
+        # preview starts.
+        resp = self.client.get("/Ibiza?w=220&animate=24", headers=BROWSER)
+        m = re.search(r'data-live-url="([^"]+)"', resp.text)
+        self.assertIsNotNone(m)
+        self.assertIn("w=220", m.group(1))
+
+    def test_animate_button_omits_width_when_view_has_no_explicit_one(self):
+        resp = self.client.get("/Ibiza?animate=24", headers=BROWSER)
+        m = re.search(r'data-live-url="([^"]+)"', resp.text)
+        self.assertIsNotNone(m)
+        self.assertNotIn("w=", m.group(1))
+
     def test_terminal_gif_followup_carries_the_requested_time(self):
         # The streamed preview's own "Want a shareable GIF? Run: ..." command
         # used to drop t= entirely, built from place.slug alone -- so
@@ -93,6 +121,37 @@ class AnimateBrowserVsTerminal(unittest.TestCase):
         # the wrong GIF). animate=1 keeps this fast (4 frames, ~0.6s).
         resp = self.client.get("/Ibiza?t=2026-08-12T18:00&animate=1", headers=TERMINAL)
         self.assertIn("/Ibiza/animate.gif?t=2026-08-12T18:00", resp.text)
+
+
+class GifButtonAlwaysVisible(unittest.TestCase):
+    """'Share as a GIF' used to render with a hidden attribute and only
+    become visible once animate had actually been clicked -- rendering
+    itself (data-gif-url) never depended on that, so it's always visible
+    now, greyed out only by the real constraint (skymapPollGifCapacity,
+    kicked off on page load rather than from inside skymapAnimate)."""
+
+    def setUp(self):
+        client_cm = TestClient(server.app)
+        self.client = client_cm.__enter__()
+        self.addCleanup(client_cm.__exit__, None, None, None)
+
+    def test_gif_button_has_no_hidden_attribute(self):
+        resp = self.client.get("/Ibiza", headers=BROWSER)
+        m = re.search(r'<button id="gif-btn"[^>]*>', resp.text)
+        self.assertIsNotNone(m)
+        self.assertNotIn("hidden", m.group(0))
+
+    def test_capacity_poll_starts_on_page_load(self):
+        resp = self.client.get("/Ibiza", headers=BROWSER)
+        self.assertIn("if(gifBtn)skymapPollGifCapacity(gifBtn);", resp.text)
+
+    def test_animate_no_longer_kicks_off_the_poll_itself(self):
+        # Regression guard against double-polling (two setInterval loops on
+        # one button) if this ever gets called from both places again.
+        resp = self.client.get("/Ibiza", headers=BROWSER)
+        animate_fn = resp.text.split("function skymapAnimate(btn){")[1]
+        animate_fn = animate_fn.split("\nfunction skymapPollGifCapacity")[0]
+        self.assertNotIn("skymapPollGifCapacity(gifBtn)", animate_fn)
 
 
 class StatsPagesInBrowser(unittest.TestCase):
@@ -196,6 +255,13 @@ class ParamCounters(unittest.TestCase):
         self.client.get("/Zurich?quadrant", headers=TERMINAL)
         resp = self.client.get("/stats?format=json", headers=TERMINAL)
         self.assertEqual(resp.json()["params"].get("quadrant"), 1)
+
+    def test_nodso_param_is_tallied_and_keeps_dso_off_the_tally(self):
+        self.client.get("/Zurich?quadrant=A&nodso=1", headers=TERMINAL)
+        resp = self.client.get("/stats?format=json", headers=TERMINAL)
+        params = resp.json()["params"]
+        self.assertEqual(params.get("nodso"), 1)
+        self.assertIsNone(params.get("dso"))
 
     def test_night_nolines_and_width_params_are_tallied(self):
         self.client.get("/Zurich?night=1", headers=TERMINAL)
@@ -1194,6 +1260,317 @@ class StatsPersistence(unittest.TestCase):
         server._load_stats_state()
 
 
+class CacheKeyRespectsEveryRenderAffectingParam(unittest.TestCase):
+    """_cache_key used to omit r.lines entirely -- a plain request and a
+    ?nolines=1 request at the same place/time hashed to the identical key,
+    so whichever hit the cache first silently answered both, and the 'l'
+    shortcut appeared to do nothing. Regression coverage for that."""
+
+    def setUp(self):
+        client_cm = TestClient(server.app)
+        self.client = client_cm.__enter__()
+        self.addCleanup(client_cm.__exit__, None, None, None)
+
+    def test_nolines_actually_changes_the_rendered_chart(self):
+        # A fixed, deterministic scene (astronomical positions don't depend
+        # on "now") with a known-visible asterism -- Zurich at this exact
+        # moment reliably shows the Big Dipper. Asserting on that label
+        # directly, rather than just "the two responses differ", since a
+        # trivial difference elsewhere (e.g. the "Share as a PNG" link,
+        # which always carries nolines=1) would let a regression here pass
+        # for the wrong reason.
+        t = "2026-07-30T23:00"
+        with_lines = self.client.get(f"/Zurich?t={t}", headers=TERMINAL).text
+        without_lines = self.client.get(f"/Zurich?t={t}&nolines=1", headers=TERMINAL).text
+        # Every character carries its own ANSI colour code, so the label
+        # never appears as a contiguous substring in the raw response --
+        # strip escapes first, same as server.py does for ?plain=1.
+        self.assertIn("BIG DIPPER", server.api.strip_ansi(with_lines))
+        self.assertNotIn("BIG DIPPER", server.api.strip_ansi(without_lines))
+
+    def test_panel_actually_changes_the_rendered_layout(self):
+        # Same bug, same fix, this time for r.panel: a plain request and a
+        # ?panel=1 request at the same place/time/width used to hash to the
+        # identical cache key, so whichever hit the cache first silently
+        # answered both and the side panel appeared to do nothing.
+        t = "2026-07-30T23:00"
+        stacked = self.client.get(f"/Zurich?t={t}&w=150", headers=TERMINAL).text
+        paneled = self.client.get(f"/Zurich?t={t}&w=150&panel=1", headers=TERMINAL).text
+        stacked_zenith = next(l for l in server.api.strip_ansi(stacked).split("\n")
+                              if "zenith 70-90" in l)
+        paneled_zenith = next(l for l in server.api.strip_ansi(paneled).split("\n")
+                              if "zenith 70-90" in l)
+        self.assertEqual(stacked_zenith.split("zenith 70-90")[0].strip(), "")
+        self.assertTrue(paneled_zenith.split("zenith 70-90")[0].strip())
+
+
+class KeyboardShortcuts(unittest.TestCase):
+    """d/l read their target URLs, and z its landing URL for the arrow-key
+    picker, from a small JS object (KBD) the server embeds per-page -- only
+    the pages/states where a toggle actually means something should
+    populate it, everything else gets {}."""
+
+    def setUp(self):
+        client_cm = TestClient(server.app)
+        self.client = client_cm.__enter__()
+        self.addCleanup(client_cm.__exit__, None, None, None)
+
+    def test_night_chart_page_offers_the_toggles(self):
+        resp = self.client.get("/Zurich?t=2026-07-30T23:00", headers=BROWSER)
+        self.assertIn('"nolines": "/Zurich?t=2026-07-30T23:00&nolines=1"', resp.text)
+        self.assertIn('"quadrant": "/Zurich?t=2026-07-30T23:00&quadrant"', resp.text)
+        self.assertIn('"grid": "/Zurich?t=2026-07-30T23:00&quadrant"', resp.text)
+
+    def test_day_view_offers_no_toggles(self):
+        # dso/nolines/quadrant don't apply to the Sun's-arc day view -- same
+        # gate quadrant_btn's own disabled state already uses. Checking for
+        # the JSON-key form (quote-colon-quote) specifically -- the bare word
+        # "quadrant" also appears in the static hint text and JS comments on
+        # every chart page regardless, which a plain substring check would
+        # wrongly match.
+        resp = self.client.get("/Zurich?t=2026-07-30T13:00", headers=BROWSER)
+        self.assertIn("var KBD={};", resp.text)
+        self.assertNotIn('"nolines": "', resp.text)
+        self.assertNotIn('"quadrant": "', resp.text)
+        self.assertNotIn('"grid": "', resp.text)
+
+    def test_grid_toggle_stays_bare_even_when_already_zoomed_into_one_cell(self):
+        # 'z' needs a "go to the bare grid" landing spot regardless of
+        # whether the grid is currently off *or* already cropped to one
+        # lettered cell -- api._quadrant_grid_url never carries the letter.
+        resp = self.client.get("/Zurich?t=2026-07-30T23:00&quadrant=A", headers=BROWSER)
+        self.assertIn('"grid": "/Zurich?t=2026-07-30T23:00&quadrant"', resp.text)
+
+    def test_toggles_preserve_an_explicitly_picked_time(self):
+        # The bug this guards against: dropping t= on a toggle click bounces
+        # you back to "now", which can silently flip a picked nighttime view
+        # to the daytime Sun's-arc view if it's actually daytime right now.
+        resp = self.client.get("/Zurich?t=2026-07-30T23:00", headers=BROWSER)
+        self.assertIn('"quadrant": "/Zurich?t=2026-07-30T23:00&quadrant"', resp.text)
+
+    def test_the_shortcut_hint_appears_on_a_chart_page(self):
+        resp = self.client.get("/Zurich", headers=BROWSER)
+        self.assertIn('<p class="kbd-hint">', resp.text)
+
+    def test_hint_and_js_bind_p_and_f_to_the_place_and_find_fields(self):
+        # p/f aren't in KBD (they're unconditional, same as the JS -- no
+        # server-side toggle state involved), so check the hint text and
+        # the keydown handler directly instead.
+        resp = self.client.get("/Zurich", headers=BROWSER)
+        self.assertIn("<kbd>p</kbd> place", resp.text)
+        self.assertIn("<kbd>f</kbd> find", resp.text)
+        self.assertIn("e.key==='p'", resp.text)
+        self.assertIn("e.key==='f'", resp.text)
+        self.assertNotIn("e.key==='/'", resp.text)
+
+    def test_hint_and_js_bind_m_to_geolocation(self):
+        # Same as p/f -- unconditional, no server-side toggle state, so
+        # check the hint text and the keydown handler directly.
+        resp = self.client.get("/Zurich", headers=BROWSER)
+        self.assertIn("<kbd>m</kbd> my location", resp.text)
+        self.assertIn("e.key==='m'", resp.text)
+        self.assertIn("navigator.geolocation", resp.text)
+        self.assertIn("getCurrentPosition", resp.text)
+
+    def test_m_shortcut_present_on_non_chart_pages_too(self):
+        # Unlike d/l/z (which read from KBD, only populated on a chart
+        # page), m has no server-side toggle state -- it's the same
+        # unconditional JS on every page, same as p/f.
+        for path in ("/catalog", "/legend", "/help"):
+            resp = self.client.get(path, headers=BROWSER)
+            self.assertIn("e.key==='m'", resp.text, path)
+
+    def test_d_binds_to_the_combined_quadrant_toggle_not_a_standalone_dso(self):
+        resp = self.client.get("/Zurich?t=2026-07-30T23:00", headers=BROWSER)
+        self.assertIn("e.key==='d'&&KBD.quadrant", resp.text)
+        self.assertNotIn("KBD.dso", resp.text)
+
+    def test_z_and_arrow_keys_are_wired_and_q_is_gone(self):
+        resp = self.client.get("/Zurich?t=2026-07-30T23:00", headers=BROWSER)
+        self.assertIn("e.key==='z'", resp.text)
+        self.assertIn("ArrowLeft", resp.text)
+        self.assertIn("ArrowRight", resp.text)
+        self.assertIn("ArrowUp", resp.text)
+        self.assertIn("ArrowDown", resp.text)
+        self.assertNotIn("e.key==='q'", resp.text)
+        self.assertNotIn("<kbd>q</kbd>", resp.text)
+
+    def test_other_pages_get_no_toggles_and_no_hint(self):
+        # The .kbd-hint *style rule* is in every page's shared <style> block
+        # regardless -- checking for the rendered <p class="kbd-hint"> tag
+        # specifically is what actually distinguishes "hint shown" from not.
+        for path in ("/catalog", "/legend", "/help", "/stats"):
+            resp = self.client.get(path, headers=BROWSER)
+            self.assertIn("var KBD={};", resp.text, path)
+            self.assertNotIn('<p class="kbd-hint">', resp.text, path)
+
+    def test_help_documents_the_shortcuts(self):
+        resp = self.client.get("/help", headers=TERMINAL)
+        self.assertIn("KEYBOARD", resp.text)
+
+
+class ControlsPanel(unittest.TestCase):
+    """The explore form + toolbar are always visible on every page, chart
+    included -- there used to be a '≡ controls' toggle that hid them behind
+    a click on the chart view specifically; that's gone, so 'p'/'f' just
+    focus the always-visible input directly, no open-the-panel-first step."""
+
+    def setUp(self):
+        client_cm = TestClient(server.app)
+        self.client = client_cm.__enter__()
+        self.addCleanup(client_cm.__exit__, None, None, None)
+
+    def test_chart_page_has_the_explore_form(self):
+        resp = self.client.get("/Zurich", headers=BROWSER)
+        self.assertIn('id="explore"', resp.text)
+
+    def test_no_toggle_button_or_hide_show_js_remain(self):
+        resp = self.client.get("/Zurich", headers=BROWSER)
+        self.assertNotIn('id="controls-toggle"', resp.text)
+        self.assertNotIn('id="controls-panel"', resp.text)
+        self.assertNotIn("openPanel", resp.text)
+        self.assertNotIn("closePanel", resp.text)
+
+    def test_other_pages_also_have_the_explore_form(self):
+        for path in ("/catalog", "/legend", "/help", "/stats"):
+            resp = self.client.get(path, headers=BROWSER)
+            self.assertIn('id="explore"', resp.text, path)
+            self.assertNotIn('id="controls-toggle"', resp.text, path)
+
+
+class AutoFitWidth(unittest.TestCase):
+    """The plain horizon panorama gets the wide container + a real column
+    count for the client-side auto-fit JS to compare against; every other
+    view/page gets fit_width=null so the JS no-ops there."""
+
+    def setUp(self):
+        client_cm = TestClient(server.app)
+        self.client = client_cm.__enter__()
+        self.addCleanup(client_cm.__exit__, None, None, None)
+
+    def test_plain_horizon_view_gets_the_wide_class_and_real_width(self):
+        resp = self.client.get("/Zurich?t=2026-07-30T23:00", headers=BROWSER)
+        self.assertIn('class="w w-wide"', resp.text)
+        self.assertIn("var FIT_W=110;", resp.text)
+
+    def test_explicit_w_is_reflected_not_the_default(self):
+        resp = self.client.get("/Zurich?t=2026-07-30T23:00&w=150", headers=BROWSER)
+        self.assertIn("var FIT_W=150;", resp.text)
+
+    def test_facing_view_opts_out(self):
+        # facing= has its own aspect-locked sizing formula -- auto-fit would
+        # fight it, see api.py's DEFAULT_HORIZON_WIDTH comment.
+        resp = self.client.get("/Zurich?t=2026-07-30T23:00&facing=NW", headers=BROWSER)
+        self.assertIn('class="w"', resp.text)
+        self.assertNotIn('class="w w-wide"', resp.text)
+        self.assertIn("var FIT_W=null;", resp.text)
+
+    def test_disc_view_opts_out(self):
+        resp = self.client.get("/Zurich?t=2026-07-30T23:00&view=disc", headers=BROWSER)
+        self.assertIn("var FIT_W=null;", resp.text)
+
+    def test_find_view_opts_out(self):
+        resp = self.client.get("/Zurich?find=Venus", headers=BROWSER)
+        self.assertIn("var FIT_W=null;", resp.text)
+
+    def test_non_chart_pages_opt_out(self):
+        for path in ("/catalog", "/legend", "/help", "/stats"):
+            resp = self.client.get(path, headers=BROWSER)
+            self.assertIn('class="w"', resp.text, path)
+            self.assertNotIn('class="w w-wide"', resp.text, path)
+            self.assertIn("var FIT_W=null;", resp.text, path)
+
+    def test_js_reserves_panel_width_and_can_request_panel(self):
+        # Doesn't execute the JS -- just guards against the reservation
+        # logic (PANEL_COLS/wantPanel) getting deleted or renamed silently,
+        # same shallow-presence style as the keyboard-shortcut JS checks.
+        resp = self.client.get("/Zurich?t=2026-07-30T23:00", headers=BROWSER)
+        self.assertIn("PANEL_COLS", resp.text)
+        self.assertIn("wantPanel", resp.text)
+        self.assertIn("params.set('panel','1')", resp.text)
+
+
+class SidePanel(unittest.TestCase):
+    """?panel=1 is parsed into Request.panel and never inferred -- only the
+    browser's own auto-fit JS ever sets it (see AutoFitWidth above)."""
+
+    def setUp(self):
+        client_cm = TestClient(server.app)
+        self.client = client_cm.__enter__()
+        self.addCleanup(client_cm.__exit__, None, None, None)
+
+    def test_panel_param_is_tallied(self):
+        self._orig_stat = server._stat.copy()
+        server._stat.clear()
+        self.addCleanup(lambda: (server._stat.clear(), server._stat.update(self._orig_stat)))
+        self.client.get("/Zurich?t=2026-07-30T23:00&panel=1", headers=TERMINAL)
+        resp = self.client.get("/stats?format=json", headers=TERMINAL)
+        self.assertEqual(resp.json()["params"].get("panel"), 1)
+
+    def test_panel_page_still_renders_successfully(self):
+        resp = self.client.get("/Zurich?t=2026-07-30T23:00&panel=1", headers=BROWSER)
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn("zenith 70-90", resp.text)
+
+
+class FollowLineOnlyOnCli(unittest.TestCase):
+    """The "Follow @habibicode..." line stays in curl/plain-text output
+    (matches the CLI, which shares this same compose() text) but is
+    stripped from the browser HTML page -- the header's social icons carry
+    that invitation there instead."""
+
+    def setUp(self):
+        client_cm = TestClient(server.app)
+        self.client = client_cm.__enter__()
+        self.addCleanup(client_cm.__exit__, None, None, None)
+
+    def test_terminal_output_keeps_the_follow_line(self):
+        resp = self.client.get("/Zurich?t=2026-07-30T23:00", headers=TERMINAL)
+        self.assertIn("Follow @habibicode", server.api.strip_ansi(resp.text))
+
+    def test_html_page_does_not_have_the_follow_line(self):
+        resp = self.client.get("/Zurich?t=2026-07-30T23:00", headers=BROWSER)
+        self.assertNotIn("Follow @habibicode", resp.text)
+
+
+class HeaderSocialIcons(unittest.TestCase):
+    """GitHub/Reddit/Bluesky/X icon links sit inline in the header nav row,
+    on every page -- replacing the old standalone "Created by ... see the
+    repo" line that used to sit below the chart (chart-only, so catalog/
+    legend/help/stats never had it; the icons fix that inconsistency for
+    free)."""
+
+    def setUp(self):
+        client_cm = TestClient(server.app)
+        self.client = client_cm.__enter__()
+        self.addCleanup(client_cm.__exit__, None, None, None)
+
+    def test_chart_page_has_all_four_icons_and_not_the_old_footer_text(self):
+        resp = self.client.get("/Zurich", headers=BROWSER)
+        self.assertIn('class="social-icons"', resp.text)
+        self.assertIn("https://github.com/HabibiCodeCH/skymap-sh", resp.text)
+        self.assertIn("https://www.reddit.com/r/skymap/", resp.text)
+        self.assertIn("https://bsky.app/profile/skymap.sh", resp.text)
+        self.assertIn("https://x.com/habibicode", resp.text)
+        self.assertNotIn("Created by", resp.text)
+
+    def test_icons_appear_in_the_requested_order(self):
+        resp = self.client.get("/Zurich", headers=BROWSER)
+        text = resp.text
+        positions = [text.index(url) for url in (
+            "https://github.com/HabibiCodeCH/skymap-sh",
+            "https://www.reddit.com/r/skymap/",
+            "https://bsky.app/profile/skymap.sh",
+            "https://x.com/habibicode",
+        )]
+        self.assertEqual(positions, sorted(positions))
+
+    def test_every_page_gets_the_icons(self):
+        for path in ("/catalog", "/legend", "/help", "/stats"):
+            resp = self.client.get(path, headers=BROWSER)
+            self.assertIn('class="social-icons"', resp.text, path)
+
+
 class CatalogPage(unittest.TestCase):
     def setUp(self):
         client_cm = TestClient(server.app)
@@ -1218,7 +1595,7 @@ class CatalogPage(unittest.TestCase):
 
     def test_catalog_is_the_first_nav_link_after_home(self):
         resp = self.client.get("/legend", headers=BROWSER)
-        nav = resp.text[resp.text.index('<b>skymap.sh</b>'):]
+        nav = resp.text[resp.text.index('class="t nav-row"'):]
         self.assertLess(nav.index('href="/"'), nav.index('href="/catalog"'))
         self.assertLess(nav.index('href="/catalog"'), nav.index('href="/demo"'))
 

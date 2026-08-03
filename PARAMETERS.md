@@ -98,7 +98,8 @@ to overlay there.
 `--quadrant` (with or without a letter) turns on the deep-sky layer
 automatically too, as if `--dso` were also given -- one cell of the sky is a
 small enough patch that stars alone often leave it looking near-empty, and
-the whole point of zooming in is to reveal more.
+the whole point of zooming in is to reveal more. Add `--nodso` / `?nodso=1`
+to opt back out and see the crop with stars only.
 
 The horizon view is split into a fixed 4x3 grid (`A B C D`, `E F G H`,
 `I J K L`), always 12 cells, whatever the current span. The letters are
