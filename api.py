@@ -3171,24 +3171,22 @@ function skymapAnimate(btn){{
 
 function skymapPollGifCapacity(gifBtn){{
   // Greys the button out before a click would just 503, rather than only
-  // finding out after. A stale read is harmless -- the render endpoint
-  // still enforces the real cap itself, this is only ever a UX hint. Skips
-  // a tick entirely while this button's own render is in flight, or once
-  // it's done and showing the "View GIF" link (dataset.ready) -- otherwise
-  // this loop would overwrite that link with '' the next time it ticks,
-  // since it doesn't otherwise know the status line is in use for that now.
+  // finding out after. One check on page load is enough for that -- a
+  // stale read is harmless, since skymapRenderGif already catches a 503
+  // on click and shows "render failed, try again" re-enabling the button.
+  // This used to also re-poll every 4s for as long as the tab stayed open,
+  // which cost every visitor ~15 rate-limited requests a minute just for
+  // having a chart page open, with no correctness benefit over a single
+  // check (capacity opening back up mid-visit is already covered by the
+  // click-time catch above).
   var status=document.getElementById('gif-status');
-  function poll(){{
+  if(gifBtn.dataset.rendering==='1'||gifBtn.dataset.ready==='1')return;
+  fetch('/gif-capacity').then(function(r){{return r.json();}}).then(function(d){{
     if(gifBtn.dataset.rendering==='1'||gifBtn.dataset.ready==='1')return;
-    fetch('/gif-capacity').then(function(r){{return r.json();}}).then(function(d){{
-      if(gifBtn.dataset.rendering==='1'||gifBtn.dataset.ready==='1')return;
-      gifBtn.disabled=!d.available;
-      if(status)status.textContent=d.available?'':
-        'Too many GIFs rendering right now, please wait a few seconds';
-    }}).catch(function(){{}});
-  }}
-  poll();
-  setInterval(poll,4000);
+    gifBtn.disabled=!d.available;
+    if(status)status.textContent=d.available?'':
+      'Too many GIFs rendering right now, please wait a few seconds';
+  }}).catch(function(){{}});
 }}
 
 function skymapRenderGif(btn){{
