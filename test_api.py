@@ -763,6 +763,31 @@ class NightOverrideDuringDaylight(unittest.TestCase):
         api.compose_chart_only(r)   # raises on failure; nothing to assert
 
 
+class HelpTextIsCurrent(unittest.TestCase):
+    """HELP is free text, easy for the UI to drift out from under -- a
+    handful of content checks so a future feature/shortcut change is more
+    likely to also update the doc, not just leave it stale."""
+
+    def test_mentions_every_wired_up_keyboard_shortcut(self):
+        for key in ("p/tab", "f ", "m ", "esc", "a ", "g ", "d ", "z "):
+            self.assertIn(key, api.HELP)
+
+    def test_find_mentions_deep_sky_and_radiants(self):
+        # resolve_target() accepts both (sky.py) -- the doc used to only
+        # list planets/Sun/Moon/stars/asterisms.
+        self.assertIn("deep-sky", api.HELP)
+        self.assertIn("radiant", api.HELP)
+
+    def test_mentions_events(self):
+        self.assertIn("EVENTS", api.HELP)
+        self.assertIn("/events", api.HELP)
+        self.assertIn(".ics", api.HELP)
+        self.assertIn(".rss", api.HELP)
+
+    def test_documented_events_window_matches_the_real_default(self):
+        self.assertIn(f"next {api.EVENTS_WINDOW_DAYS} days", api.HELP)
+
+
 class CatalogText(unittest.TestCase):
     """catalog_text() lists every object findable by name via ?find= -- it
     must actually match what resolve_target() accepts, or the page would

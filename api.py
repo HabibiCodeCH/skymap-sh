@@ -2065,8 +2065,18 @@ VIEWS
 
 FIND
   ?find=Venus      frame one object, with directions in fists
-  ?find=Big+Dipper works for planets, Sun, Moon, named stars, asterisms
-                   tells you if you can see it, and if not, when you can
+  ?find=M31        planets, Sun, Moon, named stars, asterisms, deep-sky
+                   objects (M31, Andromeda Galaxy...), or a meteor shower's
+                   radiant (Perseids) -- and whether you can see it right
+                   now, or when you next can
+  ?find=X&span=90  crop to a window around it instead of the full sky
+
+EVENTS -- meteor showers, eclipses, oppositions, conjunctions, elongations
+  curl skymap.sh/Zurich/events            what's coming up, next 90 days
+  curl skymap.sh/Zurich/events?next=1     one line, for a shell prompt
+  curl skymap.sh/Zurich/events?days=30    a different window, 7-365
+                                           .ics and .rss feeds too, for a
+                                           calendar app or a feed reader
 
 OPTIONS
   ?t=2026-08-12T23:00   local time at that place (default: now)
@@ -2090,7 +2100,7 @@ KEYBOARD (in a browser, on a chart page)
   p/tab  focus the place search        a   toggle animate
   f      focus the find field          g   share as a GIF
   m      jump to my location           d   toggle quadrant grid + dso
-  esc    cancel out of a field         z   zoom: pick a quadrant cell with
+  esc    close the drawer, or a field  z   zoom: pick a quadrant cell with
                                             arrow keys, enter to crop to it
 
 Stars: Yale Bright Star Catalogue. Planets: JPL approximate elements.
