@@ -2081,6 +2081,25 @@ def _events_window(request: Req):
     return next(w for w in EVENTS_WINDOWS if w >= want)
 
 
+@app.get("/events.ics")
+def events_ics_here(request: Req):
+    """The nav points at /events, so /events.ics is the next thing anyone
+    tries -- and it 404'd, which a calendar app reports as a flat "the URL
+    is not valid". Same IP fallback as the page.
+
+    A subscription pinned to a place is the better thing to hand out, since
+    this one follows whatever IP the calendar app fetches from, but it has
+    to work rather than fail."""
+    _stat["events_ip"] += 1
+    return events_ics(request, None)
+
+
+@app.get("/events.rss")
+def events_rss_here(request: Req):
+    _stat["events_ip"] += 1
+    return events_rss(request, None)
+
+
 @app.get("/events", response_class=PlainTextResponse)
 def events_here(request: Req):
     """What's coming up over wherever the visitor is.
@@ -2095,8 +2114,8 @@ def events_here(request: Req):
 
 
 @app.get("/{place}/events.ics")
-def events_ics(request: Req, place: str):
-    if api.lookup_place(place) is None:
+def events_ics(request: Req, place: str | None):
+    if place is not None and api.lookup_place(place) is None:
         return PlainTextResponse("", status_code=404)
     r = _build(request, place)
     _stat["events.ics"] += 1
@@ -2110,8 +2129,8 @@ def events_ics(request: Req, place: str):
 
 
 @app.get("/{place}/events.rss")
-def events_rss(request: Req, place: str):
-    if api.lookup_place(place) is None:
+def events_rss(request: Req, place: str | None):
+    if place is not None and api.lookup_place(place) is None:
         return PlainTextResponse("", status_code=404)
     r = _build(request, place)
     _stat["events.rss"] += 1

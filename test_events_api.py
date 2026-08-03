@@ -456,6 +456,23 @@ def test_days_snaps_to_a_ladder(client):
     assert len(got) <= len(server.EVENTS_WINDOWS)
 
 
+def test_bare_feed_urls_work(client):
+    """The nav points at /events, so /events.ics is the next thing anyone
+    tries. It 404'd, which a calendar app reports as a flat "the URL is not
+    valid" with nothing to go on."""
+    for path, ctype in (("/events.ics", "text/calendar"),
+                        ("/events.rss", "rss+xml")):
+        r = client.get(path)
+        assert r.status_code == 200, path
+        assert ctype in r.headers["content-type"], path
+    assert client.get("/events.ics").text.startswith("BEGIN:VCALENDAR")
+
+
+def test_unknown_place_feeds_still_404(client):
+    for p in ("/wombat/events.ics", "/wombat/events.rss"):
+        assert client.get(p).status_code == 404, p
+
+
 # ---------------------------------------------------------------- ICS
 def test_ics_is_well_formed():
     ics = api.events_ics(_req(), days=30)
