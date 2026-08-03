@@ -1602,7 +1602,14 @@ def _respond(request: Req, place: str | None):
                 if city:
                     _stat["geo_redirect"] += 1
                     qs = f"?{request.url.query}" if request.url.query else ""
-                    return RedirectResponse(f"/{quote(city)}{qs}", status_code=302)
+                    # no-store, like /healthz -- without an explicit
+                    # Cache-Control, Cloudflare applies its own default TTL
+                    # to this at the edge, and a visitor who hit these exact
+                    # coordinates before this redirect existed (or before
+                    # today's deploy) keeps getting served that stale,
+                    # un-redirected response indefinitely.
+                    return RedirectResponse(f"/{quote(city)}{qs}", status_code=302,
+                                           headers={"Cache-Control": "no-store"})
     if place and api.lookup_place(place) is None:
         near = api.suggest(place)
         did = ("\n  Did you mean:\n" + "".join(f"    {n}\n" for n in near)

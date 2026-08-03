@@ -1478,6 +1478,32 @@ class HeaderIsAlwaysWide(unittest.TestCase):
         self.assertLess(resp.text.index('class="header-row"'), resp.text.index('class="w"'))
 
 
+class ChartPreFontSizeScoping(unittest.TestCase):
+    """#chart-pre is the same id every page's <pre> uses -- a bare
+    #chart-pre{font-size:...} selector silently applies everywhere, not
+    just the chart page it was meant for (bit the /stats live map once:
+    a bigger font made its fixed-character-count ASCII grid wider in
+    pixels, pushing it past the 1200px .w cap into a horizontal scroll
+    that didn't exist before). .kbd-hint ~ #chart-pre is the actual
+    "chart page only" scope, since SHORTCUTS_HINT (.kbd-hint) only
+    renders there."""
+
+    def setUp(self):
+        client_cm = TestClient(server.app)
+        self.client = client_cm.__enter__()
+        self.addCleanup(client_cm.__exit__, None, None, None)
+
+    def test_rule_is_scoped_through_kbd_hint_not_bare_chart_pre(self):
+        resp = self.client.get("/Zurich", headers=BROWSER)
+        self.assertIn(".kbd-hint ~ #chart-pre{font-size:13px}", resp.text)
+        self.assertNotIn(" #chart-pre{font-size:13px}", resp.text.replace(
+            ".kbd-hint ~ #chart-pre{font-size:13px}", ""))
+
+    def test_stats_page_has_no_kbd_hint_so_the_rule_does_not_apply(self):
+        resp = self.client.get("/stats", headers=BROWSER)
+        self.assertNotIn('class="kbd-hint"', resp.text)
+
+
 class AutoFitWidth(unittest.TestCase):
     """The plain horizon panorama gets the wide container + a real column
     count for the client-side auto-fit JS to compare against; every other
@@ -2596,6 +2622,15 @@ class CoordinatesRedirectToNearbyCity(unittest.TestCase):
         resp = self.client.get("/46.20,6.15", headers=BROWSER, follow_redirects=False)
         self.assertEqual(resp.status_code, 302)
         self.assertEqual(resp.headers["location"], "/Geneva")
+
+    def test_redirect_is_not_cached_at_the_edge(self):
+        # No Cache-Control here, like the old /healthz bug this codebase has
+        # already hit once: Cloudflare applies its own default TTL to a
+        # response with none, and a visitor who hit these exact coordinates
+        # before this redirect existed keeps getting served that stale,
+        # un-redirected response indefinitely.
+        resp = self.client.get("/46.20,6.15", headers=BROWSER, follow_redirects=False)
+        self.assertEqual(resp.headers.get("cache-control"), "no-store")
 
     def test_redirect_preserves_the_query_string(self):
         resp = self.client.get("/46.20,6.15?t=2026-07-30T23:00&panel=1",
