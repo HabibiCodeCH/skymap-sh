@@ -1,3 +1,9 @@
 # Refresh the ISS element set. CelesTrak issues a few per day; this is polite
 # and keeps pass predictions inside a few seconds of truth.
-17 */6 * * * cd /srv/sky && venv/bin/python tle.py >> /var/log/sky-tle.log 2>&1
+# DEPLOY.md appends this to /etc/crontab, which is the SYSTEM crontab and
+# needs a user column between the schedule and the command. Without it cron
+# reads "cd" as the username, rejects the line, and the job silently never
+# runs -- no log file is even created, so nothing looks wrong until the ISS
+# quietly drops off every chart at the 7-day STALE_AFTER cutoff in tle.py.
+# Runs as sky, not root, and logs beside the app where sky can write.
+17 */6 * * * sky cd /srv/sky && venv/bin/python tle.py >> /srv/sky/tle.log 2>&1
