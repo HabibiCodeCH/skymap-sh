@@ -2775,6 +2775,14 @@ document.documentElement.classList.add('js');
  .w{{max-width:1200px;margin:0 auto}}
  .w-wide{{max-width:none}}
  pre{{margin:0;font-size:11px;line-height:1.22;overflow-x:auto;font-variant-ligatures:none}}
+ /* Bigger than the generic pre{{}} above -- scoped to the chart page only
+    (catalog/help/legend/stats stay at 11px), not a blanket change. Chart
+    height is invariant to this: the auto-fit JS measures #chart-pre's own
+    font size to pick column count, and the row count is always cols/
+    HORIZON_COLS_PER_ROW, so a bigger font just means fewer, taller
+    cells -- same total pixel height either way. Only the fixed-line-count
+    prose below the chart actually grows, which is the whole point. */
+ #chart-pre{{font-size:13px}}
  .t{{color:#6e7681;font-size:12px;margin:0 0 18px}}
  .nav-row{{display:flex;justify-content:flex-end;align-items:center;
           flex-wrap:wrap;gap:8px}}
