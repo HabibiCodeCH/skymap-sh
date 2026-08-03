@@ -9,7 +9,7 @@ skymap.sh: one URL, four consumers.
 
 Run:  uvicorn server:app --host 0.0.0.0 --port 8000
 """
-import asyncio, datetime as dt, html, json, os, re, secrets, threading, time
+import asyncio, datetime as dt, html, json, math, os, re, secrets, threading, time
 from collections import OrderedDict
 from urllib.parse import quote, urlparse
 from fastapi import FastAPI, Request as Req
@@ -104,7 +104,14 @@ _events_places = Counter()
 # of them, since the teaser is meant to be missing on a quiet night.
 _events_teased = Counter()
 _referrers = Counter()
+# Where requests come from, binned to whole degrees, for the dotted world map
+# on /stats. Keyed on coordinates rather than place name because plenty of
+# requests are raw lat/lon rather than a city -- those have no name to key on,
+# and a name would need resolving back to a position anyway. Whole degrees is
+# already finer than the map can draw.
+_geo_hits = Counter()
 _TOP_KEEP = 2000            # trim the long tail so the tables cannot grow forever
+_GEO_KEEP = 5000            # same idea for the map: distinct 1-degree cells
 
 # --- persisting the live counters ----------------------------------------------
 # _stat/_places/_finds are otherwise purely in-memory, so a restart (deploy,
@@ -125,7 +132,7 @@ def _save_stats_state():
                           sphere_places=dict(_sphere_places),
                           events_places=dict(_events_places),
                           events_teased=dict(_events_teased),
-                          referrers=dict(_referrers)), f)
+                          referrers=dict(_referrers), geo=dict(_geo_hits)), f)
         os.replace(tmp, STATS_STATE_FILE)   # atomic -- a crash mid-write
     except OSError:                          # can't leave a corrupt file
         pass
@@ -155,7 +162,7 @@ def _load_stats_state():
                          (_finds, "finds"), (_sphere_places, "sphere_places"),
                          (_events_places, "events_places"),
                          (_events_teased, "events_teased"),
-                         (_referrers, "referrers")):
+                         (_referrers, "referrers"), (_geo_hits, "geo")):
         counter.clear()
         counter.update(data.get(key, {}))
 
@@ -243,6 +250,426 @@ def _read_hourly_history(days=7):
     return rows
 
 
+def _hourly_rows(days):
+    """Log rows for the window, plus the hour currently in progress -- that
+    one is still only in memory, so reading the file alone always leaves the
+    chart and the table an hour short of now."""
+    _roll_hour()
+    rows = _read_hourly_history(days=days)
+    if _hour_stat:
+        rows = rows + [dict(hour=_hour_key, requests=_hour_stat["requests"],
+                            hit=_hour_stat["hit"], miss=_hour_stat["miss"],
+                            day=_hour_stat["day"], night=_hour_stat["night"],
+                            top_referrers=_top_hour_referrers(_hour_stat))]
+    return rows
+
+
+# --- plaintext charts ---------------------------------------------------------
+# Eight rows of eighth-blocks give 64 steps of vertical resolution, which is
+# enough to tell a busy hour from a quiet one without the chart eating half
+# the page. 60 columns keeps the widest chart inside an 80-column terminal,
+# which matters because `curl skymap.sh/stats` is a real way people read this.
+CHART_ROWS = 12
+SPARK_ROWS = 2              # two rows is 16 steps instead of 8, enough to see
+                            # a hit rate move rather than guess at it
+CHART_COLS = 60
+CHART_HOURS = 48            # two full diurnal cycles, so the daily rhythm shows
+CHART_DAYS = 30
+CHART_PAD = 7               # width of the y-axis label gutter
+_BLOCKS = " ▁▂▃▄▅▆▇█"
+_SPARK = "▁▂▃▄▅▆▇█"
+_ZERO_FILL = ("requests", "hit", "miss", "day", "night")
+
+
+def _dense_hours(rows, hours, end=None):
+    """One entry per hour in the window, oldest first, with hours the log
+    never recorded filled in as zeros.
+
+    _flush_hour returns early on an hour with no traffic, and _roll_hour only
+    fires when a request arrives, so an idle stretch leaves no line at all.
+    Charted straight off the log the x-axis would be "rows in the file"
+    rather than time: two neighbouring columns could be a whole night apart
+    with nothing on screen saying so. Zero-filling makes the axis mean
+    elapsed time again, and a quiet hour reads as the blank column it is.
+    """
+    end = (end or dt.datetime.utcnow()).replace(minute=0, second=0, microsecond=0)
+    # Summed, not last-one-wins. The log can hold more than one line for the
+    # same hour: a restart flushes the partial hour it was in, and the next
+    # process flushes the rest of that same hour when it rolls. Keying a
+    # plain dict on the hour silently threw the first half away.
+    by_hour = {}
+    for r in rows:
+        acc = by_hour.setdefault(r["hour"], Counter())
+        for k in _ZERO_FILL:
+            acc[k] += r.get(k, 0)
+    out = []
+    for i in range(hours - 1, -1, -1):
+        key = (end - dt.timedelta(hours=i)).strftime("%Y-%m-%dT%H:00")
+        row = by_hour.get(key) or {}
+        entry = dict(hour=key, recorded=key in by_hour)
+        entry.update({k: row.get(k, 0) for k in _ZERO_FILL})
+        out.append(entry)
+    return out
+
+
+def _dense_days(rows, days, end=None):
+    """The same idea one level up: one entry per UTC calendar day, summed out
+    of the hourly log.
+
+    There is no daily log and there doesn't need to be -- the hourly file is
+    never trimmed, so grouping it by date is the entire implementation, and
+    the history reaches back as far as the server has ever run. A day with no
+    traffic is zero-filled here for the same reason an hour is."""
+    end = end or dt.datetime.utcnow().date()
+    acc = {}
+    for row in rows:
+        day = acc.setdefault(row["hour"][:10], Counter())
+        for k in _ZERO_FILL:
+            day[k] += row.get(k, 0)
+        day["hours"] += 1
+    out = []
+    for i in range(days - 1, -1, -1):
+        key = (end - dt.timedelta(days=i)).isoformat()
+        day = acc.get(key) or Counter()
+        entry = dict(date=key, hours=day["hours"], recorded=key in acc)
+        entry.update({k: day[k] for k in _ZERO_FILL})
+        out.append(entry)
+    return out
+
+
+def _chunks(entries, max_cols=CHART_COLS):
+    """Squeeze a long series into the chart width by grouping adjacent
+    entries. Returns (list of groups, entries per group).
+
+    Whatever is drawn from a group is summed, not averaged: the y-axis then
+    reads as "requests per group", a real number you can check against the
+    totals printed below the chart. An average over a group that is partly
+    zero-filled reads as neither the busy hours nor the quiet ones."""
+    n = len(entries)
+    if not n:
+        return [], 1
+    per = max(1, -(-n // max_cols))
+    return [entries[i:i + per] for i in range(0, n, per)], per
+
+
+def _bar_chart(values, tick_label, rows=CHART_ROWS, width=1, tick=6,
+               pad=CHART_PAD):
+    """A column chart in text, drawn top row down.
+
+    A zero is always blank, never a stub. An hour with no requests and an
+    hour with one request must not look the same, which is exactly what a
+    minimum-one-pixel bar would do to them.
+
+    Always exactly `rows` rows plus an axis, even for a window with no
+    traffic at all. An empty chart that collapsed to a one-line apology made
+    the page jump by eight lines depending on the data, and put the two
+    charts on /stats at different heights."""
+    top = max(values) if values else 0
+    L = []
+    for i in range(rows):
+        r = rows - i                       # 1 = bottom row
+        line = ""
+        for v in values:
+            level = v / top * rows - (r - 1) if top else 0
+            if v <= 0 or level <= 0:
+                line += " " * width
+            elif level >= 1:
+                line += "█" * width
+            else:
+                line += _BLOCKS[max(1, round(level * 8))] * width
+        # Roughly four numbers up the side however tall the chart is -- one
+        # per row is noise, and the top and zero lines are the two that
+        # actually get read.
+        every = max(2, rows // 4)
+        lab = f"{round(top * (rows - i) / rows):,}" if i % every == 0 else ""
+        L.append(f"{lab:>{pad}} ┤{line}")
+    axis = "".join(("┬" if i % tick == 0 else "─") + "─" * (width - 1)
+                   for i in range(len(values)))
+    L.append(f"{0:>{pad},} ┼{axis}")
+    marks = " " * (pad + 2)
+    for i in range(0, len(values), tick):
+        marks += tick_label(i).ljust(tick * width)
+    L.append(marks.rstrip())
+    L.append("")
+    return L
+
+
+def _spark_rows(values, rows=SPARK_ROWS, width=1, full=100.0):
+    """A percentage series as a short bar chart, `rows` tall, no axis.
+    `width` matches the chart above so a sparkline column sits under the bar
+    it belongs to.
+
+    Scaled against `full`, not against the series' own min and max. These are
+    percentages, so a bar's height should mean the value: 50%% is half-height
+    every time, and the hit%% row can be compared against the night row
+    directly. Self-scaling made a flat 88-91%% hit rate look like a mountain
+    range, and made two rows at completely different levels look alike.
+
+    None means "no ratio to take" -- an hour with no requests has no hit rate,
+    which is not the same as a hit rate of zero. Those render blank, the same
+    rule the charts use, while a real 0%% still gets the shortest visible bar
+    on the bottom row.
+
+    Always the full width, blanks included, so whatever is printed after it
+    lands in the same column whether or not there is data."""
+    out = []
+    for i in range(rows):
+        r = rows - i                       # 1 = bottom row
+        line = ""
+        for v in values:
+            if v is None:
+                line += " " * width
+                continue
+            level = v / full * rows - (r - 1)
+            if level >= 1:
+                line += "█" * width
+            elif level > 0:
+                line += _BLOCKS[max(1, round(level * 8))] * width
+            elif r == 1:
+                line += _BLOCKS[1] * width      # a real 0%, not a blank
+            else:
+                line += " " * width
+        out.append(line)
+    return out
+
+
+def _spark_pair(label, values, value, width):
+    """One labelled sparkline: `rows` lines, with the label and the current
+    number on the bottom one so they sit level with the axis of the bars."""
+    rows = _spark_rows(values, width=width)
+    out = []
+    for i, row in enumerate(rows):
+        last = i == len(rows) - 1
+        tail = ("  " + (f"{value:.0f}%" if value is not None else "-")
+                if last else "")
+        out.append(f"{label if last else '':>{CHART_PAD}} ┤{row}{tail}")
+    return out
+
+
+def _hour_tick(per):
+    """Clock time while each column is one hour. Once a column is several
+    hours wide the ticks land a day or more apart, and the clock time alone
+    stops saying which day you're looking at -- so the label becomes a date."""
+    if per > 1:
+        return lambda e: e["hour"][5:10]
+    return lambda e: e["hour"][11:16]
+
+
+def _day_tick(_per):
+    return lambda e: e["date"][5:]
+
+
+def _hour_tick_every(per):
+    """Space the hour ticks a whole number of days apart, so every label is
+    the same time of day. At 6 columns minimum they also stay far enough
+    apart not to collide."""
+    return max(6, round(24 / per)) if per > 1 else 6
+
+
+def _ratio(groups, num, den="requests"):
+    """Per-group percentage, or None where the group has no denominator --
+    an hour with no requests has no hit rate, and that is not zero."""
+    out = []
+    for g in groups:
+        bottom = sum(e[den] for e in g)
+        out.append(100 * sum(e[num] for e in g) / bottom if bottom else None)
+    return out
+
+
+def _chart_block(entries, tick_for, unit, span, width=1, tick_every=None,
+                 cols=CHART_COLS, legend=True):
+    """Title, chart, and the two ratio sparklines under it. Shared because
+    /stats and the drill-down pages draw the same thing over different
+    windows, just at different bucket sizes.
+
+    `cols` is the data-column budget. The drill-down pages give a chart the
+    full width; /stats sits two of them side by side and halves it. `legend`
+    is off for those, since one line under the pair says it for both."""
+    groups, per = _chunks(entries, cols // width)
+    # Tick labels are 5-6 characters, so they need at least that many columns
+    # between them or they run together.
+    tick = tick_every(per) if tick_every else max(5, -(-6 // width))
+    tick_of = tick_for(per)
+    vals = [sum(e["requests"] for e in g) for g in groups]
+    total = sum(vals)
+    idle = sum(1 for e in entries if not e["requests"])
+    bucket = f"{per} {unit}s" if per > 1 else unit
+    # Title, then the numbers as a caption under the chart. All on one line
+    # it ran past 80 columns on a long window with big counts, which wraps in
+    # exactly the terminal the whole page is shaped for.
+    # Every branch below appends unconditionally. The block is the same
+    # number of lines whatever the data says, so the page doesn't jump by
+    # eight lines when a window happens to be quiet, and the two charts on
+    # /stats always sit at the same height as each other.
+    L = [f"requests per {bucket} · last {span}".upper(), ""]
+    L += _bar_chart(vals, lambda i: tick_of(groups[i][0]), width=width, tick=tick)
+    gut = " " * (CHART_PAD + 2)
+    if total:
+        peak = max(entries, key=lambda e: e["requests"])
+        when = (peak["hour"][5:13] if "hour" in peak else peak["date"][5:])
+        L.append(f"{gut}{total:,} req · peak {peak['requests']:,} at {when}")
+    else:
+        L.append(f"{gut}no requests recorded in this window")
+    L.append(f"{gut}{idle:,} idle {unit}(s), shown blank")
+    hit = _ratio(groups, "hit")
+    night = _ratio(groups, "night")
+    now_hit = next((v for v in reversed(hit) if v is not None), None)
+    share = 100 * sum(e["night"] for e in entries) / total if total else None
+    # Same gutter as the chart rows above, so the series stack in one column
+    # instead of each starting wherever its label ended.
+    L += [""]
+    L += _spark_pair("hit%", hit, now_hit, width)
+    L += _spark_pair("night", night, share, width)
+    L += [""]
+    if legend:
+        L.append(f"{gut}cache hit % (latest) and night share of the window")
+    return L
+
+
+def _side_by_side(left, right, gap=3):
+    """Two chart blocks rendered on the same lines, hours on the left and
+    days on the right, sparklines included.
+
+    _chart_block emits the same number of lines whatever the data says, so
+    this is a straight zip -- it pads anyway rather than depend on that
+    holding forever. The left column is padded to its own widest line, so
+    the right chart starts at a fixed column and the two stay aligned
+    however the numbers come out."""
+    n = max(len(left), len(right))
+    left = left + [""] * (n - len(left))
+    right = right + [""] * (n - len(right))
+    w = max((len(l) for l in left), default=0)
+    return [f"{l:<{w}}{' ' * gap}{r}".rstrip() for l, r in zip(left, right)]
+
+
+def _hourly_chart(hours=CHART_HOURS, cols=CHART_COLS, legend=True):
+    # +1 day of slack: a 48 h window that starts mid-day still needs the
+    # calendar day before the one _read_hourly_history's cutoff lands in.
+    rows = _hourly_rows(days=max(2, -(-hours // 24) + 1))
+    return _chart_block(_dense_hours(rows, hours), _hour_tick,
+                        "hour", f"{hours} h", tick_every=_hour_tick_every,
+                        cols=cols, legend=legend)
+
+
+def _daily_chart(days=CHART_DAYS, cols=CHART_COLS, width=2, legend=True):
+    rows = _hourly_rows(days=days + 1)
+    # Two columns per day on its own page, where there is room to spare. One
+    # column per day beside the hourly chart on /stats, where there isn't.
+    return _chart_block(_dense_days(rows, days), _day_tick,
+                        "day", f"{days} d", width=width, cols=cols,
+                        legend=legend)
+
+
+# --- dotted world map ---------------------------------------------------------
+# Land mask precomputed by build_worldmap.py from real country polygons. See
+# that file for why it isn't derived from cities.json.
+WORLDMAP_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                             "worldmap.json")
+# White for land nobody has asked from, warming through yellow and orange to
+# red at the busiest cell. xterm-256, the same palette sky.py's renderer uses,
+# so api.ansi_to_html() converts it for the browser with no extra work.
+MAP_RAMP = (231, 229, 227, 220, 214, 208, 196)
+MAP_DOT = "·"
+_worldmap = None
+
+
+def _load_worldmap():
+    """(rows, width, height, lat_top, lat_bot), or None if the mask is
+    missing. Missing is survivable -- the map is the one part of /stats that
+    needs a generated file, and the page is more useful without it than
+    500-ing over it."""
+    global _worldmap
+    if _worldmap is None:
+        try:
+            with open(WORLDMAP_FILE) as f:
+                d = json.load(f)
+            _worldmap = (d["rows"], d["width"], d["height"],
+                         d["lat_top"], d["lat_bot"])
+        except (OSError, json.JSONDecodeError, KeyError):
+            _worldmap = ()
+    return _worldmap or None
+
+
+def _map_cell(lat, lon, w, h, lat_top, lat_bot):
+    """Grid cell for a position, or None if it falls outside the clipped
+    latitude band -- the mask stops at 83N/56S, and a request from further
+    south than that has nowhere on the map to go."""
+    if not lat_bot <= lat <= lat_top:
+        return None
+    r = int((lat_top - lat) / (lat_top - lat_bot) * h)
+    c = int((lon + 180) / 360 * w)
+    return (min(h - 1, max(0, r)), min(w - 1, max(0, c)))
+
+
+def _map_heat(w, h, lat_top, lat_bot):
+    """{cell: requests}, the 1-degree bins collapsed onto the map grid."""
+    heat = Counter()
+    for key, n in _geo_hits.items():
+        try:
+            lat, lon = (float(v) for v in key.split(","))
+        except ValueError:
+            continue
+        cell = _map_cell(lat, lon, w, h, lat_top, lat_bot)
+        if cell:
+            heat[cell] += n
+    return heat
+
+
+def _world_map():
+    """The land mask with request cells warmed up, as ANSI-coloured rows.
+
+    Colour is on a log scale. Traffic is dominated by wherever the author
+    lives, and on a linear scale that one cell is red and every other cell on
+    Earth is white -- which is true but says nothing."""
+    loaded = _load_worldmap()
+    if not loaded:
+        return []
+    rows, w, h, lat_top, lat_bot = loaded
+    heat = _map_heat(w, h, lat_top, lat_bot)
+    top = max(heat.values()) if heat else 0
+    scale = math.log1p(top) if top else 1
+    out = []
+    for r, row in enumerate(rows):
+        line, pen = [], None
+        for c, ch in enumerate(row):
+            if ch == " ":
+                # Close the colour before a run of ocean so the escape codes
+                # don't outnumber the dots.
+                if pen is not None:
+                    line.append("\033[0m")
+                    pen = None
+                line.append(" ")
+                continue
+            n = heat.get((r, c), 0)
+            i = (0 if not n else
+                 min(len(MAP_RAMP) - 1,
+                     1 + int(math.log1p(n) / scale * (len(MAP_RAMP) - 2))))
+            if i != pen:
+                line.append(f"\033[38;5;{MAP_RAMP[i]}m")
+                pen = i
+            line.append(MAP_DOT)
+        if pen is not None:
+            line.append("\033[0m")
+        out.append("".join(line).rstrip())
+    return out
+
+
+def _map_block():
+    """Title, map, and a legend naming the busiest place, or nothing at all
+    when there is no map file and no traffic to draw on it."""
+    body = _world_map()
+    if not body:
+        return []
+    L = ["WHERE REQUESTS COME FROM", ""] + body + [""]
+    ramp = "".join(f"\033[38;5;{n}m{MAP_DOT}\033[0m" for n in MAP_RAMP)
+    busiest = ""
+    if _places:
+        name, c = _places.most_common(1)[0]
+        busiest = f"   busiest: {name} ({c:,})"
+    L.append(f"quiet {ramp} busy   {len(_geo_hits):,} distinct location(s){busiest}")
+    return L
+
+
 def _referrer_domain(request: Req):
     """Bare domain from the Referer header, or None for direct/CLI traffic.
     Self-referrals (a link from skymap.sh back to skymap.sh) aren't an
@@ -306,6 +733,10 @@ def _tally(r, daytime, hit, mode, status, data, colour=True, referrer=None):
     if not colour:
         _stat["param:plain"] += 1
     _places[r.place.name] += 1
+    # Straight off the resolved position, so a request for "47.37,8.55" lands
+    # in the same bin as one for "Zurich". A string key because this is
+    # persisted as JSON, and JSON object keys are strings.
+    _geo_hits[f"{round(r.place.lat)},{round(r.place.lon)}"] += 1
     if r.find:
         _finds[r.find.strip().title()[:40]] += 1
     if referrer:
@@ -320,6 +751,9 @@ def _tally(r, daytime, hit, mode, status, data, colour=True, referrer=None):
     if len(_referrers) > _TOP_KEEP:
         for k, _v in _referrers.most_common()[_TOP_KEEP:]:
             del _referrers[k]
+    if len(_geo_hits) > _GEO_KEEP:
+        for k, _v in _geo_hits.most_common()[_GEO_KEEP:]:
+            del _geo_hits[k]
 
 
 def stats_text(n=50):
@@ -327,6 +761,22 @@ def stats_text(n=50):
     req = _stat["requests"] or 1
     L = [f"skymap.sh: {req:,} requests over {up/3600:.1f} h "
          f"({req/max(up,1)*60:.1f}/min)", ""]
+    # Charts first. The counters below are a running total with no time axis
+    # of their own, so they can't answer "is it growing" -- which is usually
+    # the first thing anyone opening this page wants to know.
+    # Side by side, hours against days. One column is one hour on the left
+    # and one day on the right -- no bucketing, so `cols` is just the window.
+    gut = f"{'':{CHART_PAD + 2}}"
+    hourly = _hourly_chart(cols=CHART_HOURS, legend=False)
+    hourly.append(f"{gut}(hour by hour: /stats/hourly)")
+    daily = _daily_chart(cols=CHART_DAYS, width=1, legend=False)
+    daily.append(f"{gut}(day by day: /stats/daily)")
+    L += _side_by_side(hourly, daily)
+    L += ["", f"{gut}sparklines: cache hit % (latest) and night share of "
+              f"the window", ""]
+    mapped = _map_block()
+    if mapped:
+        L += mapped + ["", ""]
     L.append(f"cache      {_stat['hit']:,} hit / {_stat['miss']:,} miss "
              f"({100*_stat['hit']/req:.1f}% hit)")
     L.append(f"sky        {_stat['night']:,} night / {_stat['day']:,} day")
@@ -541,20 +991,40 @@ def _referrer_grid(rows):
     return L
 
 
-def stats_hourly_text(days=7):
-    _roll_hour()
-    rows = _read_hourly_history(days=days)
-    if _hour_stat:
-        rows = rows + [dict(hour=_hour_key, requests=_hour_stat["requests"],
-                            hit=_hour_stat["hit"], miss=_hour_stat["miss"],
-                            day=_hour_stat["day"], night=_hour_stat["night"],
-                            top_referrers=_top_hour_referrers(_hour_stat))]
+def _idle_gap(prev_hour, hour):
+    """The table lists only hours the log actually recorded, so two adjacent
+    rows can be a whole night apart. One line naming the hole says "quiet";
+    a silent jump says "no data", and those are different claims.
+
+    Collapsed to a marker rather than one zero row per hour: a week-long
+    window on a quiet site would otherwise be 168 rows, most of them empty."""
+    missing = round((dt.datetime.fromisoformat(hour)
+                     - dt.datetime.fromisoformat(prev_hour)).total_seconds() / 3600) - 1
+    if missing < 1:
+        return None
+    return f"{'· · ·':>17}   {missing:,} hour(s) with no requests"
+
+
+def stats_hourly_text(days=7, hours=None):
+    rows = _hourly_rows(days)
     if not rows:
         return "skymap.sh: hourly stats\n\nno data yet (first hour still in progress)\n"
-    L = [f"skymap.sh: hourly stats, last {days}d ({len(rows)} hour(s) on record)", "",
+    # The chart spans the window the caller asked for, zero-filled, so it
+    # covers idle hours the table below can only mark as gaps.
+    hours = hours or min(days * 24, HOURLY_MAX_QUERY_DAYS * 24)
+    L = [f"skymap.sh: hourly stats, last {days}d ({len(rows)} hour(s) on record)", ""]
+    L += _chart_block(_dense_hours(rows, hours), _hour_tick, "hour", f"{hours} h",
+                      tick_every=_hour_tick_every)
+    L += ["",
         f"{'hour (UTC)':17} {'requests':>9} {'hit%':>6} {'day':>6} {'night':>6}  "
         f"{'top referrer':24}"]
+    prev = None
     for row in rows:
+        if prev:
+            gap = _idle_gap(prev, row["hour"])
+            if gap:
+                L.append(gap)
+        prev = row["hour"]
         req = row["requests"] or 1
         hitpct = 100 * row["hit"] / req
         current = "  (in progress)" if row["hour"] == _hour_key and row is rows[-1] else ""
@@ -565,15 +1035,42 @@ def stats_hourly_text(days=7):
     return "\n".join(L) + "\n"
 
 
+def stats_daily_text(days=CHART_DAYS):
+    rows = _hourly_rows(days + 1)
+    if not rows:
+        return "skymap.sh: daily stats\n\nno data yet (first hour still in progress)\n"
+    entries = _dense_days(rows, days)
+    L = [f"skymap.sh: daily stats, last {days}d", ""]
+    L += _chart_block(entries, _day_tick, "day", f"{days} d", width=2)
+    L += ["",
+        f"{'day (UTC)':12} {'requests':>9} {'hit%':>6} {'day':>7} {'night':>7} "
+        f"{'hours':>6}"]
+    for e in entries:
+        # Every day in the window gets a row, including the empty ones. A
+        # daily table is 30 lines at most, so unlike the hourly one there is
+        # room to just show the zeroes rather than collapse them. A day with
+        # no requests gets `-` for hit%, not 0.0% -- there is no ratio to
+        # take, same rule the sparklines use.
+        hit = (f"{100 * e['hit'] / e['requests']:.1f}%" if e["requests"] else "-")
+        L.append(f"{e['date']:12} {e['requests']:>9,} "
+                 f"{hit:>6} {e['day']:>7,} {e['night']:>7,} "
+                 f"{e['hours']:>6,}")
+    L.append("")
+    L.append("`hours` is how many hours of that day the log recorded at all -- "
+             "fewer than 24")
+    L.append("means the server was idle or down for the rest, not that traffic "
+             "was zero.")
+    return "\n".join(L) + "\n"
+
+
+def stats_daily_json(days=CHART_DAYS):
+    return dict(days=_dense_days(_hourly_rows(days + 1), days))
+
+
 def stats_hourly_json(days=7):
-    _roll_hour()
-    rows = _read_hourly_history(days=days)
-    if _hour_stat:
-        rows = rows + [dict(hour=_hour_key, requests=_hour_stat["requests"],
-                            hit=_hour_stat["hit"], miss=_hour_stat["miss"],
-                            day=_hour_stat["day"], night=_hour_stat["night"],
-                            top_referrers=_top_hour_referrers(_hour_stat),
-                            in_progress=True)]
+    rows = _hourly_rows(days)
+    if rows and rows[-1]["hour"] == _hour_key:
+        rows[-1] = dict(rows[-1], in_progress=True)
     return dict(hours=rows)
 
 # --- per-IP rate limit -------------------------------------------------------
@@ -1017,7 +1514,7 @@ def _respond(request: Req, place: str | None):
 @app.middleware("http")
 async def ratelimit(request: Req, call_next):
     if request.url.path in ("/healthz", "/robots.txt", "/stats", "/stats/sphere",
-                            "/stats/hourly"):
+                            "/stats/hourly", "/stats/daily"):
         return await call_next(request)
     ok, retry = take_token(client_ip(request))
     if not ok:
@@ -1168,13 +1665,18 @@ def stats(request: Req):
     if request.query_params.get("format") == "json":
         return JSONResponse(stats_json(), headers={"Cache-Control": "no-store"})
     headers = {"Cache-Control": "no-store"}
-    mode, _colour = _wants(request)
+    mode, colour = _wants(request)
+    text = stats_text()
     if mode == "html":
+        # ansi_to_html, not html.escape: the world map is the one coloured
+        # thing on this page, and escaping would print its escape codes.
+        # ansi_to_html escapes everything else on the way through.
         body = api.PAGE.format(title="skymap.sh: stats", header=api.header_html("/stats"),
-                               explore=api.EXPLORE, body=html.escape(stats_text()),
+                               explore=api.EXPLORE, body=api.ansi_to_html(text),
                                extra="", animate_btn="", quadrant_btn="", sphere_btn="")
         return HTMLResponse(body, headers=headers)
-    return PlainTextResponse(stats_text(), headers=headers)
+    return PlainTextResponse(text if colour else api.strip_ansi(text),
+                             headers=headers)
 
 
 @app.get("/stats/sphere", response_class=PlainTextResponse)
@@ -1190,6 +1692,27 @@ def stats_sphere(request: Req):
                                extra="", animate_btn="", quadrant_btn="", sphere_btn="")
         return HTMLResponse(body, headers=headers)
     return PlainTextResponse(stats_sphere_text(), headers=headers)
+
+
+@app.get("/stats/daily", response_class=PlainTextResponse)
+def stats_daily(request: Req):
+    _stat["page:stats.daily"] += 1
+    q = request.query_params
+    try:
+        days = max(1, min(HOURLY_MAX_QUERY_DAYS, int(q.get("days", CHART_DAYS))))
+    except ValueError:
+        days = CHART_DAYS
+    if q.get("format") == "json":
+        return JSONResponse(stats_daily_json(days), headers={"Cache-Control": "no-store"})
+    headers = {"Cache-Control": "no-store"}
+    mode, _colour = _wants(request)
+    if mode == "html":
+        body = api.PAGE.format(title="skymap.sh: daily stats",
+                               header=api.header_html("/stats/daily"),
+                               explore=api.EXPLORE, body=html.escape(stats_daily_text(days)),
+                               extra="", animate_btn="", quadrant_btn="", sphere_btn="")
+        return HTMLResponse(body, headers=headers)
+    return PlainTextResponse(stats_daily_text(days), headers=headers)
 
 
 @app.get("/stats/hourly", response_class=PlainTextResponse)

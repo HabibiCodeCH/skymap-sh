@@ -288,8 +288,12 @@ at all.
 | `/legend` | every character and colour a chart can draw, explained |
 | `/demo` | six-plus real renders, side by side |
 | `/healthz` | `ok stars=2887 asterisms=28 deepsky=739 tle=… cache=… hitrate=…` |
-| `/stats` | what people ask for: top cities, top finds, top referrers, views, cache hit rate |
-| `/stats?format=json` | the same, structured |
+| `/stats` | 48-hour and 30-day traffic charts, then what people ask for: top cities, top finds, top referrers, views, cache hit rate |
+| `/stats?format=json` | the same counters, structured (the charts and map are drawing, not data) |
+| `/stats?plain` | same page with the map's colour stripped |
+| `/stats/hourly` | hour-by-hour chart and table; `?days=` (1–3650, default 7) |
+| `/stats/daily` | day-by-day chart and table; `?days=` (1–3650, default 30) |
+| `/stats/sphere` | sphere views by place and OS |
 | `/{place}/sphere` | mobile-only 3D sky sphere, look around by tilting the phone |
 | `/{place}/events` | what's coming up over that place, next 90 days |
 | `/{place}/events.ics` | iCalendar feed of the same |

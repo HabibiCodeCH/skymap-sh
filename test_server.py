@@ -407,6 +407,406 @@ class HourlyReferrers(unittest.TestCase):
         self.assertEqual(data["hours"][-1]["top_referrers"], {})
 
 
+class PlaintextCharts(unittest.TestCase):
+    """The counters on /stats are a running total with no time axis, so they
+    cannot answer "is it growing". These charts add one, drawn out of the
+    hourly log -- which has holes in it, and that is the whole difficulty."""
+
+    def _hours(self, spec, end):
+        """spec: {hours-ago: requests}. Everything else is absent from the
+        log entirely, the way a real idle hour is."""
+        return [dict(hour=(end - dt.timedelta(hours=ago)).strftime("%Y-%m-%dT%H:00"),
+                     requests=n, hit=n // 2, miss=n - n // 2, day=0, night=n)
+                for ago, n in sorted(spec.items(), reverse=True)]
+
+    def test_missing_hours_are_zero_filled_not_skipped(self):
+        # _flush_hour writes nothing for an hour with no traffic and
+        # _roll_hour only fires on a request, so an idle stretch leaves no
+        # line at all. Read straight off the log the x-axis would be "rows
+        # in the file", and two neighbouring columns could be a night apart.
+        end = dt.datetime(2026, 8, 3, 12, 0)
+        rows = self._hours({5: 10, 1: 4}, end)
+        dense = server._dense_hours(rows, 6, end=end)
+        self.assertEqual([e["requests"] for e in dense], [10, 0, 0, 0, 4, 0])
+        self.assertEqual([e["recorded"] for e in dense],
+                         [True, False, False, False, True, False])
+        # The axis spans elapsed time, so its length is the window, not the
+        # number of rows that happened to be in the log.
+        self.assertEqual(len(dense), 6)
+
+    def test_a_zero_hour_draws_blank_never_a_stub(self):
+        # An hour with no requests and an hour with one request must not
+        # look the same, which a minimum-one-pixel bar would do to them.
+        lines = server._bar_chart([0, 1, 0, 8], lambda i: "", tick=1)
+        bottom = lines[server.CHART_ROWS - 1]
+        body = bottom[server.CHART_PAD + 2:]
+        self.assertEqual(body[0], " ")
+        self.assertNotEqual(body[1], " ")
+        self.assertEqual(body[2], " ")
+        self.assertNotEqual(body[3], " ")
+
+    def test_chart_of_an_entirely_idle_window_says_so(self):
+        end = dt.datetime(2026, 8, 3, 12, 0)
+        dense = server._dense_hours([], 6, end=end)
+        out = "\n".join(server._chart_block(dense, server._hour_tick, "hour", "6 h"))
+        self.assertIn("no requests recorded in this window", out)
+        self.assertIn("6 idle hour(s), shown blank", out)
+
+    def test_the_block_is_the_same_height_whatever_the_data(self):
+        # A page that jumps by eight lines depending on how quiet the window
+        # was is worse than one with an empty chart in it, and the two charts
+        # on /stats have to sit at the same height as each other.
+        end = dt.datetime(2026, 8, 3, 12, 0)
+        empty = server._dense_hours([], 12, end=end)
+        busy = server._dense_hours(self._hours({i: i * 3 for i in range(12)}, end),
+                                   12, end=end)
+        one = server._dense_hours(self._hours({4: 1}, end), 12, end=end)
+        heights = {len(server._chart_block(d, server._hour_tick, "hour", "12 h"))
+                   for d in (empty, busy, one)}
+        self.assertEqual(len(heights), 1)
+        # And the chart itself is CHART_ROWS tall plus an axis, not collapsed.
+        self.assertEqual(sum(1 for l in server._bar_chart([0] * 6, lambda i: "")
+                             if l.endswith("┤" + " " * 6)), server.CHART_ROWS)
+
+    def test_idle_hours_are_counted_in_the_caption(self):
+        end = dt.datetime(2026, 8, 3, 12, 0)
+        dense = server._dense_hours(self._hours({5: 10, 1: 4}, end), 6, end=end)
+        out = "\n".join(server._chart_block(dense, server._hour_tick, "hour", "6 h"))
+        self.assertIn("4 idle hour(s), shown blank", out)
+
+    def test_duplicate_log_lines_for_one_hour_are_summed(self):
+        # A restart flushes the partial hour it was in, then the next
+        # process flushes the rest of that same hour when it rolls. Keying a
+        # plain dict on the hour threw the first half away.
+        end = dt.datetime(2026, 8, 3, 12, 0)
+        hour = (end - dt.timedelta(hours=1)).strftime("%Y-%m-%dT%H:00")
+        rows = [dict(hour=hour, requests=6, hit=2, miss=4, day=1, night=5),
+                dict(hour=hour, requests=4, hit=3, miss=1, day=0, night=4)]
+        dense = server._dense_hours(rows, 2, end=end)
+        self.assertEqual(dense[0]["requests"], 10)
+        self.assertEqual(dense[0]["hit"], 5)
+
+    def test_days_roll_up_out_of_the_hourly_log(self):
+        # There is no daily log. The hourly file is never trimmed, so
+        # grouping it by date is the entire implementation.
+        rows = [dict(hour="2026-08-02T09:00", requests=4, hit=1, miss=3, day=4, night=0),
+                dict(hour="2026-08-02T22:00", requests=6, hit=5, miss=1, day=0, night=6),
+                dict(hour="2026-08-03T01:00", requests=2, hit=0, miss=2, day=0, night=2)]
+        days = server._dense_days(rows, 3, end=dt.date(2026, 8, 3))
+        self.assertEqual([e["date"] for e in days],
+                         ["2026-08-01", "2026-08-02", "2026-08-03"])
+        self.assertEqual([e["requests"] for e in days], [0, 10, 2])
+        # `hours` is hours the log recorded, not hours that had traffic.
+        self.assertEqual([e["hours"] for e in days], [0, 2, 1])
+        self.assertEqual([e["recorded"] for e in days], [False, True, True])
+
+    def test_long_windows_bucket_instead_of_overflowing_the_width(self):
+        # 720 hours cannot be 720 columns. Buckets sum rather than average,
+        # so the y-axis stays a real number you can check against the total.
+        end = dt.datetime(2026, 8, 3, 12, 0)
+        dense = server._dense_hours(self._hours({i: 1 for i in range(720)}, end),
+                                    720, end=end)
+        groups, per = server._chunks(dense, server.CHART_COLS)
+        self.assertLessEqual(len(groups), server.CHART_COLS)
+        self.assertEqual(sum(sum(e["requests"] for e in g) for g in groups), 720)
+        self.assertGreater(per, 1)
+        for line in server._chart_block(dense, server._hour_tick, "hour", "720 h",
+                                        tick_every=server._hour_tick_every):
+            self.assertLessEqual(len(line), 80)
+
+    def test_sparkline_blanks_hours_with_no_ratio_to_take(self):
+        # An hour with no requests has no hit rate. That is not 0%. Every row
+        # keeps its full width so the percentage after it stays in column.
+        self.assertEqual(server._spark_rows([None, None]), ["  ", "  "])
+        rows = server._spark_rows([10.0, None, 90.0])
+        for row in rows:
+            self.assertEqual(row[1], " ")
+            self.assertEqual(len(row), 3)
+        for row in server._spark_rows([10.0, None, 90.0], width=2):
+            self.assertEqual(len(row), 6)
+
+    def test_sparkline_is_two_rows_tall(self):
+        self.assertEqual(server.SPARK_ROWS, 2)
+        self.assertEqual(len(server._spark_rows([50.0])), server.SPARK_ROWS)
+        # A labelled pair is that many lines, label and number on the last.
+        pair = server._spark_pair("hit%", [50.0, 90.0], 90.0, 1)
+        self.assertEqual(len(pair), server.SPARK_ROWS)
+        self.assertNotIn("hit%", pair[0])
+        self.assertIn("hit%", pair[-1])
+        self.assertTrue(pair[-1].endswith("90%"))
+
+    def test_sparkline_is_scaled_to_100_percent_not_to_itself(self):
+        # These are percentages, so height has to mean the value. Scaling to
+        # the series' own range made a flat 88-91% hit rate look like a
+        # mountain range and made two rows at different levels look alike.
+        top, bottom = server._spark_rows([0.0, 100.0])
+        self.assertEqual(bottom[1], "█")          # 100% fills both rows
+        self.assertEqual(top[1], "█")
+        self.assertEqual(top[0], " ")             # 0% reaches neither
+        # 50% is exactly half height: full bottom row, empty top row.
+        top, bottom = server._spark_rows([50.0])
+        self.assertEqual(bottom, "█")
+        self.assertEqual(top, " ")
+        # Two low values stay low instead of being stretched to fill.
+        top, bottom = server._spark_rows([10.0, 20.0])
+        self.assertEqual(top, "  ")
+        self.assertNotIn("█", bottom)
+        # A real 0% is the shortest bar, still distinct from the blank None.
+        self.assertEqual(server._spark_rows([0.0, None])[-1],
+                         server._BLOCKS[1] + " ")
+
+    def test_ratio_is_none_where_the_denominator_is_zero(self):
+        groups = [[dict(requests=0, hit=0)], [dict(requests=4, hit=1)]]
+        self.assertEqual(server._ratio(groups, "hit"), [None, 25.0])
+
+    def test_hourly_table_marks_the_gap_instead_of_jumping_silently(self):
+        # A silent jump between two rows reads as "no data"; a marker reads
+        # as "quiet". Different claims.
+        gap = server._idle_gap("2026-08-02T09:00", "2026-08-02T15:00")
+        self.assertIn("5 hour(s) with no requests", gap)
+        self.assertIsNone(server._idle_gap("2026-08-02T09:00", "2026-08-02T10:00"))
+        # Duplicate lines for the same hour are not a gap.
+        self.assertIsNone(server._idle_gap("2026-08-02T09:00", "2026-08-02T09:00"))
+
+    def test_stats_page_carries_both_charts(self):
+        text = server.stats_text()
+        self.assertIn(f"LAST {server.CHART_HOURS} H", text)
+        self.assertIn(f"LAST {server.CHART_DAYS} D", text)
+        self.assertIn("/stats/daily", text)
+        self.assertIn("/stats/hourly", text)
+
+    def test_the_two_charts_sit_side_by_side_on_stats(self):
+        text = server.stats_text()
+        # Same line, hours left of days -- not stacked.
+        title = next(l for l in text.splitlines() if "LAST 48 H" in l)
+        self.assertIn("LAST 30 D", title)
+        self.assertLess(title.index("LAST 48 H"), title.index("LAST 30 D"))
+        # Both charts' sparklines land on the same two lines too.
+        sparks = [l for l in text.splitlines() if l.lstrip().startswith("hit%")]
+        self.assertEqual(len(sparks), 1)
+        self.assertEqual(sparks[0].count("hit%"), 2)
+
+    def test_side_by_side_puts_the_right_block_at_a_fixed_column(self):
+        # Padded to the left block's widest line, so the right chart starts
+        # in the same column on every row however the numbers come out.
+        out = server._side_by_side(["a", "wide left line", "b"],
+                                   ["one", "two", "three"])
+        starts = {l.index(r) for l, r in zip(out, ("one", "two", "three"))}
+        self.assertEqual(len(starts), 1)
+
+    def test_side_by_side_pads_a_shorter_block(self):
+        out = server._side_by_side(["a", "b", "c"], ["x"])
+        self.assertEqual(len(out), 3)
+        self.assertTrue(out[0].endswith("x"))
+
+    def test_one_column_is_one_hour_and_one_day_on_stats(self):
+        # No bucketing on /stats: the window is the column count.
+        hourly = server._hourly_chart(cols=server.CHART_HOURS, legend=False)
+        daily = server._daily_chart(cols=server.CHART_DAYS, width=1, legend=False)
+        self.assertIn(f"per hour · last {server.CHART_HOURS} h".upper(), hourly[0])
+        self.assertIn(f"per day · last {server.CHART_DAYS} d".upper(), daily[0])
+        # Axis line is the gutter plus one character per hour / per day.
+        axis = next(l for l in hourly if l.lstrip().startswith("0 ┼"))
+        self.assertEqual(len(axis) - (server.CHART_PAD + 2), server.CHART_HOURS)
+        axis = next(l for l in daily if l.lstrip().startswith("0 ┼"))
+        self.assertEqual(len(axis) - (server.CHART_PAD + 2), server.CHART_DAYS)
+
+    def test_daily_page_shows_every_day_including_the_empty_ones(self):
+        text = server.stats_daily_text(days=5)
+        self.assertIn("day (UTC)", text)
+        today = dt.datetime.utcnow().date()
+        for i in range(5):
+            self.assertIn((today - dt.timedelta(days=i)).isoformat(), text)
+
+    def test_daily_page_dashes_hit_rate_on_a_day_with_no_requests(self):
+        # A day with no requests has no hit rate. Printing 0.0% claims every
+        # request that day missed the cache, when there were none.
+        rows = [dict(hour="2026-08-03T09:00", requests=4, hit=4, miss=0,
+                     day=4, night=0)]
+        entries = server._dense_days(rows, 2, end=dt.date(2026, 8, 3))
+        blank, busy = entries
+        self.assertEqual(blank["requests"], 0)
+        self.assertEqual(busy["requests"], 4)
+        # Rebuilt the way stats_daily_text formats it, so the assertion is
+        # about the rule rather than about where the column happens to sit.
+        self.assertEqual([("-" if not e["requests"]
+                           else f"{100 * e['hit'] / e['requests']:.1f}%")
+                          for e in entries], ["-", "100.0%"])
+
+    def test_daily_page_with_an_empty_log_says_so(self):
+        orig_log = server.HOURLY_LOG
+        self.addCleanup(setattr, server, "HOURLY_LOG", orig_log)
+        server.HOURLY_LOG = os.path.join(tempfile.mkdtemp(), "empty.jsonl")
+        orig = server._hour_stat.copy()
+        self.addCleanup(lambda: (server._hour_stat.clear(),
+                                 server._hour_stat.update(orig)))
+        server._hour_stat.clear()
+        self.assertIn("no data yet", server.stats_daily_text(days=3))
+
+
+class WorldMap(unittest.TestCase):
+    """The dotted map on /stats. The land mask is precomputed by
+    build_worldmap.py from real country polygons; these check the projection,
+    the heat ramp and the degradations."""
+
+    def setUp(self):
+        self._orig = server._geo_hits.copy()
+        self.addCleanup(self._restore)
+        server._geo_hits.clear()
+
+    def _restore(self):
+        server._geo_hits.clear()
+        server._geo_hits.update(self._orig)
+
+    def test_mask_matches_its_declared_size(self):
+        rows, w, h, top, bot = server._load_worldmap()
+        self.assertEqual(len(rows), h)
+        self.assertEqual({len(r) for r in rows}, {w})
+        self.assertGreater(top, bot)
+        # Some land, and not all land.
+        dots = sum(r.count("#") for r in rows)
+        self.assertGreater(dots, 1000)
+        self.assertLess(dots, w * h)
+
+    def test_known_places_land_in_the_right_cell(self):
+        _rows, w, h, top, bot = server._load_worldmap()
+        zurich = server._map_cell(47.37, 8.55, w, h, top, bot)
+        sydney = server._map_cell(-33.87, 151.21, w, h, top, bot)
+        lima = server._map_cell(-12.05, -77.04, w, h, top, bot)
+        # Sydney is south and east of Zurich; Lima is south and west.
+        self.assertGreater(sydney[0], zurich[0])
+        self.assertGreater(sydney[1], zurich[1])
+        self.assertGreater(lima[0], zurich[0])
+        self.assertLess(lima[1], zurich[1])
+        # Greenwich sits on the horizontal midline of the grid.
+        self.assertEqual(server._map_cell(0.0, 0.0, w, h, top, bot)[1], w // 2)
+
+    def test_latitudes_outside_the_clipped_band_are_dropped(self):
+        _rows, w, h, top, bot = server._load_worldmap()
+        # The mask stops at 83N/56S. Antarctica has nowhere to go, and
+        # silently clamping it to the bottom row would invent a location.
+        self.assertIsNone(server._map_cell(-89.0, 0.0, w, h, top, bot))
+        self.assertIsNone(server._map_cell(89.0, 0.0, w, h, top, bot))
+        self.assertIsNotNone(server._map_cell(0.0, 0.0, w, h, top, bot))
+
+    def test_coordinate_requests_bin_like_city_ones(self):
+        # A request for "47.37,8.55" has no city name to key on, so the map
+        # keys on the resolved position instead.
+        _rows, w, h, top, bot = server._load_worldmap()
+        server._geo_hits.update({"47,9": 5})
+        heat = server._map_heat(w, h, top, bot)
+        self.assertEqual(heat[server._map_cell(47.0, 9.0, w, h, top, bot)], 5)
+
+    def test_malformed_geo_keys_are_skipped_not_fatal(self):
+        _rows, w, h, top, bot = server._load_worldmap()
+        server._geo_hits.update({"47,9": 3, "rubbish": 9, "": 1, "1,2,3": 4})
+        heat = server._map_heat(w, h, top, bot)
+        self.assertEqual(sum(heat.values()), 3)
+
+    def test_busier_places_get_a_warmer_colour(self):
+        server._geo_hits.update({"47,9": 5000, "-34,151": 5})
+        text = "\n".join(server._world_map())
+        codes = [int(m) for m in re.findall(r"\033\[38;5;(\d+)m", text)]
+        self.assertIn(server.MAP_RAMP[0], codes)      # untouched land is white
+        self.assertIn(server.MAP_RAMP[-1], codes)     # the busiest cell is red
+        # Zurich outranks Sydney, so it must sit further along the ramp.
+        _rows, w, h, top, bot = server._load_worldmap()
+        heat = server._map_heat(w, h, top, bot)
+        zh = heat[server._map_cell(47.0, 9.0, w, h, top, bot)]
+        syd = heat[server._map_cell(-34.0, 151.0, w, h, top, bot)]
+        self.assertGreater(zh, syd)
+
+    def test_ocean_stays_blank(self):
+        server._geo_hits.update({"47,9": 10})
+        plain = [server.api.strip_ansi(r) for r in server._world_map()]
+        # Mid-Pacific, far from any coast, on the row through the equator.
+        _r, w, h, top, bot = server._load_worldmap()
+        r, c = server._map_cell(0.0, -150.0, w, h, top, bot)
+        line = plain[r]
+        self.assertTrue(len(line) <= c or line[c] == " ")
+
+    def test_map_reads_fine_with_the_colour_stripped(self):
+        server._geo_hits.update({"47,9": 10})
+        plain = server.api.strip_ansi("\n".join(server._world_map()))
+        self.assertNotIn("\033", plain)
+        self.assertIn(server.MAP_DOT, plain)
+
+    def test_no_mask_file_means_no_map_rather_than_a_500(self):
+        orig = server.WORLDMAP_FILE
+        cached = server._worldmap
+        self.addCleanup(setattr, server, "WORLDMAP_FILE", orig)
+        self.addCleanup(setattr, server, "_worldmap", cached)
+        server.WORLDMAP_FILE = os.path.join(tempfile.mkdtemp(), "nope.json")
+        server._worldmap = None
+        self.assertIsNone(server._load_worldmap())
+        self.assertEqual(server._world_map(), [])
+        self.assertEqual(server._map_block(), [])
+        # And the page still renders.
+        self.assertIn("skymap.sh:", server.stats_text())
+
+    def test_geo_counter_survives_a_restart(self):
+        orig = server.STATS_STATE_FILE
+        self.addCleanup(setattr, server, "STATS_STATE_FILE", orig)
+        server.STATS_STATE_FILE = os.path.join(tempfile.mkdtemp(), "state.json")
+        server._geo_hits.update({"47,9": 7, "-34,151": 2})
+        server._save_stats_state()
+        server._geo_hits.clear()
+        server._load_stats_state()
+        self.assertEqual(server._geo_hits["47,9"], 7)
+        self.assertEqual(server._geo_hits["-34,151"], 2)
+
+    def test_the_map_is_on_the_stats_page(self):
+        server._geo_hits.update({"47,9": 4})
+        text = server.stats_text()
+        self.assertIn("WHERE REQUESTS COME FROM", text)
+        self.assertIn("distinct location(s)", text)
+
+
+class StatsDailyRoute(unittest.TestCase):
+    """/stats/daily, the drill-down behind the 30-day chart on /stats."""
+
+    @classmethod
+    def setUpClass(cls):
+        client_cm = TestClient(server.app)
+        cls.client = client_cm.__enter__()
+        cls.addClassCleanup(client_cm.__exit__, None, None, None)
+
+    def test_plain_text_by_default(self):
+        resp = self.client.get("/stats/daily", headers=TERMINAL)
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn("text/plain", resp.headers["content-type"])
+        self.assertIn("daily stats", resp.text)
+
+    def test_html_for_a_browser(self):
+        resp = self.client.get("/stats/daily", headers=BROWSER)
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn("text/html", resp.headers["content-type"])
+        self.assertIn("skymap.sh: daily stats", resp.text)
+
+    def test_json_view(self):
+        resp = self.client.get("/stats/daily?format=json&days=4")
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(len(resp.json()["days"]), 4)
+
+    def test_days_is_clamped_and_survives_junk(self):
+        self.assertEqual(len(self.client.get("/stats/daily?format=json&days=0")
+                             .json()["days"]), 1)
+        self.assertEqual(len(self.client.get("/stats/daily?format=json&days=abc")
+                             .json()["days"]), server.CHART_DAYS)
+        self.assertLessEqual(len(self.client.get("/stats/daily?format=json&days=99999")
+                                 .json()["days"]), server.HOURLY_MAX_QUERY_DAYS)
+
+    def test_the_route_counts_itself_on_stats(self):
+        before = server._stat["page:stats.daily"]
+        self.client.get("/stats/daily", headers=TERMINAL)
+        self.assertEqual(server._stat["page:stats.daily"], before + 1)
+
+    def test_not_cached_and_not_rate_limited(self):
+        resp = self.client.get("/stats/daily", headers=TERMINAL)
+        self.assertEqual(resp.headers["cache-control"], "no-store")
+        self.assertNotIn("x-ratelimit-limit", resp.headers)
+
+
 class StatsPersistence(unittest.TestCase):
     """_stat/_places/_finds are otherwise purely in-memory -- a restart
     (deploy, crash, systemd bounce) would silently zero them. This checks
