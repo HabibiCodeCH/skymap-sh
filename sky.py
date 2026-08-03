@@ -847,7 +847,7 @@ def fists(deg):
     return f"about {'one' if n == 1 else n} fist{'s' if n != 1 else ''} up"
 
 
-def find_text(t, visible, lat):
+def find_text(t, visible, lat, wrap_width=76):
     L = [f"{t['name']}: {t['alt']:.0f}\u00b0 above the horizon in the {compass(t['az'])} "
          f"(bearing {t['az']:.0f}\u00b0)."]
     L.append(f"Face {compass(t['az'])} and look {fists(t['alt'])} \u2014 a closed fist at "
@@ -882,7 +882,7 @@ def find_text(t, visible, lat):
     import textwrap
     out = []
     for p in [x for x in L if x]:
-        out.extend(textwrap.wrap(p, 76))
+        out.extend(textwrap.wrap(p, wrap_width))
     return "\n".join(out)
 
 

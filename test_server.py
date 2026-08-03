@@ -1753,6 +1753,20 @@ class FindFieldWiring(unittest.TestCase):
         self.assertIn("findbar.classList.add('expanded')", f_branch)
         self.assertIn("find.focus()", f_branch)
 
+    def test_escape_in_find_collapses_the_field_and_blurs_in_one_press(self):
+        # Used to only close the dropdown (or fall through to the global
+        # handler's blur), leaving .expanded on below findbar-collapse-
+        # width -- the box stayed visibly open with no obvious way out.
+        resp = self.client.get("/Zurich", headers=BROWSER)
+        # Two IIFEs handle 'Escape' -- the global keyboard-shortcuts one
+        # (drawer priority) comes first, the find field's own comes last
+        # (see its "Deliberately after the keyboard-shortcuts IIFE" note),
+        # so this is the one that matters here.
+        escape_branch = resp.text.rsplit("e.key==='Escape'){", 1)[1].split("}}", 1)[0]
+        self.assertIn("closeDropdown()", escape_branch)
+        self.assertIn("findbar.classList.remove('expanded')", escape_branch)
+        self.assertIn("findInput.blur()", escape_branch)
+
 
 class GhostCompletionWiring(unittest.TestCase):
     """The client JS that drives ghost completion is present on every page

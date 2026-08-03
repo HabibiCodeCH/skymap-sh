@@ -391,6 +391,19 @@ class SidePanelLayout(unittest.TestCase):
         )
         self.assertTrue(prose_stacked)  # sanity: default path still renders
 
+    def test_find_guide_also_wraps_to_the_panel_width_not_a_fixed_76(self):
+        # find_text() used to ignore panel entirely, wrapping its guide
+        # sentences at a fixed 76 columns even once the chart itself (see
+        # _compose_find's side_panel=r.panel) had the full effective width.
+        r = api.Request(place="Zurich", find="Venus",
+                        when=dt.datetime(2026, 7, 30, 21, 10), panel=True)
+        text = api.strip_ansi(api.compose(r).text)
+        self.assertIn(
+            "Face WSW and look about one fist up — a closed fist at "
+            "arm's length is about 10°.",
+            text,
+        )
+
 
 class StripFooterLine(unittest.TestCase):
     """strip_footer_line removes _footer's "Follow @habibicode..." line from

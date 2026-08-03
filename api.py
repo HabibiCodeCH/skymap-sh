@@ -642,7 +642,12 @@ def _compose_find(r):
     art, st = render_linear(shown_utc, p.lat, p.lon, color=c, show_lines=r.lines,
                             tle=r.tle, target=tgt, side_panel=r.panel, **extra)
     shown_local = shown_utc + dt.timedelta(hours=p.offset(shown_utc))
-    guide = find_text(tgt, st["visible"], p.lat)
+    # Same wrap_width choice sky_read() makes for the ordinary view's prose
+    # -- the guide text used to be stuck at a fixed 76 columns even once
+    # ?panel=1 gave the chart itself the full effective width, wrapping
+    # mid-sentence well short of the space actually available.
+    guide = find_text(tgt, st["visible"], p.lat,
+                      wrap_width=_effective_width(r) if r.panel else 76)
 
     where = f"{int(sp)}° window" if zoomed else "full panorama"
     head_line = paint(f"  {p.name}   {shown_local:%d %b %Y %H:%M}   finding "
@@ -2162,7 +2167,7 @@ KEYBOARD (in a browser, on a chart page)
   p/tab  focus the place search        a   toggle animate
   f      focus the find field          g   share as a GIF
   m      jump to my location           d   toggle quadrant grid + dso
-  esc    close the drawer, or a field  z   zoom: pick a quadrant cell with
+  esc    cancel/exit find mode, drawer z   zoom: pick a quadrant cell with
                                             arrow keys, enter to crop to it
 
 Stars: Yale Bright Star Catalogue. Planets: JPL approximate elements.
@@ -3633,12 +3638,17 @@ function skymapRenderGif(btn){{
       // No highlighted suggestion -- let the #explore form's own submit
       // handle whatever's literally typed (resolve_target does its own
       // case-insensitive matching server-side).
-    }}else if(e.key==='Escape'&&items.length){{
-      // Stops here rather than bubbling to the global Escape handler,
-      // which would blur the field entirely -- first Escape just closes
-      // the dropdown, matching the drawer's own priority-of-Escape order.
+    }}else if(e.key==='Escape'){{
+      // One press, fully out -- closes the dropdown, collapses the field
+      // back to icon-only below findbar-collapse-width (letting the global
+      // handler blur it instead used to leave .expanded on: the box stayed
+      // visibly open, focus gone, with no obvious way to close it short of
+      // clicking elsewhere), and blurs. stopPropagation so the global
+      // handler doesn't also try to act on this same press.
       e.stopPropagation();
       closeDropdown();
+      if(findbar)findbar.classList.remove('expanded');
+      findInput.blur();
     }}
   }});
   // Delayed so a dropdown-option mousedown (which calls preventDefault, but
