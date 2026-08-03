@@ -338,6 +338,76 @@ def test_curl_gets_no_html(client):
     assert "<a href" not in body
 
 
+# ---------------------------------------------------------------- card payload
+def test_card_is_none_most_nights():
+    """Same bar as the teaser: a card that is always there stops meaning
+    anything."""
+    seen = sum(1 for d in range(0, 360, 5)
+               if api.events_card(_req(when=dt.datetime(2026, 1, 1)
+                                       + dt.timedelta(days=d, hours=23))))
+    assert 0 < seen < 72, seen
+
+
+def test_card_shape():
+    c = api.events_card(_req())
+    assert c["id"] == "shower-perseids-20260813"
+    assert c["kind"] == "meteor_shower"
+    assert c["eyebrow"] == "tomorrow night"
+    assert c["headline"] == "Perseids peak"
+    assert "Perseids" in c["body"] and not c["body"].startswith("Coming up:")
+    assert c["urgency"] in ("tonight", "soon", "later")
+    assert {d["label"] for d in c["detail"]} >= {"best", "where", "rate"}
+    assert c["cta"]["url"].startswith("/Zurich?t=")
+    assert c["more"]["url"] == "/Zurich/events"
+
+
+def test_card_urgency_tightens_as_it_approaches():
+    far = api.events_card(_req(when=dt.datetime(2026, 8, 9, 23, 0)))
+    near = api.events_card(_req(when=dt.datetime(2026, 8, 12, 23, 0)))
+    assert near["days_away"] < far["days_away"]
+    assert near["urgency"] == "tonight"
+
+
+def test_card_id_matches_the_ics_uid():
+    """So a dismissal keyed on it survives, and lines up with the feeds."""
+    c = api.events_card(_req())
+    assert f"UID:{c['id']}@skymap.sh" in api.events_ics(_req(), days=30)
+
+
+def test_card_is_json_serialisable_everywhere_it_is_served():
+    import json
+    json.dumps(api._compose_events(_req(), days=30).data)
+    json.dumps(api.compose(_req()).data)
+    json.dumps(api.compose(_req(when=dt.datetime(2026, 8, 12, 14, 0))).data)
+
+
+def test_card_served_on_both_payloads(client):
+    j = client.get("/Zurich/events?format=json&t=2026-08-11T23:00",
+                   headers=CURL).json()
+    assert j["card"] and j["card"]["kind"] == "meteor_shower"
+    k = client.get("/Zurich?format=json&t=2026-08-11T23:00", headers=CURL).json()
+    assert k["coming_up_card"]["id"] == j["card"]["id"]
+
+
+def test_page_carries_the_marker_but_renders_no_card(client):
+    """The UI is built separately; this only reserves the spot."""
+    body = client.get("/Zurich", headers=BROWSER).text
+    assert "skymap:coming-up-card" in body
+    assert "<section" not in body          # nothing rendered there yet
+
+
+def test_events_is_in_the_nav(client):
+    body = client.get("/Zurich", headers=BROWSER).text
+    assert '<a href="/events">events</a>' in body
+
+
+def test_bare_events_locates_by_ip(client):
+    assert client.get("/events", headers=CURL).status_code == 200
+    before = server._stat["events_ip"]
+    client.get("/events", headers=CURL)
+    assert server._stat["events_ip"] == before + 1
+
+
 # ---------------------------------------------------------------- ICS
 def test_ics_is_well_formed():
     ics = api.events_ics(_req(), days=30)

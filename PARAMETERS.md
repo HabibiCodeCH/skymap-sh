@@ -294,6 +294,7 @@ at all.
 | `/{place}/events` | what's coming up over that place, next 90 days |
 | `/{place}/events.ics` | iCalendar feed of the same |
 | `/{place}/events.rss` | RSS feed of the same |
+| `/events` | the same, for wherever your IP puts you; this is the nav link |
 | `/{place}/sphere.json` | the same sky as stars/asterisms/deep-sky/bodies with resolved alt/az, for the 3D view |
 | `/robots.txt` | allow all |
 | unknown place | 404 with near misses |

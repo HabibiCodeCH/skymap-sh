@@ -748,6 +748,9 @@ def _compose_sky(r):
         quadrant=dict(cells=[cell["letter"] for cell in st.get("quad_cells", [])],
                      applied=st.get("quad_applied"), error=st.get("quad_error")),
         coming_up=teaser,
+        # Structured twin of coming_up, for the web UI's card. See the
+        # <!-- skymap:coming-up-card --> marker in PAGE.
+        coming_up_card=events_card(r),
         prose=prose,
     )
     return Result("\n".join(out), data)
@@ -1022,6 +1025,7 @@ def _compose_day(r):
                 # above, so the sky-events list is "coming_up" rather than
                 # shadowing a key clients already read.
                 coming_up=teaser,
+                coming_up_card=events_card(r),
                 prose="\n".join(body))
     return Result("\n".join(out), data)
 
@@ -1128,6 +1132,84 @@ def _event_date(e):
     # evening's chart. The row has to be dated the same, or the list says the
     # 16th while its own link opens the 15th.
     return e.get("best_local") or e["when_local"]
+
+
+# ---------------------------------------------------------------- card payload
+# Data for the prominent "Coming up" card on a place page. Deliberately data
+# only: nothing here renders HTML, and PAGE does not include the card. The
+# markup lives in the web UI, which is being built separately -- see the
+# <!-- skymap:coming-up-card --> marker in PAGE for where it goes.
+#
+# events_card() returns None on most nights, which is the point: the card is
+# meant to mean something when it appears. See TEASER_HORIZON in events.py for
+# how far ahead each kind of event earns a mention.
+
+# Urgency buckets, for the UI to colour from. Anything sooner than the next
+# threshold takes that bucket, so ordering matters.
+CARD_URGENCY = (("tonight", 0.6), ("soon", 3.0), ("later", 999.0))
+
+
+def _card_urgency(days_away):
+    for name, cutoff in CARD_URGENCY:
+        if days_away <= cutoff:
+            return name
+    return "later"
+
+
+def events_card(r):
+    """The next thing worth a card on this place's page, or None.
+
+    A flat dict, ready to hand to a template. Everything the card might want
+    is precomputed here rather than left as raw event fields, so the UI never
+    has to reimplement the "which night does this belong to" or "is the Moon
+    in the way" reasoning that the text views already do.
+    """
+    e = ev_mod.next_event(r.place.lat, r.place.lon, r.tz, now_utc=r.when_utc,
+                          within_days=TEASER_DAYS)
+    if e is None:
+        return None
+
+    watch = e.get("best_local") or e["when_local"]
+    days_away = (e["when_utc"] - r.when_utc).total_seconds() / 86400
+
+    detail = []
+    if e.get("window_local"):
+        detail.append(dict(label="best", value=f"{e['window_local'][0]}–{e['window_local'][1]}"))
+    if e.get("alt") is not None and e.get("compass"):
+        detail.append(dict(label="where", value=f"{e['alt']:.0f}° {e['compass']}"))
+    if e.get("zhr"):
+        detail.append(dict(label="rate", value=f"up to {e['zhr']}/hr"))
+    if e.get("sep_deg") is not None and e["kind"] == "conjunction":
+        detail.append(dict(label="apart", value=f"{e['sep_deg']}°"))
+    if e.get("mag") is not None:
+        detail.append(dict(label="magnitude", value=f"{e['mag']}"))
+
+    return dict(
+        # Stable across renders and shared with the ICS UID and RSS GUID, so
+        # the UI can key a dismissal on it and have it stay dismissed.
+        id=e["id"],
+        kind=e["kind"],
+        glyph=e.get("glyph", "✦"),
+        # "TOMORROW NIGHT", "TONIGHT", "ON FRIDAY" -- already phrased for the
+        # eyebrow, uppercase left to CSS.
+        eyebrow=_when_words(e, r),
+        headline=e["headline"],
+        # One sentence, the same wording the terminal views use.
+        body=(events_teaser(r) or "").replace("Coming up: ", ""),
+        detail=detail,
+        moon_verdict=e.get("moon_verdict"),
+        note=e.get("note"),
+        urgency=_card_urgency(days_away),
+        days_away=round(days_away, 2),
+        when_local=e["when_local"].isoformat(),
+        watch_local=watch.isoformat(),
+        window_local=e.get("window_local"),
+        # Where the buttons go. cta opens the chart for the moment, framed on
+        # the thing; more opens the full list.
+        cta=dict(label="show me that sky", url=_event_url(e, r)),
+        more=dict(label="everything coming up",
+                  url=f"/{quote(r.place.slug)}/events"),
+    )
 
 
 def _event_line(e, r):
@@ -1296,6 +1378,7 @@ def _compose_events(r, next_only=False, days=EVENTS_WINDOW_DAYS):
 
     data = dict(place=p.name, lat=p.lat, lon=p.lon, tz_offset=r.tz,
                 when_utc=r.when_utc.isoformat() + "Z", window_days=days,
+                card=events_card(r),
                 upcoming=[_event_json(e) for e in every])
     return Result("\n".join(out), data)
 
@@ -1995,6 +2078,10 @@ def header_html(path):
     return (f'<pre class="cta">curl skymap.sh{path}</pre>\n'
             f'<p class="t"><b>skymap.sh</b>\n'
             f'<a href="/">home</a> · <a href="/catalog">catalog</a> · <a href="/demo">demo</a> · '
+            # Bare /events, not /{place}/events: the nav is the same on every
+            # page, so it cannot carry a place. The route locates by IP the
+            # way a bare `curl skymap.sh` does.
+            f'<a href="/events">events</a> · '
             f'<a href="/help">help</a> · <a href="/legend">legend</a></p>')
 
 
@@ -2053,7 +2140,24 @@ PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
  @media (pointer:coarse) and (max-width:900px){{.mobile-only{{display:inline-block}}}}
 </style></head><body><div class="w">
 {header}
-{explore}<div class="toolbar"><div class="toolbar-left">{animate_btn}{quadrant_btn}</div><div class="toolbar-right">{sphere_btn}{extra}</div></div><pre id="chart-pre">{body}</pre>
+{explore}<!-- skymap:coming-up-card
+     Insertion point for the prominent "Coming up" card. Nothing renders it
+     yet -- the markup belongs to the web UI, built separately.
+
+     Data:  api.events_card(r) -> dict | None   (None on most nights)
+            also served as "card" on /{{place}}/events?format=json
+            and as "coming_up_card" on /{{place}}?format=json
+     Suggested element id:  coming-up
+     Suggested attribute:   data-urgency = tonight | soon | later
+     Fields marked [] are lists of {{label, value}} pairs.
+     Fields: id kind glyph eyebrow headline body detail[] moon_verdict note
+             urgency days_away when_local watch_local window_local cta more
+
+     It belongs here, above the toolbar and the chart, so it reads before the
+     sky rather than after it. Absent most nights on purpose: see
+     TEASER_HORIZON in events.py.
+-->
+<div class="toolbar"><div class="toolbar-left">{animate_btn}{quadrant_btn}</div><div class="toolbar-right">{sphere_btn}{extra}</div></div><pre id="chart-pre">{body}</pre>
 <p class="t" style="margin-top:18px">Created by <a href="https://x.com/habibicode">@habibicode</a>
 · <a href="https://github.com/HabibiCodeCH/skymap-sh">see the repo</a></p>
 <script>

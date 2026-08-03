@@ -336,6 +336,9 @@ def stats_text(n=50):
         # a subscription keeps costing a request an hour until it's cancelled.
         L.append(f"  {'ics':12} {_stat['events.ics']:>8,}")
         L.append(f"  {'rss':12} {_stat['events.rss']:>8,}")
+        if _stat["events_ip"]:
+            L.append(f"  {'via nav':12} {_stat['events_ip']:>8,}  "
+                     f"(bare /events, located by IP)")
         if _events_places:
             # Not "top places": test_server.py keys on that exact string to
             # find the main table, and a second occurrence here shadowed it.
@@ -404,7 +407,7 @@ def stats_json(n=50):
         gif=_stat["gif"], gif_rejected=_stat["gif_rejected"], png=_stat["png"],
         sphere=_stat["sphere"],
         events=dict(page=_stat["events"], ics=_stat["events.ics"],
-                    rss=_stat["events.rss"],
+                    rss=_stat["events.rss"], via_nav=_stat["events_ip"],
                     places_distinct=len(_events_places),
                     top_places=dict(_events_places.most_common(n))),
         views={k[5:]: v for k, v in _stat.items() if k.startswith("view:")},
@@ -1331,6 +1334,19 @@ def _events_window(request: Req):
         return api.EVENTS_WINDOW_DAYS
 
 
+@app.get("/events", response_class=PlainTextResponse)
+def events_here(request: Req):
+    """What's coming up over wherever the visitor is.
+
+    The nav is identical on every page so it cannot carry a place, and this
+    is how the rest of the site already answers that: a bare `curl skymap.sh`
+    locates by IP, so a bare /events does too. Falls back to _build's usual
+    default when the CDN sends no coordinates.
+    """
+    _stat["events_ip"] += 1
+    return events_page(request, None)
+
+
 @app.get("/{place}/events.ics")
 def events_ics(request: Req, place: str):
     if api.lookup_place(place) is None:
@@ -1360,8 +1376,8 @@ def events_rss(request: Req, place: str):
 
 
 @app.get("/{place}/events", response_class=PlainTextResponse)
-def events_page(request: Req, place: str):
-    if api.lookup_place(place) is None:
+def events_page(request: Req, place: str | None):
+    if place is not None and api.lookup_place(place) is None:
         return PlainTextResponse(UNKNOWN.format(q=place, did=api.suggest(place)),
                                  status_code=404)
     r = _build(request, place)
