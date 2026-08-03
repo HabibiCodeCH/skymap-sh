@@ -594,7 +594,11 @@ def _compose_find(r):
         wl = w + dt.timedelta(hours=p.offset(w))
         same = wl.date() == r.when_local.date()
         when_txt = f"{wl:%H:%M} tonight" if same else f"{wl:%a %d %b} at {wl:%H:%M}"
-        note = (f"Not visible right now, {why}.",
+        # "right now" only when the chart is actually about now. Both this
+        # and the "Visible now." below used to say it whatever ?t= asked
+        # for, so a chart drawn for an eclipse next Wednesday announced its
+        # visibility in the present tense.
+        note = (f"Not visible {'then' if r.when_explicit else 'right now'}, {why}.",
                 f"Next chance: {when_txt}, {a2:.0f}° up in the {compass(z2)}. "
                 f"Chart drawn for that moment.")
         data.update(next_visible=dict(when_utc=w.isoformat() + "Z",
@@ -628,11 +632,21 @@ def _compose_find(r):
         # the extra 488 as dim backdrop was worse still, because mag 4-5 is
         # 63% of the whole field, so most of the sky went grey and the colour
         # and size variety that makes the chart readable disappeared with it.
-        sun_alt = altaz(*[sun(julian(shown_utc))[k] for k in ("ra", "dec")],
-                        p.lat, (gmst_hours(julian(shown_utc)) + p.lon / 15.0) % 24)[0]
+        jd_shown = julian(shown_utc)
+        sun_alt = altaz(*[sun(jd_shown)[k] for k in ("ra", "dec")],
+                        p.lat, (gmst_hours(jd_shown) + p.lon / 15.0) % 24)[0]
+        # line_limit and bodies as well as mag_limit -- the same three
+        # _compose_sky passes. mag_limit alone fades the star field but not
+        # the constellation lines drawn through it, nor the planets, which
+        # nothing ever noticed because find in daylight always ended at "not
+        # visible" rather than at a chart. ?find=Sun reaches it now, and a
+        # partial eclipse an hour before sunset was drawing Lyra, the
+        # Northern Cross and three planets into a bright sky.
         extra = dict(span=360.0, height=_horizon_height(r),
                      width=_effective_width(r),
-                     mag_limit=_fade_mag_limit(sun_alt))
+                     mag_limit=_fade_mag_limit(sun_alt),
+                     line_limit=_fade_mag_limit(sun_alt),
+                     bodies=_fade_visible_bodies(sun_alt, jd_shown) | {"Sun", "Moon"})
     sp = extra["span"]
     # side_panel=r.panel: find draws the full panorama now (see the comment
     # above), so it earns the same zenith-inset-beside-the-chart treatment
@@ -656,7 +670,8 @@ def _compose_find(r):
         notice = [paint("  " + note[0], C.MUTE, c),
                   paint("  " + note[1], "\033[38;5;213m", c)]
     else:
-        notice = [paint("  Visible now.", "\033[38;5;48m", c)]
+        notice = [paint("  Visible then." if r.when_explicit else "  Visible now.",
+                        "\033[38;5;48m", c)]
     guide_lines = [paint("  " + l, C.LABEL, c) for l in guide.split("\n")]
     if r.panel:
         zenith = st.get("zenith_lines") or []
@@ -2024,11 +2039,21 @@ def _find_chart_only(r):
         extra = dict(span=r.span, alt_lo=lo, alt_hi=lo + rng, width=r.width,
                      mag_limit=5.0)
     else:
-        sun_alt = altaz(*[sun(julian(shown_utc))[k] for k in ("ra", "dec")],
-                        p.lat, (gmst_hours(julian(shown_utc)) + p.lon / 15.0) % 24)[0]
+        jd_shown = julian(shown_utc)
+        sun_alt = altaz(*[sun(jd_shown)[k] for k in ("ra", "dec")],
+                        p.lat, (gmst_hours(jd_shown) + p.lon / 15.0) % 24)[0]
+        # line_limit and bodies as well as mag_limit -- the same three
+        # _compose_sky passes. mag_limit alone fades the star field but not
+        # the constellation lines drawn through it, nor the planets, which
+        # nothing ever noticed because find in daylight always ended at "not
+        # visible" rather than at a chart. ?find=Sun reaches it now, and a
+        # partial eclipse an hour before sunset was drawing Lyra, the
+        # Northern Cross and three planets into a bright sky.
         extra = dict(span=360.0, height=_horizon_height(r),
                      width=_effective_width(r),
-                     mag_limit=_fade_mag_limit(sun_alt))
+                     mag_limit=_fade_mag_limit(sun_alt),
+                     line_limit=_fade_mag_limit(sun_alt),
+                     bodies=_fade_visible_bodies(sun_alt, jd_shown) | {"Sun", "Moon"})
     sp = extra["span"]
     art, _st = render_linear(shown_utc, p.lat, p.lon, color=c, show_lines=r.lines,
                              tle=r.tle, target=tgt, **extra)

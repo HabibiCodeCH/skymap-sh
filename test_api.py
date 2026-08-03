@@ -995,6 +995,96 @@ class CatalogHtml(unittest.TestCase):
         self.assertIn("DEEP SKY (112)", h)
 
 
+class FindingTheSun(unittest.TestCase):
+    """?find=Sun answered "not visible: the sky is still too bright", then
+    "0° from the Sun: too deep in the glare", and drew nothing. Both rules
+    are about picking a faint thing out of a bright sky, which is not a
+    question about the Sun. It matters beyond curiosity: the "show me that
+    sky" button on a solar eclipse goes straight here, and a solar eclipse
+    is by definition something you look at in daylight."""
+
+    # 12 Aug 2026, the total solar eclipse. Partial from Geneva, with the
+    # Sun about 10° up an hour before it sets -- the awkward case, low and
+    # in daylight.
+    PLACE = "Geneva"
+    ECLIPSE_LOCAL = dt.datetime(2026, 8, 12, 19, 47)
+
+    def _at(self, local, **kw):
+        p = api.lookup_place(self.PLACE)
+        when = local - dt.timedelta(hours=p.offset(dt.datetime(2026, 8, 12)))
+        return api.compose(api.Request(place=self.PLACE, when=when, color=False,
+                                       find="Sun", **kw))
+
+    def test_the_sun_is_visible_when_it_is_up(self):
+        res = self._at(self.ECLIPSE_LOCAL)
+        self.assertTrue(res.data["visible"], res.text[:200])
+        self.assertNotIn("too deep in the glare", res.text)
+        self.assertNotIn("too bright", res.text)
+
+    def test_the_chart_is_actually_drawn_and_points_at_the_sun(self):
+        res = self._at(self.ECLIPSE_LOCAL)
+        self.assertIn("finding Sun", res.text)
+        self.assertIn("SUN", res.text)          # the marker, not just prose
+        self.assertIn("Moon", res.text)          # its eclipse mate, on top of it
+        self.assertIn("above the horizon in the", res.text)   # where to look
+        self.assertGreater(res.text.count("\n"), 30)          # a chart, not a note
+
+    def test_daylight_does_not_get_a_night_sky_drawn_over_it(self):
+        # mag_limit alone fades the star field but not the lines through it
+        # or the planets, and nothing noticed while find in daylight never
+        # reached a chart at all.
+        res = self._at(self.ECLIPSE_LOCAL)
+        for label in ("LYRA", "NORTHERN CROSS", "SPRING TRIANGLE", "SICKLE"):
+            self.assertNotIn(label, res.text)
+        for body in ("Venus", "Jupiter", "Mercury", "Saturn"):
+            self.assertNotIn(body, res.text)
+
+    def test_a_chart_for_a_picked_moment_does_not_claim_it_is_visible_now(self):
+        # The header says 12 Aug 2026 19:45 and the notice under it said
+        # "Visible now." -- read together that is a chart claiming the
+        # present tense for a Wednesday next week.
+        res = self._at(self.ECLIPSE_LOCAL)
+        self.assertIn("Visible then.", res.text)
+        self.assertNotIn("Visible now.", res.text)
+
+    def test_a_chart_for_the_present_still_says_now(self):
+        # now= rather than when=, so the request carries no ?t= and the
+        # chart really is about the moment someone is reading it.
+        p = api.lookup_place(self.PLACE)
+        now = self.ECLIPSE_LOCAL - dt.timedelta(hours=p.offset(dt.datetime(2026, 8, 12)))
+        res = api.compose(api.Request(place=self.PLACE, now=now, find="Sun",
+                                      color=False))
+        self.assertIn("Visible now.", res.text)
+        self.assertNotIn("Visible then.", res.text)
+
+    def test_not_visible_at_a_picked_moment_drops_the_present_tense_too(self):
+        res = self._at(dt.datetime(2026, 8, 13, 1, 0))
+        self.assertIn("Not visible then,", res.text)
+        self.assertNotIn("right now", res.text)
+
+    def test_after_dark_the_answer_is_the_next_sunrise(self):
+        # Not "no window in the next 40 days", which is what searching for a
+        # dark sky with the Sun up gets you.
+        res = self._at(dt.datetime(2026, 8, 13, 1, 0))
+        self.assertFalse(res.data["visible"])
+        self.assertEqual(res.data["reason"], "below the horizon")
+        self.assertIsNotNone(res.data["next_visible"])
+        self.assertNotIn("too deep in the glare", res.text)
+        self.assertIn("Next chance", res.text)
+
+    def test_the_eclipse_card_still_points_here(self):
+        # The bug arrived through the card's CTA, so this pins the two ends
+        # together: whatever the card links to has to be a chart.
+        import events
+        p = api.lookup_place(self.PLACE)
+        r = api.Request(place=self.PLACE)
+        evs = events.next_events(p.lat, p.lon, p.offset(r.when_utc), within_days=14,
+                                 now_utc=dt.datetime(2026, 8, 3, 12, 0))
+        ecl = next((e for e in evs if e["kind"] == "eclipse"), None)
+        self.assertIsNotNone(ecl, "no eclipse in the window to check")
+        self.assertIn("find=Sun", api._event_url(ecl, r))
+
+
 class LegendMatchesTheRealGlyphs(unittest.TestCase):
     def test_moon_phase_row_is_generated_not_hand_typed(self):
         # Regression test: this line used to be a separately hand-typed

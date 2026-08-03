@@ -910,6 +910,18 @@ def visibility(t, jd, lat, lst, min_alt=8.0):
     """(ok, reason) for right now."""
     sa, _ = altaz(*[sun(jd)[k] for k in ("ra", "dec")], lat, lst)
     mag = t["mag"] if t.get("mag") is not None else t.get("faint")
+    if t["kind"] == "sun":
+        # Both rules below are about picking a faint thing out of a bright
+        # sky, and neither is a question you can ask about the Sun. It is
+        # what makes the sky bright, so dark_enough() wants it below the
+        # horizon before it will call it visible -- ?find=Sun answered "not
+        # visible: the sky is still too bright", then "0° from the Sun: too
+        # deep in the glare", and drew nothing at all. The low-altitude
+        # warning doesn't fit either: when the question is which bit of the
+        # horizon to look at, being low is the reason to draw the chart, not
+        # to refuse it. A partial eclipse an hour before sunset is exactly
+        # that.
+        return (t["alt"] > 0, "visible now" if t["alt"] > 0 else "below the horizon")
     if t["alt"] < min_alt:
         return False, ("below the horizon" if t["alt"] <= 0 else
                        "too low, under 8°, so trees and buildings will be in the way")
@@ -922,6 +934,12 @@ def visibility(t, jd, lat, lst, min_alt=8.0):
 def next_visible(t, lat, lon, start_utc, days=40, step_min=10, min_alt=12.0):
     """First moment it clears min_alt in a sky dark enough for its brightness."""
     mag = t["mag"] if t.get("mag") is not None else t.get("faint")
+    # Asked about the Sun at night, the answer is sunrise. Left to the rules
+    # below it would search forty days for a dark sky with the Sun up, find
+    # none, and report the Sun as permanently lost in its own glare.
+    is_sun = t["kind"] == "sun"
+    if is_sun:
+        min_alt = 0.0
     n = int(days * 24 * 60 / step_min)
     for i in range(1, n):
         when = start_utc + dt.timedelta(minutes=i * step_min)
@@ -929,7 +947,7 @@ def next_visible(t, lat, lon, start_utc, days=40, step_min=10, min_alt=12.0):
         lst = (gmst_hours(jd) + lon / 15.0) % 24
         su = sun(jd)
         sa, _ = altaz(su["ra"], su["dec"], lat, lst)
-        if not dark_enough(sa, mag):
+        if not is_sun and not dark_enough(sa, mag):
             continue
         a, z = target_altaz(t, jd, lat, lst)
         if a >= min_alt:
