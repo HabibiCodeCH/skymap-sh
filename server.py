@@ -1240,10 +1240,15 @@ def stats_sphere_text(n=50):
     if _stat["sphere_radiant"]:
         L.append(f"  {'radiant':12} {_stat['sphere_radiant']:>8,}  "
                  f"(views on a night with a shower running)")
-    if _stat["sphere_golden"]:
-        share = 100 * _stat["sphere_golden"] / max(_stat["sphere"], 1)
-        L.append(f"  {'golden':12} {_stat['sphere_golden']:>8,}  "
-                 f"({share:.0f}% of sphere views opened in golden hour)")
+    used = _stat["sphere_golden"] + _stat["sphere_golden_on"]
+    if used:
+        share = 100 * used / max(_stat["sphere"], 1)
+        L.append(f"  {'golden':12} {used:>8,}  "
+                 f"({share:.0f}% of sphere views reached golden hour)")
+        L.append(f"    {'arrived':10} {_stat['sphere_golden']:>8,}  "
+                 f"(opened on a ?golden=1 link)")
+        L.append(f"    {'switched':10} {_stat['sphere_golden_on']:>8,}  "
+                 f"(tapped into it from the star view)")
     sphere_os = sorted(k for k in _stat if k.startswith("sphere_os:"))
     if sphere_os:
         L.append("views by OS")
@@ -1261,6 +1266,7 @@ def stats_sphere_json(n=50):
         sphere=_stat["sphere"], sphere_json=_stat["sphere_json"],
         sphere_radiant=_stat["sphere_radiant"],
         sphere_golden=_stat["sphere_golden"],
+        sphere_golden_on=_stat["sphere_golden_on"],
         mobile_redirect=_stat["mobile_redirect"],
         by_os={k[10:]: v for k, v in _stat.items() if k.startswith("sphere_os:")},
         places_distinct=len(_sphere_places),
@@ -1452,6 +1458,14 @@ def stats_hourly_json(days=7):
 #
 # NOTE: this is per process. With N gunicorn workers the effective ceiling is
 # N x RATE, so divide, or move the buckets to Redis if you run more than one box.
+# Paths that never spend a visitor's allowance. All of them are cheap,
+# cached or length-capped, and all of them fire more often than a page view
+# does: /complete on every pause in typing, /beacon/golden on every flick
+# between the two sphere modes. Throttling those would eat the allowance
+# meant for actual charts.
+RATE_EXEMPT = ("/healthz", "/robots.txt", "/complete", "/complete/objects",
+               "/beacon/golden")
+
 RATE = 30                   # sustained requests per minute per IP
 BURST = 45                  # allowed spike before shaping kicks in
 MAX_IPS = 20000             # bounded so the table cannot grow without limit
@@ -2142,7 +2156,7 @@ async def head_as_get(request: Req, call_next):
 @app.middleware("http")
 async def ratelimit(request: Req, call_next):
     path = request.url.path
-    if path in ("/healthz", "/robots.txt", "/complete", "/complete/objects"):
+    if path in RATE_EXEMPT:
         # /complete and /complete/objects are exempt too -- both fire one
         # debounced request per pause in typing, which a normal word can
         # easily reach on its own; both are cheap, cached, and length-
@@ -2289,6 +2303,27 @@ def gif_capacity():
     return JSONResponse(
         {"available": _gif_render_active < GIF_RENDER_MAX_CONCURRENT},
         headers={"Cache-Control": "no-store"})
+
+
+@app.api_route("/beacon/golden", methods=["GET", "POST"])
+def beacon_golden():
+    """Someone switched into golden hour without loading a new page.
+
+    ?golden=1 already counts arrivals -- a shared link, a bookmark, a reload
+    -- but the common case is landing on the star sphere and tapping
+    `light`, and replaceState deliberately rewrites the address without
+    making a request. That toggle was the one thing the counter could not
+    see, and it is most of the usage.
+
+    GET and POST both, because navigator.sendBeacon always POSTs and the
+    fetch fallback does not -- declared GET-only this would have 405'd, which
+    a fire-and-forget beacon is precisely the wrong thing to discover late.
+
+    Deliberately tiny: 204, no body, no cache, and exempt from the rate
+    limiter below, since a visitor flicking between the two modes should not
+    spend their chart allowance on it."""
+    _stat["sphere_golden_on"] += 1
+    return Response(status_code=204, headers={"Cache-Control": "no-store"})
 
 
 @app.get("/legend", response_class=PlainTextResponse)

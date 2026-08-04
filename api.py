@@ -6372,10 +6372,21 @@ window.addEventListener('wheel', function(e) {{
   document.addEventListener(g, function(e) {{ e.preventDefault(); }}, {{passive: false}});
 }});
 
+// Fired only for a switch someone actually made, never for a page that
+// arrived already in the mode -- ?golden=1 counts those, and beaconing them
+// too would count one visitor twice.
+function beaconGolden() {{
+  try {{
+    if (navigator.sendBeacon) navigator.sendBeacon('/beacon/golden');
+    else fetch('/beacon/golden', {{keepalive: true}});
+  }} catch (e) {{}}
+}}
+
 document.getElementById('mode-sky').addEventListener('click', function() {{
   setGolden(false);
 }});
 document.getElementById('mode-golden').addEventListener('click', function() {{
+  if (!goldenOn) beaconGolden();
   setGolden(true);
 }});
 
@@ -6388,7 +6399,11 @@ window.addEventListener('keydown', function(e) {{
   if (e.metaKey || e.ctrlKey || e.altKey) return;
   var t = e.target;
   if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA')) return;
-  if (e.key === 'g') {{ e.preventDefault(); setGolden(!goldenOn); }}
+  if (e.key === 'g') {{
+    e.preventDefault();
+    if (!goldenOn) beaconGolden();
+    setGolden(!goldenOn);
+  }}
 }});
 
 document.getElementById('dso-toggle').addEventListener('click', function() {{
