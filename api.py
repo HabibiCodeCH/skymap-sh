@@ -1997,7 +1997,13 @@ def compose_frame(r, dusk_lead_minutes=0, dawn_lag_minutes=0):
                              mag_limit=mag_limit, line_limit=mag_limit, tle=None,
                              inset=False, alt_lo=0.0, alt_hi=alt_hi,
                              width=_effective_width(r), height=_horizon_height(r),
-                             overlay=overlay, bodies=visible_bodies)
+                             overlay=overlay, bodies=visible_bodies,
+                             # A frame ignored ?dso= entirely, so asking an
+                             # animation for deep sky changed nothing at all
+                             # -- byte-identical output. The paused-frame "d"
+                             # in the browser refetches a single frame with
+                             # it on, and that needs somewhere to land.
+                             dso_limit=DSO_LIMIT if r.dso else None)
 
     if sun_alt >= -1:      mode = _sun_path_mode(r)
     elif sun_alt >= -6:    mode = "civil twilight"
@@ -2202,6 +2208,8 @@ KEYBOARD (in a browser, on a chart page)
   m      jump to my location           d   toggle quadrant grid + dso
   esc    cancel/exit find mode, drawer z   zoom: pick a quadrant cell with
                                             arrow keys, enter to crop to it
+  while animating: space plays/pauses, left/right step a frame at a time
+  (15 simulated minutes each), d loads deep sky into the frame on screen
 
 Stars: Yale Bright Star Catalogue. Planets: JPL approximate elements.
 Sun and Moon: Meeus. Satellites: CelesTrak.
@@ -3172,15 +3180,150 @@ function ansiToHtml(text){{
   if(open)out+='</span>';
   return out;
 }}
+// Playback runs off a buffer rather than painting each frame as it lands.
+// That is what space and the arrow keys need: frames keep arriving while
+// paused, and once the stream has finished the whole night sits in memory
+// (96 frames of ~7 KB) to step through or replay without asking the server
+// for it again. The tick runs at the same interval the server streams at,
+// handed over on the button as data-frame-ms so the two cannot drift.
+function skymapAnimShow(i){{
+  var A=window.skymapAnim;
+  if(!A||!A.frames.length)return;
+  A.at=Math.max(0,Math.min(A.frames.length-1,i));
+  A.pre.innerHTML=ansiToHtml(A.frames[A.at]);
+}}
+function skymapAnimAtEnd(A){{
+  return A.done&&A.at>=A.frames.length-1;
+}}
+// What the hint line says while an animation is up. No "while animating"
+// prefix -- it only appears while one is running, so saying so is redundant.
+var SKYMAP_ANIM_HINT='<kbd>space</kbd> play/pause &middot; '+
+  '<kbd>&larr;</kbd><kbd>&rarr;</kbd> step a frame &middot; '+
+  '<kbd>d</kbd> deep sky';
+function skymapAnimRestore(){{
+  // Put the chart back the way it was found. The last frame is 24 hours
+  // past the moment the page is actually about, so leaving it up ends the
+  // animation on a chart that quietly disagrees with every heading, link
+  // and time on the page around it. Stepping back with an arrow brings the
+  // frames straight back.
+  var A=window.skymapAnim;
+  if(!A||A.base===null)return;
+  A.pre.innerHTML=A.base;
+  if(window.skymapSetHint)window.skymapSetHint(null);
+}}
+function skymapAnimPlay(on){{
+  var A=window.skymapAnim;
+  if(!A)return;
+  A.playing=on;
+  A.btn.textContent=on?'⏸ pause':(skymapAnimAtEnd(A)?'▶ replay':'▶ resume');
+  if(on)skymapAnimTick();else clearTimeout(A.timer);
+}}
+function skymapAnimTick(){{
+  var A=window.skymapAnim;
+  if(!A)return;
+  clearTimeout(A.timer);
+  if(!A.playing)return;
+  if(A.at<A.frames.length-1)skymapAnimShow(A.at+1);
+  else if(A.done){{skymapAnimPlay(false);skymapAnimRestore();return;}}
+  // Caught up with a stream still arriving: keep the timer alive and wait
+  // rather than stopping, or playback would end at whatever had landed.
+  A.timer=setTimeout(skymapAnimTick,A.ms);
+}}
+// The wall-clock time a frame is drawn for: the stream's own t= plus the
+// step it is along. Formatted by hand rather than through toISOString,
+// which would convert to UTC -- t= is local time at the place, and the
+// arithmetic here is pure wall clock. (A place crossing a DST boundary
+// mid-animation would be shifted by the reader's own rules rather than its
+// own, an hour out for one frame of a 24-hour run.)
+function skymapAnimFrameTime(i){{
+  var A=window.skymapAnim;
+  var qs=(A.btn.getAttribute('data-live-url')||'').split('?')[1]||'';
+  var t=new URLSearchParams(qs).get('t');
+  if(!t)return null;
+  var d=new Date(t);
+  if(isNaN(d.getTime()))return null;
+  d.setMinutes(d.getMinutes()+i*A.stepMin);
+  function p(n){{return (n<10?'0':'')+n;}}
+  return d.getFullYear()+'-'+p(d.getMonth()+1)+'-'+p(d.getDate())+
+         'T'+p(d.getHours())+':'+p(d.getMinutes());
+}}
+// Deep sky for the frame on screen. One frame, not the whole run: "d" here
+// means "show me more of what I am looking at", and the run is 96 frames of
+// server work. The stream is asked for the paused moment and cancelled as
+// soon as its first frame is whole, so the server renders one or two rather
+// than the four its one-hour minimum would otherwise produce.
+function skymapAnimDeepSky(done){{
+  var A=window.skymapAnim;
+  if(!A||!A.frames.length||A.loadingDso)return;
+  if(A.playing)skymapAnimPlay(false);
+  var t=skymapAnimFrameTime(A.at);
+  var live=A.btn.getAttribute('data-live-url');
+  if(!t||!live)return;
+  var url=live.replace(/([?&])t=[^&]*/,'$1t='+encodeURIComponent(t))
+              .replace(/([?&])animate=[^&]*/,'$1animate=1')+'&dso=1';
+  var at=A.at;
+  A.loadingDso=true;
+  fetch(url).then(function(resp){{
+    var reader=resp.body.getReader(),dec=new TextDecoder(),buf='';
+    function pump(){{
+      return reader.read().then(function(res){{
+        buf+=res.value?dec.decode(res.value,{{stream:true}}):'';
+        var parts=buf.split('\\x1b[2J\\x1b[H');
+        // Frame one is whole once the next separator lands (or the stream
+        // ends). Everything after it is thrown away unread.
+        if(parts.length>2&&parts[1].trim()){{reader.cancel();return parts[1];}}
+        if(res.done)return parts.length>1&&parts[1].trim()?parts[1]:null;
+        return pump();
+      }});
+    }}
+    return pump();
+  }}).then(function(frame){{
+    A.loadingDso=false;
+    if(!frame)return;
+    // Written back into the buffer, so stepping away and returning to this
+    // frame still finds the deep-sky version.
+    A.frames[at]=frame;
+    if(A.at===at)skymapAnimShow(at);
+    if(done)done(true);
+  }}).catch(function(){{
+    A.loadingDso=false;
+    if(done)done(false);
+  }});
+}}
+// Stepping only -- the "frame 12/96" hint is raised by the key handler,
+// which is where flashHint actually lives (it is local to that IIFE, not a
+// global, so calling it from here threw ReferenceError on every arrow).
+function skymapAnimStep(d){{
+  var A=window.skymapAnim;
+  if(!A||!A.frames.length)return;
+  if(A.playing)skymapAnimPlay(false);
+  skymapAnimShow(A.at+d);
+}}
 function skymapAnimate(btn){{
   // Live preview plays right in the chart itself from the same streaming
   // ?animate= text the CLI uses. "Share as a GIF" is visible the whole
   // time (see skymapPollGifCapacity, kicked off on page load) -- rendering
   // only actually happens if it's clicked -- see skymapRenderGif -- since
   // that's real Pillow work, not free to do for every single viewer.
+  var A=window.skymapAnim;
+  if(A&&A.frames.length){{
+    // Second click is play/pause, and replay once it has run out -- from
+    // the buffer, so a rewatch costs the server nothing at all.
+    if(skymapAnimAtEnd(A)&&!A.playing)skymapAnimShow(0);
+    skymapAnimPlay(!A.playing);
+    return;
+  }}
   var liveUrl=btn.getAttribute('data-live-url');
   var pre=document.getElementById('chart-pre');
-  btn.disabled=true;btn.textContent='animating…';
+  A=window.skymapAnim={{frames:[],at:-1,playing:true,done:false,timer:null,
+                       btn:btn,pre:pre,base:pre.innerHTML,loadingDso:false,
+                       ms:parseInt(btn.getAttribute('data-frame-ms'),10)||150,
+                       stepMin:parseInt(btn.getAttribute('data-step-min'),10)||15}};
+  // Enabled throughout now: while the stream runs this button is the pause
+  // control, so greying it out would take the mouse-only way to pause with
+  // it.
+  btn.disabled=false;btn.textContent='⏸ pause';
+  if(window.skymapSetHint)window.skymapSetHint(SKYMAP_ANIM_HINT);
   fetch(liveUrl).then(function(resp){{
     var reader=resp.body.getReader();
     var decoder=new TextDecoder();
@@ -3188,22 +3331,30 @@ function skymapAnimate(btn){{
     function pump(){{
       return reader.read().then(function(res){{
         if(res.done){{
-          if(buf.trim())pre.innerHTML=ansiToHtml(buf);
+          // The tail is the last frame -- nothing follows it to split on.
+          if(buf.trim())A.frames.push(buf);
           return;
         }}
         buf+=decoder.decode(res.value,{{stream:true}});
         var parts=buf.split('\\x1b[2J\\x1b[H');
         buf=parts.pop();
         for(var i=0;i<parts.length;i++){{
-          if(parts[i].trim())pre.innerHTML=ansiToHtml(parts[i]);
+          if(parts[i].trim())A.frames.push(parts[i]);
         }}
         return pump();
       }});
     }}
+    skymapAnimTick();
     return pump();
   }}).then(function(){{
-    btn.disabled=false;btn.textContent='▶ animate';
+    A.done=true;
+    if(!A.playing)A.btn.textContent=skymapAnimAtEnd(A)?'▶ replay':'▶ resume';
   }}).catch(function(){{
+    A.done=true;clearTimeout(A.timer);
+    // Same restore as a clean finish -- a stream that dies halfway leaves a
+    // half-played chart that is even less about now than the last frame is.
+    skymapAnimRestore();
+    window.skymapAnim=null;
     btn.disabled=false;btn.textContent='animate failed, try again';
   }});
 }}
@@ -3450,6 +3601,14 @@ function skymapRenderGif(btn){{
       if(drawer.classList.contains('open')||e.target===q)return;
       var findbarEl=document.getElementById('findbar');
       if(findbarEl&&findbarEl.contains(e.target))return;
+      // Not the animate button. Its whole point is that the keys pressed
+      // next -- space to pause, arrows to step -- go to the animation, and
+      // parking focus in a text field sends them to the field instead
+      // (the keydown handler returns early on INPUT, as it must, or
+      // typing a place with a space in it would pause the playback).
+      // Pressing "a" goes through here too: it works by clicking this same
+      // button, and that synthetic click bubbles up to this listener.
+      if(e.target&&e.target.id==='animate-btn')return;
       q.focus();
       q.select();
     }});
@@ -3472,7 +3631,21 @@ function skymapRenderGif(btn){{
   var pick={{active:false,row:0,col:0}};
   var hintEl=document.querySelector('.kbd-hint');
   var hintHTML=hintEl?hintEl.innerHTML:null;
+  var baseHint=hintHTML;
   var hintRestoreTimer=null;
+  // Swaps what the hint line says at rest, which is how the animation puts
+  // its own transport keys there while it runs and takes them away again
+  // when it stops -- space and the arrows only do anything while there are
+  // frames, so advertising them the rest of the time is noise on a line
+  // with room for one row. Global because the animation code lives outside
+  // this IIFE. Passing null restores the page's own hint.
+  window.skymapSetHint=function(html){{
+    if(!hintEl)return;
+    hintHTML=(html===null?baseHint:html);
+    // Not while a flash is up -- its own restore timer will land on the
+    // new baseline in a moment.
+    if(!hintRestoreTimer)hintEl.innerHTML=hintHTML;
+  }};
   // Transient status in the same spot as the keyboard hint itself (e.g.
   // "Locating..." / a geolocation error) instead of an alert() -- restores
   // the real hint text after ms, clearing any earlier pending restore so
@@ -3556,6 +3729,39 @@ function skymapRenderGif(btn){{
         var params=new URLSearchParams(location.search);
         params.set('quadrant', GRID[pick.row][pick.col]);
         location.href=location.pathname+'?'+params.toString();
+        return;
+      }}
+    }}
+    // Animation transport. Only bound while there is an animation to
+    // control, so space and the arrows keep scrolling the page everywhere
+    // else -- and after the quadrant picker above, which owns the arrows
+    // whenever it is up.
+    if(window.skymapAnim&&window.skymapAnim.frames.length){{
+      if(e.key===' '||e.key==='Spacebar'){{
+        e.preventDefault();
+        var ab=document.getElementById('animate-btn');
+        if(ab)ab.click();
+        return;
+      }}
+      if(e.key==='ArrowLeft'||e.key==='ArrowRight'){{
+        e.preventDefault();
+        skymapAnimStep(e.key==='ArrowLeft'?-1:1);
+        var A=window.skymapAnim;
+        flashHint('frame '+(A.at+1)+'/'+A.frames.length+
+                  (A.done?'':', still loading'));
+        return;
+      }}
+      // d normally navigates to the quadrant+dso view, which would take the
+      // buffer and the paused position with it. While there are frames, it
+      // loads deep sky into the frame on screen instead.
+      if(e.key==='d'){{
+        e.preventDefault();
+        flashHint('Deep sky for this frame…',10000);
+        skymapAnimDeepSky(function(ok){{
+          var A=window.skymapAnim;
+          flashHint(ok?'Deep sky &middot; frame '+(A.at+1)+'/'+A.frames.length
+                     :'Deep sky failed for this frame');
+        }});
         return;
       }}
     }}
@@ -3751,10 +3957,15 @@ function skymapRenderGif(btn){{
 # Only shown on an actual chart page (server.py passes "" everywhere else) --
 # most of these keys are no-ops on /catalog, /legend etc. anyway, so a hint
 # there would be more confusing than helpful.
+# One line, and it has to stay one line -- it sits under the chart where a
+# second row pushes the page taller. That is the budget the contents are
+# chosen against: tab rather than p (both focus the place field, tab is the
+# one people try), and no g, since "Share as a GIF" is a button sitting
+# right there in the drawer with its own label.
 SHORTCUTS_HINT = (
-    '<p class="kbd-hint">Keyboard: <kbd>p</kbd> place &middot; '
+    '<p class="kbd-hint">Keyboard: <kbd>tab</kbd> place &middot; '
     '<kbd>f</kbd> find &middot; <kbd>m</kbd> my location &middot; '
-    '<kbd>a</kbd> animate &middot; <kbd>g</kbd> gif &middot; <kbd>d</kbd> deep sky &middot; '
+    '<kbd>a</kbd> animate &middot; <kbd>d</kbd> deep sky &middot; '
     '<kbd>z</kbd> zoom &middot; '
     '<kbd>esc</kbd> cancel</p>'
 )

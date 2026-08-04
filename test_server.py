@@ -113,6 +113,112 @@ class AnimateBrowserVsTerminal(unittest.TestCase):
         self.assertIsNotNone(m)
         self.assertNotIn("w=", m.group(1))
 
+    def test_playback_runs_at_the_speed_the_server_streams_at(self):
+        # The page's tick reads this rather than hardcoding a matching
+        # number. Retune ANIMATE_FRAME_DELAY alone and playback would drift
+        # behind the stream, then catch up in jumps.
+        resp = self.client.get("/Ibiza?animate=24", headers=BROWSER)
+        m = re.search(r'data-frame-ms="(\d+)"', resp.text)
+        self.assertIsNotNone(m)
+        self.assertEqual(int(m.group(1)),
+                         int(server.ANIMATE_FRAME_DELAY * 1000))
+
+    def test_frames_are_buffered_rather_than_painted_as_they_land(self):
+        # Painting straight off the stream leaves nothing to pause on or
+        # step back to -- each frame was drawn once and dropped. Shallow
+        # presence check, the same style the other JS-behaviour tests use.
+        body = self.client.get("/Ibiza?animate=24", headers=BROWSER).text
+        self.assertIn("A.frames.push", body)
+        self.assertIn("function skymapAnimTick", body)
+        self.assertIn("function skymapAnimStep", body)
+
+    def test_the_chart_goes_back_to_where_it_started_when_the_run_ends(self):
+        # The last frame is 24 hours past the moment the page is about, so
+        # leaving it up ends the animation on a chart that disagrees with
+        # every heading and link around it.
+        body = self.client.get("/Ibiza?animate=24", headers=BROWSER).text
+        self.assertIn("base:pre.innerHTML", body)          # captured up front
+        self.assertIn("function skymapAnimRestore", body)
+        self.assertIn("A.pre.innerHTML=A.base", body)
+        # Called on a clean finish and on a stream that dies halfway. The
+        # trailing semicolon keeps the definition itself out of the count.
+        self.assertEqual(body.count("skymapAnimRestore();"), 2)
+
+    def test_space_pauses_and_the_arrows_step_while_animating(self):
+        body = self.client.get("/Ibiza?animate=24", headers=BROWSER).text
+        self.assertIn("e.key==='ArrowLeft'||e.key==='ArrowRight'", body)
+        self.assertIn("skymapAnimStep(e.key==='ArrowLeft'?-1:1)", body)
+        # Gated on there being an animation, so space and the arrows keep
+        # scrolling the page everywhere else.
+        self.assertIn("window.skymapAnim&&window.skymapAnim.frames.length", body)
+
+    def test_a_frame_can_carry_deep_sky_at_all(self):
+        # compose_frame never passed dso_limit, so an animation asked for
+        # deep sky rendered byte-identical output -- there was nothing for
+        # the paused-frame "d" to reveal.
+        def frame(dso):
+            qs = "&dso=1" if dso else ""
+            body = self.client.get(f"/Geneva?animate=1&t=2026-08-19T23:00&ui=1{qs}",
+                                   headers=TERMINAL).text
+            first = [f for f in body.split("\x1b[2J\x1b[H") if f.strip()][0]
+            return server.api.strip_ansi(first)
+        plain, deep = frame(False), frame(True)
+        self.assertNotEqual(plain, deep)
+        self.assertIn("Nebula", deep)
+        self.assertNotIn("Nebula", plain)
+
+    def test_the_page_knows_how_far_apart_frames_are(self):
+        # Needed to work out which moment the paused frame is showing, so it
+        # can be asked for again with deep sky on.
+        resp = self.client.get("/Ibiza?animate=24", headers=BROWSER)
+        m = re.search(r'data-step-min="(\d+)"', resp.text)
+        self.assertIsNotNone(m)
+        self.assertEqual(int(m.group(1)), server.ANIMATE_STEP_MIN)
+
+    def test_d_loads_deep_sky_into_the_paused_frame_instead_of_navigating(self):
+        # Plain "d" is location.href to the quadrant+dso view, which would
+        # take the frame buffer and the paused position with it.
+        body = self.client.get("/Ibiza?animate=24", headers=BROWSER).text
+        self.assertIn("function skymapAnimDeepSky", body)
+        self.assertIn("skymapAnimDeepSky(function(ok)", body)
+        # One frame, not the whole run: the stream is cancelled as soon as
+        # its first frame is whole.
+        self.assertIn("reader.cancel();return parts[1];", body)
+        # Written back into the buffer, so stepping away and returning keeps it.
+        self.assertIn("A.frames[at]=frame;", body)
+
+    def test_starting_the_animation_does_not_park_focus_in_a_text_field(self):
+        # A document-level click listener focuses the place search on any
+        # click, and pressing "a" works by clicking the animate button -- so
+        # every key after it went to that input, where the handler rightly
+        # returns early, and space and the arrows did nothing at all.
+        body = self.client.get("/Ibiza?animate=24", headers=BROWSER).text
+        self.assertIn("if(e.target&&e.target.id==='animate-btn')return;", body)
+
+    def test_the_transport_hint_only_shows_while_something_is_animating(self):
+        # The hint line has room for one row, and space/arrows/d do nothing
+        # until there are frames -- so they take the line over while the
+        # animation runs and hand it back when it stops.
+        body = self.client.get("/Ibiza?animate=24", headers=BROWSER).text
+        hint = re.search(r'<p class="kbd-hint">(.*?)</p>', body, re.S).group(1)
+        self.assertNotIn("<br>", hint)                    # stays one line
+        for key in ("space", "&larr;"):
+            self.assertNotIn(key, hint)                   # not at rest
+        self.assertIn("<kbd>space</kbd> play/pause", body)   # in the JS
+        self.assertIn("window.skymapSetHint(SKYMAP_ANIM_HINT)", body)
+        self.assertIn("window.skymapSetHint(null)", body)
+        help_text = self.client.get("/help", headers=TERMINAL).text
+        self.assertIn("space plays/pauses", help_text)
+
+    def test_the_resting_hint_says_tab_and_leaves_out_gif(self):
+        body = self.client.get("/Ibiza", headers=BROWSER).text
+        hint = re.search(r'<p class="kbd-hint">(.*?)</p>', body, re.S).group(1)
+        self.assertIn("<kbd>tab</kbd> place", hint)
+        # p still focuses the place field, it just isn't the one advertised.
+        self.assertNotIn("<kbd>p</kbd>", hint)
+        # Share as a GIF is a labelled button in the drawer already.
+        self.assertNotIn("<kbd>g</kbd>", hint)
+
     def test_terminal_gif_followup_carries_the_requested_time(self):
         # The streamed preview's own "Want a shareable GIF? Run: ..." command
         # used to drop t= entirely, built from place.slug alone -- so
@@ -1528,7 +1634,10 @@ class KeyboardShortcuts(unittest.TestCase):
         # server-side toggle state involved), so check the hint text and
         # the keydown handler directly instead.
         resp = self.client.get("/Zurich", headers=BROWSER)
-        self.assertIn("<kbd>p</kbd> place", resp.text)
+        # The hint advertises tab (the one people try first); p still works
+        # and is still bound below, it just isn't what the line spends its
+        # single row of space on.
+        self.assertIn("<kbd>tab</kbd> place", resp.text)
         self.assertIn("<kbd>f</kbd> find", resp.text)
         self.assertIn("e.key==='p'", resp.text)
         self.assertIn("e.key==='f'", resp.text)

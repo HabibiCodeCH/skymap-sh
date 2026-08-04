@@ -1795,6 +1795,16 @@ def _respond(request: Req, place: str | None):
             '<div class="animate-controls">'
             f'<button id="animate-btn" class="animate-btn" '
             f'data-live-url="/{r.place.slug}?animate=24&t={live_t}{live_w}&ui=1" '
+            # The page's playback tick reads this instead of hardcoding a
+            # matching number, so retuning the stream's pace here can't
+            # leave the browser playing at a different speed than it
+            # receives -- which would show as playback drifting behind the
+            # stream and then catching up in jumps.
+            f'data-frame-ms="{int(ANIMATE_FRAME_DELAY * 1000)}" '
+            # Simulated minutes per frame, so the page can work out which
+            # moment the paused frame is showing and ask for that one again
+            # with deep sky on.
+            f'data-step-min="{ANIMATE_STEP_MIN}" '
             'onclick="skymapAnimate(this)">▶ animate</button>'
             '</div>')
         if q.get("animate") is not None:
