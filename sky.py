@@ -647,13 +647,28 @@ def iss_track(tle_path, when_utc, lat, lon, minutes=110, step=0.5):
     return (best or None), None
 
 
-def _zenith_inset(items, alt_max, color, indent, IW=21, IH=11):
+def _zenith_inset(items, alt_max, color, indent, IW=21, IH=11, lat=0.0):
     """Small all-sky disc for the cap the panorama cannot honestly show.
-    Same convention as the full disc: north up, east left."""
+    North up and east left, as the full disc has it -- turned half a circle
+    south of the equator, so north sits at the bottom and south at the top.
+
+    Not a correction of the maths: the disc was right either way round,
+    since azimuth runs from north through east everywhere. It is to agree
+    with the panorama underneath it, which already centres its sweep on
+    south up north and on north down south (see render_linear) because that
+    is where the ecliptic rides high. With the strip centred on north and
+    the disc still drawn north-up, the two put the same piece of sky on
+    opposite sides, and reading from one to the other meant turning the
+    picture over in your head.
+
+    A half turn, not a mirror: (x, y) -> (-x, -y) is the same picture with
+    the page rotated, which keeps east where a reader looking up will find
+    it. Mirroring would swap east and west and quietly make it wrong."""
     g = [[" "] * IW for _ in range(IH)]
     t = [[None] * IW for _ in range(IH)]
     cx, cy = (IW - 1) / 2, (IH - 1) / 2
     span = 90.0 - alt_max
+    turn = -1.0 if lat < 0 else 1.0
 
     def put(x, y, ch, col, over=False):
         c, r = int(round(cx + x * cx)), int(round(cy - y * cy))
@@ -664,13 +679,15 @@ def _zenith_inset(items, alt_max, color, indent, IW=21, IH=11):
         th = i * 2 * math.pi / 500
         put(math.sin(th), math.cos(th), "∙", C.HOR)
     for az, ch in ((0, "N"), (90, "E"), (180, "S"), (270, "W")):
-        put(-math.sin(az * D), math.cos(az * D), ch, C.CARD, over=True)
+        put(turn * -math.sin(az * D), turn * math.cos(az * D), ch, C.CARD,
+            over=True)
     put(0, 0, "+", "\033[38;5;238m")                       # the zenith itself
 
     named = []
     for alt, az, ch, col, nm in sorted(items, key=lambda v: -v[0]):
         r = (90.0 - alt) / span
-        put(-math.sin(az * D) * r, math.cos(az * D) * r, ch, col, over=True)
+        put(turn * -math.sin(az * D) * r, turn * math.cos(az * D) * r,
+            ch, col, over=True)
         if nm:
             named.append((nm, col))
 
@@ -1457,7 +1474,8 @@ def render_linear(when_utc, lat, lon, W=176, H=22, color=True, show_lines=True,
     # inset labelled 70-90° is a lie on a chart that stops at 40°.
     zenith_lines = None
     if facing is None and not alt_cropped and quad_applied is None and inset:
-        zenith_lines = _zenith_inset(inset_items, alt_max, color, 0 if side_panel else LM)
+        zenith_lines = _zenith_inset(inset_items, alt_max, color,
+                                     0 if side_panel else LM, lat=lat)
         if not side_panel:
             out.append("")
             out.extend(zenith_lines)

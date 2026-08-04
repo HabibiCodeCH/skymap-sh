@@ -330,6 +330,49 @@ class SideBySideHelper(unittest.TestCase):
         self.assertEqual(out[1], "BB R")
 
 
+class ZenithInsetOrientation(unittest.TestCase):
+    """The panorama centres its sweep on south up north and on north down
+    south, because that is where the ecliptic rides high. The inset stayed
+    north-up everywhere, so south of the equator the strip and the disc put
+    the same sky on opposite sides."""
+
+    def _inset(self, place):
+        r = api.Request(place=place, when=dt.datetime(2026, 8, 4, 22, 0),
+                        panel=True, night=True, color=False)
+        _chart, zenith, _prose = api.split_chart_parts(api.compose(r).text)
+        return [l for l in zenith.split("\n") if l.strip()]
+
+    def _cardinal_positions(self, lines):
+        # Only inside the disc itself: a star name sits three spaces past
+        # its right edge and can hold any letter. Within the disc the
+        # cardinals are the only alphabetic characters there are.
+        pos = {}
+        for row, line in enumerate(lines):
+            for col, ch in enumerate(line[:21]):
+                if ch in "NESW":
+                    pos.setdefault(ch, (row, col))
+        return pos
+
+    def test_north_up_and_east_left_in_the_northern_hemisphere(self):
+        pos = self._cardinal_positions(self._inset("Zurich"))
+        self.assertLess(pos["N"][0], pos["S"][0])      # north above south
+        self.assertLess(pos["E"][1], pos["W"][1])      # east left of west
+
+    def test_turned_half_a_circle_in_the_southern_hemisphere(self):
+        pos = self._cardinal_positions(self._inset("Wellington"))
+        self.assertLess(pos["S"][0], pos["N"][0])      # south above north
+        self.assertLess(pos["W"][1], pos["E"][1])      # west left of east
+
+    def test_it_is_a_rotation_and_not_a_mirror(self):
+        # A mirror would put south at the top while leaving east on the
+        # left, which reads fine and is wrong -- it swaps the two directions
+        # a reader turns to.
+        north = self._cardinal_positions(self._inset("Zurich"))
+        south = self._cardinal_positions(self._inset("Wellington"))
+        for a, b in (("N", "S"), ("E", "W")):
+            self.assertEqual(north[a], south[b], f"{a}/{b} are not opposite")
+
+
 class SidePanelLayout(unittest.TestCase):
     """?panel=1 (Request.panel) moves the zenith inset beside the horizon
     chart; prose text still renders in its own full-width block below,
