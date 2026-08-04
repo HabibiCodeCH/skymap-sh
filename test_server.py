@@ -3281,6 +3281,35 @@ class MobileRedirectsToSphere(unittest.TestCase):
         stats = self.client.get("/stats/sphere?format=json").json()
         self.assertGreaterEqual(stats["mobile_redirect"], 1)
 
+    # Whether a phone reaches the sphere depends on the User-Agent, and a
+    # shared cache keyed on the URL alone does not know that. Cloudflare
+    # caching one desktop page at `/` and handing it to every phone behind
+    # it is the whole bug these three exist to prevent -- it looks
+    # intermittent in the wild, because it depends on who arrived first.
+    def test_a_browser_page_is_never_stored_by_a_shared_cache(self):
+        for path in ("/", "/Tokyo"):
+            cc = self.client.get(path, headers=BROWSER).headers["cache-control"]
+            self.assertIn("private", cc, path)
+            self.assertNotIn("s-maxage", cc, path)
+            self.assertNotIn("public", cc, path)
+
+    def test_the_redirect_itself_is_never_stored_either(self):
+        # The same bug pointing the other way: a cached 302 would bounce
+        # desktop visitors to the sphere.
+        cc = self.client.get("/Tokyo", headers=MOBILE).headers["cache-control"]
+        self.assertIn("no-store", cc)
+
+    def test_terminal_and_json_keep_full_edge_caching(self):
+        # The reason for not simply sending Vary: User-Agent. Curl and
+        # ?format=json are the bulk of the traffic and are identical for
+        # every visitor, so they stay shared-cacheable.
+        for headers in (TERMINAL, {"user-agent": "curl/8.0", "accept": "*/*"}):
+            cc = self.client.get("/Tokyo", headers=headers).headers["cache-control"]
+            self.assertIn("s-maxage", cc)
+            self.assertIn("public", cc)
+        cc = self.client.get("/Tokyo?format=json", headers=TERMINAL).headers["cache-control"]
+        self.assertIn("s-maxage", cc)
+
     def test_googlebot_mobile_crawler_is_not_redirected(self):
         # Googlebot's and Bingbot's mobile crawlers send an Android/iPhone
         # UA -- without an exemption they'd get the sphere page redirect

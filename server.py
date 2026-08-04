@@ -1856,8 +1856,32 @@ def _respond(request: Req, place: str | None):
     _tally(r, daytime, hit, mode, res.status, res.data, colour,
            referrer=_referrer_domain(request), mobile=_is_mobile(request))
     edge = DAY_EDGE if daytime else NIGHT_EDGE
-    headers = {"Cache-Control": f"public, max-age={edge // 4}, s-maxage={edge}, "
-                                f"stale-while-revalidate=600",
+    # A browser page is private; a terminal or JSON response is not.
+    #
+    # These routes decide what to serve from the User-Agent: a phone gets a
+    # 302 to the sphere (_mobile_sphere_redirect) and everyone else gets the
+    # page. A shared cache with no Vary keyed only on the URL, which is what
+    # Cloudflare does by default, therefore serves whichever it saw first to
+    # everyone for the length of s-maxage -- one desktop visitor warms `/`
+    # with the text page and every phone behind it lands there instead of on
+    # the sphere. It looks intermittent because it depends on who arrived
+    # first inside each window.
+    #
+    # The width ladder made this constant rather than occasional: browsers
+    # used to bounce themselves to `/?w=NNN` (a different cache key) and now
+    # they stay on the bare URL, which is exactly the entry a phone needs.
+    #
+    # Vary: User-Agent would also be correct but fragments the cache across
+    # every UA string in existence. Marking only the browser path private is
+    # narrower: curl and ?format=json keep full edge caching, which is the
+    # overwhelming majority of traffic, and the origin renders a warm page
+    # in a few milliseconds anyway.
+    if mode == "html":
+        cache = f"private, max-age={edge // 4}"
+    else:
+        cache = (f"public, max-age={edge // 4}, s-maxage={edge}, "
+                 f"stale-while-revalidate=600")
+    headers = {"Cache-Control": cache,
                "X-Cache": "HIT" if hit else "MISS"}
     if mode == "json":
         return JSONResponse(res.data, status_code=res.status, headers=headers)
@@ -2760,7 +2784,12 @@ def _mobile_sphere_redirect(request, place):
     _hour_stat["mobile"] += 1
     _stat["ua:mobile"] += 1
     qs = f"?{request.url.query}" if request.url.query else ""
-    return RedirectResponse(f"/{r.place.slug}/sphere{qs}", status_code=302)
+    # The other half of keeping this decision out of a shared cache. The page
+    # response is marked private above; without the same treatment here a
+    # cached 302 would bounce desktop visitors to the sphere, which is the
+    # identical bug pointing the other way.
+    return RedirectResponse(f"/{r.place.slug}/sphere{qs}", status_code=302,
+                            headers={"Cache-Control": "private, no-store"})
 
 
 @app.get("/")
