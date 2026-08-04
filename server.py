@@ -982,6 +982,12 @@ def _tally(r, daytime, hit, mode, status, data, colour=True, referrer=None,
         _stat["param:quadrant"] += 1
     if r.night:
         _stat["param:night"] += 1
+    # Golden hour is on by default, so counting the parameter would only ever
+    # count people switching it off. Both halves are worth knowing: "shown"
+    # is the denominator that says how often the layer was even eligible,
+    # which is the only thing that makes the opt-out rate mean anything.
+    if daytime:
+        _stat["golden:off" if not r.golden else "golden:shown"] += 1
     if not r.lines:
         _stat["param:nolines"] += 1
     if r.width:
@@ -1132,6 +1138,18 @@ def stats_text(n=50, map_slot=False):
             for name, c in _events_teased.most_common(8):
                 L.append(f"    {name[:26]:26} {c:>8,}")
         L.append("")
+    # Golden hour: how many daylight charts could have carried the layer, and
+    # how many visitors turned it off with g. An opt-out rate is the only
+    # honest read on a default-on feature -- a raw parameter count would just
+    # be the people who disliked it.
+    g_shown, g_off = _stat["golden:shown"], _stat["golden:off"]
+    if g_shown or g_off:
+        total = g_shown + g_off
+        L.append("golden hour")
+        L.append(f"  {'shown':12} {g_shown:>8,}  ({100*g_shown/total:.0f}% of "
+                 f"{total:,} daylight charts)")
+        L.append(f"  {'switched off':12} {g_off:>8,}")
+        L.append("")
     pages = sorted(k for k in _stat if k.startswith("page:"))
     if pages:
         L.append("pages")
@@ -1198,6 +1216,8 @@ def stats_json(n=50):
                     top_places=dict(_events_places.most_common(n)),
                     teaser_shown=_stat["teaser:shown"],
                     teaser_absent=_stat["teaser:absent"],
+                    golden_shown=_stat["golden:shown"],
+                    golden_off=_stat["golden:off"],
                     top_teased=dict(_events_teased.most_common(n))),
         views={k[5:]: v for k, v in _stat.items() if k.startswith("view:")},
         pages={k[5:]: v for k, v in _stat.items() if k.startswith("page:")},
@@ -1603,6 +1623,10 @@ def _build(request: Req, place: str | None):
         quadrant=(q["quadrant"] if "quadrant" in q else None),
         nodso=bool(q.get("nodso")),
         panel=bool(q.get("panel")),
+        # The opt-out, not the opt-in: golden hour is on by default, so the
+        # plain URL stays clean and only someone who turned it off carries a
+        # parameter for it.
+        nogolden=bool(q.get("nogolden")),
     )
 
 
@@ -1620,7 +1644,7 @@ UNKNOWN = """\
 def _cache_key(r, daytime):
     q = (round(r.place.lat, 1), round(r.place.lon, 1), r.view, r.facing, r.span,
          (r.find or "").lower(), bool(r.tle), r.night, r.width, r.dso, r.quadrant,
-         r.lines, r.panel)
+         r.lines, r.panel, r.golden)
     bucket = DAY_BUCKET if daytime else NIGHT_BUCKET
     stamp = int(r.when_utc.timestamp() // bucket)
     return (q, stamp)
@@ -1994,6 +2018,10 @@ def _respond(request: Req, place: str | None):
         if star_chart:
             kbd["quadrant"] = api._quadrant_toggle_url(r)
             kbd["grid"] = api._quadrant_grid_url(r)
+        else:
+            # The mirror of the above: golden hour is a daylight layer, so
+            # the g key exists exactly where the quadrant keys do not.
+            kbd["golden"] = api._golden_toggle_url(r)
         controls = api.controls_html(explore, animate_btn, quadrant_btn, sphere_btn, extra)
         # _toggle_qs(r) already drops find= (documented, matches the
         # quadrant button/d shortcut) -- None rather than "" when there's

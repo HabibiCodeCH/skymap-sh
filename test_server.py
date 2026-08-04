@@ -1785,7 +1785,7 @@ class KeyboardShortcuts(unittest.TestCase):
         self.assertIn('"quadrant": "/Zurich?t=2026-07-30T23:00&quadrant"', resp.text)
         self.assertIn('"grid": "/Zurich?t=2026-07-30T23:00&quadrant"', resp.text)
 
-    def test_day_view_offers_no_toggles(self):
+    def test_day_view_offers_no_star_chart_toggles(self):
         # dso/quadrant don't apply to the Sun's-arc day view -- same gate
         # quadrant_btn's own disabled state already uses. Checking for the
         # JSON-key form (quote-colon-quote) specifically -- the bare word
@@ -1793,9 +1793,22 @@ class KeyboardShortcuts(unittest.TestCase):
         # every chart page regardless, which a plain substring check would
         # wrongly match.
         resp = self.client.get("/Zurich?t=2026-07-30T13:00", headers=BROWSER)
-        self.assertIn("var KBD={};", resp.text)
         self.assertNotIn('"quadrant": "', resp.text)
         self.assertNotIn('"grid": "', resp.text)
+
+    def test_day_view_offers_the_golden_hour_toggle(self):
+        # The mirror of the quadrant keys: golden hour is a daylight layer,
+        # so 'g' is wired exactly where 'd' and 'z' are not.
+        resp = self.client.get("/Zurich?t=2026-07-30T13:00", headers=BROWSER)
+        self.assertIn('"golden": "/Zurich?t=2026-07-30T13:00&nogolden=1"', resp.text)
+
+    def test_star_chart_offers_no_golden_toggle(self):
+        resp = self.client.get("/Zurich?t=2026-07-30T23:00", headers=BROWSER)
+        self.assertNotIn('"golden": "', resp.text)
+
+    def test_the_golden_toggle_turns_back_on_once_it_is_off(self):
+        resp = self.client.get("/Zurich?t=2026-07-30T13:00&nogolden=1", headers=BROWSER)
+        self.assertIn('"golden": "/Zurich?t=2026-07-30T13:00"', resp.text)
 
     def test_grid_toggle_stays_bare_even_when_already_zoomed_into_one_cell(self):
         # 'z' needs a "go to the bare grid" landing spot regardless of
