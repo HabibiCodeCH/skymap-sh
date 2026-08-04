@@ -722,20 +722,34 @@ def _sun_path_mode(r):
         else "the Sun's path"
 
 
+# Was 1.6, which held the stars back far longer than a real sky does: with
+# the Sun 11 degrees down -- late nautical twilight, when Vega, Arcturus,
+# Altair and Deneb are all easy naked-eye -- it allowed magnitude -0.91,
+# and exactly one star in the catalogue is that bright. Charts drawn in the
+# hour after dusk came out empty but for a planet or two, which is not what
+# anyone standing outside at that hour can see. Arcturus needed the Sun 12.4
+# degrees down to appear; at 0.7 it arrives at 7.7, which is about when it
+# really does. Below 1.0 the curve bends the other way -- stars arrive
+# earlier in twilight rather than later -- and the two endpoints are
+# unchanged, so nothing shows while the Sun is up and full dark still lands
+# on magnitude 4.
+FADE_BIAS = 0.7
+
+
 def _fade_mag_limit(sun_alt):
     """Shared by compose_frame() (animation) and the static views, so a
     snapshot at a given moment always shows exactly what an animation
     frame at that same moment would -- no hard cut at sunset/sunrise, just
     this one continuous function of the Sun's altitude. Biased, not
-    linear: stars stay suppressed through the brighter part of twilight
-    and catch up fast near full dark -- late to appear at dusk, early to
-    vanish at dawn, symmetrically, since this is a pure function of
-    altitude with no notion of which direction time runs."""
+    linear: stars arrive through the brighter part of twilight rather than
+    all at once near full dark -- and symmetrically at dawn, since this is
+    a pure function of altitude with no notion of which direction time
+    runs."""
     if sun_alt >= 0:
         return -5.0
     if sun_alt <= -18:
         return 4.0
-    t = ((0 - sun_alt) / 18.0) ** 1.6
+    t = ((0 - sun_alt) / 18.0) ** FADE_BIAS
     return -5.0 + t * 9.0
 
 

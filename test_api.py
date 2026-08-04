@@ -1014,6 +1014,52 @@ class CatalogHtml(unittest.TestCase):
         self.assertIn("DEEP SKY (112)", h)
 
 
+class TwilightFade(unittest.TestCase):
+    """How fast stars arrive as the Sun goes down. The curve used to hold
+    them back until well past nautical twilight: at 11 degrees down it
+    allowed magnitude -0.91, one star in the whole catalogue, so a chart an
+    hour after dusk showed a planet and nothing else."""
+
+    def limit(self, alt):
+        return api._fade_mag_limit(alt)
+
+    def test_nothing_while_the_sun_is_up_and_the_full_catalogue_at_full_dark(self):
+        # The endpoints are the part that must not move.
+        self.assertEqual(self.limit(10), -5.0)
+        self.assertEqual(self.limit(0), -5.0)
+        self.assertEqual(self.limit(-18), 4.0)
+        self.assertEqual(self.limit(-30), 4.0)
+
+    def test_the_first_evening_stars_arrive_when_they_really_do(self):
+        # Vega 0.03, Arcturus -0.05: naked-eye well before astronomical
+        # twilight. Anything later than about 9 degrees is the old bug.
+        self.assertGreaterEqual(self.limit(-9), 0.05)
+        # Deneb (1.25) and the rest of first magnitude by nautical twilight.
+        self.assertGreaterEqual(self.limit(-12), 1.25)
+        # But not a sky full of stars while it is still properly bright.
+        self.assertLess(self.limit(-4), 0.0)
+
+    def test_it_only_ever_brightens_as_the_sun_sets(self):
+        prev = None
+        for tenths in range(0, -181, -1):
+            cur = self.limit(tenths / 10)
+            if prev is not None:
+                self.assertGreaterEqual(cur, prev, f"at {tenths/10}")
+            prev = cur
+
+    def test_a_real_chart_after_dusk_has_stars_in_it(self):
+        # The end of the whole point: a Geneva chart at nautical twilight
+        # showing Venus alone was what started this.
+        # Request takes local wall clock at the place -- handing it UTC
+        # renders two hours earlier, which in August is still daylight and
+        # gets the Sun's-path view instead of a star chart.
+        text = api.compose(api.Request(place="Geneva",
+                                       when=dt.datetime(2026, 8, 3, 22, 13),
+                                       color=False)).text
+        self.assertIn("Vega", text)
+        self.assertIn("Arcturus", text)
+
+
 class FindingTheSun(unittest.TestCase):
     """?find=Sun answered "not visible: the sky is still too bright", then
     "0° from the Sun: too deep in the glare", and drew nothing. Both rules
@@ -1029,9 +1075,11 @@ class FindingTheSun(unittest.TestCase):
     ECLIPSE_LOCAL = dt.datetime(2026, 8, 12, 19, 47)
 
     def _at(self, local, **kw):
-        p = api.lookup_place(self.PLACE)
-        when = local - dt.timedelta(hours=p.offset(dt.datetime(2026, 8, 12)))
-        return api.compose(api.Request(place=self.PLACE, when=when, color=False,
+        # Straight through: Request's when= is local wall clock at the place
+        # (it subtracts the offset itself). Converting first landed these
+        # two hours early -- still daylight, so the assertions held, but not
+        # on the moment they name.
+        return api.compose(api.Request(place=self.PLACE, when=local, color=False,
                                        find="Sun", **kw))
 
     def test_the_sun_is_visible_when_it_is_up(self):
