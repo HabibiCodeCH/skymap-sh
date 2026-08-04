@@ -1588,6 +1588,70 @@ def _compose_sphere(r):
         # The one thing this view can do that no chart can: point your actual
         # body at the thing. Empty on all but a handful of nights a year.
         markers=_markers_json(r),
+        golden=_sphere_golden(r),
+    )
+
+
+# One point per this many minutes along the Sun's day. The scrubber reads
+# between them, so this is the resolution of the *track*, not of the answer:
+# ten minutes moves the Sun about 2.5 degrees, which is smooth enough to
+# drag along and costs 145 points of three numbers each -- a couple of KB
+# before gzip, against the 110 KB the star list already spends.
+SPHERE_TRACK_STEP = 10
+
+
+def _sphere_golden(r):
+    """The golden-hour model for the 3D view: the Sun's whole track for the
+    day, the band edges, and where it is right now.
+
+    The flat chart can only draw the half of the golden band that is above
+    the horizon. A sphere has no such problem -- there is a below to draw in
+    -- so this carries the real -4 to +6 window and the blue hour under it,
+    which is the first time blue hour gets to be a band rather than a
+    sentence.
+
+    Times are minutes from local midnight rather than clock strings: the
+    scrubber does arithmetic on them, and a client that wants to display one
+    already has tz_offset."""
+    p = r.place
+    off = p.offset(r.when_utc)
+    day0 = r.when_local.replace(hour=0, minute=0, second=0,
+                                microsecond=0) - dt.timedelta(hours=off)
+    ev = sun_events(day0, p.lat, p.lon)
+    bands = sky.sun_bands(day0, p.lat, p.lon, ev)
+
+    def mins(t):
+        return None if t is None else round((t - day0).total_seconds() / 60)
+
+    def band(b):
+        if not b:
+            return None
+        return dict(start=mins(b["start"]), end=mins(b["end"]),
+                    open_end=b["open_end"])
+
+    # floor=-90 keeps the whole day including the night half: the band edges
+    # this view can draw run to -6, and a track that stopped at the horizon
+    # would leave the blue hour hanging off the end of it.
+    track = [[round(t), round(a, 2), round(z, 2)]
+             for t, a, z in sun_arc(day0, p.lat, p.lon,
+                                    step_min=SPHERE_TRACK_STEP, floor=-90.0)]
+    jd = julian(r.when_utc)
+    lst = (gmst_hours(jd) + p.lon / 15.0) % 24
+    sa, sz = altaz(sun(jd)["ra"], sun(jd)["dec"], p.lat, lst)
+    ratio = sky.shadow_ratio(sa)
+    return dict(
+        step_min=SPHERE_TRACK_STEP, track=track,
+        now_min=round((r.when_utc - day0).total_seconds() / 60),
+        sun=dict(alt=round(sa, 2), az=round(sz, 2)),
+        # The band edges as altitudes, so the client draws the rings itself
+        # rather than being sent geometry it can derive.
+        edges=dict(golden_lo=sky.GOLDEN_LO, golden_hi=sky.GOLDEN_HI,
+                   blue_lo=-6.0, blue_hi=sky.GOLDEN_LO, horizon=-0.833),
+        note=bands["note"],
+        golden_am=band(bands["golden_am"]), golden_pm=band(bands["golden_pm"]),
+        blue_am=band(bands["blue_am"]), blue_pm=band(bands["blue_pm"]),
+        sunrise=mins(ev.get("sunrise")), sunset=mins(ev.get("sunset")),
+        shadow=None if ratio is None else round(min(ratio, 999), 2),
     )
 
 
@@ -4794,16 +4858,26 @@ RESET_HTML = '<a class="animate-btn" href="/">↺ reset skymap</a>'
 # correct WebGL for a rotating starfield is a much bigger surface than one
 # pinned CDN import, scoped to this one opt-in page.
 SPHERE_PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
 <title>{title}</title>
 <meta name="description" content="The night sky above you, in 3D -- look around by tilting your phone.">
 <link rel="icon" href="/favicon.ico" sizes="any">
 <link rel="apple-touch-icon" href="/apple-touch-icon.png">
 <style>
- html,body{{margin:0;height:100%;background:#000;overflow:hidden;
+ /* Pinned rather than merely full-height. A pinch-zoom on this page scaled
+    the whole document and left the scene sitting in a black margin, which
+    on a view whose entire job is to be looked at is worse than useless.
+    position:fixed with inset:0 also kills iOS rubber-band scrolling, and
+    touch-action:none stops the browser claiming the gestures before the
+    scene ever sees them. maximum-scale in the viewport meta is the other
+    half; iOS ignores it on its own, hence the gesturestart handler in the
+    script and this belt as well as those braces. */
+ html,body{{margin:0;padding:0;position:fixed;inset:0;background:#000;
+           overflow:hidden;touch-action:none;overscroll-behavior:none;
+           -webkit-text-size-adjust:100%;
            font-family:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
            -webkit-font-smoothing:antialiased}}
- canvas{{display:block}}
+ canvas{{display:block;touch-action:none}}
  #hud{{position:fixed;top:0;left:0;right:0;padding:10px 14px;color:#6e7681;font-size:12px;
       display:flex;justify-content:space-between;pointer-events:none;z-index:1000}}
  #hud a{{color:#87d7ff;pointer-events:auto;text-decoration:none}}
@@ -4846,7 +4920,9 @@ SPHERE_PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
  .con-label span{{color:#8fa3c9;font-size:12px;letter-spacing:.03em}}
  .dso-label span{{color:#8fe6ae}}
  .body-label span{{color:#ffd77a;font-weight:600}}
- #toolbar{{position:fixed;left:0;right:0;bottom:0;z-index:1000;padding:10px 12px;
+ /* Stops short of the mode switch, which owns the bottom-right corner in
+    both modes. Without this the toolbar's last row ran underneath it. */
+ #toolbar{{position:fixed;left:0;right:72px;bottom:0;z-index:1000;padding:10px 12px;
          display:flex;gap:8px;flex-wrap:wrap;align-items:center;
          background:linear-gradient(rgba(4,6,10,0),rgba(4,6,10,.85) 65%)}}
  .toggle-btn{{background:#0d1117;border:1px solid #30363d;color:#6e7681;
@@ -4859,13 +4935,109 @@ SPHERE_PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
     focusing any input smaller than that. Fixing the cause beats trying to
     zoom back out again after the fact, which is jumpy and not reliable
     across browsers. */
+ /* Both the field and its button are pinned to one height. The field
+    carries font-size:16px (see above) and the button 12px, so left to
+    their own padding the button came out visibly shorter than the thing
+    it sits beside. */
+ #find-form{{align-items:stretch}}
+ #find-input,#find-form button{{height:34px;box-sizing:border-box;line-height:1}}
  #find-input{{background:#0d1117;border:1px solid #30363d;color:#c9d1d9;
              padding:6px 10px;border-radius:4px;font:inherit;font-size:16px;width:190px}}
- #find-form button{{background:#238636;border:0;color:#fff;padding:6px 12px;
+ #find-form button{{background:#238636;border:0;color:#fff;padding:0 14px;
                     border-radius:4px;font:inherit;font-size:12px;cursor:pointer}}
  #find-cancel{{background:#7a1f1f !important}}
  #find-msg{{position:fixed;left:0;right:0;top:38px;text-align:center;color:#ffd700;
            font-size:12px;padding:0 12px;pointer-events:none;z-index:1000;margin:0}}
+ /* Mode switch: a vertical pair in the bottom-right corner, thumb-reachable
+    on a phone held up in front of you. Two cells rather than one cycling
+    button, so both modes are visible and neither is a surprise. The second
+    cell only exists where there is a sunrise or sunset to talk about -- at
+    a pole in winter there is no golden hour, and offering it would be an
+    empty promise. Sized to the 44px touch target. */
+ #mode-switch{{position:fixed;right:12px;bottom:10px;z-index:1002;
+              display:flex;flex-direction:column;
+              border:1px solid #30363d;border-radius:10px;overflow:hidden;
+              background:rgba(4,6,10,.86);backdrop-filter:blur(4px)}}
+ .mode-cell{{appearance:none;border:0;background:transparent;color:#8b949e;
+            font:inherit;cursor:pointer;width:52px;padding:8px 0 6px;
+            display:flex;flex-direction:column;align-items:center;gap:2px;
+            line-height:1.05}}
+ .mode-cell+.mode-cell{{border-top:1px solid #30363d}}
+ .mode-ico{{font-size:15px}}
+ .mode-lab{{font-size:9px;letter-spacing:.04em}}
+ .mode-cell.on{{color:#f0f6fc;background:rgba(255,194,77,.10)}}
+ #mode-golden.on{{color:#ffc24d}}
+ .mode-cell:hover{{color:#f0f6fc}}
+ /* The golden-hour panel. Pinned to the bottom because in this mode the
+    phone is held up and turned, so the bottom of the screen is the one
+    place a thumb can reach without the whole model swinging. */
+ /* Stops short of the mode switch rather than running under it: the switch
+    keeps the corner it starts in, in both modes, and the readout and
+    scrubber take the space left of it. Moving the switch up when this
+    opened meant the one control that is always there was the one control
+    that moved. */
+ /* Full width so the gradient carries on behind the mode switch instead
+    of stopping in a hard edge beside it; the content is held off the
+    corner by padding rather than by the box ending early. Generous bottom
+    padding -- the scrubber sat right on the edge of the screen, which on a
+    phone is where the home indicator lives. */
+ #golden-panel{{position:fixed;left:0;right:0;bottom:0;z-index:1001;
+               background:linear-gradient(transparent,rgba(4,6,10,.93) 26%);
+               padding:24px 74px 30px 12px;text-align:center;
+               padding-bottom:calc(30px + env(safe-area-inset-bottom))}}
+ #golden-readout{{margin:0 0 8px;font-size:12px;color:#c9d1d9;
+                 font-variant-numeric:tabular-nums;line-height:1.4}}
+ /* The star view's controls have nothing to say here, and the find field
+    was showing through from behind the panel. */
+ body.golden-mode #toolbar,body.golden-mode #find-msg,
+ body.golden-mode #radiant-hud{{display:none}}
+ #golden-readout.in-band{{color:#ffc24d}}
+ /* Up top, directly under the HUD's place and bearing line: these are the
+    day's fixed facts, so they belong with the other things that do not
+    change as you scrub, not next to the control that does. Its own
+    gradient, because the sky behind it is bright in this mode. */
+ /* 999, under the HUD rather than over it: this sits at top:0 and comes
+    later in the DOM, so at equal z-index its gradient would have painted
+    across the place and bearing line. Behind, the same gradient instead
+    gives that line something to read against on a bright sky. */
+ #golden-times{{position:fixed;top:0;left:0;right:0;z-index:999;
+               margin:0;padding:42px 14px 12px;
+               font-size:11px;color:#000;pointer-events:none;
+               font-variant-numeric:tabular-nums;
+               display:flex;flex-direction:column;gap:3px;align-items:center}}
+ /* Black on the daylight sky, no panel behind it. Scrubbing the Sun under
+    the blue band takes the sky to night, though, and black on that is
+    nothing at all -- so the one case where the rule cannot hold flips it.
+    setSunAt sets the class. */
+ body.golden-dark #golden-times{{color:#c9d1d9}}
+ /* An author display: rule outranks the browser's own [hidden]{{display:none}},
+    so without this the times stayed on screen in the star view no matter
+    what the attribute said. Same trap on the light cell, which sets
+    display:flex through .mode-cell. */
+ #golden-times[hidden],.mode-cell[hidden]{{display:none}}
+ #golden-times span{{white-space:nowrap}}
+ #golden-times b{{font-weight:600;display:inline-block;min-width:44px;text-align:right}}
+ /* Deeper than the band colours themselves: gold and sky blue are picked to
+    glow against black, and against a bright daylight sky they wash out. */
+ #golden-times b.g{{color:#b8791a}}
+ #golden-times b.b{{color:#1f5fa8}}
+ body.golden-dark #golden-times b.g{{color:#ffc24d}}
+ body.golden-dark #golden-times b.b{{color:#5aa9ff}}
+ #golden-scrub{{width:100%;max-width:520px;accent-color:#ffc24d;
+               height:26px;cursor:pointer;margin:0;display:block}}
+ /* Every sky label goes: this is a model of the ground in daylight, and
+    Orion sitting over the shadow says nothing useful. The compass points
+    are on .ground-label precisely so they survive this. */
+ body.golden-mode .star-label,body.golden-mode .body-label,
+ body.golden-mode .dso-label,body.golden-mode .con-label,
+ body.golden-mode .radiant-label{{display:none}}
+ .ground-label span{{color:#3d3833;font-size:12px;font-weight:600;
+                    letter-spacing:.06em;text-shadow:0 0 3px rgba(255,255,255,.7)}}
+ .ground-label{{display:none}}
+ body.golden-mode .ground-label{{display:block}}
+ #find-arrow{{position:fixed;color:#ffd700;font-size:22px;font-weight:700;
+             letter-spacing:-2px;pointer-events:none;z-index:1000;display:none;
+             text-shadow:0 0 6px #000}}
  /* Four ticks that close in from outside toward the centre as you get
     closer -- becomes a solid cross right at the edge of "found", at which
     point a permanent purple circle + bold name takes over instead (see
@@ -4985,6 +5157,18 @@ you're holding it; anywhere else, drag to look around.</p>
 <button type="submit">Find</button>
 <button type="button" id="find-cancel" hidden>Cancel</button>
 </form>
+</div>
+<div id="mode-switch">
+<button type="button" id="mode-sky" class="mode-cell on" aria-pressed="true">
+<span class="mode-ico">&#9673;</span><span class="mode-lab">sky</span></button>
+<button type="button" id="mode-golden" class="mode-cell" aria-pressed="false" hidden>
+<span class="mode-ico">&#9728;</span><span class="mode-lab">light</span></button>
+</div>
+<p id="golden-times" hidden></p>
+<div id="golden-panel" hidden>
+<p id="golden-readout"></p>
+<input id="golden-scrub" type="range" min="0" max="1440" step="1" value="720"
+       aria-label="Time of day">
 </div>
 <p id="find-msg"></p>
 <div id="find-arrow">&gt;&gt;&gt;</div>
@@ -5135,6 +5319,347 @@ function toVec(alt, az) {{
   var y = Math.sin(a);
   var zc = -Math.cos(z) * Math.cos(a);
   return new THREE.Vector3(x, y, zc).multiplyScalar(RADIUS);
+}}
+
+// ---- golden hour -------------------------------------------------------
+// The star view stands you at the centre looking out. This is the opposite,
+// and it has to be: where the light comes from, which way the shadow falls
+// and how both move are relationships between the Sun, the ground and you,
+// and a relationship is hard to read from inside it.
+//
+// The flip costs two lines in animate() rather than a control of its own.
+// deviceQ already says which way you are facing; stepping the camera back
+// along that same axis turns "look out from here" into "look in at this"
+// with the identical quaternion and the identical compass filter. Turning
+// your body walks the camera around the model.
+// How far out the camera stands, and the range a pinch can move it through.
+// Close in, the pole and the near end of its shadow fill the screen, which
+// is what you want when you are reading a bearing off the ground; far out
+// you see the whole day's arc over the whole disc. The far end is bounded
+// by the camera's own far plane (raised below, since 200 was cut for a view
+// that never left the origin).
+var ORBIT_R = RADIUS * 2.15;
+var orbitR = ORBIT_R;
+var ORBIT_MIN = RADIUS * 0.35, ORBIT_MAX = RADIUS * 3.2;
+camera.far = 400;
+camera.updateProjectionMatrix();
+// Deliberately small against the ground disc. A vertical thing's shadow is
+// cot(altitude) times its height, which is 9.5x at the top of the golden
+// band and past 30x near the horizon -- a taller pole would throw its
+// shadow off the edge of the world for most of the window this exists to
+// show. No metres anywhere: the ratio and the bearing are the honest
+// answer, and the flat ground this assumes is doing enough work already.
+var POLE_H = RADIUS * 0.035;
+// Stockier than a person (who is about 0.11 of their height across) so it
+// still reads as an object rather than a scratch when the whole disc is on
+// screen. The shadow takes the same width, because a shadow the width of a
+// hair cast by something with body looks like a bug.
+var POLE_R = POLE_H * 0.17;
+// Broad daylight, because that is when this is used. The star view is dark
+// for night vision; a photographer standing outside at six in the evening
+// is not dark-adapted and is looking at a bright world. The ground is a
+// warm neutral so a real shadow -- dark, not glowing -- reads across it,
+// and the sky behind is a flat daylight blue rather than the black the rest
+// of the page uses.
+var GOLD_HEX = 0xffb020, BLUE_HEX = 0x3d7fd0, GROUND_HEX = 0xbfb6a6;
+var SKY_DAY_HEX = 0x8ec5ea, SHADOW_HEX = 0x2f2a24;
+var GROUND_LINE_HEX = 0x6e675c, GROUND_SPOKE_HEX = 0x9a9083;
+
+var goldenOn = false, goldenGroup = null, goldenData = null;
+var sunDot = null, shadowLine = null, poleTop = null, groundDisc = null;
+var _look = new THREE.Vector3();     // reused every frame, not allocated
+
+// The lights go out as the Sun goes down, because they do. Scrubbing past
+// the bottom of the blue band and having the scene stay in broad daylight
+// was the one thing on screen that contradicted what the bands were saying.
+//
+// Stops in Sun altitude, interpolated between: full daylight overhead, warm
+// through the golden band, deep blue through the blue one, and properly
+// dark below it. Nothing here is a measurement -- it is the same reddening
+// idea the flat chart's arc already uses, in colour rather than in glyphs.
+var SKY_STOPS = [[15, 0x8ec5ea], [6, 0xa9c6e2], [2, 0xd8a878], [0, 0xe0a56a],
+                 [-4, 0x3f5580], [-6, 0x1b2540], [-12, 0x05070d]];
+
+function _mixHex(a, b, t) {{
+  var ar = (a >> 16) & 255, ag = (a >> 8) & 255, ab = a & 255;
+  var br = (b >> 16) & 255, bg = (b >> 8) & 255, bb = b & 255;
+  return ((Math.round(ar + (br - ar) * t) << 16)
+        | (Math.round(ag + (bg - ag) * t) << 8)
+        | Math.round(ab + (bb - ab) * t));
+}}
+
+function skyColourFor(alt) {{
+  if (alt >= SKY_STOPS[0][0]) return SKY_STOPS[0][1];
+  var last = SKY_STOPS[SKY_STOPS.length - 1];
+  if (alt <= last[0]) return last[1];
+  for (var i = 0; i < SKY_STOPS.length - 1; i++) {{
+    var hi = SKY_STOPS[i], lo = SKY_STOPS[i + 1];
+    if (alt <= hi[0] && alt >= lo[0]) {{
+      return _mixHex(hi[1], lo[1], (hi[0] - alt) / (hi[0] - lo[0]));
+    }}
+  }}
+  return last[1];
+}}
+
+// The ground is lit by the Sun too. Same curve, as a plain brightness
+// scale, so the disc does not stay glowing under a night sky.
+function groundLightFor(alt) {{
+  return Math.max(0.10, Math.min(1, (alt + 10) / 16));
+}}
+
+function _altAzVec(alt, az, radius) {{
+  var v = toVec(alt, az);
+  return radius ? v.normalize().multiplyScalar(radius) : v;
+}}
+
+// A band of sky between two altitudes, as a zone of the sphere. theta runs
+// from the +Y pole, so an altitude of a degrees sits at 90 - a.
+function _bandMesh(altLo, altHi, hex, opacity) {{
+  var t0 = (90 - altHi) * Math.PI / 180, t1 = (90 - altLo) * Math.PI / 180;
+  var geo = new THREE.SphereGeometry(RADIUS, 64, 8, 0, Math.PI * 2, t0, t1 - t0);
+  var mat = new THREE.MeshBasicMaterial({{
+    color: hex, transparent: true, opacity: opacity,
+    side: THREE.DoubleSide, depthWrite: false}});
+  return new THREE.Mesh(geo, mat);
+}}
+
+function _line(points, hex, opacity) {{
+  var geo = new THREE.BufferGeometry().setFromPoints(points);
+  var mat = new THREE.LineBasicMaterial({{
+    color: hex, transparent: opacity < 1, opacity: opacity}});
+  return new THREE.Line(geo, mat);
+}}
+
+function buildGolden(g) {{
+  if (goldenGroup || !g) return;
+  goldenData = g;
+  goldenGroup = new THREE.Group();
+  goldenGroup.visible = false;
+
+  // The ground, out to the horizon circle -- the disc's rim IS the sphere's
+  // alt=0, so the compass ring lands exactly where the horizon is rather
+  // than at an arbitrary radius that only looks about right.
+  var disc = new THREE.Mesh(
+    new THREE.CircleGeometry(RADIUS, 64),
+    new THREE.MeshBasicMaterial({{color: GROUND_HEX,
+                                 side: THREE.DoubleSide}}));
+  disc.rotation.x = -Math.PI / 2;
+  disc.position.y = -0.05;          // just under the rings, so they read on top
+  goldenGroup.add(disc);
+  groundDisc = disc;
+
+  var ring = [];
+  for (var i = 0; i <= 128; i++) ring.push(_altAzVec(0, i * 360 / 128));
+  goldenGroup.add(_line(ring, GROUND_LINE_HEX, 1));
+
+  // Radial spokes and the eight compass points: the bearing is half the
+  // answer this view gives, so the ground has to be readable as a compass
+  // and not just as a floor.
+  var NAMES = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'];
+  for (var k = 0; k < 8; k++) {{
+    var az = k * 45;
+    goldenGroup.add(_line([new THREE.Vector3(0, 0, 0), _altAzVec(0, az)],
+                          GROUND_SPOKE_HEX, 1));
+    // Its own class, not con-label: golden mode hides every sky label, and
+    // the compass points are the one set of labels that belong to the
+    // ground rather than to the sky.
+    var lab = addLabel(NAMES[k], _altAzVec(0, az).multiplyScalar(1.04),
+                       'ground-label', 1);
+    if (lab) goldenGroup.add(lab);
+  }}
+
+  // You. A plain vertical mark -- the shadow is what carries the meaning,
+  // and drawing a person would put a height on it that this does not know.
+  // Solid, not a hairline. It was a one-pixel line, which vanished at any
+  // useful zoom -- and the thing casting the shadow is half of what the
+  // shadow means, so it has to have some body to it. Stockier than a real
+  // person for the same reason: this reads at a glance rather than being
+  // measured.
+  var pole = new THREE.Mesh(
+    new THREE.CylinderGeometry(POLE_R, POLE_R, POLE_H, 16),
+    new THREE.MeshBasicMaterial({{color: 0x241f1a}}));
+  pole.position.y = POLE_H / 2;
+  goldenGroup.add(pole);
+  // A soft cap, so the top reads as an end rather than a cut-off.
+  var cap = new THREE.Mesh(
+    new THREE.SphereGeometry(POLE_R, 16, 10),
+    new THREE.MeshBasicMaterial({{color: 0x241f1a}}));
+  cap.position.y = POLE_H;
+  goldenGroup.add(cap);
+  poleTop = new THREE.Vector3(0, POLE_H, 0);
+
+  goldenGroup.add(_bandMesh(g.edges.golden_lo, g.edges.golden_hi, GOLD_HEX, 0.42));
+  goldenGroup.add(_bandMesh(g.edges.blue_lo, g.edges.blue_hi, BLUE_HEX, 0.42));
+
+  // Today's whole path. Cut at -8 rather than at the horizon: the bands run
+  // to -6, and a track that stopped at 0 would leave the blue hour hanging
+  // off the end of the line that is supposed to explain it.
+  var seg = [];
+  for (var j = 0; j < g.track.length; j++) {{
+    var p = g.track[j];
+    if (p[1] < -8) {{
+      if (seg.length > 1) goldenGroup.add(_line(seg, 0x4a443c, 0.75));
+      seg = [];
+      continue;
+    }}
+    seg.push(_altAzVec(p[1], p[2]));
+  }}
+  if (seg.length > 1) goldenGroup.add(_line(seg, 0x4a443c, 0.75));
+
+  sunDot = new THREE.Mesh(
+    new THREE.SphereGeometry(RADIUS * 0.022, 16, 12),
+    new THREE.MeshBasicMaterial({{color: 0xffd700}}));
+  goldenGroup.add(sunDot);
+
+  // A quad lying on the ground, the same width as the pole, rebuilt each
+  // time the Sun moves. Two triangles is cheap enough to redo on every
+  // frame of a scrub, and far easier to reason about than rotating and
+  // scaling a shared plane into place.
+  shadowLine = new THREE.Mesh(
+    new THREE.BufferGeometry(),
+    new THREE.MeshBasicMaterial({{color: SHADOW_HEX, transparent: true,
+                                 opacity: 0.55, side: THREE.DoubleSide,
+                                 depthWrite: false}}));
+  goldenGroup.add(shadowLine);
+
+  scene.add(goldenGroup);
+  setSunAt(g.now_min);
+}}
+
+// Where the Sun is at a given minute past local midnight, read off the
+// track by straight interpolation between the two points either side. The
+// track is sampled every ten minutes; the Sun moves about 2.5 degrees in
+// that time and its path is very nearly straight over so short a span, so
+// this is smooth to drag and honest to read.
+function sunAtMinute(m) {{
+  var t = goldenData.track;
+  if (t.length < 2) return null;
+  var i = Math.max(0, Math.min(t.length - 2,
+                               Math.floor(m / goldenData.step_min)));
+  var a = t[i], b = t[i + 1];
+  var span = b[0] - a[0];
+  var f = span ? Math.max(0, Math.min(1, (m - a[0]) / span)) : 0;
+  // Azimuth is a compass bearing, so it wraps. Interpolating 359 to 1 the
+  // long way round would swing the Sun most of the way across the sky
+  // between two samples ten minutes apart.
+  var dz = ((b[2] - a[2] + 540) % 360) - 180;
+  return {{alt: a[1] + (b[1] - a[1]) * f, az: (a[2] + dz * f + 360) % 360}};
+}}
+
+// Put the Sun at a minute past local midnight and redraw everything that
+// follows from it: the marker, the shadow, and the readout.
+function setSunAt(m) {{
+  if (!goldenData || !sunDot) return;
+  var s = sunAtMinute(m);
+  if (!s) return;
+  sunDot.position.copy(_altAzVec(s.alt, s.az));
+  // A shadow falls directly away from the Sun and runs cot(altitude) times
+  // the height of what casts it. Below the horizon there is no shadow at
+  // all -- not a very long one -- so the line simply goes away.
+  var lit = s.alt > 0;
+  shadowLine.visible = lit;
+  var ratio = null;
+  if (lit) {{
+    ratio = 1 / Math.tan(s.alt * Math.PI / 180);
+    var len = Math.min(ratio * POLE_H, RADIUS * 0.97);
+    var back = (s.az + 180) * Math.PI / 180;
+    var dx = Math.sin(back), dz = -Math.cos(back);      // along the shadow
+    var px = Math.cos(back) * POLE_R, pz = Math.sin(back) * POLE_R;   // across it
+    var y = 0.04;
+    var v = new Float32Array([
+      -px, y, -pz,   px, y, pz,   dx * len + px, y, dz * len + pz,
+      -px, y, -pz,   dx * len + px, y, dz * len + pz,
+      dx * len - px, y, dz * len - pz]);
+    shadowLine.geometry.dispose();
+    var geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.BufferAttribute(v, 3));
+    shadowLine.geometry = geo;
+  }}
+  var inBand = s.alt >= goldenData.edges.golden_lo
+            && s.alt <= goldenData.edges.golden_hi;
+  sunDot.material.color.setHex(inBand ? 0xffb238 : 0xffd700);
+  // Drag the Sun down and the lights go with it.
+  if (goldenOn) scene.background = new THREE.Color(skyColourFor(s.alt));
+  var lit = groundLightFor(s.alt);
+  if (groundDisc) groundDisc.material.color.setHex(GROUND_HEX).multiplyScalar(lit);
+  sunDot.visible = s.alt > goldenData.edges.blue_lo - 4;
+  document.body.classList.toggle('golden-dark', s.alt < goldenData.edges.blue_lo);
+  updateGoldenHud(m, s, ratio, inBand);
+}}
+
+var COMPASS16 = ['N', 'NNE', 'NE', 'ENE', 'E', 'ESE', 'SE', 'SSE',
+                 'S', 'SSW', 'SW', 'WSW', 'W', 'WNW', 'NW', 'NNW'];
+function compassOf(az) {{
+  return COMPASS16[Math.round(((az % 360) + 360) % 360 / 22.5) % 16];
+}}
+function hhmm(m) {{
+  var t = ((Math.round(m) % 1440) + 1440) % 1440;
+  return String(Math.floor(t / 60)).padStart(2, '0') + ':'
+       + String(t % 60).padStart(2, '0');
+}}
+
+function updateGoldenHud(m, s, ratio, inBand) {{
+  var out = document.getElementById('golden-readout');
+  var bits = [hhmm(m), 'sun ' + s.alt.toFixed(1) + '\\u00b0 ' + compassOf(s.az)];
+  if (ratio === null) {{
+    bits.push('below the horizon');
+  }} else {{
+    // Past 20x the ground's own slope matters more than the arithmetic, so
+    // the number stops pretending to be one.
+    bits.push('shadow ' + (ratio > 20 ? '>20x' : ratio.toFixed(1) + 'x')
+              + ' toward ' + compassOf(s.az + 180));
+  }}
+  out.textContent = (inBand ? '\\u25b8 golden \\u25c2  ' : '') + bits.join('  \\u00b7  ');
+  out.classList.toggle('in-band', !!inBand);
+}}
+
+function goldenWindowText(g) {{
+  function win(b) {{
+    if (!b) return null;
+    return b.open_end ? hhmm(b.start) + ' onward' : hhmm(b.start) + '-' + hhmm(b.end);
+  }}
+  var gold = [win(g.golden_am), win(g.golden_pm)].filter(Boolean).join('  \\u00b7  ');
+  var blue = [win(g.blue_am), win(g.blue_pm)].filter(Boolean).join('  \\u00b7  ');
+  // One band per line. Side by side, four times and two labels ran past the
+  // width of a phone and wrapped mid-time, which is the one place a break
+  // is unreadable.
+  var out = [];
+  if (gold) out.push('<span><b class="g">golden</b> ' + gold + '</span>');
+  if (blue) out.push('<span><b class="b">blue</b> ' + blue + '</span>');
+  return out.join('');
+}}
+
+// Everything that belongs to looking outward at stars, hidden while looking
+// inward at a model of the ground. It is daylight in this mode by
+// definition, so none of it was visible anyway -- and seen from outside the
+// sphere the star field sits between the camera and the thing it is meant
+// to be looking at.
+function setGolden(on) {{
+  if (!goldenData) return;
+  goldenOn = on;
+  goldenGroup.visible = on;
+  if (skyDome) skyDome.visible = !on;
+  // Daylight, unconditionally. The star view's black backdrop is there for
+  // night vision; this is a tool for standing outside in the late afternoon
+  // and it should look like it, whatever the clock says -- someone planning
+  // tomorrow's shoot at midnight still wants to see the scene lit.
+  scene.background = on ? new THREE.Color(SKY_DAY_HEX) : null;
+  scene.children.forEach(function(o) {{
+    if (o === goldenGroup || o === skyDome) return;
+    if (o.isPoints || o.isLineSegments) o.visible = !on;
+  }});
+  document.getElementById('golden-panel').hidden = !on;
+  document.getElementById('golden-times').hidden = !on;
+  var sky = document.getElementById('mode-sky');
+  var gold = document.getElementById('mode-golden');
+  sky.classList.toggle('on', !on);
+  sky.setAttribute('aria-pressed', String(!on));
+  gold.classList.toggle('on', on);
+  gold.setAttribute('aria-pressed', String(on));
+  document.body.classList.toggle('golden-mode', on);
+  var times = document.getElementById('golden-times');
+  if (on) times.innerHTML = goldenWindowText(goldenData);
+  updateLabelVisibility();
 }}
 
 // A meteor shower's radiant: the one thing this view can do that no flat
@@ -5557,6 +6082,22 @@ fetch('/' + PLACE + '/sphere.json' + window.location.search).then(function(r) {{
   }});
 
   addMarkers(data.markers);
+  // Built once, up front, and left hidden. The whole layer is ~1.5 KB
+  // gzipped on top of a payload that already carries 630 stars, so paying
+  // for it eagerly buys an instant toggle with no second round trip -- the
+  // deep-sky button lazy-loads because its data is genuinely large, which
+  // this is not.
+  if (data.golden) {{
+    buildGolden(data.golden);
+    var scrub = document.getElementById('golden-scrub');
+    scrub.value = data.golden.now_min;
+    // The second cell only earns its place where there is a golden hour to
+    // show. At a pole in winter the Sun never climbs into the band at all,
+    // and offering the mode there would be an empty promise.
+    if (data.golden.note !== 'never') {{
+      document.getElementById('mode-golden').hidden = false;
+    }}
+  }}
 
   var linePts = [];
   data.asterisms.forEach(function(con) {{
@@ -5778,6 +6319,62 @@ document.getElementById('labels-toggle').addEventListener('click', function() {{
   labelsOn = !labelsOn;
   this.classList.toggle('on', labelsOn);
   updateLabelVisibility();
+}});
+
+// Pinch and wheel move the camera, not the page. The page used to be the
+// only thing that zoomed, which meant getting close enough to read the
+// shadow scaled the whole document and left the scene in a black margin --
+// so this replaces a browser gesture that was actively unhelpful with the
+// control it was standing in for. Only in golden mode: the star view puts
+// you at the centre, where there is nothing to move closer to.
+function _clampOrbit(v) {{
+  return Math.max(ORBIT_MIN, Math.min(ORBIT_MAX, v));
+}}
+function _touchSpan(e) {{
+  var dx = e.touches[0].clientX - e.touches[1].clientX;
+  var dy = e.touches[0].clientY - e.touches[1].clientY;
+  return Math.hypot(dx, dy);
+}}
+var _pinchSpan = 0;
+window.addEventListener('touchstart', function(e) {{
+  if (e.touches.length === 2) _pinchSpan = _touchSpan(e);
+}}, {{passive: true}});
+window.addEventListener('touchmove', function(e) {{
+  if (!goldenOn || e.touches.length !== 2) return;
+  e.preventDefault();
+  var span = _touchSpan(e);
+  if (_pinchSpan > 0 && span > 0) orbitR = _clampOrbit(orbitR * _pinchSpan / span);
+  _pinchSpan = span;
+}}, {{passive: false}});
+window.addEventListener('touchend', function() {{ _pinchSpan = 0; }}, {{passive: true}});
+window.addEventListener('wheel', function(e) {{
+  if (!goldenOn) return;
+  e.preventDefault();
+  orbitR = _clampOrbit(orbitR * (1 + e.deltaY * 0.0015));
+}}, {{passive: false}});
+// iOS Safari ignores maximum-scale, and these are the events it zooms the
+// document with. Blocked outright: nothing on this page wants them.
+['gesturestart', 'gesturechange', 'gestureend'].forEach(function(g) {{
+  document.addEventListener(g, function(e) {{ e.preventDefault(); }}, {{passive: false}});
+}});
+
+document.getElementById('mode-sky').addEventListener('click', function() {{
+  setGolden(false);
+}});
+document.getElementById('mode-golden').addEventListener('click', function() {{
+  setGolden(true);
+}});
+
+document.getElementById('golden-scrub').addEventListener('input', function() {{
+  setSunAt(Number(this.value));
+}});
+
+// Same letter the flat chart uses for the same layer.
+window.addEventListener('keydown', function(e) {{
+  if (e.metaKey || e.ctrlKey || e.altKey) return;
+  var t = e.target;
+  if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA')) return;
+  if (e.key === 'g') {{ e.preventDefault(); setGolden(!goldenOn); }}
 }});
 
 document.getElementById('dso-toggle').addEventListener('click', function() {{
@@ -6038,6 +6635,18 @@ function animate() {{
     applyOrientation(lastEvent);
   }} else if (mode === 'drag') {{
     camera.quaternion.setFromEuler(new THREE.Euler(pitch, yaw, 0, 'YXZ'));
+  }}
+  // The whole of the outside-in view. Both control paths above have already
+  // said which way you are facing; a camera at -R along its own view axis
+  // looks straight back through the origin, so the same quaternion that
+  // aimed you at a patch of sky now walks you around the model instead.
+  // Nothing else about the orientation code changes, compass filter
+  // included, and drag orbits on a desktop for free.
+  if (goldenOn) {{
+    _look.set(0, 0, -1).applyQuaternion(camera.quaternion);
+    camera.position.copy(_look).multiplyScalar(-orbitR);
+  }} else if (camera.position.lengthSq() !== 0) {{
+    camera.position.set(0, 0, 0);
   }}
   // Both run at ~15fps instead of every frame: updateHeading() is just a
   // text readout, no need for 60fps; declutterLabels() only adjusts each
