@@ -6,7 +6,7 @@ sky.py knows how to draw. This knows how to answer a request — resolve a place
 resolve a time, pick a view, assemble the text, and hand back a structured
 version of the same facts for anyone who would rather have JSON.
 """
-import datetime as dt, html, json, math, re, unicodedata
+import copy, datetime as dt, html, json, math, re, unicodedata
 from urllib.parse import quote
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -387,6 +387,20 @@ class Request:
             self.when_local = now + dt.timedelta(hours=self.place.offset(now))
         self.tz = self.place.offset(self.when_utc)
 
+    def sized(self, width, panel):
+        """A copy of this Request at a different chart width.
+
+        at() below is the other cheap-copy helper, but it exists for
+        animation and deliberately drops find/iss. The width ladder needs
+        the opposite: the same view, the same target, the same moment, only
+        rendered at another column count. Shallow -- place and tle are
+        resolved, read-only data and are meant to be shared, not re-derived
+        once per rung."""
+        r2 = copy.copy(self)
+        r2.width = max(60, min(220, int(width)))
+        r2.panel = panel
+        return r2
+
     def at(self, when_utc):
         """A cheap copy of this Request at a different instant, reusing the
         already-resolved place instead of re-running geo/nearest-city lookup.
@@ -706,6 +720,136 @@ HORIZON_COLS_PER_ROW = 110 / 24
 
 def _effective_width(r):
     return r.width or DEFAULT_HORIZON_WIDTH
+
+
+# --- the width ladder ----------------------------------------------------------
+# A browser gets every rung of this in one response and CSS picks exactly one.
+# Nothing measures anything, nothing reloads, and the chart is right on first
+# paint. It replaces an auto-fit script that measured the font with a hidden
+# probe and then called location.replace() with a ?w= -- a second full page
+# request per visit, which also meant every browser view was counted twice in
+# /stats (_tally ran once per request, and there were two).
+#
+# Each rung is (minimum container width in ch, chart columns, zenith panel).
+# `ch` is the width of a "0" in the container's own font, which is exactly
+# what the probe used to compute by hand -- except the browser does it at
+# layout time, for free, and re-does it on resize with no request at all.
+# The chart font is a system monospace stack (no webfont, see PAGE's CSS), so
+# `ch` is already correct on the very first paint rather than after a font
+# load.
+#
+# Each breakpoint is the rung's OWN measured width, not a nominal
+# columns-plus-panel figure. Those two are not the same number and assuming
+# they were is what made the first version of this switch ~10ch late at
+# every step:
+#
+#   - without the panel, the prose under the chart wraps at a fixed 76
+#     characters (see _compose_sky's wrap_width), which is wider than a
+#     60-column chart -- so the narrowest rung renders 85ch wide, not 60ch
+#   - with the panel, the inset and its gap add 33ch, not the 43ch the
+#     reserving arithmetic starts from
+#
+# So the numbers below are what each rung actually occupies. WidthLadder's
+# test_each_rung_fits_its_own_breakpoint renders every one and checks it,
+# which is what keeps this honest if the prose wrap or the inset changes.
+#
+# Nine rungs: each one is a real render server-side (~4 ms) and a real <pre>
+# in the response (~10 KB raw, but only ~120 B gzipped, since the rungs are
+# near-identical text). Measured against 4 rungs that buys 8/9 common
+# desktop sizes fitting instead of 4/9, and mean wasted width across the
+# range drops from 28.9ch to 11.3ch, for +4 ms LCP and +1.1 KB gzipped.
+#
+# The top rung is 220 columns because Request.__init__ clamps there, so
+# 253ch is the widest thing this can render at all -- a maximised 2560
+# screen (323ch) keeps ~70ch of empty space no matter what is done here.
+# Raising that clamp is a separate change; add rungs above 220 here when it
+# lands. Retune in this tuple and nowhere else -- the CSS and the server
+# both read it.
+# Each figure is the widest that rung rendered across 32 place/time
+# combinations, plus 2ch of headroom. A rung's width is not fixed by its
+# column count alone -- the prose and the labels beside the inset vary by a
+# character or two with the sky being described, so a breakpoint set from a
+# single sample is an off-by-one waiting to happen (measuring only Zurich in
+# August put the 60+panel rung at 93ch; the same rung is 96ch over Tokyo in
+# January).
+CHART_LADDER = ((None, 60, False),   # 86ch rendered at its widest
+                (98, 60, True),
+                (123, 80, True),
+                (138, 100, True),
+                (158, 120, True),
+                (178, 140, True),
+                (198, 160, True),
+                (230, 190, True),
+                (260, 220, True))
+
+
+def chart_pre(inner):
+    """The plain, single-width chart/text block every non-chart page uses.
+
+    Carries both the id (what the rest of the JS and CSS has always keyed
+    off) and the class the ladder uses, so skymapChartPre() finds the right
+    element on a laddered chart page and an ordinary help/legend/stats page
+    alike, without either of them special-casing the other."""
+    return f'<pre id="chart-pre" class="chart-pre">{inner}</pre>'
+
+
+def chart_ladder(rungs):
+    """`rungs` is [(cols, panel, html), ...] in CHART_LADDER order.
+
+    No id on the individual rungs: there are several of them and an id has
+    to be unique, which is the one thing a repeated <pre id="chart-pre">
+    could not be. data-cols is read at click time by the animate button --
+    the stream has to arrive at whatever width is actually on screen, and
+    only CSS knows which rung that is."""
+    blocks = "".join(
+        '<pre class="chart-pre" data-cols="%d"%s>%s</pre>'
+        % (cols, ' data-panel="1"' if panel else "", body)
+        for cols, panel, body in rungs)
+    return f'<div id="chart-ladder">{blocks}</div>'
+
+
+def chart_ladder_css():
+    """Container queries, generated from CHART_LADDER so the breakpoints
+    cannot drift from the widths actually rendered into the page.
+
+    container-type:inline-size makes #chart-ladder a query container whose
+    width comes from its parent rather than its contents -- which matters,
+    because its contents are several charts of different widths and one of
+    them is always wider than the window.
+
+    Font size is pinned here rather than inherited: `ch` in a container
+    query resolves against the *query container's* font, so the container
+    has to be the same size as the <pre> it is picking, or every breakpoint
+    lands in the wrong place. 13px matches the .kbd-hint ~ rule below.
+
+    Every rung rule is written as :nth-child(k) -- including the first,
+    which reads more naturally as :first-child and must not be. @container
+    contributes nothing to specificity, so a (1,2,0) :first-child{display:
+    block} outside the queries outranks a (1,1,0) .chart-pre{display:none}
+    inside them, and the narrow rung stays on screen at every width with the
+    wider one stacked underneath it. Identical specificity throughout means
+    source order decides, which is the whole mechanism: each breakpoint
+    hides the rung below it and shows its own, in ascending order.
+
+    A browser too old for container queries applies none of the @container
+    blocks and keeps the first rung, so it gets the narrowest chart rather
+    than a broken page."""
+    lines = [" #chart-ladder{container-type:inline-size;font-size:13px}",
+             # Repeated on the rungs themselves rather than left to inherit:
+             # the generic pre{} rule sets 11px explicitly, and an explicit
+             # rule beats inheritance no matter how specific the ancestor.
+             # It has to match the container's own 13px above or the ch
+             # breakpoints measure against a different font size than the
+             # chart they are picking.
+             " #chart-ladder .chart-pre{display:none;font-size:13px}",
+             " #chart-ladder .chart-pre:nth-child(1){display:block}"]
+    for i, (min_ch, _cols, _panel) in enumerate(CHART_LADDER):
+        if min_ch is None:
+            continue
+        lines.append(f" @container (min-width:{min_ch}ch){{"
+                     f"#chart-ladder .chart-pre:nth-child({i}){{display:none}}"
+                     f"#chart-ladder .chart-pre:nth-child({i + 1}){{display:block}}}}")
+    return "\n".join(lines)
 
 
 def _horizon_height(r):
@@ -2217,7 +2361,7 @@ OPTIONS
     skymap() { curl "skymap.sh/${1:-}?w=$(tput cols)"; }
 
 KEYBOARD (in a browser, on a chart page)
-  p/tab  focus the place search      space  start the animation
+  tab    focus the place search      space  start the animation
   f      focus the find field        g      share as a GIF
   m      jump to my location         d      toggle quadrant grid + dso
   esc    cancel/exit find mode, drawer
@@ -2859,12 +3003,15 @@ document.documentElement.classList.add('js');
     .kbd-hint ~ #chart-pre instead: SHORTCUTS_HINT (the "Keyboard: ..."
     bar, .kbd-hint) is only ever non-empty on the chart route, so this
     selector is what "chart page only" actually meant to say. Chart height
-    is invariant to this: the auto-fit JS measures #chart-pre's own font
-    size to pick column count, and the row count is always cols/
-    HORIZON_COLS_PER_ROW, so a bigger font just means fewer, taller
-    cells -- same total pixel height either way. Only the fixed-line-count
-    prose below the chart actually grows, which is the whole point. */
+    is invariant to this: the row count is always cols/HORIZON_COLS_PER_ROW,
+    so a bigger font just means fewer, taller cells -- same total pixel
+    height either way. Only the fixed-line-count prose below the chart
+    actually grows, which is the whole point.
+    The laddered chart page carries its own copy of this size (see
+    chart_ladder_css) -- there the number is load-bearing rather than
+    cosmetic, since the ch breakpoints are measured in it. */
  .kbd-hint ~ #chart-pre{{font-size:13px}}
+/*LADDER*/
  .t{{color:#6e7681;font-size:12px;margin:0 0 18px}}
  .nav-row{{display:flex;justify-content:flex-end;align-items:center;
           flex-wrap:wrap;gap:8px}}
@@ -2876,8 +3023,8 @@ document.documentElement.classList.add('js');
  .social-icons a:hover{{color:#c9d1d9}}
  .social-icons svg{{display:block}}
  a{{color:#87d7ff}}
- #chart-pre a{{color:#87d7ff;text-decoration:none}}
- #chart-pre a:hover{{text-decoration:underline}}
+ .chart-pre a{{color:#87d7ff;text-decoration:none}}
+ .chart-pre a:hover{{text-decoration:underline}}
  /* Drawer (SPEC-command-bar.md #9, adapted: slide in from the right, no
     backdrop, opened via header_html's #drawer-trigger next to the social
     icons). The base rules here are deliberately just a plain, always-
@@ -3081,87 +3228,25 @@ document.documentElement.classList.add('js');
      Chart-page only; every other PAGE.format() call site passes "". -->
 {coming_up_card}
 <div class="w{wide_class}">
-{controls}{shortcuts_hint}<pre id="chart-pre">{body}</pre>
+{controls}{shortcuts_hint}{body}
 <script>
-(function(){{
-  // Auto-fit the horizon panorama to the real browser width -- the server
-  // always renders at a fixed column count (DEFAULT_HORIZON_WIDTH) unless
-  // ?w= says otherwise, so on a wide desktop window that default leaves the
-  // chart much narrower than the space available. FIT_W is null on every
-  // page/view this doesn't apply to (see server.py's fits_width). Snapped to
-  // steps of 10 columns and clamped to [60,220] -- matches the server's own
-  // clamp (Request.__init__) and keeps ?w= from becoming a distinct cache
-  // key per visitor's exact pixel width (server._cache_key includes it).
-  var FIT_W={fit_width};
-  if(FIT_W===null)return;
-  var pre=document.getElementById('chart-pre');
-  var w=document.querySelector('.w');
-  if(!pre||!w)return;
-  // Returns null on anything that makes fitting meaningless (no charWidth
-  // to measure against) rather than {{cols:FIT_W,...}} -- callers treat
-  // null as "leave the current width alone", not "reset to the default".
-  function computeFit(){{
-    var preStyle=getComputedStyle(pre);
-    var probe=document.createElement('span');
-    probe.style.position='absolute';
-    probe.style.visibility='hidden';
-    probe.style.whiteSpace='pre';
-    // The `font` shorthand can compute to "" in some browsers (its value
-    // isn't always expressible as a shorthand), which silently no-ops the
-    // assignment and leaves the probe on the page's default font instead
-    // of the chart's actual monospace one -- wildly overstating char width
-    // and making auto-fit ask for far fewer columns than the screen can
-    // hold. Longhand properties don't have that failure mode.
-    probe.style.fontFamily=preStyle.fontFamily;
-    probe.style.fontSize=preStyle.fontSize;
-    probe.textContent=new Array(101).join('0');
-    document.body.appendChild(probe);
-    var charWidth=probe.getBoundingClientRect().width/100;
-    document.body.removeChild(probe);
-    if(!charWidth)return null;
-    // If there's room for a sensible chart *and* a side panel (the zenith
-    // inset only -- prose renders full-width below, see api.py's
-    // _side_by_side/PANEL_COLS), reserve PANEL_COLS+GAP_COLS for it and
-    // ask for panel=1 too -- otherwise the full width goes to the chart
-    // alone. 40 covers the inset's own 21 columns plus room for a body
-    // name tacked on beside it (longest is "Rigil Kentaurus").
-    var PANEL_COLS=40,GAP_COLS=3,MIN_MAIN=60;
-    var totalCols=Math.floor(w.getBoundingClientRect().width/charWidth);
-    var wantPanel=totalCols>=(MIN_MAIN+GAP_COLS+PANEL_COLS);
-    var mainRaw=wantPanel?totalCols-GAP_COLS-PANEL_COLS:totalCols;
-    var cols=Math.max(60,Math.min(220,Math.round(mainRaw/10)*10));
-    return {{cols:cols,wantPanel:wantPanel}};
-  }}
-  // force=true (used on resize) applies even when the URL already has an
-  // explicit ?w= -- a width fitted (or pinned) at load time otherwise sticks
-  // forever, so shrinking the window after a wide auto-fit left the chart
-  // stuck too wide for its new container, forcing horizontal scroll instead
-  // of ever re-fitting down. Without force, an incoming ?w= link is left
-  // alone on first paint, same as always -- only a live resize overrides it.
-  function applyFit(force){{
-    var params=new URLSearchParams(location.search);
-    if(!force&&params.has('w'))return;
-    var fit=computeFit();
-    if(!fit)return;
-    // On first load (not force), compare against the server-rendered
-    // default (FIT_W, no panel) -- skip the reload entirely when that
-    // default already happens to be correct. On a live resize, compare
-    // against whatever's actually in the URL right now instead, since
-    // that's the width the page is currently stuck at.
-    var curCols=force?parseInt(params.get('w'),10):FIT_W;
-    var curPanel=force?params.has('panel'):false;
-    if(curCols===fit.cols&&curPanel===fit.wantPanel)return;
-    params.set('w',fit.cols);
-    if(fit.wantPanel)params.set('panel','1');else params.delete('panel');
-    location.replace(location.pathname+'?'+params.toString());
-  }}
-  applyFit(false);
-  var resizeTimer=null;
-  window.addEventListener('resize',function(){{
-    if(resizeTimer)clearTimeout(resizeTimer);
-    resizeTimer=setTimeout(function(){{applyFit(true);}},400);
-  }});
-}})();
+// Which <pre> is "the chart" right now.
+//
+// On a chart page the body is a ladder of pre-rendered widths (api.py's
+// CHART_LADDER) and CSS picks one, so there is no single element the rest
+// of this script can hold onto -- and no id either, since an id has to be
+// unique and there are several rungs. offsetParent is null for anything
+// display:none'd, which is exactly the "did CSS pick this one" test, and it
+// is a plain layout read with no measuring or reloading behind it.
+//
+// Every other page still emits a single block carrying both the id and the
+// class (api.chart_pre), so the same call works there without either side
+// knowing about the other.
+window.skymapChartPre=function(){{
+  var all=document.querySelectorAll('.chart-pre');
+  for(var i=0;i<all.length;i++)if(all[i].offsetParent!==null)return all[i];
+  return all[0]||null;
+}};
 function xtermHex(n){{
   n=parseInt(n,10);
   if(n<16){{
@@ -3354,7 +3439,16 @@ function skymapAnimate(btn){{
     return;
   }}
   var liveUrl=btn.getAttribute('data-live-url');
-  var pre=document.getElementById('chart-pre');
+  var pre=window.skymapChartPre();
+  // Which width the stream should come at. The server can't put it in
+  // data-live-url any more: on a laddered page it didn't choose the width,
+  // CSS did, and only this element knows which rung won. Without it the
+  // frames arrive at DEFAULT_HORIZON_WIDTH and the chart visibly shrinks
+  // the moment animate starts on any window wider than the first rung.
+  // An explicit ?w= page is not laddered and already has its width in the
+  // URL, so data-cols is absent there and this leaves the URL alone.
+  var cols=pre&&pre.getAttribute('data-cols');
+  if(cols&&!/[?&]w=/.test(liveUrl))liveUrl+='&w='+cols;
   A=window.skymapAnim={{frames:[],at:-1,playing:true,done:false,timer:null,
                        btn:btn,pre:pre,base:pre.innerHTML,loadingDso:false,
                        plain:{{}},dsoFrames:{{}},dsoOn:{{}},
@@ -3625,35 +3719,20 @@ function skymapRenderGif(btn){{
     if(drawer.contains(e.target)||e.target===trigger)return;
     window.skymapCloseDrawer();
   }});
-  // The command bar is the main way in and out of everywhere else on this
-  // page, so any click elsewhere -- the chart, a nav link, a toolbar
-  // button once its own click has done its thing -- hands focus straight
-  // back to it, ready to type. Not while the drawer's open, though: its
-  // own fields (find/date/time, go, share...) need to keep whatever focus
-  // clicking them gave, or they'd be unusable. Skips #q itself too, so
-  // clicking into the field to reposition the caret doesn't immediately
-  // get overridden by a fresh select-all. Also skips anything inside
-  // #findbar, same reasoning -- without this, clicking find-trigger to
-  // expand the field, or a dropdown suggestion, would immediately lose
-  // focus back to #q as the click bubbles up to this same listener.
-  var q=document.getElementById('q');
-  if(q){{
-    document.addEventListener('click',function(e){{
-      if(drawer.classList.contains('open')||e.target===q)return;
-      var findbarEl=document.getElementById('findbar');
-      if(findbarEl&&findbarEl.contains(e.target))return;
-      // Not the animate button. Its whole point is that the keys pressed
-      // next -- space to pause, arrows to step -- go to the animation, and
-      // parking focus in a text field sends them to the field instead
-      // (the keydown handler returns early on INPUT, as it must, or
-      // typing a place with a space in it would pause the playback).
-      // Pressing "a" goes through here too: it works by clicking this same
-      // button, and that synthetic click bubbles up to this listener.
-      if(e.target&&e.target.id==='animate-btn')return;
-      q.focus();
-      q.select();
-    }});
-  }}
+  // A click on the page used to hand focus straight back to the command
+  // bar, ready to type. It was removed: the keyboard shortcuts are ignored
+  // while a text field has focus (they must be, or typing a place with a
+  // space in it would pause the animation), so parking focus in #q after
+  // every click meant the shortcuts were dead most of the time and the way
+  // to revive them was to click something excluded from the rule. It also
+  // needed an exception per element that wanted to keep its own focus --
+  // #q itself, the drawer, #findbar, #animate-btn -- and each new control
+  // was another exception waiting to be found the hard way.
+  //
+  // Focusing the command bar is still one Tab away (handled by the shortcut
+  // block below), and clicking the field itself obviously still works. Both
+  // are deliberate, rather than a side effect of clicking somewhere else
+  // entirely.
 }})();
 (function(){{
   // Keyboard shortcuts -- ignored while typing in a field (except Escape,
@@ -3711,7 +3790,12 @@ function skymapRenderGif(btn){{
   // else in the chart ever renders with it, so it doubles as a reliable way
   // to find the 12 grid-letter glyphs without the server tagging them.
   function quadSpans(){{
-    var spans={{}}, all=document.querySelectorAll('#chart-pre span');
+    // Scoped to the rung on screen rather than every .chart-pre on the
+    // page: the hidden rungs carry the same grid letters in the same
+    // colour, and picking one of those would paint the highlight onto an
+    // element nobody can see.
+    var pre=window.skymapChartPre();
+    var spans={{}}, all=pre?pre.querySelectorAll('span'):[];
     for(var i=0;i<all.length;i++){{
       var s=all[i];
       if(s.style.color==='rgb(255, 255, 0)'&&/^[A-L]$/.test(s.textContent))spans[s.textContent]=s;
@@ -3807,7 +3891,12 @@ function skymapRenderGif(btn){{
         return;
       }}
     }}
-    if(e.key==='p'||e.key==='Tab'){{
+    if(e.key==='Tab'){{
+      // Tab only. "p" used to do this too and was dropped: a single letter
+      // that jumps focus into a text field is exactly the thing that leaves
+      // every key after it going to the field instead of the page, and Tab
+      // is what people already reach for.
+      //
       // Tab reaches here at all only because of the guard just above --
       // once focus is actually in #q (an INPUT), this whole branch is
       // skipped and #q's own keydown handler owns Tab instead (accepting a
@@ -3815,8 +3904,8 @@ function skymapRenderGif(btn){{
       // this does take over Tab's normal "move to the next focusable
       // element" job -- pressing it while a button or link is focused jumps
       // back into the command bar instead of advancing, same tradeoff the
-      // single-letter shortcuts (p/f/a/g/...) already accept everywhere
-      // else on this page.
+      // single-letter shortcuts (f/a/g/...) already accept everywhere else
+      // on this page.
       var place=document.getElementById('q');
       if(place){{e.preventDefault();place.focus();place.select();}}
       return;
@@ -4000,6 +4089,14 @@ function skymapRenderGif(btn){{
 }})();
 </script>
 </div></body></html>"""
+
+# Spliced in rather than written out by hand, so the ch breakpoints and the
+# widths actually rendered into the page can only ever come from the one
+# CHART_LADDER tuple. Braces are doubled on the way in because PAGE is a
+# .format() template and the generated CSS is full of real ones -- this runs
+# once at import, so the escaping costs nothing per request.
+PAGE = PAGE.replace("/*LADDER*/",
+                    chart_ladder_css().replace("{", "{{").replace("}", "}}"))
 
 
 # Only shown on an actual chart page (server.py passes "" everywhere else) --

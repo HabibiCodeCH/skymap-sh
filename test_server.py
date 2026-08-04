@@ -16,6 +16,7 @@ import unittest
 import pytest
 from starlette.testclient import TestClient
 
+import api
 import server
 
 BROWSER = {"accept": "text/html", "user-agent": "Mozilla/5.0"}
@@ -216,12 +217,16 @@ class AnimateBrowserVsTerminal(unittest.TestCase):
         self.assertIn("if(!A.frames.length)return;", body)
 
     def test_starting_the_animation_does_not_park_focus_in_a_text_field(self):
-        # A document-level click listener focuses the place search on any
-        # click, and pressing "a" works by clicking the animate button -- so
-        # every key after it went to that input, where the handler rightly
-        # returns early, and space and the arrows did nothing at all.
+        # Pressing "a" works by clicking the animate button. While a
+        # document-level click listener refocused the place search on every
+        # click, that synthetic click sent every key after it to the input,
+        # where the handler rightly returns early, so space and the arrows
+        # did nothing. That listener is gone, along with the animate-btn
+        # exception it needed -- nothing puts focus in a field now unless
+        # the reader asks for it.
         body = self.client.get("/Ibiza?animate=24", headers=BROWSER).text
-        self.assertIn("if(e.target&&e.target.id==='animate-btn')return;", body)
+        self.assertNotIn("document.addEventListener('click',function(e){", body)
+        self.assertNotIn("id==='animate-btn')return;", body)
 
     def test_the_transport_hint_only_shows_while_something_is_animating(self):
         # The hint line has room for one row, and space/arrows/d do nothing
@@ -1814,8 +1819,11 @@ class KeyboardShortcuts(unittest.TestCase):
         # single row of space on.
         self.assertIn("<kbd>tab</kbd> place", resp.text)
         self.assertIn("<kbd>f</kbd> find", resp.text)
-        self.assertIn("e.key==='p'", resp.text)
+        self.assertIn("e.key==='Tab'", resp.text)
         self.assertIn("e.key==='f'", resp.text)
+        # "p" was dropped: a single letter that jumps focus into a
+        # text field kills every shortcut pressed after it.
+        self.assertNotIn("e.key==='p'", resp.text)
         self.assertNotIn("e.key==='/'", resp.text)
 
     def test_hint_and_js_bind_m_to_geolocation(self):
@@ -1955,44 +1963,186 @@ class ChartPreFontSizeScoping(unittest.TestCase):
         self.assertNotIn('class="kbd-hint"', resp.text)
 
 
-class AutoFitWidth(unittest.TestCase):
-    """The plain horizon panorama gets the wide container + a real column
-    count for the client-side auto-fit JS to compare against; every other
-    view/page gets fit_width=null so the JS no-ops there."""
+RUNG_RE = re.compile(r'<pre class="chart-pre" data-cols="(\d+)"( data-panel="1")?>')
+TAG_RE = re.compile(r"<[^>]+>")
+
+
+def strip_tags(s):
+    """Character width of one rendered chart line, spans removed."""
+    return TAG_RE.sub("", s)
+
+
+def _rungs(text):
+    """The (columns, panel) pairs a laddered page actually shipped."""
+    return [(int(cols), bool(panel)) for cols, panel in RUNG_RE.findall(text)]
+
+
+class WidthLadder(unittest.TestCase):
+    """The plain horizon panorama ships every rung of api.CHART_LADDER in one
+    response and lets a CSS container query pick one.
+
+    This replaced an auto-fit script that measured the font with a hidden
+    probe and then called location.replace() with a ?w= -- a second full page
+    request per visit, which also meant _tally ran twice and every browser
+    view was counted twice on /stats."""
 
     def setUp(self):
         client_cm = TestClient(server.app)
         self.client = client_cm.__enter__()
         self.addCleanup(client_cm.__exit__, None, None, None)
 
-    def test_plain_horizon_view_gets_the_wide_class_and_real_width(self):
+    def test_plain_horizon_view_gets_the_wide_class_and_every_rung(self):
         resp = self.client.get("/Zurich?t=2026-07-30T23:00", headers=BROWSER)
         self.assertIn('class="w w-wide"', resp.text)
-        self.assertIn("var FIT_W=110;", resp.text)
+        self.assertIn('<div id="chart-ladder">', resp.text)
+        self.assertEqual(_rungs(resp.text),
+                         [(cols, panel) for _min_ch, cols, panel in api.CHART_LADDER])
 
-    def test_explicit_w_is_reflected_not_the_default(self):
+    def test_rungs_are_really_rendered_at_their_own_width(self):
+        # The whole point: each rung is a distinct render, not the same
+        # chart four times with a different data-cols attribute on it.
+        resp = self.client.get("/Zurich?t=2026-07-30T23:00", headers=BROWSER)
+        bodies = re.findall(r'<pre class="chart-pre"[^>]*>(.*?)</pre>', resp.text, re.S)
+        self.assertEqual(len(bodies), len(api.CHART_LADDER))
+        widths = [max(len(strip_tags(b_line)) for b_line in body.split("\n"))
+                  for body in bodies]
+        # 60/60-with-panel/120/190 -- the panel rung is wider than the bare
+        # 60 despite the same column count, and each step up is wider again.
+        self.assertLess(widths[0], widths[1])
+        self.assertLess(widths[1], widths[2])
+        self.assertLess(widths[2], widths[3])
+
+    def test_no_duplicate_element_id_across_rungs(self):
+        # An id has to be unique, which a repeated <pre id="chart-pre">
+        # could not be -- that's why the rungs carry a class instead.
+        resp = self.client.get("/Zurich?t=2026-07-30T23:00", headers=BROWSER)
+        body = resp.text.split("</head>", 1)[1]
+        self.assertEqual(body.count('id="chart-pre"'), 0)
+
+    def test_css_breakpoints_come_from_the_same_tuple_as_the_rungs(self):
+        # The one way this can silently go wrong is CSS asking for a width
+        # the server never rendered, so assert they share a source.
+        resp = self.client.get("/Zurich?t=2026-07-30T23:00", headers=BROWSER)
+        self.assertIn("#chart-ladder{container-type:inline-size", resp.text)
+        for i, (min_ch, _cols, _panel) in enumerate(api.CHART_LADDER):
+            if min_ch is None:
+                self.assertIn("#chart-ladder .chart-pre:nth-child(1){display:block}",
+                              resp.text)
+                continue
+            self.assertIn(f"@container (min-width:{min_ch}ch)", resp.text)
+            self.assertIn(f"#chart-ladder .chart-pre:nth-child({i + 1})"
+                          "{display:block}", resp.text)
+
+    def test_each_rung_fits_its_own_breakpoint(self):
+        """A rung must be no wider than the container width that selects it.
+
+        CHART_LADDER's breakpoints are measured widths, not arithmetic ones:
+        the prose wraps at a fixed 76 characters with no panel (wider than a
+        60-column chart), and the zenith inset adds 33ch rather than the
+        43ch the reserving logic starts from. Deriving them instead of
+        measuring made every rung switch ~10ch late. This renders each one
+        and checks the real number, so changing the prose wrap or the inset
+        fails here rather than quietly going back to charts that overflow
+        the width that picked them.
+
+        Checked over several places and dates, not one: a rung's width moves
+        by a character or two with the sky being described, so a single
+        sample hides off-by-ones (Zurich in August put the 60+panel rung at
+        93ch; Tokyo in January renders the same rung 96ch wide).
+        """
+        for place, when in (("Zurich", "2026-07-30T23:00"),
+                            ("Tokyo", "2026-01-15T20:00"),
+                            ("Lima", "2026-11-03T04:00")):
+            resp = self.client.get(f"/{place}?t={when}&night=1", headers=BROWSER)
+            bodies = re.findall(r'<pre class="chart-pre"[^>]*>(.*?)</pre>',
+                                resp.text, re.S)
+            self.assertEqual(len(bodies), len(api.CHART_LADDER), place)
+            for (min_ch, cols, panel), body in zip(api.CHART_LADDER, bodies):
+                if min_ch is None:      # the default rung has no breakpoint
+                    continue
+                actual = max(len(strip_tags(line)) for line in body.split("\n"))
+                self.assertLessEqual(
+                    actual, min_ch,
+                    f"{place} {when}: the {cols}-column rung (panel={panel}) "
+                    f"renders {actual}ch wide but is selected at {min_ch}ch "
+                    "-- it will overflow")
+
+    def test_rung_breakpoints_and_widths_both_ascend(self):
+        # A rung that is narrower than the one below it, or a breakpoint out
+        # of order, would make the chart shrink as the window grows.
+        breaks = [m for m, _c, _p in api.CHART_LADDER if m is not None]
+        self.assertEqual(breaks, sorted(set(breaks)))
+        used = [c + (33 if p else 0) for _m, c, p in api.CHART_LADDER]
+        self.assertEqual(used, sorted(used))
+
+    def test_every_rung_rule_has_the_same_specificity(self):
+        # The bug this exists to prevent: :first-child is (1,2,0) and the
+        # .chart-pre{display:none} inside an @container block is (1,1,0).
+        # @container adds no specificity of its own, so the narrow rung won
+        # at every width and the wider ones stacked underneath it -- three
+        # charts on screen at 1400px, four at 2000px. Writing every rung
+        # rule as :nth-child(k) makes them all (1,2,0), which leaves source
+        # order to decide, which is the mechanism.
+        css = api.chart_ladder_css()
+        self.assertNotIn(":first-child", css)
+        rung_rules = re.findall(r"#chart-ladder \.chart-pre(:[a-z-]+\([^)]*\))?"
+                                r"\{display:(block|none)\}", css)
+        self.assertTrue(rung_rules)
+        for pseudo, _decl in rung_rules:
+            self.assertTrue(pseudo and pseudo.startswith(":nth-child("),
+                            f"display rule with no :nth-child() -- {pseudo!r} "
+                            "is a different specificity to the others")
+
+    def test_the_measure_and_reload_script_is_gone(self):
+        # The regression this whole change exists to prevent coming back.
+        resp = self.client.get("/Zurich?t=2026-07-30T23:00", headers=BROWSER)
+        for gone in ("applyFit", "computeFit", "location.replace", "var FIT_W"):
+            self.assertNotIn(gone, resp.text, gone)
+
+    def test_a_browser_find_is_tallied_once(self):
+        # Was two: the page load, then the auto-fit reload carrying the same
+        # find= through _tally a second time. One find, one count.
+        before = server._stat["requests"], server._hour_stat["find"]
+        self.client.get("/Zurich?find=Venus&t=2026-07-30T23:00", headers=BROWSER)
+        after = server._stat["requests"], server._hour_stat["find"]
+        self.assertEqual((after[0] - before[0], after[1] - before[1]), (1, 1))
+
+    def test_animate_can_read_the_visible_rung_width(self):
+        # The server no longer knows the width (CSS picked it), so the
+        # stream URL is completed in the browser from data-cols -- without
+        # it the frames arrive at DEFAULT_HORIZON_WIDTH and the chart
+        # visibly shrinks the moment animate starts.
+        resp = self.client.get("/Zurich?t=2026-07-30T23:00", headers=BROWSER)
+        self.assertIn("data-cols=", resp.text)
+        self.assertIn("liveUrl+='&w='+cols", resp.text)
+
+    def test_explicit_w_opts_out_of_the_ladder(self):
+        # Someone who named a width means it, and it keeps shared ?w= links,
+        # the CLI and the animate stream on the single-render path.
         resp = self.client.get("/Zurich?t=2026-07-30T23:00&w=150", headers=BROWSER)
-        self.assertIn("var FIT_W=150;", resp.text)
+        self.assertNotIn('<div id="chart-ladder">', resp.text)
+        self.assertIn('<pre id="chart-pre" class="chart-pre">', resp.text)
 
     def test_facing_view_opts_out(self):
-        # facing= has its own aspect-locked sizing formula -- auto-fit would
-        # fight it, see api.py's DEFAULT_HORIZON_WIDTH comment.
+        # facing= has its own aspect-locked sizing formula -- the ladder
+        # would fight it, see api.py's DEFAULT_HORIZON_WIDTH comment.
         resp = self.client.get("/Zurich?t=2026-07-30T23:00&facing=NW", headers=BROWSER)
         self.assertIn('class="w"', resp.text)
         self.assertNotIn('class="w w-wide"', resp.text)
-        self.assertIn("var FIT_W=null;", resp.text)
+        self.assertNotIn('<div id="chart-ladder">', resp.text)
 
     def test_disc_view_opts_out(self):
         resp = self.client.get("/Zurich?t=2026-07-30T23:00&view=disc", headers=BROWSER)
-        self.assertIn("var FIT_W=null;", resp.text)
+        self.assertNotIn('<div id="chart-ladder">', resp.text)
 
-    def test_find_view_gets_auto_fit_too(self):
+    def test_find_view_gets_the_ladder_too(self):
         # find used to crop to a narrow window (opted out, same as facing=)
         # -- it draws the full panorama now, same width as the ordinary
-        # view, so auto-fit applies exactly the same way.
+        # view, so the ladder applies exactly the same way.
         resp = self.client.get("/Zurich?find=Venus&t=2026-07-30T23:00", headers=BROWSER)
         self.assertIn('class="w w-wide"', resp.text)
-        self.assertIn("var FIT_W=110;", resp.text)
+        self.assertEqual(_rungs(resp.text),
+                         [(cols, panel) for _min_ch, cols, panel in api.CHART_LADDER])
 
     def test_non_chart_pages_opt_out(self):
         # /stats is no longer in this list -- see the test below. Everything
@@ -2001,7 +2151,10 @@ class AutoFitWidth(unittest.TestCase):
             resp = self.client.get(path, headers=BROWSER)
             self.assertIn('class="w"', resp.text, path)
             self.assertNotIn('class="w w-wide"', resp.text, path)
-            self.assertIn("var FIT_W=null;", resp.text, path)
+            self.assertNotIn('<div id="chart-ladder">', resp.text, path)
+            # Still exactly one plain block, id and all -- skymapChartPre()
+            # falls back to it with no ladder present.
+            self.assertIn('<pre id="chart-pre" class="chart-pre">', resp.text, path)
 
     def test_stats_goes_wide_for_the_map_and_nothing_else_follows_it(self):
         # The world map is 216 columns and the default column is about 182,
@@ -2010,9 +2163,9 @@ class AutoFitWidth(unittest.TestCase):
         # prose pages above must not move with it.
         resp = self.client.get("/stats", headers=BROWSER)
         self.assertIn('class="w w-wide"', resp.text)
-        # Wide layout only. Auto-fit rewrites the chart to the window width,
-        # which is a chart-page trick and has nothing to do with this.
-        self.assertIn("var FIT_W=null;", resp.text)
+        # Wide layout only. The ladder re-renders the chart at several
+        # widths, which is a chart-page trick with nothing to do with this.
+        self.assertNotIn('<div id="chart-ladder">', resp.text)
         home = self.client.get("/Zurich?t=2026-07-30T23:00", headers=BROWSER)
         self.assertNotIn(" w-wide-stats", home.text)   # no second mechanism
 
@@ -2023,14 +2176,78 @@ class AutoFitWidth(unittest.TestCase):
         _rows, w, _h, _top, _bot = server._load_worldmap()
         self.assertLessEqual(w, 216)
 
-    def test_js_reserves_panel_width_and_can_request_panel(self):
-        # Doesn't execute the JS -- just guards against the reservation
-        # logic (PANEL_COLS/wantPanel) getting deleted or renamed silently,
-        # same shallow-presence style as the keyboard-shortcut JS checks.
+    def test_exactly_one_rung_is_visible_in_a_real_browser(self):
+        """The only test here that resolves the cascade rather than reading
+        the CSS as text.
+
+        The string assertions above all passed against a version that put
+        three charts on screen at 1400px and four at 2000px -- a specificity
+        mistake no amount of substring matching can see. Skipped rather than
+        failed where playwright/chromium isn't installed: it isn't in
+        requirements.txt, and the rest of the suite must stay runnable with
+        no browser at all."""
+        playwright = pytest.importorskip("playwright.sync_api",
+                                         reason="playwright not installed")
+        import threading
+        import uvicorn
+        cfg = uvicorn.Config(server.app, host="127.0.0.1", port=8829,
+                             log_level="error")
+        srv = uvicorn.Server(cfg)
+        threading.Thread(target=srv.run, daemon=True).start()
+        self.addCleanup(setattr, srv, "should_exit", True)
+        for _ in range(100):
+            time.sleep(0.05)
+            if srv.started:
+                break
+        else:
+            self.skipTest("test server did not start")
+
+        url = "http://127.0.0.1:8829/Zurich?t=2026-07-30T23:00"
+        with playwright.sync_playwright() as p:
+            try:
+                browser = p.chromium.launch()
+            except Exception as exc:                     # no browser binary
+                self.skipTest(f"chromium unavailable: {exc}")
+            try:
+                page = browser.new_page()
+                page.goto(url, wait_until="networkidle")
+                # A phone, a narrow window, and three desktop sizes either
+                # side of the breakpoints.
+                for viewport in (420, 800, 1100, 1400, 1700, 2000, 2600):
+                    page.set_viewport_size({"width": viewport, "height": 900})
+                    page.wait_for_timeout(120)
+                    shown = page.eval_on_selector_all(
+                        "#chart-ladder .chart-pre",
+                        "els=>els.map((e,i)=>({i:i+1,cols:e.dataset.cols,"
+                        "shown:getComputedStyle(e).display!=='none'}))"
+                        ".filter(x=>x.shown)")
+                    self.assertEqual(
+                        len(shown), 1,
+                        f"{viewport}px: {len(shown)} rungs visible "
+                        f"({[s['cols'] for s in shown]}), expected exactly 1")
+                # And the rung chosen has to grow with the window, never shrink.
+                picked = []
+                for viewport in (420, 1100, 1400, 2000, 2600):
+                    page.set_viewport_size({"width": viewport, "height": 900})
+                    page.wait_for_timeout(120)
+                    picked.append(page.evaluate(
+                        "()=>{const e=[...document.querySelectorAll("
+                        "'#chart-ladder .chart-pre')].find("
+                        "x=>getComputedStyle(x).display!=='none');"
+                        "return e?[...e.parentNode.children].indexOf(e):-1;}"))
+                self.assertEqual(picked, sorted(picked),
+                                 f"rung index went backwards as the window "
+                                 f"widened: {picked}")
+            finally:
+                browser.close()
+
+    def test_panel_rungs_actually_carry_the_zenith_inset(self):
+        # The panel decision used to be the JS's (params.set('panel','1'));
+        # it is a property of the rung now, so the wide rungs must really
+        # differ from the narrow one by more than column count.
         resp = self.client.get("/Zurich?t=2026-07-30T23:00", headers=BROWSER)
-        self.assertIn("PANEL_COLS", resp.text)
-        self.assertIn("wantPanel", resp.text)
-        self.assertIn("params.set('panel','1')", resp.text)
+        self.assertIn('data-cols="60" data-panel="1"', resp.text)
+        self.assertIn('<pre class="chart-pre" data-cols="60">', resp.text)
 
 
 class SidePanel(unittest.TestCase):
@@ -2397,21 +2614,31 @@ class DrawerWiring(unittest.TestCase):
         png_pos = resp.text.index("Share as a PNG")
         self.assertTrue(row_start < gif_pos < png_pos < reset_start)
 
-    def test_any_click_refocuses_the_command_bar(self):
+    def test_clicking_the_page_does_not_steal_focus_into_the_command_bar(self):
+        # Removed deliberately. The keyboard shortcuts are ignored while a
+        # text field has focus -- they have to be, or typing a place with a
+        # space in it would pause the animation -- so refocusing #q after
+        # every click left the shortcuts dead most of the time, and the way
+        # to revive them was to click one of the few elements the rule
+        # excepted. Tab and "p" still focus the bar on purpose.
         resp = self.client.get("/Zurich", headers=BROWSER)
-        self.assertIn("q.focus();\n      q.select();", resp.text)
+        self.assertNotIn("document.addEventListener('click',function(e){",
+                         resp.text)
+        self.assertNotIn("q.focus();\n      q.select();", resp.text)
 
-    def test_refocus_skipped_while_the_drawer_is_open(self):
+    def test_tab_still_focuses_the_command_bar_and_p_no_longer_does(self):
         resp = self.client.get("/Zurich", headers=BROWSER)
-        click_handler = resp.text.split(
-            "document.addEventListener('click',function(e){")[1]
-        self.assertIn("drawer.classList.contains('open')", click_handler[:200])
+        self.assertIn("if(e.key==='Tab'){", resp.text)
+        self.assertIn("place.focus();place.select();", resp.text)
+        self.assertNotIn("e.key==='p'", resp.text)
 
-    def test_refocus_skipped_when_the_click_is_on_q_itself(self):
+    def test_the_drawer_still_closes_on_an_outside_click(self):
+        # A separate mousedown listener, not the removed click one -- the
+        # drawer has no backdrop, so this is the only thing that closes it.
         resp = self.client.get("/Zurich", headers=BROWSER)
-        click_handler = resp.text.split(
-            "document.addEventListener('click',function(e){")[1]
-        self.assertIn("e.target===q", click_handler[:200])
+        self.assertIn("document.addEventListener('mousedown',function(e){",
+                      resp.text)
+        self.assertIn("window.skymapCloseDrawer();", resp.text)
 
 
 class CommandBarSubmitDelegation(unittest.TestCase):
@@ -2584,7 +2811,8 @@ class CommandBarValue(unittest.TestCase):
         # above this branch (tag==='INPUT'||...) that #q's own keydown
         # handler (ghost-completion accept) relies on for the opposite case.
         resp = self.client.get("/Zurich", headers=BROWSER)
-        self.assertIn("e.key==='p'||e.key==='Tab'", resp.text)
+        self.assertIn("e.key==='Tab'", resp.text)
+        self.assertNotIn("e.key==='p'", resp.text)
 
 
 class HomeNavLink(unittest.TestCase):

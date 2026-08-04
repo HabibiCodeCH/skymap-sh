@@ -1978,14 +1978,20 @@ def _respond(request: Req, place: str | None):
         find_close_url = f"/{r.place.slug}{api._toggle_qs(r)}" if r.find else None
         header = api.header_html(r.place.name, find_value=r.find or "",
                                  find_close_url=find_close_url)
-        # Auto-fit applies to any plain horizon panorama, find= included --
-        # find draws the full panorama now, not a crop, so it goes through
-        # the same _effective_width(r) as the ordinary view (see
-        # _compose_sky's width= line). facing= is still excluded: it has its
-        # own aspect-locked "true shape" formula _effective_width doesn't
-        # govern. disc is a fixed circle, excluded for the same reason.
+        # The width ladder applies to any plain horizon panorama, find=
+        # included -- find draws the full panorama now, not a crop, so it
+        # goes through the same _effective_width(r) as the ordinary view
+        # (see _compose_sky's width= line). facing= is still excluded: it
+        # has its own aspect-locked "true shape" formula _effective_width
+        # doesn't govern. disc is a fixed circle, excluded for the same
+        # reason.
+        #
+        # An explicit ?w= opts out too: someone who named a width means it,
+        # and the ladder would quietly override them. That's also what keeps
+        # a shared ...?w=170 link, the CLI, and the animate stream on the
+        # single-render path they have always been on.
         fits_width = r.view != "disc" and not r.facing
-        fit_width = api._effective_width(r) if fits_width else "null"
+        laddered = fits_width and not r.width
         # Called fresh here rather than read off res.data -- _compose_find
         # doesn't set coming_up_card (find already answers "what's worth
         # looking at"), but the card is a homepage highlight, not tied to
@@ -2002,12 +2008,34 @@ def _respond(request: Req, place: str | None):
         # JSON/PNG output is untouched -- both strips only run on the copy
         # of page_text that becomes this HTML response.
         html_text = api.strip_duplicate_ui_lines(page_text, r, res, base_url)
+
+        def _rendered(text):
+            return api.ansi_to_html(api.strip_footer_line(text))
+
+        if laddered:
+            # One render per rung, each through the same _cached() as any
+            # other request -- so a rung a visitor has already been served
+            # (at this place, in this time bucket) is a cache hit, not
+            # repeated work. Costs ~4 ms per rung on a cold miss, against
+            # the up-to-34 separate cache entries ?w= and ?panel= used to
+            # split this page into once the auto-fit reload had picked a
+            # width per visitor.
+            rungs = []
+            for _min_ch, cols, panel in api.CHART_LADDER:
+                rr = r.sized(cols, panel)
+                rung_res, _daytime, _hit = _cached(rr)
+                rung_text = rung_res.text.replace("{base_url}", base_url)
+                rungs.append((cols, panel, _rendered(
+                    api.strip_duplicate_ui_lines(rung_text, rr, rung_res, base_url))))
+            chart_html = api.chart_ladder(rungs)
+        else:
+            chart_html = api.chart_pre(_rendered(html_text))
         body = api.PAGE.format(title=f"skymap.sh: {r.place.name}",
                                header=header, controls=controls,
                                wide_class=" w-wide" if fits_width else "",
-                               fit_width=fit_width, coming_up_card=coming_up_card,
+                               coming_up_card=coming_up_card,
                                kbd_urls=json.dumps(kbd), shortcuts_hint=api.SHORTCUTS_HINT,
-                               body=api.ansi_to_html(api.strip_footer_line(html_text)))
+                               body=chart_html)
         return HTMLResponse(body, status_code=res.status, headers=headers)
     text = page_text if colour else api.strip_ansi(page_text)
     return PlainTextResponse(text, status_code=res.status, headers=headers)
@@ -2059,9 +2087,9 @@ def help_(request: Req):
     if mode == "html":
         controls = api.controls_html(api.EXPLORE)
         body = api.PAGE.format(title="skymap.sh: usage", header=api.header_html("help"),
-                               controls=controls, wide_class="", fit_width="null",
+                               controls=controls, wide_class="",
                                coming_up_card="",
-                               body=html.escape(api.HELP),
+                               body=api.chart_pre(html.escape(api.HELP)),
                                kbd_urls="{}", shortcuts_hint="")
         return HTMLResponse(body, headers=headers)
     return PlainTextResponse(api.HELP, headers=headers)
@@ -2173,9 +2201,9 @@ def legend(request: Req):
     if mode == "html":
         controls = api.controls_html(api.EXPLORE)
         body = api.PAGE.format(title="skymap.sh: legend", header=api.header_html("legend"),
-                               controls=controls, wide_class="", fit_width="null",
+                               controls=controls, wide_class="",
                                coming_up_card="",
-                               body=api.ansi_to_html(api.legend_text(True)),
+                               body=api.chart_pre(api.ansi_to_html(api.legend_text(True))),
                                kbd_urls="{}", shortcuts_hint="")
         return HTMLResponse(body, headers=headers)
     return PlainTextResponse(api.legend_text(colour), headers=headers)
@@ -2189,9 +2217,9 @@ def catalog(request: Req):
     if mode == "html":
         controls = api.controls_html(api.EXPLORE)
         body = api.PAGE.format(title="skymap.sh: catalog", header=api.header_html("catalog"),
-                               controls=controls, wide_class="", fit_width="null",
+                               controls=controls, wide_class="",
                                coming_up_card="",
-                               body=api.catalog_html(),
+                               body=api.chart_pre(api.catalog_html()),
                                kbd_urls="{}", shortcuts_hint="")
         return HTMLResponse(body, headers=headers)
     return PlainTextResponse(api.catalog_text(colour), headers=headers)
@@ -2248,9 +2276,9 @@ def stats(request: Req):
         # nothing else moves -- prose pages keep the 1200px measure that makes
         # them readable.
         page = api.PAGE.format(title="skymap.sh: stats", header=api.header_html("stats"),
-                               controls=controls, wide_class=" w-wide", fit_width="null",
+                               controls=controls, wide_class=" w-wide",
                                coming_up_card="",
-                               body=body, kbd_urls="{}", shortcuts_hint="")
+                               body=api.chart_pre(body), kbd_urls="{}", shortcuts_hint="")
         return HTMLResponse(page, headers=headers)
     text = stats_text()
     return PlainTextResponse(text if colour else api.strip_ansi(text),
@@ -2278,9 +2306,9 @@ def stats_sphere(request: Req):
         controls = api.controls_html(api.EXPLORE)
         body = api.PAGE.format(title="skymap.sh: sphere stats",
                                header=api.header_html("stats/sphere"),
-                               controls=controls, wide_class="", fit_width="null",
+                               controls=controls, wide_class="",
                                coming_up_card="",
-                               body=html.escape(stats_sphere_text()),
+                               body=api.chart_pre(html.escape(stats_sphere_text())),
                                kbd_urls="{}", shortcuts_hint="")
         return HTMLResponse(body, headers=headers)
     return PlainTextResponse(stats_sphere_text(), headers=headers)
@@ -2302,9 +2330,9 @@ def stats_daily(request: Req):
         controls = api.controls_html(api.EXPLORE)
         body = api.PAGE.format(title="skymap.sh: daily stats",
                                header=api.header_html("stats/daily"),
-                               controls=controls, wide_class="", fit_width="null",
+                               controls=controls, wide_class="",
                                coming_up_card="",
-                               body=html.escape(stats_daily_text(days)),
+                               body=api.chart_pre(html.escape(stats_daily_text(days))),
                                kbd_urls="{}", shortcuts_hint="")
         return HTMLResponse(body, headers=headers)
     return PlainTextResponse(stats_daily_text(days), headers=headers)
@@ -2324,9 +2352,9 @@ def stats_hourly(request: Req):
     if mode == "html":
         controls = api.controls_html(api.EXPLORE)
         body = api.PAGE.format(title="skymap.sh: stats", header=api.header_html("stats/hourly"),
-                               controls=controls, wide_class="", fit_width="null",
+                               controls=controls, wide_class="",
                                coming_up_card="",
-                               body=html.escape(stats_hourly_text(days)),
+                               body=api.chart_pre(html.escape(stats_hourly_text(days))),
                                kbd_urls="{}", shortcuts_hint="")
         return HTMLResponse(body, headers=headers)
     return PlainTextResponse(stats_hourly_text(days), headers=headers)
@@ -2609,9 +2637,9 @@ def events_page(request: Req, place: str | None):
         body = api.PAGE.format(
             title=f"skymap.sh: what's coming up over {r.place.name}",
             header=api.header_html(f"{r.place.slug}/events"),
-            controls=controls, wide_class="", fit_width="null",
+            controls=controls, wide_class="",
             coming_up_card="",
-            body=api.events_html(r, days=_events_window(request)),
+            body=api.chart_pre(api.events_html(r, days=_events_window(request))),
             kbd_urls="{}", shortcuts_hint="")
         return HTMLResponse(body, headers=_events_headers())
     return PlainTextResponse(api.strip_ansi(res.text) if not colour else res.text,

@@ -864,7 +864,7 @@ class HelpTextIsCurrent(unittest.TestCase):
     likely to also update the doc, not just leave it stale."""
 
     def test_mentions_every_wired_up_keyboard_shortcut(self):
-        for key in ("p/tab", "f ", "m ", "esc", "a ", "g ", "d ", "z "):
+        for key in ("tab  ", "f ", "m ", "esc", "a ", "g ", "d ", "z "):
             self.assertIn(key, api.HELP)
 
     def test_find_mentions_deep_sky_and_radiants(self):
