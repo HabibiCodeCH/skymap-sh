@@ -1075,7 +1075,12 @@ def stats_text(n=50, map_slot=False):
     L += ["", f"{gut}sparklines: cache hit % (latest) and night share of "
               f"the window", ""]
     L += _side_by_side(mix_h, mix_d, left_width=left_w)
+    # Says which period each half is about. The bars are per column and the
+    # figure is the whole window, the same split the night line above uses --
+    # but unlabelled it reads as a contradiction whenever the latest column
+    # disagrees with the window, which on a quiet hour it easily does.
     L += [f"{gut}share of requests by client · the four add up to the whole",
+          f"{gut}bars are per column; the figure on the right is the window",
           ""]
     L += _side_by_side(finds_h, finds_d, left_width=left_w)
     L += [""]
