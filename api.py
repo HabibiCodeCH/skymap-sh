@@ -2217,13 +2217,13 @@ OPTIONS
     skymap() { curl "skymap.sh/${1:-}?w=$(tput cols)"; }
 
 KEYBOARD (in a browser, on a chart page)
-  p/tab  focus the place search        a   toggle animate
-  f      focus the find field          g   share as a GIF
-  m      jump to my location           d   toggle quadrant grid + dso
-  esc    cancel/exit find mode, drawer z   zoom: pick a quadrant cell with
-                                            arrow keys, enter to crop to it
-  while animating: space plays/pauses, left/right step a frame at a time
-  (15 simulated minutes each), d loads deep sky into the frame on screen
+  p/tab  focus the place search      space  start the animation
+  f      focus the find field        g      share as a GIF
+  m      jump to my location         d      toggle quadrant grid + dso
+  esc    cancel/exit find mode, drawer
+  z      zoom: pick a quadrant cell with arrow keys, enter to crop to it
+  once it is running, space plays/pauses, left/right step a frame at a time
+  (15 simulated minutes each), and d loads deep sky into the frame on screen
 
 Stars: Yale Bright Star Catalogue. Planets: JPL approximate elements.
 Sun and Moon: Meeus. Satellites: CelesTrak.
@@ -3270,12 +3270,30 @@ function skymapAnimDeepSky(done){{
   var A=window.skymapAnim;
   if(!A||!A.frames.length||A.loadingDso)return;
   if(A.playing)skymapAnimPlay(false);
-  var t=skymapAnimFrameTime(A.at);
+  var at=A.at;
+  // A toggle, not a one-way switch. Both versions of the frame are kept --
+  // the stream's own and the deep-sky one -- so pressing d again puts the
+  // plain frame back, and a third press costs no request at all.
+  if(A.dsoOn[at]){{
+    A.frames[at]=A.plain[at];
+    A.dsoOn[at]=false;
+    skymapAnimShow(at);
+    if(done)done(true,false);
+    return;
+  }}
+  if(A.dsoFrames[at]!==undefined){{
+    A.plain[at]=A.frames[at];
+    A.frames[at]=A.dsoFrames[at];
+    A.dsoOn[at]=true;
+    skymapAnimShow(at);
+    if(done)done(true,true);
+    return;
+  }}
+  var t=skymapAnimFrameTime(at);
   var live=A.btn.getAttribute('data-live-url');
   if(!t||!live)return;
   var url=live.replace(/([?&])t=[^&]*/,'$1t='+encodeURIComponent(t))
               .replace(/([?&])animate=[^&]*/,'$1animate=1')+'&dso=1';
-  var at=A.at;
   A.loadingDso=true;
   fetch(url).then(function(resp){{
     var reader=resp.body.getReader(),dec=new TextDecoder(),buf='';
@@ -3294,11 +3312,15 @@ function skymapAnimDeepSky(done){{
   }}).then(function(frame){{
     A.loadingDso=false;
     if(!frame)return;
-    // Written back into the buffer, so stepping away and returning to this
-    // frame still finds the deep-sky version.
+    // Both kept: the stream's own frame to go back to, the deep-sky one to
+    // return to without asking twice. The buffer holds whichever is showing,
+    // so stepping away and back finds the frame as it was left.
+    A.plain[at]=A.frames[at];
+    A.dsoFrames[at]=frame;
+    A.dsoOn[at]=true;
     A.frames[at]=frame;
     if(A.at===at)skymapAnimShow(at);
-    if(done)done(true);
+    if(done)done(true,true);
   }}).catch(function(){{
     A.loadingDso=false;
     if(done)done(false);
@@ -3320,9 +3342,13 @@ function skymapAnimate(btn){{
   // only actually happens if it's clicked -- see skymapRenderGif -- since
   // that's real Pillow work, not free to do for every single viewer.
   var A=window.skymapAnim;
-  if(A&&A.frames.length){{
-    // Second click is play/pause, and replay once it has run out -- from
-    // the buffer, so a rewatch costs the server nothing at all.
+  if(A){{
+    // Second press is play/pause, and replay once it has run out -- from
+    // the buffer, so a rewatch costs the server nothing at all. Before the
+    // first frame has landed there is nothing to toggle yet, and this must
+    // not fall through to starting a second stream -- easy to trigger now
+    // that space starts it, since space is a key people tap twice.
+    if(!A.frames.length)return;
     if(skymapAnimAtEnd(A)&&!A.playing)skymapAnimShow(0);
     skymapAnimPlay(!A.playing);
     return;
@@ -3331,6 +3357,7 @@ function skymapAnimate(btn){{
   var pre=document.getElementById('chart-pre');
   A=window.skymapAnim={{frames:[],at:-1,playing:true,done:false,timer:null,
                        btn:btn,pre:pre,base:pre.innerHTML,loadingDso:false,
+                       plain:{{}},dsoFrames:{{}},dsoOn:{{}},
                        ms:parseInt(btn.getAttribute('data-frame-ms'),10)||150,
                        stepMin:parseInt(btn.getAttribute('data-step-min'),10)||15}};
   // Enabled throughout now: while the stream runs this button is the pause
@@ -3770,10 +3797,11 @@ function skymapRenderGif(btn){{
       // loads deep sky into the frame on screen instead.
       if(e.key==='d'){{
         e.preventDefault();
-        flashHint('Deep sky for this frame…',10000);
-        skymapAnimDeepSky(function(ok){{
+        flashHint('Deep sky…',10000);
+        skymapAnimDeepSky(function(ok,on){{
           var A=window.skymapAnim;
-          flashHint(ok?'Deep sky &middot; frame '+(A.at+1)+'/'+A.frames.length
+          flashHint(ok?'Deep sky '+(on?'on':'off')+' &middot; frame '+
+                       (A.at+1)+'/'+A.frames.length
                      :'Deep sky failed for this frame');
         }});
         return;
@@ -3819,9 +3847,15 @@ function skymapRenderGif(btn){{
       }},{{timeout:10000}});
       return;
     }}
-    if(e.key==='a'){{
+    // Space starts it. Once it is running the block further up owns space
+    // for play/pause, so one key covers the whole thing the way it does in
+    // any video player. Only where there is an animate button to press --
+    // every other page keeps space for scrolling -- and never while a field
+    // has focus, which the INPUT guard above already handles, so typing a
+    // place with a space in it still types a space.
+    if(e.key===' '||e.key==='Spacebar'){{
       var ab=document.getElementById('animate-btn');
-      if(ab&&!ab.disabled)ab.click();
+      if(ab&&!ab.disabled){{e.preventDefault();ab.click();}}
       return;
     }}
     if(e.key==='g'){{
@@ -3979,7 +4013,7 @@ function skymapRenderGif(btn){{
 SHORTCUTS_HINT = (
     '<p class="kbd-hint">Keyboard: <kbd>tab</kbd> place &middot; '
     '<kbd>f</kbd> find &middot; <kbd>m</kbd> my location &middot; '
-    '<kbd>a</kbd> animate &middot; <kbd>d</kbd> deep sky &middot; '
+    '<kbd>space</kbd> animate &middot; <kbd>d</kbd> deep sky &middot; '
     '<kbd>z</kbd> zoom &middot; '
     '<kbd>esc</kbd> cancel</p>'
 )

@@ -180,12 +180,40 @@ class AnimateBrowserVsTerminal(unittest.TestCase):
         # take the frame buffer and the paused position with it.
         body = self.client.get("/Ibiza?animate=24", headers=BROWSER).text
         self.assertIn("function skymapAnimDeepSky", body)
-        self.assertIn("skymapAnimDeepSky(function(ok)", body)
+        self.assertIn("skymapAnimDeepSky(function(ok,on)", body)
         # One frame, not the whole run: the stream is cancelled as soon as
         # its first frame is whole.
         self.assertIn("reader.cancel();return parts[1];", body)
         # Written back into the buffer, so stepping away and returning keeps it.
         self.assertIn("A.frames[at]=frame;", body)
+
+    def test_d_is_a_toggle_not_a_one_way_switch(self):
+        # Both versions of the frame are kept -- the stream's own and the
+        # deep-sky one -- so a second press puts the plain frame back and a
+        # third costs no request.
+        body = self.client.get("/Ibiza?animate=24", headers=BROWSER).text
+        self.assertIn("A.frames[at]=A.plain[at];", body)     # back to plain
+        self.assertIn("A.dsoFrames[at]!==undefined", body)   # cached, no refetch
+        self.assertIn("plain:{},dsoFrames:{},dsoOn:{},", body.replace("\n", ""))
+        self.assertIn("'Deep sky '+(on?'on':'off')", body)
+
+    def test_space_starts_the_animation_and_a_no_longer_does(self):
+        body = self.client.get("/Ibiza?animate=24", headers=BROWSER).text
+        self.assertNotIn("if(e.key==='a')", body)
+        # Guarded on the button existing, so space keeps scrolling every
+        # page that has nothing to animate.
+        self.assertIn("var ab=document.getElementById('animate-btn');", body)
+        help_text = self.client.get("/help", headers=TERMINAL).text
+        self.assertIn("space  start the animation", help_text)
+        self.assertNotIn("a   toggle animate", help_text)
+
+    def test_a_second_press_before_the_first_frame_does_not_restart_it(self):
+        # window.skymapAnim exists the moment the fetch is kicked off, but
+        # with no frames yet -- falling through from there would open a
+        # second stream. Space makes that easy to hit; it is a key people
+        # tap twice.
+        body = self.client.get("/Ibiza?animate=24", headers=BROWSER).text
+        self.assertIn("if(!A.frames.length)return;", body)
 
     def test_starting_the_animation_does_not_park_focus_in_a_text_field(self):
         # A document-level click listener focuses the place search on any
@@ -202,8 +230,11 @@ class AnimateBrowserVsTerminal(unittest.TestCase):
         body = self.client.get("/Ibiza?animate=24", headers=BROWSER).text
         hint = re.search(r'<p class="kbd-hint">(.*?)</p>', body, re.S).group(1)
         self.assertNotIn("<br>", hint)                    # stays one line
-        for key in ("space", "&larr;"):
-            self.assertNotIn(key, hint)                   # not at rest
+        # Space is what starts it, so it is named at rest -- the stepping
+        # keys are not, since they do nothing until there are frames.
+        self.assertIn("<kbd>space</kbd> animate", hint)
+        self.assertNotIn("&larr;", hint)
+        self.assertNotIn("play/pause", hint)
         self.assertIn("<kbd>space</kbd> play/pause", body)   # in the JS
         self.assertIn("window.skymapSetHint(SKYMAP_ANIM_HINT)", body)
         self.assertIn("window.skymapSetHint(null)", body)
