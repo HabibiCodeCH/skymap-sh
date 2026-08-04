@@ -3339,6 +3339,51 @@ class MobileRedirectsToSphere(unittest.TestCase):
         self.assertNotIn("three.module.js", resp.text)
 
 
+class HeadRequestsAreAnswered(unittest.TestCase):
+    """HEAD asks for the headers a GET would return, without the body. It is
+    what `curl -I` sends and what uptime monitors and link checkers use. All
+    36 routes are declared with @app.get, which FastAPI takes literally, so
+    every one of them used to answer 405 -- anything watching the site that
+    way was reading a hard failure on every check."""
+
+    def setUp(self):
+        client_cm = TestClient(server.app, follow_redirects=False)
+        self.client = client_cm.__enter__()
+        self.addCleanup(client_cm.__exit__, None, None, None)
+
+    def test_every_kind_of_route_answers_head(self):
+        for path in ("/", "/Geneva", "/healthz", "/robots.txt", "/stats",
+                     "/legend", "/help", "/sitemap.xml", "/Geneva/sphere"):
+            resp = self.client.request("HEAD", path, headers=TERMINAL)
+            self.assertEqual(resp.status_code, 200, path)
+
+    def test_head_reports_the_length_a_get_would_have_sent(self):
+        # The body is still rendered, which is what makes Content-Length
+        # honest; uvicorn drops it on the wire because it knows the request
+        # was a HEAD.
+        head = self.client.request("HEAD", "/Geneva", headers=TERMINAL)
+        get = self.client.get("/Geneva", headers=TERMINAL)
+        self.assertEqual(head.headers["content-length"],
+                         get.headers["content-length"])
+
+    def test_head_still_redirects_a_phone_to_the_sphere(self):
+        resp = self.client.request("HEAD", "/", headers=MOBILE)
+        self.assertEqual(resp.status_code, 302)
+        self.assertTrue(resp.headers["location"].endswith("/sphere"))
+
+    def test_head_keeps_the_cache_headers_a_get_would_get(self):
+        head = self.client.request("HEAD", "/Geneva", headers=TERMINAL)
+        get = self.client.get("/Geneva", headers=TERMINAL)
+        self.assertEqual(head.headers["cache-control"], get.headers["cache-control"])
+
+    def test_an_unsupported_method_is_still_rejected(self):
+        # Only HEAD is folded onto GET; POST and friends must stay 405 so
+        # this does not quietly turn into "any method works".
+        for method in ("POST", "PUT", "DELETE", "PATCH"):
+            resp = self.client.request(method, "/Geneva", headers=TERMINAL)
+            self.assertEqual(resp.status_code, 405, method)
+
+
 class Favicon(unittest.TestCase):
     """Browsers request /favicon.ico and /apple-touch-icon.png on every visit
     regardless of whether the site has one -- unhandled, those were the

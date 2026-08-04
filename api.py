@@ -3191,9 +3191,14 @@ def complete_objects(prefix, n=8):
 
     d = _catalog_data()
     out = []
-    for _nm, display, glyph, glyph_c in d["solar_system"]:
+    # "name" is what the dropdown shows, "q" is what it searches for. They
+    # are the same for everything except the Moon, whose label carries its
+    # current phase -- and the dropdown used to submit the label, so picking
+    # the Moon searched for "Moon (last quarter)" and found nothing.
+    for nm, display, glyph, glyph_c in d["solar_system"]:
         if word_match(display):
-            out.append({"name": display, "glyph": glyph, "color": _ansi_hex(glyph_c)})
+            out.append({"name": display, "q": nm, "glyph": glyph,
+                       "color": _ansi_hex(glyph_c)})
     for s in d["named_stars"]:
         if word_match(s["n"]):
             out.append({"name": s["n"], "glyph": sky.glyph_for(s["m"]),
@@ -4586,7 +4591,9 @@ function skymapRenderGif(btn){{
   }}
 
   function selectItem(it){{
-    findInput.value=it.name;
+    // it.q where the label and the searchable name differ (the Moon, whose
+    // label carries its phase); it.name everywhere else.
+    findInput.value=it.q||it.name;
     closeDropdown();
     var form=document.getElementById('explore');
     if(form){{

@@ -891,6 +891,14 @@ def angsep(a1, z1, a2, z2):
 def resolve_target(name, jd, lat, lst):
     """Name -> where it is right now. Planets, Sun, Moon, named stars, asterisms."""
     q = name.strip().lower()
+    # A trailing parenthetical is a label, not part of the name. The find
+    # dropdown used to hand back its own display string as the query, so
+    # picking the Moon searched for "Moon (last quarter)" and found nothing
+    # -- fixed at the source in complete_objects(), but the bad string is
+    # already in people's history and in any link they shared, and nothing
+    # findable has a bracket in its real name.
+    if q.endswith(")") and "(" in q:
+        q = q[:q.rindex("(")].strip() or q
     for nm in ("Mercury","Venus","Mars","Jupiter","Saturn","Uranus","Neptune"):
         if nm.lower() == q:
             b = planet(nm, jd)

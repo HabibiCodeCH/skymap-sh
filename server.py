@@ -2109,6 +2109,32 @@ def _respond(request: Req, place: str | None):
 
 
 @app.middleware("http")
+async def head_as_get(request: Req, call_next):
+    """Answer HEAD the way GET would.
+
+    HEAD asks for the headers a GET would return, without the body -- it is
+    what `curl -I` sends, and what uptime monitors and link checkers use
+    because it costs nothing. Every route here is declared with @app.get,
+    and FastAPI takes that literally, so all 36 of them answered 405 Method
+    Not Allowed. Anything watching skymap.sh that way had been reading a
+    hard failure on every check.
+
+    Rewriting the method in the scope rather than adding HEAD to 36
+    decorators keeps it in one place and covers routes added later. The body
+    still gets rendered, which is what makes Content-Length honest, and
+    uvicorn's HTTP layer drops it on the wire because it knows the request
+    was a HEAD. Nothing downstream branches on the method.
+
+    The rate limiter is the outer of the two (@app.middleware registers
+    inward-out, so the one written later wraps the one written first), which
+    is the way round we want: a HEAD is throttled on the same bucket as the
+    GET it stands in for rather than slipping past on a technicality."""
+    if request.method == "HEAD":
+        request.scope["method"] = "GET"
+    return await call_next(request)
+
+
+@app.middleware("http")
 async def ratelimit(request: Req, call_next):
     path = request.url.path
     if path in ("/healthz", "/robots.txt", "/complete", "/complete/objects"):
