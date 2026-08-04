@@ -2270,6 +2270,28 @@ class WidthLadder(unittest.TestCase):
         for body in rungs:
             self.assertNotIn("above the horizon in the", body)
 
+    def test_the_daylight_view_leaves_no_fragments_or_markers(self):
+        # Two bugs in one page. The prose is wrapped at 76 before the
+        # summary lines are dropped, so removing them by their opening
+        # words left the tail of a wrapped sentence behind -- a lone
+        # "sets." under the chart. And split_chart_parts only looked for
+        # the prose seam after finding a zenith seam, which the Sun's-path
+        # view never has, so its marker reached the page as a tofu box.
+        snap = {n: getattr(server, n).copy() for n in ("_places", "_geo_hits")}
+        self.addCleanup(lambda: [(getattr(server, n).clear(),
+                                  getattr(server, n).update(s))
+                                 for n, s in snap.items()])
+        for url in ("/Geneva?t=2026-08-19T14:00",
+                    "/Reykjavik?t=2026-06-21T13:00"):
+            resp = self.client.get(url, headers=BROWSER)
+            text = server.api.strip_ansi(resp.text)
+            self.assertNotIn("\x00", text, url)
+            self.assertNotIn("sets.", text, url)      # the orphaned tail
+            self.assertNotIn("Sunrise ", text, url)   # the sentence it came from
+            # and the row that replaced them is there. "never fully dark" can
+            # appear in it, which is why that phrase is not what is checked.
+            self.assertRegex(text, r"☀ \d+°[NESW]+")
+
     def test_a_plain_night_chart_has_nothing_left_below_it(self):
         # Moon, planets, twilight and the star count all ride on the top
         # line now, so the chart runs to the shortcut bar.

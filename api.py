@@ -594,7 +594,10 @@ def _compose_find(r):
     data = dict(place=p.name, lat=p.lat, lon=p.lon,
                 target=tgt["name"], kind=tgt["kind"], visible=ok, reason=why)
 
-    status = "visible then" if r.when_explicit else "visible now"
+    # now or then, by whether a time was picked -- a chart headed 12 Aug
+    # cannot claim the present tense for next week.
+    when_word = "then" if r.when_explicit else "now"
+    status = f"visible {when_word}"
     if not ok:
         w, a2, z2 = next_visible_cached(tgt, p.lat, p.lon, r.when_utc)
         if w is None:
@@ -619,8 +622,8 @@ def _compose_find(r):
         # The same two facts for the browser's one-line header. "(shown)"
         # carries what "Chart drawn for that moment" spells out: the sky
         # below is that later moment, not the one asked for.
-        status = (f"not yet, {SHORT_WHY.get(why, why)} · next {when_txt}, "
-                  f"{a2:.0f}°{compass(z2)} (shown)")
+        status = (f"not visible {when_word}, {SHORT_WHY.get(why, why)} · next "
+                  f"{when_txt}, {a2:.0f}°{compass(z2)} (shown)")
         data.update(next_visible=dict(when_utc=w.isoformat() + "Z",
                                       when_local=wl.isoformat(),
                                       alt=round(a2), compass=compass(z2)))
@@ -858,10 +861,16 @@ def split_chart_parts(text):
     that actually differs. Anything without the markers (every non-panel
     render) comes back as (text, "", ""), which is what the callers that
     predate this expect."""
-    chart, sep, rest = text.partition(ZENITH_SLOT)
-    if not sep:
-        return text, "", ""
-    zenith, sep, prose = rest.partition(PROSE_SLOT)
+    chart, zsep, rest = text.partition(ZENITH_SLOT)
+    if zsep:
+        zenith, _psep, prose = rest.partition(PROSE_SLOT)
+    else:
+        # The Sun's-path view has prose to lift out but no inset to lift --
+        # it draws no zenith disc at all. Looking for the prose seam only
+        # after finding a zenith seam left its marker in the text, where it
+        # rendered as a missing-glyph box.
+        zenith = ""
+        chart, _psep, prose = text.partition(PROSE_SLOT)
     return chart.rstrip("\n"), zenith.strip("\n"), prose.strip("\n")
 
 
@@ -908,6 +917,13 @@ def chart_layout(rungs, zenith, prose):
     return (f'<div id="chart-stage">{chart_ladder(rungs)}{inset}</div>{below}')
 
 
+# One number for the chart, the inset and the prose under it. The ladder's
+# breakpoints are in `ch`, which is the width of a "0" in this font -- so
+# changing this changes how many rungs fit a given window without touching a
+# single breakpoint, and the ladder picks a wider chart on its own.
+CHART_FONT_PX = 12
+
+
 def chart_ladder_css():
     """Container queries, generated from CHART_LADDER so the breakpoints
     cannot drift from the widths actually rendered into the page.
@@ -934,14 +950,14 @@ def chart_ladder_css():
     A browser too old for container queries applies none of the @container
     blocks and keeps the first rung, so it gets the narrowest chart rather
     than a broken page."""
-    lines = [" #chart-ladder{container-type:inline-size;font-size:13px}",
+    lines = [f" #chart-ladder{{container-type:inline-size;font-size:{CHART_FONT_PX}px}}",
              # Repeated on the rungs themselves rather than left to inherit:
              # the generic pre{} rule sets 11px explicitly, and an explicit
              # rule beats inheritance no matter how specific the ancestor.
-             # It has to match the container's own 13px above or the ch
-             # breakpoints measure against a different font size than the
-             # chart they are picking.
-             " #chart-ladder .chart-pre{display:none;font-size:13px}",
+             # It has to match the container's own size above or the ch
+             # breakpoints measure against a different font than the chart
+             # they are picking.
+             f" #chart-ladder .chart-pre{{display:none;font-size:{CHART_FONT_PX}px}}",
              " #chart-ladder .chart-pre:nth-child(1){display:block}"]
     for i, (min_ch, _cols, _panel) in enumerate(CHART_LADDER):
         if min_ch is None:
@@ -957,8 +973,8 @@ def chart_ladder_css():
         # Top right, over the panorama's highest rows. That corner holds
         # 55-70 degrees of altitude, the emptiest band of the chart on most
         # nights -- and when it isn't, "i" takes the inset away.
-        " #chart-zenith{position:absolute;top:0;right:0;font-size:13px;"
-        "margin:0;pointer-events:none;"
+        f" #chart-zenith{{position:absolute;top:0;right:0;"
+        f"font-size:{CHART_FONT_PX}px;margin:0;pointer-events:none;"
         # Sits on the sky, so it needs its own floor under it or the stars
         # it covers read as part of the drawing.
         "background:rgba(4,6,10,.82);padding:2px 6px;border-radius:4px}",
@@ -966,7 +982,7 @@ def chart_ladder_css():
         # The prose keeps the chart's font but not its width: pinned above
         # the shortcut bar, where it stays put while the chart above it
         # changes rung, place or time.
-        " #chart-prose{font-size:13px;margin:6px 0 0}",
+        f" #chart-prose{{font-size:{CHART_FONT_PX}px;margin:6px 0 0}}",
     ]
     return "\n".join(lines)
 
@@ -1073,10 +1089,9 @@ def _moved_to_summary(line):
 # so rewording there fails loudly rather than quietly restoring the long
 # version.
 SHORT_WHY = {
-    "too low, under 8°, so trees and buildings will be in the way":
-        "too low, under 8°",
+    "too low, under 8°, so trees and buildings will be in the way": "too low",
     "the sky is still too bright": "sky too bright",
-    "the sky is not quite dark enough for it": "not quite dark enough",
+    "the sky is not quite dark enough for it": "not quite dark",
 }
 
 
@@ -1396,9 +1411,15 @@ def _compose_sky(r):
                            C.MUTE, c))
     if st.get("quad_cells"):
         letters = [cell["letter"] for cell in st["quad_cells"]]
-        right.append(paint(f"  Quadrants {letters[0]}-{letters[-1]} are marked on the chart. "
-                           f"To zoom in, rerun adding ?quadrant={letters[0]} "
-                           f"(or --quadrant={letters[0]} on the CLI).", C.MUTE, c))
+        # Both halves of the long sentence are instructions for editing a
+        # URL by hand, which is how it works in a terminal and not how it
+        # works in a browser -- there, z opens the arrow-key picker and
+        # Enter crops, and the picker prints its own hint while it is up.
+        right.append(paint(
+            f"  Quadrants {letters[0]}-{letters[-1]} · z to pick" if r.panel else
+            f"  Quadrants {letters[0]}-{letters[-1]} are marked on the chart. "
+            f"To zoom in, rerun adding ?quadrant={letters[0]} "
+            f"(or --quadrant={letters[0]} on the CLI).", C.MUTE, c))
     teaser = events_teaser(r)
     if teaser:
         import textwrap
@@ -1696,13 +1717,49 @@ def _compose_day(r):
         lines.append(f"See tonight's chart now:  "
                      f"curl 'skymap.sh/{p.slug}?t={tl:%Y-%m-%dT%H:%M}'")
 
+    if r.panel:
+        # Before the wrap, not after: these sentences run past 76 characters
+        # and wrap into two rows each, so dropping them by their opening
+        # words left the tail behind -- the browser showed a lone "sets."
+        # under the chart.
+        lines = [l for l in lines
+                 if not l.startswith(("Daylight. The Sun is", "Sunrise ",
+                                      "The Sun does not set here today",
+                                      "Waiting for you tonight:"))]
+
     import textwrap
     body = []
     for l in lines:
         body.extend(textwrap.wrap(l, 76))
 
-    head = _horizon_head(r, _sun_path_mode(r))
-    out = ["", paint(head, C.HEAD, c), "", art, ""]
+    if r.panel:
+        # Same one row the night chart gets: where the Sun is, the day's
+        # turning points, and what will be up once it is dark. The two
+        # sentences below said this in 96 and 76 characters, wrapping to
+        # four rows between them.
+        parts = [(0, f"☀ {sa:.0f}°{compass(sz)}")]
+        if ev["polar_day"]:
+            parts.append((1, "the Sun does not set today"))
+        else:
+            t = [f"↑{_hm(ev.get('sunrise'), off)}", f"↓{_hm(ev.get('sunset'), off)}"]
+            t.append(f"stars {_hm(first, off)} · dark {_hm(dark, off)}" if first
+                     else "never fully dark")
+            parts.append((1, " · ".join(t)))
+        if later:
+            parts.append((2, "tonight: " + ", ".join(b["name"] for b in later)))
+        prefix = _head_prefix(r)
+        while len(parts) > 1 and (len(prefix) + 3 +
+                                  len(" · ".join(x for _p, x in parts))
+                                  > _effective_width(r)):
+            parts.remove(max(parts, key=lambda pt: pt[0]))
+        head = f"{prefix} · " + " · ".join(x for _p, x in parts)
+        # body was filtered before wrapping, above. What is left is the
+        # exceptional stuff: a facing/view request this page cannot honour,
+        # and anything else worth a sentence of its own.
+        out = ["", paint(head, C.HEAD, c), "", art, PROSE_SLOT]
+    else:
+        head = _horizon_head(r, _sun_path_mode(r))
+        out = ["", paint(head, C.HEAD, c), "", art, ""]
     out += [paint("  " + l, C.LABEL, c) for l in body]
     out.append(paint(f"  Share as a PNG: {_png_url(r)}", SUN_COL, c))
     out += ["", _footer(p, c), ""]
