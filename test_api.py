@@ -7,6 +7,7 @@ import datetime as dt
 import os
 import unittest
 import api
+import sky
 
 
 class Aliases(unittest.TestCase):
@@ -944,6 +945,245 @@ class NightOverrideDuringDaylight(unittest.TestCase):
     def test_chart_only_path_does_not_crash_either(self):
         r = api.Request(place="Zurich", when=dt.datetime(2026, 7, 30, 13, 0), night=True)
         api.compose_chart_only(r)   # raises on failure; nothing to assert
+
+
+class FullDarkMeansAstronomicalDark(unittest.TestCase):
+    """"Fully dark" is astronomical dusk, the Sun at -18 deg, and nothing
+    else. The day view used to fall back to nautical dusk when astronomical
+    never happened, which printed a real-looking time for a darkness that
+    never arrives -- London on the solstice claimed "fully dark 23:23" on a
+    night that never gets there. Everywhere between ~48.5 deg and the Arctic
+    circle has months of those nights, so this was wrong for a good part of
+    Europe and Canada for a good part of the year."""
+
+    # 21 June at 51.5N: the Sun bottoms out around -15 deg, so there is a
+    # nautical dusk but no astronomical one.
+    SOLSTICE = dt.datetime(2026, 6, 21, 12, 0)
+    # Geneva in August still gets a real astronomical dusk, which is what
+    # keeps these tests honest -- they would also pass if the feature simply
+    # never reported full darkness anywhere.
+    ORDINARY = dt.datetime(2026, 8, 4, 12, 0)
+
+    def test_solstice_night_does_not_claim_a_full_dark_time(self):
+        res = api.compose(api.Request(place="London", when=self.SOLSTICE, color=False))
+        self.assertIn("never gets fully dark", res.data["prose"])
+        self.assertNotIn("fully dark 2", res.data["prose"])
+
+    def test_solstice_night_still_reports_first_stars(self):
+        # The sky does get dark enough for the brightest things, and that
+        # time is genuinely useful -- suppressing the whole line would trade
+        # one wrong answer for no answer.
+        res = api.compose(api.Request(place="London", when=self.SOLSTICE, color=False))
+        self.assertIsNotNone(res.data["first_stars"])
+        self.assertIn("first stars about", res.data["prose"])
+
+    def test_solstice_night_reports_no_dark_from_and_says_why(self):
+        res = api.compose(api.Request(place="London", when=self.SOLSTICE, color=False))
+        self.assertIsNone(res.data["dark_from"])
+        self.assertTrue(res.data["never_fully_dark"])
+        # Not polar day: the Sun does still set, it just never gets far down.
+        self.assertFalse(res.data["polar_day"])
+
+    def test_an_ordinary_night_still_gets_a_full_dark_time(self):
+        res = api.compose(api.Request(place="Geneva", when=self.ORDINARY, color=False))
+        self.assertIsNotNone(res.data["dark_from"])
+        self.assertFalse(res.data["never_fully_dark"])
+        self.assertIn("fully dark", res.data["prose"])
+
+    def test_dark_from_matches_astronomical_and_not_nautical_dusk(self):
+        r = api.Request(place="Geneva", when=self.ORDINARY, color=False)
+        res = api.compose(r)
+        off = r.place.offset(r.when_utc)
+        day0 = r.when_local.replace(hour=0, minute=0, second=0, microsecond=0) \
+            - dt.timedelta(hours=off)
+        ev = sky.sun_events(day0, r.place.lat, r.place.lon)
+        want = (ev["dusk_astro"] + dt.timedelta(hours=off)).isoformat()
+        self.assertEqual(res.data["dark_from"], want)
+        self.assertNotEqual(ev["dusk_astro"], ev["dusk_nautical"])
+
+    def test_panel_head_says_no_full_dark_rather_than_a_blank_time(self):
+        # The compact one-row head has its own copy of this sentence, and a
+        # missing time renders there as "--", which reads as a bug.
+        r = api.Request(place="London", when=self.SOLSTICE, color=False, panel=True)
+        text = api.compose(r).text
+        self.assertIn("no full dark", text)
+        self.assertNotIn("dark --", text)
+
+    def test_sphere_countdown_is_null_when_full_dark_never_comes(self):
+        # The 3D page already had the right words for null; it just never
+        # reached them, because the countdown fell back to nautical too.
+        d = api._compose_sphere(api.Request(place="London", when=self.SOLSTICE))
+        self.assertIsNone(d["hours_to_dark"])
+
+    def test_sphere_countdown_still_counts_down_on_an_ordinary_day(self):
+        d = api._compose_sphere(api.Request(place="Geneva", when=self.ORDINARY))
+        self.assertIsNotNone(d["hours_to_dark"])
+        self.assertGreater(d["hours_to_dark"], 0)
+
+
+class GoldenHourOnTheDayView(unittest.TestCase):
+    """The day view's golden-hour line and its JSON. Times are the cheap
+    half: every sunrise calculator has them. The bearings and the shadow are
+    what this is for, so most of these are about those."""
+
+    NOON = dt.datetime(2026, 8, 4, 12, 0)
+
+    def data(self, place="Geneva", when=None):
+        return api.compose(api.Request(place=place, when=when or self.NOON,
+                                       color=False)).data
+
+    def chart(self, place="Geneva", when=None, width=120):
+        """The rendered chart. The golden-hour facts live on it rather than
+        in a paragraph underneath, since a daylight chart is mostly empty
+        sky and the numbers read better beside the band they describe."""
+        return api.compose(api.Request(place=place, when=when or self.NOON,
+                                       color=False, width=width)).text
+
+    def layer(self, place="Geneva", when=None, width=120):
+        """(alt_bands, notes) for one chart -- what the golden layer actually
+        asked the renderer to draw, for assertions that would otherwise be
+        confounded by the prose printed underneath it."""
+        r = api.Request(place=place, when=when or self.NOON, color=False,
+                        width=width)
+        p, off = r.place, r.place.offset(r.when_utc)
+        day0 = r.when_local.replace(hour=0, minute=0, second=0,
+                                    microsecond=0) - dt.timedelta(hours=off)
+        ev = sky.sun_events(day0, p.lat, p.lon)
+        bands = sky.sun_bands(day0, p.lat, p.lon, ev)
+        sa, sz = sky.sun_altaz(r.when_utc, p.lat, p.lon)
+        return api._golden_layer(r, bands, ev, off, sa, sz, 70.0, width)
+
+    def test_the_chart_names_both_windows(self):
+        self.assertIn("golden 05:59-07:03 · 20:18-21:22", self.chart())
+
+    def test_the_line_is_marked_while_the_golden_hour_is_actually_running(self):
+        # 20:30 puts the Sun at 4 degrees, inside the band. The line stops
+        # being a schedule and becomes an instruction, so it gets arrows.
+        chart = self.chart(when=dt.datetime(2026, 8, 4, 20, 30))
+        self.assertIn(">> golden 05:59-07:03 · 20:18-21:22 <<", chart)
+
+    def test_the_line_is_unmarked_when_the_golden_hour_is_hours_away(self):
+        self.assertNotIn(">>", self.chart(when=dt.datetime(2026, 8, 4, 12, 0)))
+
+    def test_the_marked_line_still_fits_the_narrowest_rung(self):
+        # Four characters wider than the plain form, on the chart that has
+        # the least room for them.
+        chart = self.chart(when=dt.datetime(2026, 8, 4, 20, 30), width=80)
+        self.assertIn(">> golden", chart)
+        self.assertIn("<<", chart)
+
+    def test_the_blue_hour_line_never_gets_arrows(self):
+        # Blue hour is below the horizon, so the day view is never on screen
+        # during it -- arrows there would be a promise the chart cannot keep.
+        chart = self.chart(when=dt.datetime(2026, 8, 4, 20, 30))
+        self.assertIn(" blue 05:46-05:59 · 21:22-21:35 ", chart)
+
+    def test_the_chart_names_the_blue_hour_windows(self):
+        # Blue hour runs from -6 to -4, entirely below the horizon, so it
+        # never gets a band -- it has to appear as text or not at all.
+        self.assertIn("blue 05:46-05:59 · 21:22-21:35", self.chart())
+
+    def test_the_chart_gives_rise_and_set_bearings(self):
+        chart = self.chart()
+        self.assertIn("sunrise 06:20  64° ENE", chart)
+        self.assertIn("sunset 21:01  296° WNW", chart)
+
+    def test_the_chart_gives_shadow_length_and_direction(self):
+        self.assertIn("shadows 0.7x toward", self.chart())
+
+    def test_the_band_is_drawn_as_a_stripe(self):
+        # A run of colons long enough that it cannot be anything else.
+        self.assertIn(":" * 40, self.chart())
+
+    def test_the_narrowest_rung_keeps_the_bearings_and_drops_the_shadow(self):
+        # The full line is two columns too wide for an 80-column chart. The
+        # bearings are the point, so the shadow is what gives way.
+        chart = self.chart(width=80)
+        self.assertIn("sunrise 06:20", chart)
+        self.assertNotIn("shadows", chart)
+
+    def test_the_json_still_carries_the_convention(self):
+        # It is no longer spelled out on the chart -- anyone reading a band
+        # of colons knows what golden hour is -- but a client comparing this
+        # against another tool still needs to know which convention it is.
+        conv = self.data()["golden"]["convention"]
+        self.assertEqual((conv["lo_alt"], conv["hi_alt"]), (-4.0, 6.0))
+
+    def test_the_toggle_removes_the_band_the_text_and_the_json(self):
+        r = api.Request(place="Geneva", when=self.NOON, color=False,
+                        width=120, nogolden=True)
+        res = api.compose(r)
+        self.assertNotIn(":" * 40, res.text)
+        self.assertNotIn("golden 05:59", res.text)
+        self.assertNotIn("blue 05:46", res.text)
+        self.assertIsNone(res.data["golden"])
+
+    def test_shadow_points_directly_away_from_the_sun(self):
+        d = self.data()
+        opposed = (d["golden"]["shadow"]["az"] - d["sun"]["az"]) % 360
+        self.assertAlmostEqual(opposed, 180, delta=1)
+
+    def test_shadow_is_capped_rather_than_quoted_near_the_horizon(self):
+        # cot(h) runs away as the Sun drops; a bare "32.3x" reads as
+        # precision that the ground's own slope has already destroyed.
+        when = dt.datetime(2026, 8, 4, 20, 45)
+        self.assertTrue(self.data(when=when)["golden"]["shadow"]["capped"])
+        self.assertIn("shadows >20x", self.chart(when=when))
+
+    def test_json_carries_all_four_bands_with_bearings(self):
+        g = self.data()["golden"]
+        for k in ("golden_am", "golden_pm", "blue_am", "blue_pm"):
+            self.assertIsNotNone(g[k], k)
+            self.assertIsInstance(g[k]["az_start"], int, k)
+            self.assertIsInstance(g[k]["compass_end"], str, k)
+
+    def test_json_states_the_convention_too(self):
+        conv = self.data()["golden"]["convention"]
+        self.assertEqual(conv["lo_alt"], -4.0)
+        self.assertEqual(conv["hi_alt"], 6.0)
+
+    def test_json_times_are_whole_seconds(self):
+        # They come out of a bisection carrying a microsecond tail that reads
+        # as precision the Sun's position does not have.
+        start = self.data()["golden"]["golden_pm"]["start"]
+        self.assertNotIn(".", start)
+
+    def test_arctic_summer_says_golden_light_all_night(self):
+        when = dt.datetime(2026, 6, 21, 12, 0)
+        d = self.data(place="Tromso", when=when)
+        self.assertEqual(d["golden"]["note"], "all_night")
+        self.assertTrue(d["golden"]["golden_pm"]["open_end"])
+        # One window that never closes, not two that pretend to.
+        self.assertIn("golden from 22:35 all night",
+                      self.chart(place="Tromso", when=when))
+
+    def test_arctic_summer_reports_no_rise_or_set_bearing(self):
+        # The Sun does not set, so there is no set bearing to give. The
+        # golden layer drops that clause rather than printing a placeholder.
+        # Asserted against the layer's own notes, not the whole chart: the
+        # prose underneath has said "sunset --" on a polar day since long
+        # before this feature, and that is a separate line.
+        when = dt.datetime(2026, 6, 21, 12, 0)
+        d = self.data(place="Tromso", when=when)
+        self.assertIsNone(d["golden"]["sunset_az"])
+        self.assertIsNone(d["golden"]["sunrise_az"])
+        _bands, notes = self.layer(place="Tromso", when=when)
+        self.assertFalse(any("sunset" in n["text"] for n in notes))
+        self.assertTrue(any("shadows" in n["text"] for n in notes))
+
+    def test_the_arc_marks_the_golden_stretch_differently(self):
+        # The band is a range of Sun altitudes, so the arc colours itself
+        # where it crosses them. Only the part above the horizon can show.
+        r = api.Request(place="Geneva", when=dt.datetime(2026, 8, 4, 19, 30),
+                        color=True, width=100)
+        self.assertIn("•", api.compose(r).text)
+
+    def test_a_colourless_render_still_works(self):
+        # The golden glyph carries an ANSI colour; --no-color must not leak
+        # an escape sequence into the text.
+        r = api.Request(place="Geneva", when=dt.datetime(2026, 8, 4, 19, 30),
+                        color=False, width=100)
+        self.assertNotIn("\033", api.compose(r).text)
 
 
 class HelpTextIsCurrent(unittest.TestCase):

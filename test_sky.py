@@ -356,5 +356,104 @@ class MoonPhaseGlyph(unittest.TestCase):
         self.assertIn("◑", art)
 
 
+class SunBands(unittest.TestCase):
+    """Golden and blue hour as Sun-altitude windows. Away from the tropics
+    the Sun does not cross both edges of the golden band every day, and the
+    interesting part of this is what happens when it doesn't."""
+
+    def day(self, lat, lon, off, when):
+        return sky.sun_bands(when - dt.timedelta(hours=off), lat, lon)
+
+    def test_an_ordinary_mid_latitude_day_gets_all_four_bands(self):
+        b = self.day(46.20, 6.15, 2, dt.datetime(2026, 8, 4))
+        self.assertIsNone(b["note"])
+        for k in ("blue_am", "golden_am", "golden_pm", "blue_pm"):
+            self.assertIsNotNone(b[k], k)
+            self.assertFalse(b[k]["open_end"], k)
+
+    def test_morning_and_evening_golden_are_about_an_hour_at_geneva(self):
+        b = self.day(46.20, 6.15, 2, dt.datetime(2026, 8, 4))
+        for k in ("golden_am", "golden_pm"):
+            self.assertAlmostEqual(b[k]["minutes"], 64, delta=6, msg=k)
+
+    def test_blue_hour_sits_between_civil_dusk_and_the_golden_band(self):
+        # -6 to -4 in the morning, -4 to -6 in the evening: short, and it
+        # must abut the golden band exactly rather than overlap it.
+        b = self.day(46.20, 6.15, 2, dt.datetime(2026, 8, 4))
+        self.assertEqual(b["blue_am"]["end"], b["golden_am"]["start"])
+        self.assertEqual(b["blue_pm"]["start"], b["golden_pm"]["end"])
+        self.assertLess(b["blue_am"]["minutes"], b["golden_am"]["minutes"])
+
+    def test_azimuth_swings_across_the_window(self):
+        # The whole point of the feature: the bearing moves while the band
+        # runs, so the two edges are not the same direction.
+        b = self.day(46.20, 6.15, 2, dt.datetime(2026, 8, 4))["golden_pm"]
+        self.assertGreater(abs(b["az_end"] - b["az_start"]), 5)
+        self.assertTrue(250 < b["az_start"] < 320)
+
+    def test_the_sun_really_is_at_the_band_edges(self):
+        # Times come from a bisection, so check them against the ephemeris
+        # rather than against themselves.
+        b = self.day(46.20, 6.15, 2, dt.datetime(2026, 8, 4))["golden_pm"]
+        self.assertAlmostEqual(sky.sun_altaz(b["start"], 46.20, 6.15)[0],
+                               sky.GOLDEN_HI, delta=0.05)
+        self.assertAlmostEqual(sky.sun_altaz(b["end"], 46.20, 6.15)[0],
+                               sky.GOLDEN_LO, delta=0.05)
+
+    def test_high_summer_arctic_golden_light_never_closes(self):
+        # Tromso on the solstice: the Sun drops through +6 and climbs back
+        # out without ever reaching -4, so the evening band has no end. Two
+        # separate windows would be a fiction here.
+        b = self.day(69.65, 18.96, 2, dt.datetime(2026, 6, 21))
+        self.assertEqual(b["note"], "all_night")
+        self.assertTrue(b["golden_pm"]["open_end"])
+        self.assertIsNone(b["golden_pm"]["end"])
+        self.assertIsNone(b["golden_am"])
+
+    def test_arctic_midwinter_is_one_long_window_not_two(self):
+        # The Sun clears -4 but never +6, so it enters the band once and
+        # leaves it once. Splitting that into a morning and an evening band
+        # would invent a midday that never happened.
+        b = self.day(69.65, 18.96, 1, dt.datetime(2026, 12, 21))
+        self.assertEqual(b["note"], "all_day")
+        self.assertIsNone(b["golden_pm"])
+        self.assertGreater(b["golden_am"]["minutes"], 120)
+        self.assertFalse(b["golden_am"]["open_end"])
+
+    def test_polar_night_has_no_golden_hour_at_all(self):
+        b = self.day(78.2, 15.6, 1, dt.datetime(2026, 12, 21))
+        self.assertEqual(b["note"], "never")
+        for k in ("blue_am", "golden_am", "golden_pm", "blue_pm"):
+            self.assertIsNone(b[k], k)
+
+    def test_southern_hemisphere_azimuths_run_the_other_way(self):
+        # Ushuaia in winter: the Sun tracks through the north, and the
+        # morning bearing decreases rather than increases.
+        b = self.day(-54.8, -68.3, -3, dt.datetime(2026, 6, 21))["golden_am"]
+        self.assertLess(b["az_end"], b["az_start"])
+
+    def test_tropics_get_a_short_band_and_barely_moving_bearings(self):
+        # Singapore: the Sun comes up steeply, so the band is short and the
+        # azimuth hardly moves -- the opposite of the Arctic case.
+        b = self.day(1.35, 103.8, 8, dt.datetime(2026, 8, 4))["golden_am"]
+        self.assertLess(b["minutes"], 50)
+        self.assertLess(abs(b["az_end"] - b["az_start"]), 3)
+
+
+class ShadowRatio(unittest.TestCase):
+    def test_no_shadow_once_the_sun_is_down(self):
+        self.assertIsNone(sky.shadow_ratio(0))
+        self.assertIsNone(sky.shadow_ratio(-4))
+
+    def test_forty_five_degrees_casts_a_shadow_its_own_length(self):
+        self.assertAlmostEqual(sky.shadow_ratio(45), 1.0, places=6)
+
+    def test_the_top_of_the_golden_band_is_about_nine_and_a_half(self):
+        self.assertAlmostEqual(sky.shadow_ratio(sky.GOLDEN_HI), 9.51, delta=0.02)
+
+    def test_shadows_lengthen_as_the_sun_drops(self):
+        self.assertGreater(sky.shadow_ratio(5), sky.shadow_ratio(30))
+
+
 if __name__ == "__main__":
     unittest.main()

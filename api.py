@@ -330,7 +330,7 @@ class Request:
     def __init__(self, place=None, when=None, view="horizon", facing=None, span=None,
                  find=None, iss=False, lines=True, color=True, fallback=None,
                  tle=None, now=None, night=False, width=None, dso=False, quadrant=None,
-                 nodso=False, panel=False):
+                 nodso=False, panel=False, nogolden=False):
         self.place = resolve_place(place, fallback)
         self.view, self.facing, self.span = view, facing, span
         self.find, self.iss, self.lines, self.color = find, iss, lines, color
@@ -366,6 +366,12 @@ class Request:
         # independently toggleable even while the grid is up.
         self.nodso = nodso
         self.dso = (dso or (quadrant is not None)) and not nodso
+        # The golden-hour layer on the day view: the band across the chart,
+        # its times, and the light/shadow prose. On by default -- it is the
+        # reason to look at a daylight chart at all -- so the parameter is
+        # the opt-out, which also keeps the plain URL free of it and every
+        # existing link rendering the fuller view rather than the older one.
+        self.golden = not nogolden
         self.tle = tle
         # clamped once, here, so it's already canonical by the time it ever
         # reaches a cache key -- otherwise every distinct raw ?w= value before
@@ -412,7 +418,7 @@ class Request:
         r2.night, r2.tle, r2.width = self.night, None, self.width
         r2.dso, r2.quadrant = self.dso, self.quadrant
         r2.quadrant_requested, r2.nodso = self.quadrant_requested, self.nodso
-        r2.panel = self.panel
+        r2.panel, r2.golden = self.panel, self.golden
         r2.when_utc = when_utc
         r2.when_local = when_utc + dt.timedelta(hours=self.place.offset(when_utc))
         r2.tz = self.place.offset(when_utc)
@@ -1231,7 +1237,7 @@ def _png_url(r):
 
 
 def _toggle_qs(r, night=None, nolines=None, dso=None, quadrant_requested=None,
-                force_dso_off=False):
+                force_dso_off=False, golden=None):
     """Query string for the current view with one or more flags overridden --
     shared basis for every toggle link (the quadrant button, and the d/l
     keyboard shortcuts). facing/span/w/panel/t always carry over, same
@@ -1254,6 +1260,7 @@ def _toggle_qs(r, night=None, nolines=None, dso=None, quadrant_requested=None,
     nolines = (not r.lines) if nolines is None else nolines
     dso = r.dso if dso is None else dso
     quadrant_requested = r.quadrant_requested if quadrant_requested is None else quadrant_requested
+    golden = r.golden if golden is None else golden
     q = []
     if r.facing: q.append(f"facing={r.facing}")
     if r.span: q.append(f"span={r.span:g}")
@@ -1261,6 +1268,12 @@ def _toggle_qs(r, night=None, nolines=None, dso=None, quadrant_requested=None,
     if r.width: q.append(f"w={int(r.width)}")
     if r.panel: q.append("panel=1")
     if r.when_explicit: q.append(f"t={r.when_local:%Y-%m-%dT%H:%M}")
+    # After t=, where the other view-shaping flags sit, so a toggled link
+    # reads the same way the quadrant and dso ones already do. Only the off
+    # state travels: on is the default, so writing it would put a parameter
+    # on every link for no change in what renders, and mint a second cache
+    # entry for an identical page.
+    if not golden: q.append("nogolden=1")
     if quadrant_requested:
         q.append("quadrant")
         if force_dso_off: q.append("nodso=1")
@@ -1295,6 +1308,15 @@ def _quadrant_grid_url(r):
     client-side. Unlike _quadrant_toggle_url this never turns the grid off:
     it's a "go here" link, not a toggle."""
     return f"/{r.place.slug}{_toggle_qs(r, quadrant_requested=True)}"
+
+
+def _golden_toggle_url(r):
+    """Toggle URL for the 'g' key: the golden-hour layer on the day view.
+
+    Only meaningful while the Sun is up -- the caller gates it on that, the
+    same way the quadrant/grid links are gated on the star chart -- so the
+    key does nothing rather than something confusing on a night chart."""
+    return f"/{r.place.slug}{_toggle_qs(r, golden=not r.golden)}"
 
 
 def _dso_toggle_url(r):
@@ -1520,7 +1542,11 @@ def _compose_sphere(r):
         off = p.offset(r.when_utc)
         day0 = r.when_local.replace(hour=0, minute=0, second=0, microsecond=0) - dt.timedelta(hours=off)
         ev = sun_events(day0, p.lat, p.lon)
-        dark = ev.get("dusk_astro") or ev.get("dusk_nautical")
+        # Astronomical dusk only. Falling back to nautical here counted down
+        # to a darkness that never arrives at high summer latitudes, and the
+        # page already has the right words for null ("the sky won't get fully
+        # dark today") -- it just never reached them.
+        dark = ev.get("dusk_astro")
         if dark and dark > r.when_utc:
             hours_to_dark = round((dark - r.when_utc).total_seconds() / 3600, 1)
 
@@ -1635,6 +1661,154 @@ def _hm(t, off):
     return (t + dt.timedelta(hours=off)).strftime("%H:%M") if t else "--"
 
 
+# Past this the ratio stops being a usable number: cot(h) is 9.5x at the top
+# of the golden band, 57x at half a degree, and somewhere in there the slope
+# of the ground you are standing on matters more than the arithmetic does.
+SHADOW_CAP = 20.0
+
+
+# The band fill is a step darker than the arc so the Sun still reads on top
+# of it; the label takes the arc's own gold. Blue hour gets a real blue --
+# it happens entirely below the horizon at these latitudes, so it never gets
+# a band of its own and the colour is the only thing marking it as a
+# different kind of light.
+GOLD_BAND_COL = "\033[38;5;136m"
+BLUE_HOUR_COL = "\033[38;5;75m"
+
+
+def _golden_layer(r, bands, ev, off, sa, sz, alt_hi, width):
+    """The golden-hour layer for the day chart: the band itself, and the
+    lines of text that sit above it.
+
+    The band is drawn full width because that is what it is -- a range of Sun
+    altitudes, which the Sun crosses twice a day. Only the part above the
+    horizon can appear, so the stripe is the top 6 degrees of a window that
+    really starts 4 degrees lower, and the times printed on it are the whole
+    window rather than the visible slice of it.
+
+    Blue hour never gets a stripe. It runs from -6 to -4, entirely under the
+    horizon line, so it is a line of text in blue rather than a band that
+    would have to be drawn somewhere it does not belong."""
+    if not r.golden:
+        return None, None
+
+    def win(b):
+        return f"{_hm(b['start'], off)}-{_hm(b['end'], off)}"
+
+    note, g_am, g_pm = bands["note"], bands["golden_am"], bands["golden_pm"]
+    if note == "all_night" and g_pm:
+        gold_txt = f"golden from {_hm(g_pm['start'], off)} all night"
+    elif note == "all_day" and g_am:
+        gold_txt = f"golden all day {win(g_am)}"
+    elif g_am and g_pm:
+        gold_txt = f"golden {win(g_am)} · {win(g_pm)}"
+    elif g_am or g_pm:
+        gold_txt = f"golden {win(g_am or g_pm)}"
+    else:
+        gold_txt = ""
+
+    # Right now, not just today. The whole line is a schedule until the
+    # moment it is an instruction, and this is the difference -- the arrows
+    # only appear while the Sun is actually inside the band, which on a
+    # daylight chart means the visible half of it, 0 to +6.
+    if gold_txt and sky.GOLDEN_LO <= sa <= sky.GOLDEN_HI:
+        gold_txt = f">> {gold_txt} <<"
+
+    b_am, b_pm = bands["blue_am"], bands["blue_pm"]
+    if b_am and b_pm:
+        blue_txt = f"blue {win(b_am)} · {win(b_pm)}"
+    elif b_am or b_pm:
+        blue_txt = f"blue {win(b_am or b_pm)}"
+    else:
+        blue_txt = ""
+
+    # Where the light comes from, which is the half of this nobody else
+    # prints, and how long it makes things -- on the chart rather than in a
+    # paragraph under it, because a daylight chart has nothing else up there.
+    # Ranked, then trimmed from the least important end until the line fits
+    # the chart it has to sit inside -- the narrowest ladder rung is 80
+    # columns and the full line does not fit there. Same approach the panel
+    # head takes, and it keeps the bearings (the point) over the shadow.
+    head = []
+    for name, word in (("sunrise", "sunrise"), ("sunset", "sunset")):
+        t = ev.get(name)
+        if t:
+            az = sky.sun_altaz(t, r.place.lat, r.place.lon)[1]
+            head.append((1, f"{word} {_hm(t, off)}  {az:.0f}° {compass(az)}"))
+    ratio = sky.shadow_ratio(sa)
+    if ratio is not None:
+        size = f">{SHADOW_CAP:.0f}x" if ratio > SHADOW_CAP else f"{ratio:.1f}x"
+        head.append((2, f"shadows {size} toward {compass((sz + 180) % 360)}"))
+    # width - 2 leaves room for the space either side that the renderer pads
+    # a note with; without that allowance the full line comes out exactly two
+    # columns too wide for the narrowest rung and is dropped rather than
+    # trimmed.
+    sep = "   ·   "
+    while head and len(sep.join(t for _p, t in head)) > width - 2:
+        head.remove(max(head, key=lambda pt: pt[0]))
+    head_txt = sep.join(t for _p, t in head)
+
+    alt_bands = [dict(lo=0.0, hi=sky.GOLDEN_HI, ch=":", col=GOLD_BAND_COL)]
+    # Anchored a little above the band, in that order, so the gold line sits
+    # nearest the stripe it names. notes places each one upward from its
+    # anchor into the first row that is actually free, so a low Sun pushes
+    # them clear of the arc rather than overwriting it.
+    step = max(2.0, alt_hi * 0.045)
+    notes = [dict(text=head_txt, col=SUN_COL, alt=alt_hi * 0.96)]
+    if gold_txt:
+        notes.append(dict(text=gold_txt, col=SUN_COL, alt=sky.GOLDEN_HI + step))
+    if blue_txt:
+        notes.append(dict(text=blue_txt, col=BLUE_HOUR_COL,
+                          alt=sky.GOLDEN_HI + step * 2))
+    return alt_bands, [n for n in notes if n["text"]]
+
+
+def _golden_json(bands, ev, off, sa, sz, lat, lon):
+    """The golden-hour facts, structured.
+
+    Bearings are rounded to a degree and lengths to a tenth. Neither is
+    accurate past that: the Sun's position here is a low-precision series good
+    to about an arcminute, and a shadow on real ground is at the mercy of the
+    slope long before the second decimal matters."""
+    def local(t):
+        # Whole seconds. These come out of a bisection, so they carry a tail
+        # of microseconds that reads like precision the Sun's position does
+        # not have -- the series behind it is good to about an arcminute.
+        return (t + dt.timedelta(hours=off)).replace(microsecond=0).isoformat()
+
+    def band(b):
+        if not b:
+            return None
+        return dict(
+            start=local(b["start"]),
+            end=None if b["end"] is None else local(b["end"]),
+            minutes=b["minutes"], open_end=b["open_end"],
+            az_start=round(b["az_start"]),
+            az_end=None if b["az_end"] is None else round(b["az_end"]),
+            compass_start=compass(b["az_start"]),
+            compass_end=None if b["az_end"] is None else compass(b["az_end"]))
+
+    ratio = sky.shadow_ratio(sa)
+    rise_az = sky.sun_altaz(ev["sunrise"], lat, lon)[1] if ev.get("sunrise") else None
+    set_az = sky.sun_altaz(ev["sunset"], lat, lon)[1] if ev.get("sunset") else None
+    return dict(
+        # Stated, not implied. Tools disagree about where golden hour starts
+        # and a client comparing two of them needs to know which one this is.
+        convention=dict(lo_alt=sky.GOLDEN_LO, hi_alt=sky.GOLDEN_HI,
+                        blue_lo_alt=-6.0, blue_hi_alt=sky.GOLDEN_LO),
+        note=bands["note"],
+        golden_am=band(bands["golden_am"]), golden_pm=band(bands["golden_pm"]),
+        blue_am=band(bands["blue_am"]), blue_pm=band(bands["blue_pm"]),
+        sunrise_az=None if rise_az is None else round(rise_az),
+        sunrise_compass=None if rise_az is None else compass(rise_az),
+        sunset_az=None if set_az is None else round(set_az),
+        sunset_compass=None if set_az is None else compass(set_az),
+        shadow=None if ratio is None else dict(
+            ratio=round(ratio, 1), capped=ratio > SHADOW_CAP,
+            az=round((sz + 180) % 360), compass=compass((sz + 180) % 360)),
+    )
+
+
 def _compose_day(r):
     """No star chart worth drawing while the Sun is up, so draw the Sun instead:
     its arc across today, with rise, transit and set marked. Everything here is
@@ -1646,9 +1820,17 @@ def _compose_day(r):
     day0 = day0_local - dt.timedelta(hours=off)
 
     ev = sun_events(day0, p.lat, p.lon)
+    bands = sky.sun_bands(day0, p.lat, p.lon, ev)
     arc = sun_arc(day0, p.lat, p.lon, step_min=DAY_BUCKET)
     top = max((a for _t, a in ((x[0], x[1]) for x in arc)), default=10)
     alt_hi = max(DAY_ALT_HI_FLOOR, min(90.0, top + 8))
+    # The golden band is a range of Sun altitudes, so the arc can colour
+    # itself: no time lookup, no second pass, and the marked stretch lands
+    # exactly where the arc crosses those altitudes. Only the part above the
+    # horizon can show -- this chart starts at 0 deg -- so the arc carries the
+    # last few degrees of the window and the prose carries all of it.
+    arc = [(t, a, z, "•", _sun_color(a)) if sky.GOLDEN_LO <= a <= sky.GOLDEN_HI
+           else (t, a, z) for t, a, z in arc]
 
     jd_now = julian(r.when_utc)
     mo_now = moon(jd_now)
@@ -1665,20 +1847,35 @@ def _compose_day(r):
     # mag_limit is always -5.0 here in practice (this branch only runs while
     # sun_alt >= 0, is_daytime()'s gate), but computed via the same shared
     # formula _compose_sky uses rather than a second hardcoded copy of it.
+    alt_bands, notes = _golden_layer(r, bands, ev, off, sa_now, sz_now, alt_hi,
+                                     _effective_width(r))
     art, st = render_linear(r.when_utc, p.lat, p.lon, color=c, show_lines=False,
                             mag_limit=_fade_mag_limit(sa_now), alt_lo=0.0, alt_hi=alt_hi,
                             overlay=(arc, SUN_COL, "SUN", (sa_now, sz_now)),
                             bodies=show, inset=False, width=_effective_width(r),
-                            height=_horizon_height(r))
+                            height=_horizon_height(r),
+                            alt_bands=alt_bands, notes=notes)
 
     jd = julian(r.when_utc)
     lst = (gmst_hours(jd) + p.lon / 15.0) % 24
     sa, sz = altaz(sun(jd)["ra"], sun(jd)["dec"], p.lat, lst)
     mo = moon(jd)
     first = ev.get("dusk_civil") or ev.get("dusk_nautical")
-    dark = ev.get("dusk_astro") or ev.get("dusk_nautical") or first
-    dark_txt = (f"first stars about {_hm(first, off)}, fully dark {_hm(dark, off)}"
-                if first else "the sky never gets fully dark today")
+    # "fully dark" means astronomical dusk and nothing else. This used to fall
+    # back to nautical when the Sun never reached -18 deg, which quietly
+    # printed a real-looking time for a darkness that never arrives -- London
+    # on the solstice said "fully dark 23:23" on a night that never gets
+    # there at all. Between ~48.5 deg and the Arctic circle that is every
+    # midsummer night, so the fallback was wrong for London, Amsterdam,
+    # Berlin, Warsaw, Vancouver and Calgary for months at a time.
+    dark = ev.get("dusk_astro")
+    if not first:
+        dark_txt = "the sky never gets fully dark today"
+    elif dark:
+        dark_txt = f"first stars about {_hm(first, off)}, fully dark {_hm(dark, off)}"
+    else:
+        dark_txt = (f"first stars about {_hm(first, off)}, but it never gets "
+                    f"fully dark tonight")
 
     lines = [
         f"Daylight. The Sun is {sa:.0f}° up in the {compass(sz)}, and no stars are "
@@ -1742,7 +1939,11 @@ def _compose_day(r):
             parts.append((1, "the Sun does not set today"))
         else:
             t = [f"↑{_hm(ev.get('sunrise'), off)}", f"↓{_hm(ev.get('sunset'), off)}"]
-            t.append(f"stars {_hm(first, off)} · dark {_hm(dark, off)}" if first
+            # dark is astronomical dusk or nothing, so a night with first
+            # stars but no full darkness has to say so rather than print the
+            # "--" _hm() gives a missing time.
+            t.append(f"stars {_hm(first, off)} · dark {_hm(dark, off)}" if first and dark
+                     else f"stars {_hm(first, off)} · no full dark" if first
                      else "never fully dark")
             parts.append((1, " · ".join(t)))
         if later:
@@ -1774,7 +1975,16 @@ def _compose_day(r):
                 max_alt=round(ev["max_alt"], 1),
                 polar_day=ev["polar_day"], polar_night=ev["polar_night"],
                 first_stars=(first + dt.timedelta(hours=off)).isoformat() if first else None,
+                # null whenever the Sun never reaches -18 deg, which is a
+                # real answer and not a missing one. never_fully_dark says
+                # which it is, so a client does not have to guess from a
+                # null: with polar_day it means the Sun never sets at all,
+                # without it the ordinary high-latitude midsummer case where
+                # twilight simply never deepens into darkness.
                 dark_from=(dark + dt.timedelta(hours=off)).isoformat() if dark else None,
+                never_fully_dark=dark is None,
+                golden=(_golden_json(bands, ev, off, sa, sz, p.lat, p.lon)
+                        if r.golden else None),
                 visible_tonight=[b["name"] for b in later],
                 moon=dict(phase=phase_name(mo["age"]),
                           illum=round(mo["illum"] * 100)),
@@ -2703,8 +2913,9 @@ OPTIONS
 
 KEYBOARD (in a browser, on a chart page)
   tab    focus the place search      space  start the animation
-  f      focus the find field        g      share as a GIF
+  f      focus the find field        v      share as a GIF
   m      jump to my location         d      toggle quadrant grid + dso
+  g      toggle golden hour (daylight charts: the band, times and bearings)
   esc    cancel/exit find mode, drawer
   z      zoom: pick a quadrant cell with arrow keys, enter to crop to it
   once it is running, space plays/pauses, left/right step a frame at a time
@@ -4288,7 +4499,11 @@ function skymapRenderGif(btn){{
       if(ab&&!ab.disabled){{e.preventDefault();ab.click();}}
       return;
     }}
-    if(e.key==='g'){{
+    // g is the golden-hour layer on the day chart. It used to share as a
+    // GIF; that moved to v when golden hour arrived, since g is the letter
+    // people reach for and the GIF button is right there on screen anyway.
+    if(e.key==='g'&&KBD.golden){{location.href=KBD.golden;return;}}
+    if(e.key==='v'){{
       var gb=document.getElementById('gif-btn');
       if(gb&&!gb.disabled)gb.click();
       return;
@@ -4644,9 +4859,6 @@ SPHERE_PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
  #find-cancel{{background:#7a1f1f !important}}
  #find-msg{{position:fixed;left:0;right:0;top:38px;text-align:center;color:#ffd700;
            font-size:12px;padding:0 12px;pointer-events:none;z-index:1000;margin:0}}
- #find-arrow{{position:fixed;color:#ffd700;font-size:22px;font-weight:700;
-             letter-spacing:-2px;pointer-events:none;z-index:1000;display:none;
-             text-shadow:0 0 6px #000}}
  /* Four ticks that close in from outside toward the centre as you get
     closer -- becomes a solid cross right at the edge of "found", at which
     point a permanent purple circle + bold name takes over instead (see

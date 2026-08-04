@@ -741,6 +741,18 @@ def _cross(lat, lon, t0, t1, target, step=60):
     return t0 + (t1 - t0) / 2
 
 
+# The golden hour band, in Sun altitude. Conventions differ -- some tools
+# start golden hour at the horizon rather than 4 degrees below it -- so this
+# is stated in the output rather than left for the reader to guess. -4/+6 is
+# what PhotoPills and sunrisesunset.io use, and it is the more useful of the
+# two: the warm light photographers are actually after starts before the Sun
+# clears the horizon, not at it.
+#
+# Blue hour needs no levels of its own. It runs from civil twilight (-6) to
+# the bottom of the golden band (-4), so both its edges are already computed.
+GOLDEN_LO, GOLDEN_HI = -4.0, 6.0
+
+
 def sun_events(day_start_utc, lat, lon):
     """Rise, transit, set and the three twilights. These do not change over a
     day, which is what makes the daytime response cheap to serve."""
@@ -750,8 +762,14 @@ def sun_events(day_start_utc, lat, lon):
                for i in range(int(24 * 6) + 1)]
     ev = {}
     for name, level, rising in (("dawn_astro", -18, True), ("dawn_nautical", -12, True),
-                                ("dawn_civil", -6, True), ("sunrise", -0.833, True),
-                                ("sunset", -0.833, False), ("dusk_civil", -6, False),
+                                ("dawn_civil", -6, True),
+                                ("gold_am_start", GOLDEN_LO, True),
+                                ("sunrise", -0.833, True),
+                                ("gold_am_end", GOLDEN_HI, True),
+                                ("gold_pm_start", GOLDEN_HI, False),
+                                ("sunset", -0.833, False),
+                                ("gold_pm_end", GOLDEN_LO, False),
+                                ("dusk_civil", -6, False),
                                 ("dusk_nautical", -12, False), ("dusk_astro", -18, False)):
         for (ta, aa), (tb, ab) in zip(samples, samples[1:]):
             up = ab > aa
@@ -765,9 +783,101 @@ def sun_events(day_start_utc, lat, lon):
     hi = max(samples, key=lambda p: p[1])
     ev["transit"] = hi[0]
     ev["max_alt"] = hi[1]
-    ev["polar_day"] = min(a for _t, a in samples) > -0.833
+    ev["min_alt"] = min(a for _t, a in samples)
+    ev["polar_day"] = ev["min_alt"] > -0.833
     ev["polar_night"] = hi[1] < -0.833
     return ev
+
+
+def sun_altaz(when_utc, lat, lon):
+    """The Sun's altitude and azimuth at one moment, in degrees."""
+    return _sun_alt(julian(when_utc), lat, lon)
+
+
+def shadow_ratio(alt_deg):
+    """How many times its own height a vertical object's shadow runs: cot(h).
+
+    None once the Sun is at or below the horizon, where the answer is not a
+    large number but no number at all -- there is no shadow to measure. The
+    ratio also runs away near the horizon (9.5x at the top of the golden
+    band, 57x at half a degree), which is why callers cap what they print
+    rather than quoting three significant figures of something the ground's
+    own slope invalidates."""
+    if alt_deg <= 0:
+        return None
+    return 1.0 / math.tan(alt_deg * D)
+
+
+def sun_bands(day_start_utc, lat, lon, ev=None):
+    """Golden and blue hour, morning and evening, for one local day.
+
+    Each band comes back as a dict with start/end times and the Sun's azimuth
+    at both edges, or None if that band does not happen here today. Azimuth is
+    the point: the times are in every sunrise calculator on the web, but which
+    way the light comes from is what actually decides where you stand, and it
+    moves tens of degrees across the year.
+
+    `note` names the cases where "morning band, evening band" stops being the
+    right shape, which is most of the year once you go far enough north or
+    south. Away from the tropics the Sun does not always cross both edges of
+    the band, and when it fails to, two separate windows are the wrong answer
+    rather than a slightly imprecise one:
+
+      "all_day"    the Sun never climbs past +6, so it enters the golden band
+                   in the morning and leaves it in the evening without ever
+                   getting above it -- one long window, in golden_am, not two
+      "all_night"  the Sun never drops to -4, so the evening band opens and
+                   simply never closes; golden_pm carries open_end
+      "always"     neither edge is ever crossed and the Sun sits inside the
+                   band all day, which is what the weeks either side of a
+                   high-Arctic winter look like
+      "never"      polar night; the Sun stays below -4 and there is no golden
+                   hour to report at all
+
+    Pass `ev` to reuse a sun_events() dict the caller already has; the day
+    view has one and there is no reason to solve the same crossings twice."""
+    ev = sun_events(day_start_utc, lat, lon) if ev is None else ev
+    lo, hi = ev["min_alt"], ev["max_alt"]
+
+    def band(t0, t1):
+        if t0 is None:
+            return None
+        return dict(start=t0, end=t1, open_end=t1 is None,
+                    az_start=sun_altaz(t0, lat, lon)[1],
+                    az_end=None if t1 is None else sun_altaz(t1, lat, lon)[1],
+                    minutes=None if t1 is None else round((t1 - t0).total_seconds() / 60))
+
+    none4 = dict(blue_am=None, golden_am=None, golden_pm=None, blue_pm=None)
+    if lo >= GOLDEN_LO and hi <= GOLDEN_HI:
+        return dict(none4, note="always")
+    if hi < GOLDEN_LO:
+        return dict(none4, note="never")
+    if hi <= GOLDEN_HI:
+        # Up through -4 in the morning, back down through it in the evening,
+        # never above +6 in between: one window, not a morning and an evening
+        # one with a hole punched in the middle that never happened.
+        return dict(none4, note="all_day",
+                    blue_am=band(ev.get("dawn_civil"), ev.get("gold_am_start")),
+                    golden_am=band(ev.get("gold_am_start"), ev.get("gold_pm_end")),
+                    blue_pm=band(ev.get("gold_pm_end"), ev.get("dusk_civil")))
+    if lo >= GOLDEN_LO:
+        # Down through +6 in the evening and back up through it in the
+        # morning without ever reaching -4. The two crossings inside one
+        # local day belong to different nights, so the evening one is left
+        # open rather than closed against a morning that is not its own.
+        return dict(none4, note="all_night",
+                    golden_am=band(ev.get("gold_am_start"), ev.get("gold_am_end")),
+                    golden_pm=band(ev.get("gold_pm_start"), None))
+    return dict(
+        # Morning runs upward through the bands, evening back down, so the
+        # blue hour's edges are the civil boundary and the golden one either
+        # way round -- named by time of day rather than by which is lower.
+        note=None,
+        blue_am=band(ev.get("dawn_civil"), ev.get("gold_am_start")),
+        golden_am=band(ev.get("gold_am_start"), ev.get("gold_am_end")),
+        golden_pm=band(ev.get("gold_pm_start"), ev.get("gold_pm_end")),
+        blue_pm=band(ev.get("gold_pm_end"), ev.get("dusk_civil")),
+    )
 
 
 # ---------------------------------------------------------------- find a thing
@@ -1092,7 +1202,8 @@ def render_linear(when_utc, lat, lon, W=176, H=22, color=True, show_lines=True,
                   mag_limit=4.0, line_limit=None, tle=None, alt_max=70, facing=None, span=None,
                   alt_lo=None, alt_hi=None, target=None, overlay=None,
                   bodies=None, inset=True, width=None, height=None, dso_limit=None,
-                  quadrant=None, quadrants=False, side_panel=False):
+                  quadrant=None, quadrants=False, side_panel=False,
+                  alt_bands=None, notes=None):
     """Horizon panorama. facing=None gives the full 360 deg sweep; facing='SW'
     gives a window centred there, which is narrow enough to be undistorted.
 
@@ -1237,6 +1348,57 @@ def render_linear(when_utc, lat, lon, W=176, H=22, color=True, show_lines=True,
             if grid[r][c] == " ":
                 grid[r][c], tint[r][c], soft[r][c] = "·", "\033[38;5;234m", True
 
+    # Altitude bands: a stripe of the sky called out by how high the Sun is
+    # in it, drawn full width because that is what the band actually is -- a
+    # range of altitudes, not a range of bearings. Soft, so the Sun's arc and
+    # everything else still draws over the top. Only the part inside the
+    # chart's own altitude window can show; a band that lies entirely below
+    # the horizon has no rows here and the caller says so in words instead.
+    row_deg = alt_rng / (H - 1) if H > 1 else alt_rng
+    for bnd in alt_bands or ():
+        for r in range(H):
+            a = alt_lo + (H - 1 - r) * alt_rng / (H - 1)
+            # Half a row of slack at each edge. A row stands for a range of
+            # altitudes, not a single one, so a band whose top lands a
+            # fraction of a degree under a row's nominal value still belongs
+            # on it -- without this the 0-6 degree golden band lost its top
+            # row to a row sitting at 6.09.
+            if not (bnd["lo"] - row_deg / 2 <= a <= bnd["hi"] + row_deg / 2):
+                continue
+            for c in range(W):
+                if grid[r][c] == " " or soft[r][c]:
+                    grid[r][c], tint[r][c], soft[r][c] = bnd["ch"], bnd["col"], True
+
+    # Free-standing text pinned to an altitude rather than to an object --
+    # the band's own times, and the day view's prose, which has acres of
+    # empty chart to live in and reads better beside the thing it describes
+    # than in a paragraph underneath it. Nudged upward when the row it wants
+    # is already occupied, so it never lands on the arc.
+    for note in notes or ():
+        # Padded, so the text never abuts the background gridline dots or the
+        # band's own colons -- without the spaces a dot one column along
+        # reads as part of the label. The padding is a nicety, not a
+        # requirement: a line that fits the chart exactly keeps its text and
+        # loses the spaces rather than being dropped for being two columns
+        # too wide.
+        s = note["text"]
+        if not s:
+            continue
+        s = f" {s} " if len(s) + 2 <= W else s
+        if len(s) > W:
+            continue
+        r0 = row_of(note["alt"])
+        if r0 is None:
+            continue
+        start = 0 if note.get("align") == "left" else (W - len(s)) // 2
+        start = max(0, min(W - len(s), start + note.get("indent", 0)))
+        for r in range(r0, -1, -1):
+            if all(free(r, start + k) for k in range(len(s))):
+                for k, ch in enumerate(s):
+                    grid[r][start + k], tint[r][start + k] = ch, note["col"]
+                    soft[r][start + k], lock[r][start + k] = False, True
+                break
+
     if quad_cells:                      # dotted cell boundaries, letters follow later
         QC = "\033[38;5;240m"
         az_bounds = sorted({round(c["az_centre"] - c["az_span"] / 2, 4) for c in quad_cells}
@@ -1374,8 +1536,15 @@ def render_linear(when_utc, lat, lon, W=176, H=22, color=True, show_lines=True,
 
     if overlay:                            # Sun: thin path, marker on where it IS
         over_pts, over_col, over_lbl, over_mark = overlay
-        for _t, a, z in over_pts or ():
-            place(z, a, "·", over_col, over=True)
+        # A path point is (minutes, alt, az), and may carry its own glyph and
+        # colour after that. The Sun's arc uses the extra pair to draw the
+        # golden-hour stretch differently from the rest of the day without
+        # needing a second overlay slot and a second pass over the same arc.
+        for pt in over_pts or ():
+            a, z = pt[1], pt[2]
+            ch = pt[3] if len(pt) > 3 else "·"
+            col = pt[4] if len(pt) > 4 else over_col
+            place(z, a, ch, col, over=True)
         if over_mark:
             ma, mz = over_mark
             place(mz, ma, "◉", over_col, over=True)
