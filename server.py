@@ -603,10 +603,15 @@ def _client_mix_block(entries, cols=CHART_COLS, width=1, legend=True):
     Fixed height whatever the data says, like _chart_block, so /stats'
     two columns stay level with each other."""
     groups, _per = _chunks(entries, cols // width)
-    total = sum(e["requests"] for e in entries)
+    # Against what was actually recorded, not against every request in the
+    # window. The four fields only started being logged when they shipped,
+    # so an hour from before that has requests and a mix of nothing -- left
+    # in the denominator it drags all four tails towards zero and they stop
+    # adding up to the whole, which is the one thing this block promises.
+    recorded = sum(e[c] for e in entries for c in CLIENTS)
     L = [""]
     for name in CLIENTS:
-        share = 100 * sum(e[name] for e in entries) / total if total else None
+        share = 100 * sum(e[name] for e in entries) / recorded if recorded else None
         L += _spark_pair(name, _ratio(groups, name), share, width)
     L += [""]
     if legend:

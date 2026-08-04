@@ -737,6 +737,28 @@ class ClientMixAndFinds(unittest.TestCase):
         self.assertEqual(len(cols), 2, cols)
         self.assertEqual(len(set(cols.values())), 1, cols)
 
+    def test_the_tail_percentages_add_up_even_with_unrecorded_hours(self):
+        # The four fields only exist from the day they shipped, so most of a
+        # 48h window has requests and no mix at all. Counted in the
+        # denominator those hours dragged every tail to 0-1%, which is the
+        # one thing this block says it will never do.
+        hour = dt.datetime.utcnow().strftime("%Y-%m-%dT%H:00")
+        before = (dt.datetime.utcnow() - dt.timedelta(hours=1)).strftime(
+            "%Y-%m-%dT%H:00")
+        rows = [
+            # an hour from before the fields existed: traffic, no mix
+            dict(hour=before, requests=500, hit=250, miss=250, day=500, night=0),
+            dict(hour=hour, requests=10, hit=5, miss=5, day=10, night=0,
+                 cli=4, web=3, mobile=2, json=1),
+        ]
+        plain = server.api.strip_ansi(
+            "\n".join(server._client_mix_block(server._dense_hours(rows, 2),
+                                               cols=2)))
+        tails = [int(p) for p in re.findall(r"(\d+)%", plain)]
+        self.assertEqual(len(tails), 4, plain)
+        self.assertEqual(sum(tails), 100, plain)
+        self.assertEqual(tails, [40, 30, 20, 10], plain)
+
     def test_the_four_shares_are_taken_against_the_same_bucket(self):
         # Each sparkline is that client's share of the same hour, so the
         # four bars at any column stack to the whole -- not four separate
