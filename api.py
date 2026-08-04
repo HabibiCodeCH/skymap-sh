@@ -5659,6 +5659,15 @@ function setGolden(on) {{
   document.body.classList.toggle('golden-mode', on);
   var times = document.getElementById('golden-times');
   if (on) times.innerHTML = goldenWindowText(goldenData);
+  // Keep the address honest. Without this the mode was unshareable, lost on
+  // reload, and invisible to the server -- which is also why nobody could
+  // tell whether anyone used it. replaceState rather than pushState: the
+  // back button should leave the page, not step through mode changes.
+  try {{
+    var u = new URL(window.location.href);
+    if (on) u.searchParams.set('golden', '1'); else u.searchParams.delete('golden');
+    window.history.replaceState(null, '', u.pathname + u.search + u.hash);
+  }} catch (e) {{}}
   updateLabelVisibility();
 }}
 
@@ -6096,6 +6105,11 @@ fetch('/' + PLACE + '/sphere.json' + window.location.search).then(function(r) {{
     // and offering the mode there would be an empty promise.
     if (data.golden.note !== 'never') {{
       document.getElementById('mode-golden').hidden = false;
+      // ?golden=1 lands you straight in the mode, so a shared link opens on
+      // what the sender was looking at rather than on the star sphere.
+      try {{
+        if (new URL(window.location.href).searchParams.get('golden')) setGolden(true);
+      }} catch (e) {{}}
     }}
   }}
 

@@ -2967,6 +2967,51 @@ class SphereButtonGating(unittest.TestCase):
         self.assertNotIn("View in 3D", resp.text)
 
 
+class SphereGoldenIsAddressableAndCounted(unittest.TestCase):
+    """Golden hour on the sphere is a client-side layer, so nothing reached
+    the server when someone switched into it -- it shipped shareable by
+    nobody and measurable by nobody, which are the same bug. ?golden=1 makes
+    the mode a real address and a countable one."""
+
+    def setUp(self):
+        client_cm = TestClient(server.app)
+        self.client = client_cm.__enter__()
+        self.addCleanup(client_cm.__exit__, None, None, None)
+        server._stat["sphere_golden"] = 0
+
+    def test_the_parameter_is_counted(self):
+        self.client.get("/Geneva/sphere?golden=1")
+        self.client.get("/Geneva/sphere?golden=1")
+        self.assertEqual(
+            self.client.get("/stats/sphere?format=json").json()["sphere_golden"], 2)
+
+    def test_a_plain_sphere_view_is_not_counted_as_golden(self):
+        self.client.get("/Geneva/sphere")
+        self.assertEqual(
+            self.client.get("/stats/sphere?format=json").json()["sphere_golden"], 0)
+
+    def test_the_stats_page_reports_it_against_total_sphere_views(self):
+        self.client.get("/Geneva/sphere?golden=1")
+        line = [l for l in self.client.get("/stats/sphere").text.split("\n")
+                if "golden" in l]
+        self.assertTrue(line)
+        self.assertIn("of sphere views", line[0])
+
+    def test_the_parameter_survives_the_coordinates_redirect(self):
+        # /46.20,6.10/sphere bounces to /Geneva/sphere; a shared golden link
+        # must not lose its mode on the way.
+        resp = TestClient(server.app, follow_redirects=False).get(
+            "/46.20,6.10/sphere?golden=1")
+        self.assertEqual(resp.status_code, 302)
+        self.assertIn("golden=1", resp.headers["location"])
+
+    def test_the_page_reads_the_parameter_and_the_toggle_writes_it(self):
+        body = self.client.get("/Geneva/sphere").text
+        self.assertIn("searchParams.get('golden')", body)
+        self.assertIn("searchParams.set('golden', '1')", body)
+        self.assertIn("replaceState", body)
+
+
 class SpherePage(unittest.TestCase):
     def setUp(self):
         client_cm = TestClient(server.app)

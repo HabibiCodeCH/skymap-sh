@@ -1240,6 +1240,10 @@ def stats_sphere_text(n=50):
     if _stat["sphere_radiant"]:
         L.append(f"  {'radiant':12} {_stat['sphere_radiant']:>8,}  "
                  f"(views on a night with a shower running)")
+    if _stat["sphere_golden"]:
+        share = 100 * _stat["sphere_golden"] / max(_stat["sphere"], 1)
+        L.append(f"  {'golden':12} {_stat['sphere_golden']:>8,}  "
+                 f"({share:.0f}% of sphere views opened in golden hour)")
     sphere_os = sorted(k for k in _stat if k.startswith("sphere_os:"))
     if sphere_os:
         L.append("views by OS")
@@ -1256,6 +1260,7 @@ def stats_sphere_json(n=50):
     return dict(
         sphere=_stat["sphere"], sphere_json=_stat["sphere_json"],
         sphere_radiant=_stat["sphere_radiant"],
+        sphere_golden=_stat["sphere_golden"],
         mobile_redirect=_stat["mobile_redirect"],
         by_os={k[10:]: v for k, v in _stat.items() if k.startswith("sphere_os:")},
         places_distinct=len(_sphere_places),
@@ -2580,6 +2585,13 @@ def sphere_page(request: Req, place: str):
         return PlainTextResponse("Not found.\n", status_code=404)
     _stat["sphere"] += 1
     _stat[f"sphere_os:{_sphere_os(request)}"] += 1
+    # Golden hour on the sphere is a client-side layer, so nothing would
+    # otherwise reach the server when someone switches into it -- it shipped
+    # measurable only by the fact that nobody could tell. ?golden=1 makes the
+    # mode a real address: shareable, bookmarkable, survives a reload, and
+    # countable here for free.
+    if request.query_params.get("golden"):
+        _stat["sphere_golden"] += 1
     _sphere_places[p.name] += 1
     if len(_sphere_places) > _TOP_KEEP:
         for k, _v in _sphere_places.most_common()[_TOP_KEEP:]:
