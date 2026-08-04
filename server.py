@@ -224,6 +224,12 @@ def _flush_hour(hour_key, hstat):
     # never trimmed is a cost with no reader.
     if hstat["notfound"]:
         row["notfound"] = hstat["notfound"]
+    # Same rule for the client mix and the find count: written only when
+    # there is something to say, so a quiet hour stays one short line in a
+    # file that is never trimmed.
+    for k in CLIENTS + ("find",):
+        if hstat[k]:
+            row[k] = hstat[k]
     top_ref = _top_hour_referrers(hstat)
     if top_ref:
         row["top_referrers"] = top_ref
@@ -272,6 +278,8 @@ def _hourly_rows(days):
                             hit=_hour_stat["hit"], miss=_hour_stat["miss"],
                             day=_hour_stat["day"], night=_hour_stat["night"],
                             notfound=_hour_stat["notfound"],
+                            find=_hour_stat["find"],
+                            **{k: _hour_stat[k] for k in CLIENTS},
                             top_referrers=_top_hour_referrers(_hour_stat))]
     return rows
 
@@ -288,14 +296,24 @@ CHART_COLS = 60
 CHART_HOURS = 48            # two full diurnal cycles, so the daily rhythm shows
 CHART_DAYS = 30
 CHART_PAD = 7               # width of the y-axis label gutter
+FINDS_ROWS = 5              # the finds chart sits under two full-height ones
+                            # already -- tall enough to read a shape, short
+                            # enough not to push the map off the first screen
 _BLOCKS = " ▁▂▃▄▅▆▇█"
 _SPARK = "▁▂▃▄▅▆▇█"
+# _wants' three modes as the names the page shows. text is curl and the CLI,
+# html is a browser, json is a script -- and a phone is html, so it is split
+# back out in _tally rather than being a mode of its own.
+CLIENT_OF = {"text": "cli", "html": "web", "json": "json"}
+CLIENTS = ("cli", "web", "mobile", "json")
+
 # notfound rides alongside requests rather than inside it. A request for a
 # place that doesn't exist isn't a cache hit or a miss and has no day or
 # night, so folding it into `requests` would leave every ratio taken against
 # it slightly wrong. Kept separate, the header's running total reconciles
 # exactly: its request count is the log's requests plus its notfounds.
-_ZERO_FILL = ("requests", "hit", "miss", "day", "night", "notfound")
+_ZERO_FILL = ("requests", "hit", "miss", "day", "night", "notfound",
+              "cli", "web", "mobile", "json", "find")
 
 
 def _merge_hour_rows(rows):
@@ -574,7 +592,52 @@ def _chart_block(entries, tick_for, unit, span, width=1, tick_every=None,
     return L
 
 
-def _side_by_side(left, right, gap=3):
+def _client_mix_block(entries, cols=CHART_COLS, width=1, legend=True):
+    """Who asked, as four sparklines that add up to the window.
+
+    Percentages of the same bucket, so the four bars at any column stack to
+    100% -- which is the point of splitting mobile back out of web rather
+    than counting a phone as both. An hour with no requests has no mix and
+    draws blank, the same rule the hit% line already follows.
+
+    Fixed height whatever the data says, like _chart_block, so /stats'
+    two columns stay level with each other."""
+    groups, _per = _chunks(entries, cols // width)
+    total = sum(e["requests"] for e in entries)
+    L = [""]
+    for name in CLIENTS:
+        share = 100 * sum(e[name] for e in entries) / total if total else None
+        L += _spark_pair(name, _ratio(groups, name), share, width)
+    L += [""]
+    if legend:
+        L.append(f"{' ' * (CHART_PAD + 2)}share of requests by client")
+    return L
+
+
+def _finds_block(entries, unit, cols=CHART_COLS, width=1, tick_every=None,
+                 tick_for=None, rows=FINDS_ROWS):
+    """How many charts were asked to point at something, over the window.
+
+    Counts, not a percentage, so this is a small bar chart rather than a
+    sparkline -- "six finds this hour" is the number worth reading, and a
+    share of requests would just track traffic. Short on purpose: it sits
+    under two full-height charts already."""
+    groups, per = _chunks(entries, cols // width)
+    vals = [sum(e["find"] for e in g) for g in groups]
+    total = sum(vals)
+    bucket = f"{per} {unit}s" if per > 1 else unit
+    tick = tick_every(per) if tick_every else max(5, -(-6 // width))
+    tick_of = tick_for(per)
+    L = [f"finds per {bucket}".upper(), ""]
+    L += _bar_chart(vals, lambda i: tick_of(groups[i][0]), rows=rows,
+                    width=width, tick=tick)
+    gut = " " * (CHART_PAD + 2)
+    L.append(f"{gut}{total:,} find(s) in this window" if total
+             else f"{gut}no finds in this window")
+    return L
+
+
+def _side_by_side(left, right, gap=3, left_width=None):
     """Two chart blocks rendered on the same lines, hours on the left and
     days on the right, sparklines included.
 
@@ -586,7 +649,13 @@ def _side_by_side(left, right, gap=3):
     n = max(len(left), len(right))
     left = left + [""] * (n - len(left))
     right = right + [""] * (n - len(right))
-    w = max((len(l) for l in left), default=0)
+    # left_width lets a page that stacks several of these pass one width for
+    # all of them. Without it each block pads to its own widest line, so the
+    # right-hand column starts a few characters further left under a short
+    # block than under a tall one -- which reads as the charts being out of
+    # alignment with each other, because they are.
+    w = left_width if left_width is not None else max((len(l) for l in left),
+                                                      default=0)
     return [f"{l:<{w}}{' ' * gap}{r}".rstrip() for l, r in zip(left, right)]
 
 
@@ -853,7 +922,8 @@ def _referrer_domain(request: Req):
     return host
 
 
-def _tally(r, daytime, hit, mode, status, data, colour=True, referrer=None):
+def _tally(r, daytime, hit, mode, status, data, colour=True, referrer=None,
+           mobile=False):
     _roll_hour()
     _stat["requests"] += 1
     _stat["hit" if hit else "miss"] += 1
@@ -862,6 +932,21 @@ def _tally(r, daytime, hit, mode, status, data, colour=True, referrer=None):
     _hour_stat["requests"] += 1
     _hour_stat["hit" if hit else "miss"] += 1
     _hour_stat["day" if daytime else "night"] += 1
+    # Who asked, per hour, as four buckets that add up to the hour's requests.
+    # mode is already a three-way split of every request (json/html/text);
+    # mobile is not a fourth mode but a subset of html, so a phone has to be
+    # taken *out* of web rather than counted twice. Recorded per hour rather
+    # than only all-time so /stats can chart the mix over the window -- the
+    # all-time mode: counters can't say whether the CLI share is growing.
+    _hour_stat[CLIENT_OF[mode] if not (mobile and mode == "html")
+               else "mobile"] += 1
+    if mobile:
+        _stat["ua:mobile"] += 1
+    # Finds per hour: how many charts were asked to point at something,
+    # regardless of what. _finds already keeps the leaderboard by object,
+    # which cannot answer "is anyone using this" over time.
+    if r.find:
+        _hour_stat["find"] += 1
     if status != 200:
         _stat[f"status:{status}"] += 1
     _stat["view:find" if r.find else
@@ -955,13 +1040,40 @@ def stats_text(n=50, map_slot=False):
     # Side by side, hours against days. One column is one hour on the left
     # and one day on the right -- no bucketing, so `cols` is just the window.
     gut = f"{'':{CHART_PAD + 2}}"
-    hourly = _hourly_chart(cols=CHART_HOURS, legend=False)
+    # The same two windows the charts use, kept here rather than rebuilt per
+    # block: the client mix and the finds chart below have to bucket
+    # identically to the bars above them or the columns stop lining up.
+    h_entries = _dense_hours(_hourly_rows(days=max(2, -(-CHART_HOURS // 24) + 1)),
+                             CHART_HOURS)
+    d_entries = _dense_days(_hourly_rows(days=CHART_DAYS + 1), CHART_DAYS)
+    hourly = _chart_block(h_entries, _hour_tick, "hour", f"{CHART_HOURS} h",
+                          tick_every=_hour_tick_every, cols=CHART_HOURS,
+                          legend=False)
     hourly.append(f"{gut}(hour by hour: /stats/hourly)")
-    daily = _daily_chart(cols=CHART_DAYS, width=1, legend=False)
+    daily = _chart_block(d_entries, _day_tick, "day", f"{CHART_DAYS} d",
+                         width=1, cols=CHART_DAYS, legend=False)
     daily.append(f"{gut}(day by day: /stats/daily)")
-    L += _side_by_side(hourly, daily)
+    # Who asked, then how many of them were looking for something. Only on
+    # /stats: the drill-down pages answer one question each and get the
+    # chart they are named after, nothing stacked underneath it.
+    mix_h = _client_mix_block(h_entries, cols=CHART_HOURS, legend=False)
+    mix_d = _client_mix_block(d_entries, cols=CHART_DAYS, legend=False)
+    finds_h = _finds_block(h_entries, "hour", cols=CHART_HOURS,
+                           tick_every=_hour_tick_every, tick_for=_hour_tick)
+    finds_d = _finds_block(d_entries, "day", cols=CHART_DAYS,
+                           tick_for=_day_tick)
+    # One left-column width for all three pairs, so the day charts line up
+    # with each other down the page instead of each starting wherever its
+    # own hour block happened to end.
+    left_w = max(len(l) for blk in (hourly, mix_h, finds_h) for l in blk)
+    L += _side_by_side(hourly, daily, left_width=left_w)
     L += ["", f"{gut}sparklines: cache hit % (latest) and night share of "
               f"the window", ""]
+    L += _side_by_side(mix_h, mix_d, left_width=left_w)
+    L += [f"{gut}share of requests by client · the four add up to the whole",
+          ""]
+    L += _side_by_side(finds_h, finds_d, left_width=left_w)
+    L += [""]
     mapped = _map_block([MAP_SLOT] if map_slot else None, slots=map_slot)
     if mapped:
         L += mapped + ["", ""]
@@ -1732,7 +1844,7 @@ def _respond(request: Req, place: str | None):
     r = _build(request, place)
     res, daytime, hit = _cached(r)
     _tally(r, daytime, hit, mode, res.status, res.data, colour,
-           referrer=_referrer_domain(request))
+           referrer=_referrer_domain(request), mobile=_is_mobile(request))
     edge = DAY_EDGE if daytime else NIGHT_EDGE
     headers = {"Cache-Control": f"public, max-age={edge // 4}, s-maxage={edge}, "
                                 f"stale-while-revalidate=600",
@@ -2582,6 +2694,18 @@ def _mobile_sphere_redirect(request, place):
         return None   # let the normal 404 flow handle an unknown place
     r = _build(request, place)
     _stat["mobile_redirect"] += 1
+    # Counted as a request from a phone, because that is what it is. This
+    # path returns before _tally ever runs, so without it the client mix on
+    # /stats would report next to no mobile traffic while phones are plainly
+    # arriving -- they just get sent to the sphere before the chart code
+    # sees them. The sphere view that follows is a different surface and
+    # stays in /stats/sphere; counting it here as well would be the same
+    # visitor twice.
+    _roll_hour()
+    _stat["requests"] += 1
+    _hour_stat["requests"] += 1
+    _hour_stat["mobile"] += 1
+    _stat["ua:mobile"] += 1
     qs = f"?{request.url.query}" if request.url.query else ""
     return RedirectResponse(f"/{r.place.slug}/sphere{qs}", status_code=302)
 

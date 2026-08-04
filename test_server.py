@@ -602,6 +602,128 @@ class HourlyReferrers(unittest.TestCase):
         self.assertEqual(data["hours"][-1]["top_referrers"], {})
 
 
+class ClientMixAndFinds(unittest.TestCase):
+    """Who asked (CLI/Web/Mobile/JSON) and how many were looking for
+    something, per hour. _wants' three modes already cover every request,
+    but a phone is html -- so mobile is split back out of web rather than
+    counted twice, which is what makes the four add up to the whole."""
+
+    def setUp(self):
+        client_cm = TestClient(server.app)
+        self.client = client_cm.__enter__()
+        self.addCleanup(client_cm.__exit__, None, None, None)
+        self._hour = server._hour_stat.copy()
+        self._key = server._hour_key
+        # These tests make real requests to exercise _tally, which lands in
+        # the geo bins and the place leaderboard as well -- snapshot them or
+        # a later test that pins "2 distinct locations" fails depending on
+        # what ran before it.
+        self._snap = {name: getattr(server, name).copy()
+                      for name in ("_stat", "_places", "_geo_hits")}
+        self.addCleanup(self._restore)
+        server._hour_stat.clear()
+        server._hour_key = dt.datetime.utcnow().strftime("%Y-%m-%dT%H:00")
+
+    def _restore(self):
+        server._hour_stat.clear()
+        server._hour_stat.update(self._hour)
+        server._hour_key = self._key
+        for name, snap in self._snap.items():
+            counter = getattr(server, name)
+            counter.clear()
+            counter.update(snap)
+
+    def _mix(self):
+        return {k: server._hour_stat[k] for k in server.CLIENTS}
+
+    def test_every_request_lands_in_exactly_one_bucket(self):
+        for headers in (TERMINAL, BROWSER, MOBILE):
+            self.client.get("/Zurich", headers=headers)
+        self.client.get("/Zurich?format=json", headers=TERMINAL)
+        mix = self._mix()
+        self.assertEqual(sum(mix.values()), server._hour_stat["requests"])
+        # And each went where it belongs, rather than all landing in one.
+        self.assertEqual(mix["cli"], 1)
+        self.assertEqual(mix["json"], 1)
+        self.assertEqual(mix["mobile"], 1)
+        self.assertEqual(mix["web"], 1)
+
+    def test_a_phone_is_not_also_counted_as_web(self):
+        # The whole reason the four can add up: html is the mode a phone
+        # arrives as, so counting both would double it.
+        self.client.get("/Zurich", headers=MOBILE)
+        self.assertEqual(self._mix()["mobile"], 1)
+        self.assertEqual(self._mix()["web"], 0)
+
+    def test_finds_are_counted_per_hour_not_just_by_object(self):
+        # _finds already keeps the leaderboard by name, which cannot answer
+        # "is anyone using this" over time.
+        self.client.get("/Zurich?find=Vega", headers=TERMINAL)
+        self.client.get("/Zurich?find=Altair", headers=TERMINAL)
+        self.client.get("/Zurich", headers=TERMINAL)
+        self.assertEqual(server._hour_stat["find"], 2)
+
+    def test_the_new_fields_reach_the_log_only_when_there_is_something(self):
+        orig = server.HOURLY_LOG
+        self.addCleanup(setattr, server, "HOURLY_LOG", orig)
+        server.HOURLY_LOG = os.path.join(tempfile.mkdtemp(), "hourly.jsonl")
+        hour = dt.datetime.utcnow().strftime("%Y-%m-%dT%H:00")
+        server._flush_hour(hour, server.Counter({"requests": 3, "cli": 2,
+                                                 "web": 1, "find": 4}))
+        row = server._read_hourly_history(days=1)[0]
+        self.assertEqual((row["cli"], row["web"], row["find"]), (2, 1, 4))
+        for empty in ("mobile", "json"):
+            self.assertNotIn(empty, row)      # never written as a zero
+        # but a reader still gets a number for them
+        dense = server._dense_hours([row], 1)[-1]
+        self.assertEqual(dense["mobile"], 0)
+
+    def test_stats_shows_both_blocks_and_the_drilldowns_do_not(self):
+        # /stats is the overview and stacks them; the drill-down pages
+        # answer one question each and keep the chart they are named after.
+        stats = self.client.get("/stats", headers=TERMINAL).text
+        for label in ("cli", "web", "mobile", "json"):
+            self.assertIn(label, stats)
+        self.assertIn("share of requests by client", stats)
+        self.assertIn("FINDS PER HOUR", stats)
+        self.assertIn("FINDS PER DAY", stats)
+        for path in ("/stats/hourly", "/stats/daily"):
+            body = self.client.get(path, headers=TERMINAL).text
+            self.assertNotIn("share of requests by client", body, path)
+            self.assertNotIn("FINDS PER", body, path)
+
+    def test_the_day_charts_all_start_at_the_same_column(self):
+        # Each _side_by_side used to pad to its own block's widest line, so
+        # the day column began a few characters further left under the short
+        # finds chart than under the tall requests one.
+        text = server.api.strip_ansi(self.client.get("/stats",
+                                                     headers=TERMINAL).text)
+        cols = {}
+        for line in text.splitlines():
+            for marker in ("REQUESTS PER DAY", "FINDS PER DAY"):
+                if marker in line:
+                    cols[marker] = line.index(marker)
+        self.assertEqual(len(cols), 2, cols)
+        self.assertEqual(len(set(cols.values())), 1, cols)
+
+    def test_the_four_shares_are_taken_against_the_same_bucket(self):
+        # Each sparkline is that client's share of the same hour, so the
+        # four bars at any column stack to the whole -- not four separate
+        # scales that happen to sit under each other.
+        # The current hour: _dense_hours zero-fills relative to now, so a
+        # row dated elsewhere lands outside the window and reads as empty.
+        hour = dt.datetime.utcnow().strftime("%Y-%m-%dT%H:00")
+        rows = [dict(hour=hour, requests=10, hit=5, miss=5,
+                     day=10, night=0, cli=4, web=3, mobile=2, json=1, find=0)]
+        entries = server._dense_hours(rows, 1)
+        block = "\n".join(server._client_mix_block(entries, cols=1))
+        plain = server.api.strip_ansi(block)
+        self.assertIn("40%", plain)      # cli
+        self.assertIn("30%", plain)      # web
+        self.assertIn("20%", plain)      # mobile
+        self.assertIn("10%", plain)      # json
+
+
 class HourlyLogLosesNothing(unittest.TestCase):
     """/stats' header counts every request; the charts count what reached the
     hourly log. They used to disagree by a wide margin -- 730 against 544 over
