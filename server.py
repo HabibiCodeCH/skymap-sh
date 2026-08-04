@@ -2020,14 +2020,26 @@ def _respond(request: Req, place: str | None):
             # the up-to-34 separate cache entries ?w= and ?panel= used to
             # split this page into once the auto-fit reload had picked a
             # width per visitor.
-            rungs = []
+            rungs, zenith, prose = [], "", ""
             for _min_ch, cols, panel in api.CHART_LADDER:
                 rr = r.sized(cols, panel)
                 rung_res, _daytime, _hit = _cached(rr)
                 rung_text = rung_res.text.replace("{base_url}", base_url)
-                rungs.append((cols, panel, _rendered(
-                    api.strip_duplicate_ui_lines(rung_text, rr, rung_res, base_url))))
-            chart_html = api.chart_ladder(rungs)
+                rung_text = api.strip_duplicate_ui_lines(rung_text, rr, rung_res,
+                                                         base_url)
+                # The inset and the prose come out of the rung rather than
+                # staying in it, so the panorama gets the full width at every
+                # step of the ladder. Both are identical across rungs, so the
+                # last one to set them wins and it makes no difference which:
+                # taken from whichever rungs actually carry the markers, since
+                # the narrowest has no panel and therefore no inset.
+                chart, rung_zenith, rung_prose = api.split_chart_parts(rung_text)
+                if rung_zenith:
+                    zenith = _rendered(rung_zenith)
+                if rung_prose:
+                    prose = _rendered(rung_prose)
+                rungs.append((cols, panel, _rendered(chart)))
+            chart_html = api.chart_layout(rungs, zenith, prose)
         else:
             chart_html = api.chart_pre(_rendered(html_text))
         body = api.PAGE.format(title=f"skymap.sh: {r.place.name}",
@@ -2037,7 +2049,10 @@ def _respond(request: Req, place: str | None):
                                kbd_urls=json.dumps(kbd), shortcuts_hint=api.SHORTCUTS_HINT,
                                body=chart_html)
         return HTMLResponse(body, status_code=res.status, headers=headers)
-    text = page_text if colour else api.strip_ansi(page_text)
+    # The layout seams are for a browser to break the text apart at; a
+    # terminal asking for ?panel=1 gets the pieces stacked, not the markers.
+    text = api.strip_slots(page_text)
+    text = text if colour else api.strip_ansi(text)
     return PlainTextResponse(text, status_code=res.status, headers=headers)
 
 

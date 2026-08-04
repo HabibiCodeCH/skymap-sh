@@ -1755,12 +1755,18 @@ class CacheKeyRespectsEveryRenderAffectingParam(unittest.TestCase):
         t = "2026-07-30T23:00"
         stacked = self.client.get(f"/Zurich?t={t}&w=150", headers=TERMINAL).text
         paneled = self.client.get(f"/Zurich?t={t}&w=150&panel=1", headers=TERMINAL).text
-        stacked_zenith = next(l for l in server.api.strip_ansi(stacked).split("\n")
-                              if "zenith 70-90" in l)
-        paneled_zenith = next(l for l in server.api.strip_ansi(paneled).split("\n")
-                              if "zenith 70-90" in l)
-        self.assertEqual(stacked_zenith.split("zenith 70-90")[0].strip(), "")
-        self.assertTrue(paneled_zenith.split("zenith 70-90")[0].strip())
+        # Both stack the inset for a terminal -- panel is a browser layout
+        # instruction now, and a reader who cannot be handed positioned
+        # boxes gets the pieces one after another either way. What must
+        # still differ is the render itself, or one cache entry would answer
+        # both: the paneled one carries the inset as its own block rather
+        # than inside the chart, which moves where it lands in the text.
+        self.assertNotEqual(stacked, paneled)
+        for body in (stacked, paneled):
+            self.assertNotIn("\x00", body)
+            zenith_line = next(l for l in server.api.strip_ansi(body).split("\n")
+                               if "zenith 70-90" in l)
+            self.assertEqual(zenith_line.split("zenith 70-90")[0].strip(), "")
 
 
 class KeyboardShortcuts(unittest.TestCase):
@@ -2241,13 +2247,34 @@ class WidthLadder(unittest.TestCase):
             finally:
                 browser.close()
 
-    def test_panel_rungs_actually_carry_the_zenith_inset(self):
-        # The panel decision used to be the JS's (params.set('panel','1'));
-        # it is a property of the rung now, so the wide rungs must really
-        # differ from the narrow one by more than column count.
+    def test_the_inset_is_lifted_out_of_the_ladder_and_shipped_once(self):
+        # It is the same 21-column drawing at every width, and it no longer
+        # sits inside the text -- it floats over the chart, so it belongs to
+        # the page rather than to any one rung.
         resp = self.client.get("/Zurich?t=2026-07-30T23:00", headers=BROWSER)
-        self.assertIn('data-cols="60" data-panel="1"', resp.text)
-        self.assertIn('<pre class="chart-pre" data-cols="60">', resp.text)
+        self.assertEqual(resp.text.count('id="chart-zenith"'), 1)
+        self.assertNotIn("zenith 70-90", re.sub(
+            r'<pre id="chart-zenith".*?</pre>', "", resp.text, flags=re.S))
+        # every rung asks for the inset now; none of them pays width for it
+        for _min_ch, cols, panel in api.CHART_LADDER:
+            self.assertTrue(panel, cols)
+
+    def test_the_prose_is_lifted_out_too_and_shipped_once(self):
+        # A find view still has prose worth a block of its own; a plain
+        # night chart no longer has any, since the top line took the lot.
+        resp = self.client.get("/Zurich?t=2026-07-30T23:00&find=Vega",
+                               headers=BROWSER)
+        self.assertEqual(resp.text.count('id="chart-prose"'), 1)
+        rungs = re.findall(r'<pre class="chart-pre"[^>]*>(.*?)</pre>',
+                           resp.text, re.S)
+        for body in rungs:
+            self.assertNotIn("above the horizon in the", body)
+
+    def test_a_plain_night_chart_has_nothing_left_below_it(self):
+        # Moon, planets, twilight and the star count all ride on the top
+        # line now, so the chart runs to the shortcut bar.
+        resp = self.client.get("/Zurich?t=2026-07-30T23:00", headers=BROWSER)
+        self.assertNotIn('id="chart-prose"', resp.text)
 
 
 class SidePanel(unittest.TestCase):

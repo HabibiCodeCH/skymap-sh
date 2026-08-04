@@ -847,13 +847,14 @@ def fists(deg):
     return f"about {'one' if n == 1 else n} fist{'s' if n != 1 else ''} up"
 
 
-def find_text(t, visible, lat, wrap_width=76):
-    L = [f"{t['name']}: {t['alt']:.0f}\u00b0 above the horizon in the {compass(t['az'])} "
-         f"(bearing {t['az']:.0f}\u00b0)."]
-    L.append(f"Face {compass(t['az'])} and look {fists(t['alt'])} \u2014 a closed fist at "
-             f"arm's length is about 10\u00b0.")
-    if t.get("mag") is not None:
-        L.append(f"Magnitude {t['mag']:.1f}." if t["kind"] != "asterism" else "")
+def find_marker(t, visible):
+    """(name, degrees away, vertical, sideways) for the bright star nearest
+    the target, or None when nothing bright is near enough to help.
+
+    Its own function because two callers need the same answer worded two
+    ways -- the prose sentence under a chart and the one-line summary above
+    it -- and a second implementation of "which star is nearest" is a
+    second thing to get wrong."""
     ref, near = None, 12 if t["kind"] == "asterism" else 6
     for s, a, z in sorted(visible, key=lambda v: v[0]["m"]):
         if not s.get("n") or s["m"] > 2.0 or s["n"] == t["name"]:
@@ -861,19 +862,33 @@ def find_text(t, visible, lat, wrap_width=76):
         d = angsep(t["alt"], t["az"], a, z)
         if near < d < 45 and (ref is None or d < ref[1]):
             ref = (s["n"], d, a, z)
-    if ref:
-        nm, d, a, z = ref
-        # describe where the TARGET sits relative to the marker, not the reverse
-        vert = ("above" if t["alt"] > a + 3 else
-                "below" if t["alt"] < a - 3 else "level with")
-        dz = ((t["az"] - z + 180) % 360) - 180
-        side = "right" if dz > 3 else "left" if dz < -3 else None
-        if side and vert != "level with":
+    if not ref:
+        return None
+    nm, d, a, z = ref
+    # Where the TARGET sits relative to the marker, not the reverse.
+    vert = ("above" if t["alt"] > a + 3 else
+            "below" if t["alt"] < a - 3 else "level")
+    dz = ((t["az"] - z + 180) % 360) - 180
+    side = "right" if dz > 3 else "left" if dz < -3 else None
+    return nm, d, vert, side
+
+
+def find_text(t, visible, lat, wrap_width=76):
+    L = [f"{t['name']}: {t['alt']:.0f}\u00b0 above the horizon in the {compass(t['az'])} "
+         f"(bearing {t['az']:.0f}\u00b0)."]
+    L.append(f"Face {compass(t['az'])} and look {fists(t['alt'])} \u2014 a closed fist at "
+             f"arm's length is about 10\u00b0.")
+    if t.get("mag") is not None:
+        L.append(f"Magnitude {t['mag']:.1f}." if t["kind"] != "asterism" else "")
+    mark = find_marker(t, visible)
+    if mark:
+        nm, d, vert, side = mark
+        if side and vert != "level":
             rel = f"{vert} it and to the {side}"
         elif side:
             rel = f"level with it, to the {side}"
         else:
-            rel = f"directly {vert} it" if vert != "level with" else "right beside it"
+            rel = f"directly {vert} it" if vert != "level" else "right beside it"
         L.append(f"Nearest bright marker: {nm}, {d:.0f}\u00b0 away \u2014 {t['name']} is "
                  f"{rel}.")
     if t.get("kind") == "moon":

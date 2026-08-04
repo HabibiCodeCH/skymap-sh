@@ -13,7 +13,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 import sky
 from sky import (C, paint, julian, gmst_hours, altaz, angsep, compass, moon_glyph,
                  phase_name, resolve_target, visibility, next_visible,
-                 solar_elongation, find_text, sky_read, render, render_linear,
+                 solar_elongation, find_text, find_marker, sky_read, render, render_linear,
                  sun, moon, planet, sun_arc, sun_events, dark_enough, DSO_LEGEND)
 import events as ev_mod
 
@@ -594,6 +594,7 @@ def _compose_find(r):
     data = dict(place=p.name, lat=p.lat, lon=p.lon,
                 target=tgt["name"], kind=tgt["kind"], visible=ok, reason=why)
 
+    status = "visible then" if r.when_explicit else "visible now"
     if not ok:
         w, a2, z2 = next_visible_cached(tgt, p.lat, p.lon, r.when_utc)
         if w is None:
@@ -615,6 +616,11 @@ def _compose_find(r):
         note = (f"Not visible {'then' if r.when_explicit else 'right now'}, {why}.",
                 f"Next chance: {when_txt}, {a2:.0f}° up in the {compass(z2)}. "
                 f"Chart drawn for that moment.")
+        # The same two facts for the browser's one-line header. "(shown)"
+        # carries what "Chart drawn for that moment" spells out: the sky
+        # below is that later moment, not the one asked for.
+        status = (f"not yet, {SHORT_WHY.get(why, why)} · next {when_txt}, "
+                  f"{a2:.0f}°{compass(z2)} (shown)")
         data.update(next_visible=dict(when_utc=w.isoformat() + "Z",
                                       when_local=wl.isoformat(),
                                       alt=round(a2), compass=compass(z2)))
@@ -678,8 +684,17 @@ def _compose_find(r):
                       wrap_width=_effective_width(r) if r.panel else 76)
 
     where = f"{int(sp)}° window" if zoomed else "full panorama"
-    head_line = paint(f"  {p.name}   {shown_local:%d %b %Y %H:%M}   finding "
-                      f"{tgt['name']}, {where}", C.HEAD, c)
+    if r.panel:
+        # One row, the same shape the ordinary chart's header has: place,
+        # moment, what is being looked for, and whether it is up. "full
+        # panorama" goes -- it is what every find view draws unless ?span=
+        # says otherwise, and a zoomed one still says so.
+        head_line = paint(f"{_head_prefix(r, shown_local)} · finding "
+                          f"{tgt['name']} · {status}"
+                          + (f" · {where}" if zoomed else ""), C.HEAD, c)
+    else:
+        head_line = paint(f"  {p.name}   {shown_local:%d %b %Y %H:%M}   finding "
+                          f"{tgt['name']}, {where}", C.HEAD, c)
     if note:
         notice = [paint("  " + note[0], C.MUTE, c),
                   paint("  " + note[1], "\033[38;5;213m", c)]
@@ -688,10 +703,14 @@ def _compose_find(r):
                         "\033[38;5;48m", c)]
     guide_lines = [paint("  " + l, C.LABEL, c) for l in guide.split("\n")]
     if r.panel:
+        # Same three-part split as _compose_sky: chart, then the inset, then
+        # the prose. The notice is in the header line already, and the guide
+        # is one line rather than four.
         zenith = st.get("zenith_lines") or []
-        out = ["", head_line, ""] + notice
-        out += _side_by_side(art.split("\n"), zenith)
-        out += [""] + guide_lines
+        summary = _find_summary(tgt, st, p.lat, _effective_width(r) - 2)
+        out = ["", head_line, "", art,
+               ZENITH_SLOT] + zenith + [PROSE_SLOT, paint("  " + summary,
+                                                          C.LABEL, c)]
     else:
         out = ["", head_line, ""] + notice + ["", art, ""] + guide_lines
     out += ["", _footer(p, c), ""]
@@ -772,15 +791,78 @@ def _effective_width(r):
 # single sample is an off-by-one waiting to happen (measuring only Zurich in
 # August put the 60+panel rung at 93ch; the same rung is 96ch over Tokyo in
 # January).
-CHART_LADDER = ((None, 60, False),   # 86ch rendered at its widest
-                (98, 60, True),
-                (123, 80, True),
-                (138, 100, True),
-                (158, 120, True),
-                (178, 140, True),
-                (198, 160, True),
-                (230, 190, True),
-                (260, 220, True))
+# Retuned once the inset stopped taking width from the chart (it floats over
+# the top-right corner now) and the prose moved out of the ladder entirely.
+# Both used to set a rung's width: the inset added 33ch and the prose's fixed
+# 76-character wrap put a floor under the narrow end. Neither does now, so a
+# rung is its chart plus the y-axis gutter -- except at the narrow end, where
+# the header line ("Zurich 47.38N 8.54E ... horizon panorama", ~89ch) is the
+# floor instead, which is why there is no rung below 80 columns any more: 60
+# and 80 render the same width, so 60 could never be the better fit.
+#
+# panel is True on every rung now. It no longer means "there is room beside
+# the chart" -- it means the inset comes out as its own block for the page to
+# position, which is wanted at every width.
+#
+# Measured over six place/date combinations through the real HTTP path, plus
+# 2ch. Mostly columns plus the y-axis gutter, but not always: at 140 the
+# widest sample runs 149ch, because a body label beside the chart can hang
+# past its right edge. That overhang is what the old reserving arithmetic was
+# really paying for, and it is still real -- it just no longer costs the
+# inset's 33ch as well.
+CHART_LADDER = ((None, 80, True),    # 94ch rendered at its widest
+                (107, 100, True),
+                (127, 120, True),
+                (151, 140, True),
+                (167, 160, True),
+                # 1470px of laptop is ~184ch, which reached the 160 rung and
+                # left 19ch of it empty; the next one up needed 199. 170 is
+                # the widest that fits there -- 175 renders 184ch at its
+                # worst and would overflow the window it was picked for.
+                (181, 170, True),
+                (199, 190, True),
+                (227, 220, True))
+
+
+# Seams in the composed text, so the browser can lay the three pieces out
+# itself instead of taking the server's one-column stack. Only ever emitted
+# on the panel path, which is the ladder's and nothing else's -- r.panel is
+# part of the cache key (server._cache_key), so a CLI reader cannot be
+# served a marked-up entry. Control characters for the same reason MAP_SLOT
+# uses one: they cannot collide with real content, and they survive
+# ansi_to_html untouched.
+# Control characters only, no readable word inside them: a marker spelling
+# "zenith" made `"zenith" not in text` true of a chart that had no inset and
+# false of the marker announcing one, which is exactly the kind of check
+# callers and tests write.
+ZENITH_SLOT = "\x00\x01\x00"
+PROSE_SLOT = "\x00\x02\x00"
+
+
+def strip_slots(text):
+    """Drop the layout seams, leaving the pieces stacked in the order they
+    were composed. What a terminal gets if it asks for ?panel=1: the seams
+    are places for a browser to break the text apart, and a reader who
+    cannot be handed three positioned boxes just gets the chart, the inset
+    and the prose one after another, which is what they got before."""
+    return text.replace(ZENITH_SLOT + "\n", "").replace(PROSE_SLOT + "\n", "") \
+               .replace(ZENITH_SLOT, "").replace(PROSE_SLOT, "")
+
+
+def split_chart_parts(text):
+    """(chart, zenith, prose) out of a panel-mode render.
+
+    The zenith inset is the same 21-column drawing at every width, and with
+    the chart no longer wrapped around it the prose is identical across
+    rungs too -- so both come out once and the ladder carries only the part
+    that actually differs. Anything without the markers (every non-panel
+    render) comes back as (text, "", ""), which is what the callers that
+    predate this expect."""
+    chart, sep, rest = text.partition(ZENITH_SLOT)
+    if not sep:
+        return text, "", ""
+    zenith, sep, prose = rest.partition(PROSE_SLOT)
+    return chart.rstrip("\n"), zenith.strip("\n"), prose.strip("\n")
 
 
 def chart_pre(inner):
@@ -806,6 +888,24 @@ def chart_ladder(rungs):
         % (cols, ' data-panel="1"' if panel else "", body)
         for cols, panel, body in rungs)
     return f'<div id="chart-ladder">{blocks}</div>'
+
+
+def chart_layout(rungs, zenith, prose):
+    """The ladder with the inset floated over it and the prose pinned below.
+
+    zenith and prose come out of any one rung (see split_chart_parts) rather
+    than per rung: the inset is the same 21-column drawing at every width,
+    and with the chart no longer wrapped around it the prose wraps the same
+    at every width too. Emitting them once keeps the ladder to the one thing
+    that genuinely differs between rungs.
+
+    Both are plain <pre> so they keep the chart's own font and spacing --
+    the inset is a drawing made of characters and would fall apart in a
+    proportional font."""
+    inset = (f'<pre id="chart-zenith" aria-label="zenith inset">{zenith}</pre>'
+             if zenith.strip() else "")
+    below = (f'<pre id="chart-prose">{prose}</pre>' if prose.strip() else "")
+    return (f'<div id="chart-stage">{chart_ladder(rungs)}{inset}</div>{below}')
 
 
 def chart_ladder_css():
@@ -849,6 +949,25 @@ def chart_ladder_css():
         lines.append(f" @container (min-width:{min_ch}ch){{"
                      f"#chart-ladder .chart-pre:nth-child({i}){{display:none}}"
                      f"#chart-ladder .chart-pre:nth-child({i + 1}){{display:block}}}}")
+    lines += [
+        # The stage is the positioning context for the inset. Not the ladder
+        # itself: that is the query container, and giving a query container
+        # a positioned child it also has to size is asking for a loop.
+        " #chart-stage{position:relative}",
+        # Top right, over the panorama's highest rows. That corner holds
+        # 55-70 degrees of altitude, the emptiest band of the chart on most
+        # nights -- and when it isn't, "i" takes the inset away.
+        " #chart-zenith{position:absolute;top:0;right:0;font-size:13px;"
+        "margin:0;pointer-events:none;"
+        # Sits on the sky, so it needs its own floor under it or the stars
+        # it covers read as part of the drawing.
+        "background:rgba(4,6,10,.82);padding:2px 6px;border-radius:4px}",
+        " html.no-inset #chart-zenith{display:none}",
+        # The prose keeps the chart's font but not its width: pinned above
+        # the shortcut bar, where it stays put while the chart above it
+        # changes rung, place or time.
+        " #chart-prose{font-size:13px;margin:6px 0 0}",
+    ]
     return "\n".join(lines)
 
 
@@ -922,13 +1041,152 @@ def _fade_visible_bodies(sun_alt, jd):
     return visible                                       # eclipse mate
 
 
-def _horizon_head(r, mode):
+# What the Moon/planets/brightest-stars lines say, on one line above the
+# chart instead of three below it. The header row is nearly all empty space
+# on a wide screen, and these are the three lines someone reads before
+# looking up -- so they go where the eye already is, and the page keeps
+# three rows it was spending on them.
+#
+# Browser only (r.panel): curl's layout is a separate question and a
+# separate review. Built from st rather than by matching sky_read's
+# sentences, so a reworded sentence there cannot silently empty this.
+SUMMARY_DROP = ("Moon ", "Planets up:", "No naked-eye planets",
+                "Brightest stars:",
+                # The twilight label is the Sun's altitude said in words,
+                # and it rides on the top line now too.
+                "daylight, the sun is up.", "civil twilight.",
+                "nautical twilight.", "astronomical twilight.", "full dark.")
+
+
+def _moved_to_summary(line):
+    """Lines the top line now carries. The star count is matched on its tail
+    because it begins with the number, which is the part that varies."""
+    s = line.strip()
+    return s.startswith(SUMMARY_DROP) or s.endswith("stars above the horizon.")
+
+
+# visibility()'s reasons are written as prose for the terminal, where they
+# sit in a sentence of their own. On the browser's one-line header they are
+# most of the line -- "too low, under 8°, so trees and buildings will be in
+# the way" is 59 characters explaining a number that is right there. Missing
+# keys fall through unchanged; a test checks each one still exists in sky.py,
+# so rewording there fails loudly rather than quietly restoring the long
+# version.
+SHORT_WHY = {
+    "too low, under 8°, so trees and buildings will be in the way":
+        "too low, under 8°",
+    "the sky is still too bright": "sky too bright",
+    "the sky is not quite dark enough for it": "not quite dark enough",
+}
+
+
+def _find_summary(tgt, st, lat, width):
+    """The find view's four lines as one: where it is, how bright, and what
+    bright thing it sits next to.
+
+    The fist instruction goes. "A closed fist at arm's length is about 10°"
+    is worth reading once and is printed on every find chart forever; the
+    altitude in degrees says the same thing to anyone who has read it, and
+    help is where the explanation belongs. Trimmed like the sky summary --
+    the marker first, since it is the one part the chart itself shows."""
+    bits = [f"{tgt['name']} · {tgt['alt']:.0f}° up · "
+            f"{compass(tgt['az'])} {tgt['az']:.0f}°"]
+    if tgt.get("kind") == "moon":
+        bits.append(f"{moon_glyph(tgt['age'], lat)} {tgt['illum'] * 100:.0f}%")
+    elif tgt.get("mag") is not None and tgt["kind"] != "asterism":
+        bits.append(f"mag {tgt['mag']:.1f}")
+    mark = find_marker(tgt, st["visible"])
+    if mark:
+        nm, d, vert, side = mark
+        rel = " and ".join(x for x in (vert if vert != "level" else "level with",
+                                       side) if x)
+        bits.append(f"{d:.0f}° from {nm}, {rel}")
+    while len(bits) > 1 and len(" · ".join(bits)) > width:
+        bits.pop()
+    return " · ".join(bits)
+
+
+def _head_when(r, when_local=None):
+    """The moment, with the year only when it isn't this one. A chart of
+    tonight does not need to say 2026; a ?t= link two years out does, and
+    dropping it there would quietly read as today.
+
+    when_local overrides r's own: a find view can be drawn for the next time
+    the thing is up rather than for the moment asked about."""
+    w = when_local or r.when_local
+    now_year = dt.datetime.now(dt.timezone.utc).year
+    return f"{w:{'%d %b %H:%M' if w.year == now_year else '%d %b %Y %H:%M'}}"
+
+
+def _sky_summary(st, lat, width, n_stars=0):
+    """Trimmed to `width`, brightest-last. It sits above the chart, so a
+    summary longer than the chart is one that decides how wide the page is
+    -- which is exactly the job the prose used to do from below, and the
+    reason the narrow rungs were 86ch for a 60-column chart. The Moon comes
+    first and survives every trim; the star list is the first thing to go,
+    then the planets, since both are in full in the chart itself."""
+    mo, su = st["moon"], st["sun"]
+    # Space after the glyph, always: the phase mark and the number are two
+    # facts, and run together they read as one broken word.
+    where = (f"{mo['alt']:.0f}°{compass(mo['az'])}" if mo["alt"] > 0
+             else "below the horizon")
+    pl = sorted((b for b in st["up"]
+                 if b["name"] not in ("Sun", "Moon") and b["mag"] < 6.0),
+                key=lambda b: b["mag"])
+    alt = su["alt"]
+    dark = ("daylight" if alt > 0 else "civil twilight" if alt > -6 else
+            "nautical twilight" if alt > -12 else
+            "astro twilight" if alt > -18 else "full dark")
+    # (drop-order, text). Rendered in list order, but trimmed worst-first,
+    # so a busy planet night loses the star count rather than whichever
+    # happens to sit at the end. The Moon never goes: it decides how much
+    # of the rest is worth looking for.
+    parts = [(0, f"{moon_glyph(mo['age'], lat)} {mo['illum'] * 100:.0f}% {where}"),
+             (2, ", ".join(f"{p['name']} {p['alt']:.0f}°{compass(p['az'])}"
+                           for p in pl) if pl else "no planets"),
+             (1, dark),
+             (3, f"{len(st['visible'])} stars")]
+    # n_stars defaults to none: the bright stars are labelled on the chart a
+    # few rows below this line, which is the one place they cannot be
+    # misread as a list of somewhere else.
+    bright = [(s, a, z) for s, a, z in
+              sorted(st["visible"], key=lambda v: v[0]["m"])[:n_stars]
+              if s.get("n")]
+    if bright:
+        parts.append((4, ", ".join(f"{s['n']} {a:.0f}°{compass(z)}"
+                                   for s, a, z in bright)))
+    while len(parts) > 1 and len(" · ".join(t for _p, t in parts)) > width:
+        parts.remove(max(parts, key=lambda pt: pt[0]))
+    return " · ".join(t for _p, t in parts)
+
+
+def _head_prefix(r, when_local=None):
+    """`  Geneva · 19 Aug 22:00`, the fixed part of the browser's top line.
+    Its own function so the summary that follows can be given the width
+    that is actually left over, rather than the whole chart's."""
+    near = f" · near {r.place.near}" if r.place.near else ""
+    return f"  {r.place.name}{near} · {_head_when(r, when_local)}"
+
+
+def _horizon_head(r, mode, summary=""):
+    """The CLI's header, or -- given a summary -- the browser's single top
+    line: place, moment, and what is up, in one row.
+
+    The coordinates go on the browser line. Asked for by name they say
+    nothing the name doesn't, and asked for by coordinates the *name* is
+    already the coordinates, so printing both said it twice. The "near X"
+    hint stays either way: it is the only thing identifying a bare pair of
+    numbers."""
     p = r.place
     hemi = 'N' if p.lat >= 0 else 'S'
     ew = 'E' if p.lon >= 0 else 'W'
+    if summary:
+        tail = f" · {mode}" if mode else ""
+        return f"{_head_prefix(r)} · {summary}{tail}"
     near = f"  (near {p.near})" if p.near else ""
     return (f"  {p.name}  {abs(p.lat):.2f}°{hemi} {abs(p.lon):.2f}°{ew}{near}"
-            f"   {r.when_local:%d %b %Y %H:%M}   {mode}")
+            f"   {r.when_local:%d %b %Y %H:%M}"
+            + (f"   {mode}" if mode else ""))
 
 
 def _png_url(r):
@@ -1089,8 +1347,27 @@ def _compose_sky(r):
                 if r.facing else
                 f"horizon panorama, 0-70°{quad_bit}" if no_inset else
                 f"horizon panorama, 0-70° + zenith inset{quad_bit}")
+        # On the laddered page the default panorama says nothing the chart
+        # is not already showing: the axis is labelled 0-70 down its left
+        # edge and the inset is right there in the corner. A facing window
+        # or a quadrant crop is different -- that one is not obvious from
+        # looking, so it keeps its label.
+        if r.panel and not r.facing and not quad_bit:
+            mode = ""
 
-    head = _horizon_head(r, mode)
+    # One row on the browser page: place, moment, Moon and planets. The CLI
+    # keeps its own two-part header and its own prose, untouched.
+    #
+    # The summary gets what is left of the chart's width after the place and
+    # the moment, not the whole of it -- given the whole, a night with four
+    # planets up wrote a top line wider than the chart underneath it, which
+    # is the one thing a rung's breakpoint cannot survive.
+    summary = ""
+    if r.panel:
+        spare = _effective_width(r) - len(_head_prefix(r)) - 3
+        spare -= len(mode) + 3 if mode else 0
+        summary = _sky_summary(st, p.lat, max(20, spare))
+    head = _horizon_head(r, mode, summary=summary)
     # Panel mode still wraps wide -- prose sits in its own full-width block
     # below the chart+zenith row (see the side_panel branch below), not
     # squeezed into the zenith's ~30-column-wide column, so there's no
@@ -1098,7 +1375,11 @@ def _compose_sky(r):
     prose = sky_read(st, p.name, r.when_local, f"UTC{r.tz:+g}", p.lat,
                      wrap_width=_effective_width(r) if r.panel else 76)
 
-    right = [paint("  " + l, C.LABEL, c) for l in prose.split("\n")[1:]]
+    lines = prose.split("\n")[1:]
+    if r.panel:
+        # Everything the top line now says.
+        lines = [l for l in lines if not _moved_to_summary(l)]
+    right = [paint("  " + l, C.LABEL, c) for l in lines]
     tr = st.get("track")
     if tr:
         pk = max(tr, key=lambda x: x[1])
@@ -1131,14 +1412,17 @@ def _compose_sky(r):
     if r.panel:
         # zenith_lines is None when this view has no inset at all (facing=,
         # target=, or a quadrant crop already applied) -- st.get, not
-        # st[...], since disc view's own st dict never has this key. Only
-        # the zenith rides beside the chart; prose goes in its own
-        # full-width block below, same as the non-panel layout, so it never
-        # gets squeezed into the zenith's narrow column.
+        # st[...], since disc view's own st dict never has this key.
+        #
+        # The three pieces go out separated rather than stacked: the browser
+        # floats the inset over the chart's top corner and pins the prose
+        # above the shortcut bar, which gives the panorama the inset's 33ch
+        # back and the prose's rows with it. Laid out here as one column,
+        # the chart could only ever be as wide as the window minus the
+        # inset.
         zenith = st.get("zenith_lines") or []
-        out = ["", paint(head, C.HEAD, c), ""]
-        out += _side_by_side(art.split("\n"), zenith)
-        out += [""] + right
+        out = ["", paint(head, C.HEAD, c), "", art,
+               ZENITH_SLOT] + zenith + [PROSE_SLOT] + right
     else:
         out = ["", paint(head, C.HEAD, c), "", art, ""]
         out += right
@@ -3959,7 +4243,28 @@ function skymapRenderGif(btn){{
       return;
     }}
     if(e.key==='d'&&KBD.quadrant){{location.href=KBD.quadrant;return;}}
+    // i hides the zenith inset. It floats over the chart's top-right
+    // corner, which is the emptiest band of sky most nights and not all of
+    // them -- so this is how you get the stars underneath it back. Kept in
+    // localStorage: someone who does not want it never wants it, and making
+    // them press i on every chart would be the annoying half of a toggle.
+    if(e.key==='i'){{
+      if(!document.getElementById('chart-zenith'))return;
+      var off=document.documentElement.classList.toggle('no-inset');
+      try{{localStorage.setItem('skymap.inset',off?'0':'1');}}catch(err){{}}
+      flashHint(off?'Zenith inset hidden &middot; <kbd>i</kbd> to bring it back'
+                  :'Zenith inset shown');
+      return;
+    }}
   }});
+}})();
+(function(){{
+  // Applied before first paint (this script runs in <head>, see PAGE) so a
+  // reader who turned the inset off never sees it flash on and disappear.
+  try{{
+    if(localStorage.getItem('skymap.inset')==='0')
+      document.documentElement.classList.add('no-inset');
+  }}catch(e){{}}
 }})();
 (function(){{
   // Find field -- live dropdown against GET /complete/objects, keyboard-
@@ -4111,6 +4416,7 @@ SHORTCUTS_HINT = (
     '<p class="kbd-hint">Keyboard: <kbd>tab</kbd> place &middot; '
     '<kbd>f</kbd> find &middot; <kbd>m</kbd> my location &middot; '
     '<kbd>space</kbd> animate &middot; <kbd>d</kbd> deep sky &middot; '
+    '<kbd>i</kbd> inset &middot; '
     '<kbd>z</kbd> zoom &middot; '
     '<kbd>esc</kbd> cancel</p>'
 )

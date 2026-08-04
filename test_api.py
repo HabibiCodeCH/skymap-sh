@@ -4,6 +4,7 @@
 Run:  python3 test_api.py
 """
 import datetime as dt
+import os
 import unittest
 import api
 
@@ -346,16 +347,32 @@ class SidePanelLayout(unittest.TestCase):
         r = api.Request(place="Zurich")
         self.assertFalse(r.panel)
 
-    def test_panel_produces_fewer_total_lines_than_stacked(self):
-        stacked = api.compose(self._request(panel=False)).text.split("\n")
-        paneled = api.compose(self._request(panel=True)).text.split("\n")
-        self.assertLess(len(paneled), len(stacked))
+    def test_panel_marks_the_three_pieces_for_the_browser_to_place(self):
+        # panel used to mean "put the inset beside the chart", which cost the
+        # chart the inset's width at every size. It now means "hand the
+        # pieces over separately": the browser floats the inset over the
+        # chart's corner, so the panorama keeps the whole width.
+        text = api.compose(self._request(panel=True)).text
+        chart, zenith, prose = api.split_chart_parts(text)
+        self.assertIn("zenith 70-90", zenith)
+        self.assertNotIn("zenith 70-90", chart)
+        self.assertIn("Share as a PNG", prose)
+        self.assertNotIn("Share as a PNG", chart)
 
-    def test_panel_places_the_zenith_label_beside_chart_content(self):
-        text = api.strip_ansi(api.compose(self._request(panel=True)).text)
-        zenith_line = next(l for l in text.split("\n") if "zenith 70-90" in l)
-        before = zenith_line.split("zenith 70-90")[0]
-        self.assertTrue(before.strip(), "expected chart content before the zenith label")
+    def test_the_chart_is_no_narrower_for_having_an_inset(self):
+        # The point of the whole arrangement.
+        paneled, _z, _p = api.split_chart_parts(
+            api.compose(self._request(panel=True)).text)
+        stacked = api.strip_ansi(api.compose(self._request(panel=False)).text)
+        chart_line = lambda t: max(len(l) for l in api.strip_ansi(t).split("\n"))
+        self.assertGreaterEqual(chart_line(paneled), chart_line(stacked) - 2)
+
+    def test_a_reader_never_sees_the_seams(self):
+        text = api.compose(self._request(panel=True)).text
+        self.assertNotIn("\x00", api.strip_slots(text))
+        # and stripping leaves the pieces in the order they were composed
+        plain = api.strip_ansi(api.strip_slots(text))
+        self.assertLess(plain.index("zenith 70-90"), plain.index("Share as a PNG"))
 
     def test_without_panel_the_zenith_label_is_alone_on_its_line(self):
         text = api.strip_ansi(api.compose(self._request(panel=False)).text)
@@ -391,18 +408,46 @@ class SidePanelLayout(unittest.TestCase):
         )
         self.assertTrue(prose_stacked)  # sanity: default path still renders
 
-    def test_find_guide_also_wraps_to_the_panel_width_not_a_fixed_76(self):
-        # find_text() used to ignore panel entirely, wrapping its guide
-        # sentences at a fixed 76 columns even once the chart itself (see
-        # _compose_find's side_panel=r.panel) had the full effective width.
+    def test_the_browser_find_view_is_one_line_above_and_one_below(self):
+        # The four guide sentences became a single row, and the fist
+        # instruction went with them: "a closed fist at arm's length is
+        # about 10°" is worth reading once, and it was printed on every
+        # find chart forever.
         r = api.Request(place="Zurich", find="Venus",
                         when=dt.datetime(2026, 7, 30, 21, 10), panel=True)
+        chart, _zen, prose = api.split_chart_parts(api.compose(r).text)
+        self.assertNotIn("closed fist", prose)
+        # The footer ("Follow @habibicode") rides in this block too and is
+        # stripped for the browser by strip_duplicate_ui_lines, so what
+        # matters here is that the guide itself is a single row.
+        body = [l for l in api.strip_ansi(prose).split("\n")
+                if l.strip() and "@habibicode" not in l]
+        self.assertEqual(len(body), 1, body)
+        self.assertIn("Venus · ", body[0])
+        head = [l for l in api.strip_ansi(chart).split("\n") if l.strip()][0]
+        self.assertIn("finding Venus", head)
+        self.assertNotIn("full panorama", head)
+
+    def test_every_shortened_reason_still_exists_in_sky(self):
+        # The short forms are keyed on visibility()'s exact sentences. If one
+        # is reworded there, the lookup misses and the long version quietly
+        # comes back to a line with no room for it.
+        src = open(os.path.join(os.path.dirname(os.path.abspath(api.__file__)),
+                                "sky.py")).read()
+        for long_form in api.SHORT_WHY:
+            self.assertIn(long_form, src, long_form)
+
+    def test_the_cli_find_view_keeps_its_sentences(self):
+        # Same request without panel: the terminal reads prose, and its
+        # layout is a separate review.
+        r = api.Request(place="Zurich", find="Venus",
+                        when=dt.datetime(2026, 7, 30, 21, 10))
         text = api.strip_ansi(api.compose(r).text)
-        self.assertIn(
-            "Face WSW and look about one fist up — a closed fist at "
-            "arm's length is about 10°.",
-            text,
-        )
+        # Wrapped at 76 for a terminal, so the sentence spans two lines --
+        # assert the halves rather than the whole.
+        self.assertIn("Face WSW and look about one fist up", text)
+        self.assertIn("closed fist at arm's length is about", text)
+        self.assertIn("Magnitude -4.2.", text)
 
 
 class StripFooterLine(unittest.TestCase):
