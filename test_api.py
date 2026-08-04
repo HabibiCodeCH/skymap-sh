@@ -175,6 +175,53 @@ class CompleteObjects(unittest.TestCase):
         self.assertEqual(api.complete_objects(long_prefix), [])
 
 
+class EverySuggestionIsActuallyFindable(unittest.TestCase):
+    """The find dropdown showed the Moon as "Moon (last quarter)" and then
+    submitted that label as the search, which resolve_target could not parse
+    -- so the one object whose label is not its name was the one object you
+    could see in the list and not find."""
+
+    LAT, LON = 46.20, 6.15
+
+    def when(self):
+        jd = sky.julian(dt.datetime(2026, 8, 4, 22, 0))
+        return jd, (sky.gmst_hours(jd) + self.LON / 15.0) % 24
+
+    def test_the_moon_suggestion_carries_a_searchable_name(self):
+        moon = [o for o in api.complete_objects("moo") if "Moon" in o["name"]]
+        self.assertTrue(moon)
+        self.assertEqual(moon[0]["q"], "Moon")
+        # The label still shows the phase -- that is why it exists.
+        self.assertIn("(", moon[0]["name"])
+
+    def test_every_suggestion_resolves_by_what_it_would_submit(self):
+        jd, lst = self.when()
+        for prefix in ("moo", "ven", "veg", "dip", "m31", "sun", "ori",
+                       "and", "jup", "sat", "alt", "rig", "tea", "ple"):
+            for o in api.complete_objects(prefix):
+                q = o.get("q") or o["name"]
+                self.assertIsNotNone(
+                    sky.resolve_target(q, jd, self.LAT, lst),
+                    f"{o['name']!r} suggests a query {q!r} that finds nothing")
+
+    def test_the_label_already_shared_in_links_still_resolves(self):
+        # The broken string is in browser history and in any URL anyone
+        # copied while it was live, so it has to keep working.
+        jd, lst = self.when()
+        for s in ("Moon (last quarter)", "moon (waxing crescent)",
+                  "Moon (full)", "  Moon (new)  "):
+            t = sky.resolve_target(s, jd, self.LAT, lst)
+            self.assertIsNotNone(t, s)
+            self.assertEqual(t["name"], "Moon")
+
+    def test_a_bracket_does_not_swallow_a_real_name(self):
+        # Nothing findable has a bracket in its name, but a query that is
+        # only a parenthetical must not silently become an empty search.
+        jd, lst = self.when()
+        self.assertIsNone(sky.resolve_target("(last quarter)", jd, self.LAT, lst))
+        self.assertIsNone(sky.resolve_target("()", jd, self.LAT, lst))
+
+
 class HeaderFindField(unittest.TestCase):
     """header_html's find_value param -- None (every page but the chart
     view) omits the find field entirely; a string (possibly empty, the
