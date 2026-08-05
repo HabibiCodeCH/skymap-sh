@@ -1201,16 +1201,11 @@ def stats_text(n=50, map_slot=False):
     L.append(f"top places ({len(_places):,} distinct)")
     for name, c in _places.most_common(n):
         L.append(f"  {name[:28]:28} {c:>8,}")
-    if _finds:
-        L.append("")
-        L.append(f"top finds ({len(_finds):,} distinct)")
-        for name, c in _finds.most_common(n):
-            L.append(f"  {name[:28]:28} {c:>8,}")
-    if _objects:
-        L.append("")
-        L.append(f"top objects ({len(_objects):,} distinct)")
-        for name, c in _objects.most_common(n):
-            L.append(f"  {name[:28]:28} {c:>8,}")
+    # The find leaderboard moved to /stats/objects, which is the same
+    # question asked properly: object pages and ?find= are two ways of
+    # reaching the same thing, and listing them separately here answered
+    # "which object" twice with two different numbers. The per-hour find
+    # CHART stays -- that answers "is anyone using it", which no list does.
     if _referrers:
         L.append("")
         L.append(f"top referrers ({len(_referrers):,} distinct)")
@@ -2459,6 +2454,63 @@ def stats_live(request: Req):
         since = 0.0
     return JSONResponse(stats_live_json(since),
                         headers={"Cache-Control": "no-store"})
+
+
+def stats_objects_text(n=60):
+    """Which objects people actually look up.
+
+    Object pages and ?find= are two routes to the same question, so both are
+    counted here rather than kept as separate leaderboards that disagree.
+    """
+    total_obj = sum(_objects.values())
+    total_find = sum(_finds.values())
+    L = [f"skymap.sh -- objects",
+         "",
+         f"object pages served   {total_obj:>10,}   {len(_objects):,} distinct",
+         f"?find= on a chart     {total_find:>10,}   {len(_finds):,} distinct",
+         ""]
+    merged = Counter()
+    merged.update(_objects)
+    merged.update(_finds)
+    if not merged:
+        L.append("nothing looked up yet")
+        return "\n".join(L) + "\n"
+    L.append(f"{'object':<30}{'page':>8}{'find':>8}{'total':>9}")
+    L.append("-" * 55)
+    for name, c in merged.most_common(n):
+        L.append(f"{name[:30]:<30}{_objects.get(name, 0):>8,}"
+                 f"{_finds.get(name, 0):>8,}{c:>9,}")
+    return "\n".join(L) + "\n"
+
+
+def stats_objects_json(n=200):
+    merged = Counter()
+    merged.update(_objects)
+    merged.update(_finds)
+    return dict(
+        object_pages=sum(_objects.values()), finds=sum(_finds.values()),
+        distinct=len(merged),
+        top=[dict(name=nm, pages=_objects.get(nm, 0), finds=_finds.get(nm, 0),
+                  total=c)
+             for nm, c in merged.most_common(n)])
+
+
+@app.get("/stats/objects", response_class=PlainTextResponse)
+def stats_objects(request: Req):
+    """Which objects get looked up, by page and by find."""
+    if request.query_params.get("format") == "json":
+        return JSONResponse(stats_objects_json(), headers={"Cache-Control": "no-store"})
+    headers = {"Cache-Control": "no-store"}
+    mode, _colour = _wants(request)
+    if mode == "html":
+        body = api.PAGE.format(title="skymap.sh: object stats",
+                               header=api.header_html("stats/objects"),
+                               controls=api.controls_html(api.EXPLORE),
+                               wide_class="", coming_up_card="",
+                               body=api.chart_pre(html.escape(stats_objects_text())),
+                               kbd_urls="{}", shortcuts_hint="")
+        return HTMLResponse(body, headers=headers)
+    return PlainTextResponse(stats_objects_text(), headers=headers)
 
 
 @app.get("/stats/sphere", response_class=PlainTextResponse)

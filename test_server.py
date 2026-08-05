@@ -2760,9 +2760,18 @@ class ExploreFormEmptySubmitGoesHome(unittest.TestCase):
         self.assertNotIn("if(!p&&!f&&!t)return false;", resp.text)
 
     def test_empty_p_falls_through_to_the_bare_home_navigation(self):
+        # The form builds a PATH now rather than a ?find= query: every object
+        # has its own page, so finding one navigates to it. With no place and
+        # no find it still falls through to the bare home navigation.
         resp = self.client.get("/Zurich", headers=BROWSER)
         onsubmit = resp.text.split('onsubmit="', 1)[1].split('">', 1)[0]
-        self.assertIn("location.href='/'+(p?encodeURIComponent(p):'')", onsubmit)
+        self.assertIn(":('/'+(p?encodeURIComponent(p):''))", onsubmit)
+
+    def test_a_find_navigates_to_the_object_page(self):
+        resp = self.client.get("/Zurich", headers=BROWSER)
+        onsubmit = resp.text.split('onsubmit="', 1)[1].split('">', 1)[0]
+        self.assertIn("encodeURIComponent(p)+'/'", onsubmit)
+        self.assertNotIn("find=", onsubmit)
 
 
 class CopyButtonWiring(unittest.TestCase):

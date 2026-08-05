@@ -1210,19 +1210,17 @@ def object_prose(facts, tgt, r, width=76):
 
     b = facts.get("best_this_year")
     if b and b.get("is_peak"):
-        # A shower has a peak night rather than a best night, and the number
-        # that matters is how high the radiant gets while it is happening --
-        # not how much darkness the year can offer that patch of sky.
+        # The peak date, the hour and the radiant's altitude are all in the
+        # heading and the line under it now, so repeating them here was the
+        # same sentence three times. Only the Moon is left, and only when it
+        # is worth mentioning: a full Moon on the peak night is the one thing
+        # that can write the night off, and a dark one is worth knowing.
         moon = b.get("moon_illum", 0)
-        at_txt = f" at {b['at'][11:16]}" if b.get("at") else ""
-        s = (f"The peak is {b['date']}, with the radiant "
-             f"{b['radiant_alt']:.0f}° up{at_txt}")
         if moon > 0.5:
-            s += (f", though the Moon is {moon:.0%} lit that night and will "
-                  f"drown most of it")
+            L.append(f"The Moon is {moon:.0%} lit that night and will drown "
+                     f"most of it.")
         elif moon < 0.15:
-            s += ", and almost no Moon to spoil it"
-        L.append(s + ".")
+            L.append("Almost no Moon that night to spoil it.")
     elif b:
         L.append(f"Best this year: {b['date']}, when it reaches "
                  f"{b['transit_alt']:.0f}° with {b['dark_hours']:.1f} hours of "
@@ -1470,6 +1468,53 @@ def object_descriptor(facts):
     return f"{article} {word}"
 
 
+def object_sources(facts):
+    """Where the numbers on this page came from.
+
+    Per object, not a fixed footer: a star page draws on BSC5 and Hipparcos,
+    a planet page on JPL, a deep-sky page on the Revised NGC, and listing all
+    of them everywhere would credit sources that had nothing to do with the
+    page you are reading. Every entry here is also in LICENSES.md, which is
+    where the licensing reasoning lives; this is attribution, not a licence
+    notice.
+    """
+    kind = facts.get("kind")
+    out = []
+    if kind in ("planet", "moon", "sun"):
+        out.append("Physical data from NASA/JPL Horizons")
+        out.append("positions from JPL approximate elements")
+    elif kind == "star":
+        st = facts.get("star", {})
+        bits = []
+        if st.get("spectral_type"):
+            bits.append("spectrum")
+        if bits or True:
+            out.append("Position"
+                       + (" and " + " and ".join(bits) if bits else "")
+                       + " from the Yale Bright Star Catalogue")
+        if st.get("light_years"):
+            out.append("distance from Hipparcos (ESA 1997)")
+        if st.get("next_minimum"):
+            out.append("variability from the General Catalogue of "
+                       "Variable Stars")
+    elif kind == "radiant":
+        out.append("Shower timing and rates cross-checked against the IMO "
+                   "Meteor Shower Calendar")
+    elif kind:
+        out.append("Position from the Revised NGC (Sulentic & Tifft 1973), "
+                   "after Dreyer 1888")
+        if facts.get("size_arcmin"):
+            out.append("apparent size from published visual dimensions")
+    if facts.get("constellation"):
+        out.append("constellation boundaries after Delporte (1930)")
+    if not out:
+        return ""
+    # Semicolons, not full stops: these are clauses of one credit, and
+    # joining them with periods left every clause after the first starting
+    # in lower case.
+    return "; ".join(out) + "."
+
+
 def object_intro(facts, canonical, width=76):
     """Title, one-line gloss and the paragraph under it.
 
@@ -1516,6 +1561,13 @@ def compose_object(r, canonical):
     when it is next up if it is not, and a chart with a mark on it -- and a
     second implementation would be a second set of answers to drift apart.
     """
+    # Work on a copy. This function moves the clock to the best moment, and
+    # the caller reuses its Request to build every rung of the width ladder
+    # -- so mutating it in place meant each rung was composed from an
+    # already-shifted clock, decided the object was up "now", and produced a
+    # page that said "Zurich now" on first load and the real moment on
+    # refresh depending on which pass had populated the cache.
+    r = copy.copy(r)
     r.find = canonical
     # Now if it is up, the best moment tonight otherwise.
     #
@@ -1833,17 +1885,18 @@ OBJECT_CSS = """
    OWN font-size, and a 30px heading's `ch` is nearly three times the body's.
    So the h1 keeps the body's 11px for measurement and the span inside it
    carries the size. 2ch then means two body characters, exactly. */
-.obj-title{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
-  font-size:11px;padding-left:2ch;margin:1.5rem 0 .35rem;
-  line-height:38px;font-weight:600;letter-spacing:-.01em}
-.obj-title span{font-size:30px;vertical-align:middle}
-/* The glyph is a geometric mark and the name is lettering, so they do not
-   share a baseline: a diamond or a spiral sat low against the capitals.
-   Centring the mark on the text's own middle lines them up whatever glyph
-   the object happens to carry. */
-.obj-title span:first-child{display:inline-block;line-height:1;
-  transform:translateY(-.04em)}
-@media (max-width:600px){.obj-title{line-height:30px}.obj-title span{font-size:23px}}
+.obj-title{display:flex;align-items:center;gap:.26em;
+  font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  font-size:30px;font-weight:600;letter-spacing:-.01em;
+  line-height:1.15;margin:1.5rem 0 .35rem}
+/* No left padding. It used to carry a two-character indent to line up with
+   a <pre> underneath it; the static column is a description list now and
+   starts at the column edge, so the heading does too.
+   Flex rather than vertical-align: the glyph is a geometric mark and the
+   name is lettering, so they share no baseline worth aligning on. Centring
+   the two boxes on each other works whatever mark the object carries. */
+.obj-title span{display:block}
+@media (max-width:600px){.obj-title{font-size:23px}}
 
 /* The static half and the live half, side by side. Sized off the chart: 110
    monospace columns at 11px is about 726px, so the sidebar takes what is
@@ -1876,6 +1929,11 @@ OBJECT_CSS = """
 /* The conversion after the number, not the number. */
 .obj-facts .sec{display:block;color:#8b93a3;font-size:12px;line-height:1.35;
   margin-top:.05rem}
+/* Where the numbers came from. Quiet on purpose: it is a credit, and a
+   reader who wants it will look for it at the foot of the facts. */
+.obj-src{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  font-style:italic;font-size:11px;line-height:1.45;color:#666e7d;
+  margin:1.4rem 0 0;padding-top:.7rem;border-top:1px solid #1c2027}
 /* The live half's prose, above its chart, in the chart's own face and size
    so the two read as one block. */
 .obj-prose{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
@@ -1992,8 +2050,12 @@ def object_html(r, canonical, text, data, place=None, base_url="",
         # count ran off the side of the sidebar with no way to read the rest
         # of it.
         intro_txt = strip_ansi(_first_para(static)).strip()
-        static_html = (f'<p class="obj-lede">{html.escape(intro_txt)}</p>'
-                       if intro_txt else "") + infobox_html(data.get("infobox"))
+        src = object_sources(data)
+        static_html = ((f'<p class="obj-lede">{html.escape(intro_txt)}</p>'
+                        if intro_txt else "")
+                       + infobox_html(data.get("infobox"))
+                       + (f'<p class="obj-src">{html.escape(src)}</p>'
+                          if src else ""))
         live_html = ((f'<p class="obj-lede obj-live-head">{live_head}</p>'
                       if live_head else "")
                      + (f'<p class="obj-subhead">{_link_best_date(live_sub, canonical, data)}</p>'
@@ -6296,10 +6358,9 @@ var f=document.getElementById('find').value.trim();
 var wd=document.getElementById('whenDate').value;
 var wt=document.getElementById('whenTime').value;
 var t=(wd&&wt)?(wd+'T'+wt):'';
-var q=[];
-if(f)q.push('find='+encodeURIComponent(f));
-if(t)q.push('t='+t);
-location.href='/'+(p?encodeURIComponent(p):'')+(q.length?'?'+q.join('&'):'');
+var path=f?('/'+(p?encodeURIComponent(p)+'/':'')+encodeURIComponent(f))
+          :('/'+(p?encodeURIComponent(p):''));
+location.href=path+(t?'?t='+t:'');
 return false;">
 <input id="find" type="text" placeholder="Find (Venus, Big Dipper...)" autocomplete="off">
 <div class="ex-row">
@@ -6321,10 +6382,9 @@ var f=document.getElementById('find').value.trim();
 var wd=document.getElementById('whenDate').value;
 var wt=document.getElementById('whenTime').value;
 var t=(wd&&wt)?(wd+'T'+wt):'';
-var q=[];
-if(f)q.push('find='+encodeURIComponent(f));
-if(t)q.push('t='+t);
-location.href='/'+(p?encodeURIComponent(p):'')+(q.length?'?'+q.join('&'):'');
+var path=f?('/'+(p?encodeURIComponent(p)+'/':'')+encodeURIComponent(f))
+          :('/'+(p?encodeURIComponent(p):''));
+location.href=path+(t?'?t='+t:'');
 return false;">
 <div class="ex-row">
 <input id="whenDate" type="date" title="local date at that place (default: today)">

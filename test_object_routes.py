@@ -922,3 +922,78 @@ def test_a_low_target_is_still_marked_in_the_panorama(client):
 
 def test_a_chart_with_no_target_carries_no_crosshair(client):
     assert "◎" not in body(client.get("/Zurich", headers=CURL))
+
+
+# --------------------------------------------------------- object stats
+def test_stats_objects_page(client):
+    client.get("/Saturn", headers=CURL)
+    r = client.get("/stats/objects", headers=CURL)
+    assert r.status_code == 200
+    t = r.text
+    assert "object pages served" in t
+    assert "?find= on a chart" in t
+    assert "Saturn" in t
+
+
+def test_stats_objects_json(client):
+    client.get("/Saturn", headers=CURL)
+    d = client.get("/stats/objects?format=json").json()
+    for key in ("object_pages", "finds", "distinct", "top"):
+        assert key in d
+    assert any(row["name"] == "Saturn" for row in d["top"])
+
+
+def test_stats_objects_counts_pages_and_finds_together(client):
+    """An object page and ?find= are two routes to the same question. Two
+    separate leaderboards answered it twice with different numbers."""
+    d = client.get("/stats/objects?format=json").json()
+    for row in d["top"]:
+        assert row["total"] == row["pages"] + row["finds"], row
+
+
+def test_the_find_list_is_gone_from_stats(client):
+    """It moved to /stats/objects. The per-hour find CHART stays -- that
+    answers "is anyone using it", which a leaderboard does not."""
+    t = client.get("/stats", headers=CURL).text
+    assert "top finds" not in t
+    assert "top objects" not in t
+
+
+def test_stats_objects_is_not_shadowed_by_an_object_page(client):
+    import objects
+    assert objects.resolve_name("objects") is None
+    assert client.get("/stats/objects", headers=CURL).status_code == 200
+
+
+def test_a_page_says_the_same_thing_on_every_load(client):
+    """compose_object moves the clock to the best moment, and the caller
+    reuses its Request to build every rung of the width ladder. Mutating it
+    in place meant each rung was composed from an already-shifted clock,
+    decided the object was up "now", and the page said "Zurich now" on first
+    load and the real moment on refresh, depending on which pass had
+    populated the cache."""
+    import re
+    seen = set()
+    for _ in range(4):
+        h = client.get("/Neptune", headers=BROWSER).text
+        m = re.search(r'obj-live-head">(.*?)</p>', h, re.S)
+        seen.add(re.sub(r"<[^>]+>", "", m.group(1)).strip())
+    assert len(seen) == 1, f"the heading changed between loads: {seen}"
+
+
+def test_composing_does_not_mutate_the_caller(client):
+    import api, datetime as dt
+    r = api.Request(place="Zurich")
+    before = r.when_utc
+    api.compose_object(r, "Neptune")
+    assert r.when_utc == before, "compose_object moved the caller's clock"
+    assert r.find in (None, "Neptune")
+
+
+def test_each_object_gets_its_own_cache_entry(client):
+    """The cache key carries the object, so two pages cannot serve each
+    other's render."""
+    a = client.get("/Neptune?format=json").json()
+    b = client.get("/Saturn?format=json").json()
+    assert a["object"] == "Neptune" and b["object"] == "Saturn"
+    assert a["mag"] != b["mag"]
