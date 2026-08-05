@@ -270,6 +270,18 @@ def _read_hourly_history(days=7):
             for line in f:
                 try:
                     row = json.loads(line)
+                    # Rows written before object pages replaced "find" carry
+                    # the same quantity under the old name. Renamed here, on
+                    # the way in, so nothing downstream has to know there
+                    # were ever two names for it.
+                    #
+                    # It has to happen here and not at the chart: _ZERO_FILL
+                    # stamps a 0 onto every row missing a key it knows
+                    # about, so by the time the chart saw an old row it
+                    # already had object=0 and any fallback to "find" was
+                    # dead code. That silently flatlined the whole history.
+                    if "object" not in row and "find" in row:
+                        row["object"] = row["find"]
                     if dt.datetime.fromisoformat(row["hour"]) >= cutoff:
                         rows.append(row)
                 except (json.JSONDecodeError, KeyError, ValueError):
@@ -640,10 +652,7 @@ def _finds_block(entries, unit, cols=CHART_COLS, width=1, tick_every=None,
     share of requests would just track traffic. Short on purpose: it sits
     under two full-height charts already."""
     groups, per = _chunks(entries, cols // width)
-    # Either key: rows written before object pages replaced "find" carry
-    # the same quantity under the old name, so reading both keeps one
-    # continuous series instead of a cliff on the day this shipped.
-    vals = [sum(e.get("object", e.get("find", 0)) for e in g) for g in groups]
+    vals = [sum(e.get("object", 0) for e in g) for g in groups]
     total = sum(vals)
     bucket = f"{per} {unit}s" if per > 1 else unit
     tick = tick_every(per) if tick_every else max(5, -(-6 // width))

@@ -3648,5 +3648,70 @@ class SearchBarPathsResolve(unittest.TestCase):
             self.assertIn(f'name="q" value="{shown}"', resp.text, path)
 
 
+class StatsSurviveTheDeploy(unittest.TestCase):
+    """The counters are persisted, so a rename in the code has to keep
+    reading what the running server already wrote. Both files are
+    gitignored, so a deploy never overwrites them -- which is exactly why
+    the new code has to understand the old contents."""
+
+    def test_a_pre_deploy_state_file_loads_whole(self):
+        state = {
+            "started": 1750000000,
+            "stat": {"requests": 91234, "view:horizon": 60000,
+                     "view:find": 12910},
+            "places": {"Zurich": 5000}, "finds": {"Venus": 3240},
+            "objects": {"Venus": 3100}, "sphere_places": {}, "events_places": {},
+            "events_teased": {}, "referrers": {"bsky.app": 900},
+            "geo": {"47,8": 5000},
+        }
+        d = tempfile.mkdtemp()
+        orig = server.STATS_STATE_FILE
+        self.addCleanup(setattr, server, "STATS_STATE_FILE", orig)
+        server.STATS_STATE_FILE = os.path.join(d, "stats_state.json")
+        with open(server.STATS_STATE_FILE, "w") as f:
+            json.dump(state, f)
+        server._load_stats_state()
+        self.assertEqual(server._stat["requests"], 91234)
+        self.assertEqual(dict(server._places), {"Zurich": 5000})
+        self.assertEqual(dict(server._objects), {"Venus": 3100})
+        # Frozen, but not thrown away: nothing writes to it now and nothing
+        # shows it, and it still has to survive a save.
+        self.assertEqual(dict(server._finds), {"Venus": 3240})
+        server._save_stats_state()
+        back = json.load(open(server.STATS_STATE_FILE))
+        self.assertEqual(back["finds"], {"Venus": 3240})
+        self.assertEqual(back["stat"]["view:find"], 12910)
+        self.assertEqual(back["started"], 1750000000)
+
+    def test_hourly_rows_written_before_the_rename_still_count(self):
+        # The hourly log records object lookups under "object"; it used to
+        # call the same number "find". _ZERO_FILL stamps a 0 onto any row
+        # missing a key it knows about, so a fallback read at the chart was
+        # dead code and the whole history flatlined -- the rename has to
+        # happen as the rows are read.
+        d = tempfile.mkdtemp()
+        orig = server.HOURLY_LOG
+        self.addCleanup(setattr, server, "HOURLY_LOG", orig)
+        server.HOURLY_LOG = os.path.join(d, "stats_hourly.jsonl")
+        now = dt.datetime.utcnow()
+        rows = [{"hour": (now - dt.timedelta(hours=h)).strftime("%Y-%m-%dT%H:00"),
+                 "requests": 100, "hit": 80, "miss": 20, "day": 40,
+                 "night": 60, "find": 7 + h} for h in range(6, 0, -1)]
+        rows.append({"hour": now.strftime("%Y-%m-%dT%H:00"), "requests": 100,
+                     "hit": 80, "miss": 20, "day": 40, "night": 60,
+                     "object": 5})
+        with open(server.HOURLY_LOG, "w") as f:
+            for r in rows:
+                f.write(json.dumps(r) + "\n")
+        dense = server._dense_hours(server._read_hourly_history(days=1), 24)
+        total = sum(e.get("object", 0) for e in dense)
+        self.assertEqual(total, sum(7 + h for h in range(6, 0, -1)) + 5)
+
+    def test_the_state_files_are_not_tracked_so_a_deploy_cannot_clobber_them(self):
+        ignored = open(".gitignore").read()
+        self.assertIn("stats_state.json", ignored)
+        self.assertIn("stats_hourly.jsonl", ignored)
+
+
 if __name__ == "__main__":
     unittest.main()
