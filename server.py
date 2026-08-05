@@ -1886,6 +1886,16 @@ def _nearby_city_for_redirect(request: Req, place: str | None, mode: str):
     """
     if mode != "html":
         return None
+    # An unfurler's IP is a datacentre, not a reader. Bluesky's fetcher sits
+    # in Columbus, so IP-geolocating it bounced skymap.sh to /Columbus and
+    # every card shared on Bluesky said "the night sky above Columbus" --
+    # someone else's city, pinned to the link for everyone who saw it.
+    #
+    # Only the IP branch is refused. Coordinates spelled out in the path are
+    # a real request for that place and still tidy up, for a crawler as much
+    # as for anyone.
+    if not place and _is_crawler((request.headers.get("user-agent") or "").lower()):
+        return None
     if place:
         m = api.LATLON.match(place)
         if not m:
@@ -2177,12 +2187,30 @@ def _respond(request: Req, place: str | None):
             chart_html = api.chart_layout(rungs, zenith, prose)
         else:
             chart_html = api.chart_pre(_rendered(html_text))
-        # The object-page template, for its head slot: a place page gets its
-        # own social card rather than the shared generic one, so a shared
-        # link to Paris unfurls as Paris.
-        body = api._object_page_template().format(
+        # A place named in the URL gets its own card; the bare domain keeps
+        # the generic one.
+        #
+        # place is the path segment, so it is None exactly when the location
+        # was guessed from the caller's IP -- and for an unfurler that IP is
+        # a datacentre. Handing that page a place card meant a link to
+        # skymap.sh unfurled as whichever city the crawler happened to sit
+        # in, and stayed that way for everyone who saw the post.
+        if place:
+            body = api._object_page_template().format(
                                title=f"skymap.sh: {r.place.name}",
                                head_extra=api.place_head(r.place, base_url),
+                               header=header, controls=controls,
+                               wide_class=" w-wide" if fits_width else "",
+                               coming_up_card=coming_up_card,
+                               kbd_urls=json.dumps(kbd), shortcuts_hint=api.SHORTCUTS_HINT,
+                               body=chart_html)
+        else:
+            # Plain "skymap.sh", not the guessed location: this branch is
+            # reached by unfurlers, and titling the card with the city their
+            # datacentre sits in leaks it into every post the link appears
+            # in -- as coordinates, at that, since a bare IP fallback keeps
+            # them as its display name.
+            body = api.PAGE.format(title="skymap.sh",
                                header=header, controls=controls,
                                wide_class=" w-wide" if fits_width else "",
                                coming_up_card=coming_up_card,
@@ -3096,7 +3124,7 @@ def _respond_object(request: Req, place: str | None, canonical: str):
     if mode == "html":
         city = _nearby_city_for_redirect(request, place, mode)
         if city:
-            if place:
+            if place:  # explicit coordinates in the path
                 _stat["geo_redirect"] += 1
                 qs = f"?{request.url.query}" if request.url.query else ""
                 return RedirectResponse(
