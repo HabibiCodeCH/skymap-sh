@@ -3018,6 +3018,18 @@ def _cached_object(r, canonical):
     return res, daytime, False
 
 
+@app.get("/og.png")
+def generic_og():
+    """The card for everything that is not one object -- the home page and
+    every place page. One fixed image: it is the same for all of them, and
+    the sky behind it is pinned rather than live (see card.py) because a
+    crawler fetching this at noon would otherwise get an empty daylight
+    chart as the first thing anyone sees of the site."""
+    _stat["og"] += 1
+    return Response(card.render_generic(), media_type="image/png",
+                    headers={"Cache-Control": "public, max-age=86400, s-maxage=604800"})
+
+
 @app.get("/{obj}/og.png")
 def object_og(request: Req, obj: str):
     """The social card for an object page. Registered ahead of
@@ -3037,7 +3049,6 @@ def object_og(request: Req, obj: str):
     res, _daytime, _hit = _cached_object(r, canonical)
     art = api.compose_chart_only(r)
     facts = dict(res.data)
-    facts["where_line"] = api.object_where_line(facts)
     _stat["og"] += 1
     edge = DAY_EDGE if api.is_daytime(r) else NIGHT_EDGE
     return Response(card.render(facts, art), media_type="image/png",

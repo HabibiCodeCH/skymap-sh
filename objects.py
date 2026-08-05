@@ -253,6 +253,45 @@ def variable_info(hr):
     return sky._load("variables.json").get(str(hr), {})
 
 
+def what_you_need(mag):
+    """What it takes to see something this bright, in words.
+
+    None when the magnitude is unknown -- see deepsky.json's "nomag" flag.
+    The Revised NGC records no brightness at all for most diffuse nebulae,
+    and build_deepsky.py substitutes the catalogue cutoff so they still get
+    drawn, which means a magnitude of 11.0 is sometimes measured and
+    sometimes a placeholder. Telling someone they need a telescope on the
+    strength of a number nobody measured is worse than saying nothing: the
+    Rosette and the Veil both carry that placeholder and both are binocular
+    targets from a dark sky.
+
+    Thresholds are for extended objects, which is what this is used on.
+    They are dimmer to the eye than a star of the same integrated
+    magnitude, because that light is spread out rather than concentrated
+    into a point.
+    """
+    if mag is None:
+        return None
+    if mag <= 4.0:
+        return "naked eye from a dark sky"
+    if mag <= 6.5:
+        return "binoculars, or naked eye if it is really dark"
+    if mag <= 9.0:
+        return "binoculars"
+    if mag <= 11.0:
+        return "a small telescope"
+    return "a telescope"
+
+
+def dso_magnitude(name):
+    """The measured magnitude of a deep-sky object, or None when the
+    catalogue never recorded one."""
+    for o in sky._load("deepsky.json"):
+        if name in (o["n"], o.get("cn"), o["id"]):
+            return None if o.get("nomag") else o["m"]
+    return None
+
+
 def dso_size(dso_id):
     """Angular size in arcminutes for a deep-sky object, by catalogue id
     ("NGC224"). {} when we have no measured size for it.
@@ -379,6 +418,10 @@ def _overlap(a0, a1, b0, b1):
 # Sampling each night at ten-minute steps instead costs about 200 ms, roughly
 # seven times the most expensive thing the service currently does, on every
 # uncached object page. This costs a few milliseconds.
+# How long a shower stays "this year's" after its peak. The peak is a
+# moment; the shower is a night, and the night outlasts the moment.
+SHOWER_GRACE_DAYS = 1.0
+
 _MIN_USEFUL_ALT = 20.0
 _ASTRO_DARK = -18.0
 
@@ -393,7 +436,21 @@ def _shower_peak(tgt, lat, lon, start_utc, days):
     orbit, not when the radiant is convenient.
     """
     import events as ev_mod                     # local: events imports sky, not us
-    jd0 = sky.julian(start_utc)
+    # A shower stays "this year's shower" for a day after it peaks rather
+    # than rolling to next year the instant the peak passes.
+    #
+    # The peak is a moment, but the shower is a night, and the night runs
+    # past the moment -- a peak at 04:00 is still worth going out for that
+    # evening, and someone reading about it over breakfast has not missed
+    # it. Without the grace period a card shared hours before the peak, which
+    # is exactly when people share it, flips to a date a year away while the
+    # shower is still falling.
+    #
+    # One day, and not the shower's real activity period, because
+    # showers.json does not carry one: it records the solar longitude of
+    # maximum, the radiant and the rate, and nothing about how long the
+    # stream lasts. A real end date would need that column added.
+    jd0 = sky.julian(start_utc) - SHOWER_GRACE_DAYS
     name = tgt["name"].replace(" radiant", "")
     for e in ev_mod.meteor_showers(jd0, jd0 + days):
         if not e.get("name", "").lower().startswith(name.lower()[:6]):

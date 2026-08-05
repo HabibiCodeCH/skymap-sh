@@ -506,3 +506,48 @@ def test_the_pleiades_are_in_there():
     assert o is not None
     assert o["cn"] == "Pleiades"
     assert _separation_arcmin(o["ra"], o["de"], 3.79067, 24.11333) < 3.0
+
+
+def test_famous_nebulae_are_typed_as_nebulae():
+    """RNGC files these as "cluster with nebulosity", which is true and
+    unhelpful: the type code picks the glyph and the word, so the chart drew
+    the Orion Nebula with a gold cluster mark and its page read "Cluster in
+    Orion". Nobody calls it that."""
+    by_id = {o["id"]: o for o in sky._load("deepsky.json")}
+    for oid, name in (("NGC1976", "Orion"), ("NGC6523", "Lagoon"),
+                      ("NGC6514", "Trifid"), ("NGC6611", "Eagle"),
+                      ("NGC2237", "Rosette"), ("NGC2070", "Tarantula")):
+        assert by_id[oid]["t"] == "neb", f"{name} is typed {by_id[oid]['t']}"
+
+
+def test_the_reclassification_touched_nothing_else():
+    """Six objects change type and no object changes anything else. A type
+    override that moved a position or dropped an entry would be a much bigger
+    change than it looks, since every chart reads this file."""
+    d = sky._load("deepsky.json")
+    assert len(d) == 749
+    # The clusters that are genuinely clusters stay clusters.
+    by_id = {o["id"]: o for o in d}
+    assert by_id["NGC2264"]["t"] == "clu", "Christmas Tree Cluster is a cluster"
+    assert by_id["NGC869"]["t"] == "clu", "Double Cluster is a cluster"
+    assert by_id["NGC6205"]["t"] == "clu", "Hercules Cluster is a cluster"
+
+
+def test_a_shower_stays_this_year_through_the_night_after_its_peak():
+    """The peak is a moment; the shower is a night, and the night outlasts
+    the moment. Without a grace period a card shared hours before the peak --
+    which is exactly when people share it -- flips to a date a year away
+    while the shower is still falling."""
+    peak = dt.datetime(2026, 8, 13, 2, 10)
+    t = _target("Perseids")
+    for offset_h, want_year in ((-72, 2026), (-1, 2026), (+12, 2026),
+                                (+21, 2026), (+45, 2027)):
+        when = peak + dt.timedelta(hours=offset_h)
+        got = objects.best_this_year(t, *ZURICH, when)
+        assert got["when_utc"].year == want_year, (
+            f"{offset_h:+}h from the peak: expected {want_year}, "
+            f"got {got['when_utc']:%Y-%m-%d}")
+
+
+def test_shower_grace_is_one_day():
+    assert objects.SHOWER_GRACE_DAYS == 1.0

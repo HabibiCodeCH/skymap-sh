@@ -43,6 +43,46 @@ def _font(size):
         return ImageFont.load_default()
 
 
+# Characters that need the fallback font. gif._PRIMARY_GAPS covers what the
+# CHART draws; a card also marks meteor showers and asterisms, and neither of
+# those two glyphs appears on a chart, so neither is in that set. Missing them
+# here does not fail loudly -- it draws .notdef, an empty box, which is
+# exactly the tofu this file shipped on every galaxy and cluster card.
+#
+# test_object_routes.py reads the fonts' cmaps and asserts every glyph
+# api.object_glyph() can return is covered, so adding a new object type with
+# a new mark fails a test rather than quietly rendering a box.
+_GAPS = gif._PRIMARY_GAPS | frozenset("✧☄")
+
+
+def _glyph_font(ch, size):
+    """The font that actually has this character, at this size.
+
+    JetBrains Mono is missing most of the deep-sky marks, and a missing glyph
+    does not fail loudly -- it draws .notdef, an empty box. The galaxy,
+    nebula and cluster cards were all showing tofu where the chart shows a
+    symbol.
+
+    gif.py already worked this out for the PNG export, down to reading which
+    codepoints each font's cmap actually contains rather than guessing from
+    rendered bitmaps. Reusing its tables rather than keeping a second list
+    that can disagree with the first.
+    """
+    if ch and ch in _GAPS:
+        try:
+            return ImageFont.truetype(gif._FALLBACK_PATH, size)
+        except OSError:
+            pass
+    return _font(size)
+
+
+def _glyph_char(ch):
+    """U+2042 ASTERISM, the cluster mark, is in neither bundled font. gif.py
+    substitutes U+2234, which is in both and says the same thing: three
+    points close together."""
+    return gif.PNG_SUBSTITUTE.get(ch, ch)
+
+
 def _fit(draw, text, size, max_w, floor=34):
     """Shrink until it fits. Object names run from "M13" to "Christmas Tree
     Cluster", so a single fixed size is either tiny for the short ones or
@@ -97,87 +137,251 @@ def _scrim(img):
 
 
 def _headline_facts(facts):
-    """Two or three short facts. Chosen for what stays true longest and what
-    a person would actually repeat -- the ring angle, the distance, the size
-    -- rather than whatever is numerically largest."""
+    """What this object IS, in at most two lines.
+
+    Nothing location-dependent, for the reason render() gives. Nothing
+    time-of-night dependent either. What survives is the description a person
+    would repeat: what kind of star it is, how big it looks, which way the
+    rings are tilted.
+
+    Two lines is a budget set by legibility, not taste -- at the size these
+    have to be set to survive a phone unfurl, a third line runs into the
+    wordmark.
+    """
     out = []
     st, pl = facts.get("star", {}), facts.get("planet", {})
-    if facts.get("kind") == "planet":
-        if pl.get("ring_angle") is not None:
-            out.append(f"rings {pl['ring_angle']:.0f}° open")
-        if pl.get("light_minutes"):
-            out.append(f"{pl['light_minutes']:.0f} light-minutes away")
-        if pl.get("apparent_arcsec"):
-            out.append(f"{pl['apparent_arcsec']:.0f}″ across")
+
     if st.get("description"):
         out.append(st["description"])
-    if st.get("light_years") and st.get("distance_confidence") == "good":
-        out.append(f"{st['light_years']:.0f} light years away")
-    if st.get("next_minimum"):
-        out.append(f"next minimum {st['next_minimum'][11:16]}")
+
+    if facts.get("kind") == "planet":
+        # Distance, and only distance, on every planet including Saturn. One
+        # line, the same line, so the seven cards read as a set rather than
+        # as six of a kind plus an exception. Saturn's ring angle is a better
+        # fact than its distance and it still leads the planet's page -- but
+        # a card is a set, and consistency across it beats the best line on
+        # one member of it.
+        if pl.get("light_minutes"):
+            out.append(f"{pl['light_minutes']:.0f} light-minutes away")
+
     if facts.get("size_arcmin"):
-        out.append(f"{facts['size_arcmin']['maj']:g}′ across")
+        maj = facts["size_arcmin"]["maj"]
+        moons = maj / 31.0
+        out.append(f"{moons:.0f}\u00d7 the width of the full Moon" if moons >= 2
+                   else f"{maj:g} arcminutes across")
+    if facts.get("need"):
+        out.append(facts["need"])
+
+    if facts.get("star_count"):
+        # Whether the whole shape is traceable, which is decided by its
+        # faintest corner rather than by its brightest star.
+        faint = facts.get("faintest")
+        how = ("all naked-eye" if faint is not None and faint <= 4.0 else
+               "faintest needs a dark sky" if faint is not None and faint <= 5.5 else
+               "faintest needs binoculars" if faint is not None else None)
+        out.append(f"{facts['star_count']} stars, {how}" if how
+                   else f"{facts['star_count']} stars")
+
+    if facts.get("kind") == "sun":
+        out.append("8 light-minutes away")
+    elif facts.get("kind") == "moon":
+        out.append("1.3 light-seconds away")
+
     b = facts.get("best_this_year")
     if b and b.get("is_peak"):
-        out.append(f"peaks {b['date']}")
+        # A shower peaks on a date in the Earth's orbit -- the same date for
+        # everyone on the planet, so this one is not location-dependent.
+        out.insert(0, f"peaks {b['date']}")
         if b.get("zhr"):
-            out.append(f"up to {b['zhr']}/hour at best")
-        if b.get("moon_illum", 0) > 0.5:
-            out.append(f"moon {b['moon_illum']:.0%} that night")
-    elif b and len(out) < 3:
-        out.append(f"best on {b['date']}")
-    return out[:3]
+            out.append(f"up to {b['zhr']} an hour at its best")
+
+    return out[:2]
+
+
+# Every kind string sky.resolve_target() can return, and what a card calls
+# it. Audited against that function rather than written from memory: the map
+# used to have "globular cluster" and "open cluster", which it never returns
+# -- it returns plain "cluster" via sky.DSO_NAMES -- so every cluster card
+# read "OBJECT IN HERCULES". A missing key does not fail, it silently falls
+# back to "Object", which is why there is a test.
+KIND_WORDS = {
+    "planet": "Planet", "star": "Star", "moon": "Moon", "sun": "Sun",
+    "asterism": "Asterism", "radiant": "Meteor shower",
+    "galaxy": "Galaxy", "cluster": "Cluster", "nebula": "Nebula",
+    "planetary nebula": "Planetary nebula",
+}
+
+_FIXED_SUBTITLE = {"sun": "The star we orbit", "moon": "Earth's only moon"}
+
+# Order from the Sun. Earth is third, which is why Mars is fourth and not
+# third -- worth stating, since the gap is the question the line invites.
+_PLANET_ORDER = {"Mercury": 1, "Venus": 2, "Mars": 4, "Jupiter": 5,
+                 "Saturn": 6, "Uranus": 7, "Neptune": 8}
 
 
 def _subtitle(facts):
-    kind = {"planet": "Planet", "star": "Star", "moon": "Moon", "sun": "Sun",
-            "asterism": "Asterism", "radiant": "Meteor shower",
-            "galaxy": "Galaxy", "globular cluster": "Globular cluster",
-            "open cluster": "Open cluster",
-            "planetary nebula": "Planetary nebula",
-            "nebula": "Nebula"}.get(facts.get("kind"), "Object")
+    """The category line above the name.
+
+    A planet gets its place in the solar system rather than the constellation
+    it is passing through. The constellation is the right answer for anything
+    fixed to the sky, and the wrong one for a planet: it changes every few
+    weeks, and this image is cached by whoever unfurls it, so the card would
+    quietly start naming the wrong patch of sky. Where a planet sits from the
+    Sun never changes.
+    """
+    if facts.get("kind") == "planet":
+        n = _PLANET_ORDER.get(facts.get("object"))
+        return f"Planet #{n} in the solar system" if n else "Planet"
+    # The Sun crosses a constellation a month and the Moon one every two or
+    # three days, so naming it here would be wrong within a week of anyone
+    # sharing the card -- and it is not why anybody looks at either.
+    if facts.get("kind") in _FIXED_SUBTITLE:
+        return _FIXED_SUBTITLE[facts["kind"]]
+    kind = KIND_WORDS.get(facts.get("kind"), "Object")
     con = facts.get("constellation")
     return f"{kind} in {con}" if con else kind
 
 
+# apple-touch-icon rather than favicon.png: the favicon is a 720x720 render
+# of a terminal prompt, and scaled to wordmark height it reads as a grey
+# smudge rather than a mark. The touch icon is drawn to survive being small.
+_ICON = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                     "apple-touch-icon.png")
+
+
+def _hex_rgb(h):
+    h = (h or "#ffffff").lstrip("#")
+    return tuple(int(h[i:i + 2], 16) for i in (0, 2, 4))
+
+
+def _wordmark(img, d, size=56):
+    """The favicon and the name, bottom left. Sized to be read in a phone
+    unfurl, where the whole card is about 350px wide -- a 3.4x reduction, so
+    anything under about 48px here lands below 14px there and is decoration
+    rather than a word."""
+    f = _font(size)
+    y = H - MARGIN - size
+    icon_px = int(size * 1.15)
+    x = MARGIN
+    try:
+        icon = Image.open(_ICON).convert("RGBA").resize(
+            (icon_px, icon_px), Image.LANCZOS)
+        img.paste(icon, (x, y - int(size * 0.12)), icon)
+        x += icon_px + int(size * 0.35)
+    except OSError:
+        pass
+    d.text((x, y), "skymap.sh", font=f, fill=ACCENT)
+
+
 def render(facts, chart_text=None):
-    """The card as PNG bytes."""
+    """The card as PNG bytes.
+
+    Deliberately carries nothing that depends on where the reader is. The
+    image is fetched once by the unfurling platform's crawler, from its own
+    datacentre, then cached and shown to everyone -- so an altitude or a
+    compass bearing on here is computed for a machine in Virginia and served
+    to someone in Tokyo, contradicting the page it links to. The page does
+    the local half properly, per visitor. This does the half that is true
+    for everybody.
+    """
     img = _scrim(_background(chart_text))
     d = ImageDraw.Draw(img)
     name = facts.get("object", "skymap.sh")
 
-    # Subtitle above the name, spaced out and quiet -- it is the category,
-    # not the headline.
     sub = _subtitle(facts).upper()
-    f_sub = _font(26)
-    d.text((MARGIN, MARGIN + 6), " ".join(sub), font=f_sub, fill=ACCENT)
+    f_sub = _fit(d, " ".join(sub), 44, W - MARGIN * 2, floor=30)
+    d.text((MARGIN, MARGIN), " ".join(sub), font=f_sub, fill=ACCENT)
 
-    f_name = _fit(d, name, 132, W - MARGIN * 2 - 40)
-    name_y = MARGIN + 62
-    d.text((MARGIN, name_y), name, font=f_name, fill=INK)
+    # The glyph the chart draws this object with, in the colour the chart
+    # draws it -- so the card and the map agree at a glance.
+    glyph = _glyph_char(facts.get("glyph") or "")
+    y = MARGIN + f_sub.size + 30
+    f_name = _fit(d, f"{glyph} {name}" if glyph else name, 150,
+                  W - MARGIN * 2, floor=56)
+    x = MARGIN
+    if glyph:
+        # Drawn with whichever font actually has this character, and measured
+        # with that same font -- measuring a fallback glyph against the
+        # primary font puts the name in the wrong place.
+        f_glyph = _glyph_font(glyph, f_name.size)
+        d.text((x, y), glyph, font=f_glyph, fill=_hex_rgb(facts.get("glyph_color")))
+        x += d.textlength(glyph, font=f_glyph) + d.textlength(" ", font=f_name)
+    d.text((x, y), name, font=f_name, fill=INK)
 
-    # Where it is, in the same words the page uses.
-    y = name_y + f_name.size + 34
-    where = facts.get("where_line")
-    if where:
-        f_where = _fit(d, where, 38, W - MARGIN * 2, floor=26)
-        d.text((MARGIN, y), where, font=f_where, fill=INK)
-        y += f_where.size + 26
-
-    f_fact = _font(29)
+    y += f_name.size + 34
     for line in _headline_facts(facts):
-        d.text((MARGIN, y), line, font=f_fact, fill=MUTED)
-        y += 42
+        f_fact = _fit(d, line, 58, W - MARGIN * 2, floor=40)
+        d.text((MARGIN, y), line, font=f_fact, fill=INK)
+        y += f_fact.size + 18
 
-    # Wordmark, bottom left, where the eye lands last.
-    f_mark = _font(28)
-    d.text((MARGIN, H - MARGIN - 12), "skymap.sh", font=f_mark, fill=ACCENT)
-    place = facts.get("place")
-    if place:
-        f_place = _font(24)
-        t = f"from {place}"
-        d.text((W - MARGIN - d.textlength(t, font=f_place), H - MARGIN - 10),
-               t, font=f_place, fill=MUTED)
+    _wordmark(img, d)
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    return buf.getvalue()
+
+
+# ------------------------------------------------------- the generic card
+# For the home page and the place pages -- everything that is not about one
+# object. An object card leads with the object; this has none, so it leads
+# with the wordmark itself, with the icon beside it rather than repeated in
+# a footer underneath.
+#
+# The sky behind it is fixed rather than live. Everywhere else on this site
+# the picture is of the sky where you are, right now, and that is the whole
+# point -- but this one image is fetched once by an unfurling crawler and
+# then shown to everybody, so "live" means whatever Zurich happened to look
+# like at the moment a bot asked. That is a daylight chart about half the
+# time, and a daylight chart is nearly empty. This is the first thing anyone
+# sees of the site, so it gets a night that is always worth looking at: the
+# Atacama in July, Bortle 1, with the galactic core overhead.
+GENERIC_PLACE = (-24.63, -70.40)
+GENERIC_WHEN = (2026, 7, 15, 4, 0)      # UTC; local midnight in Chile
+
+GENERIC_HEAD = "skymap.sh"
+GENERIC_SUB = "the night sky above you, as plain text"
+GENERIC_TAIL = "curl skymap.sh"
+
+
+def generic_chart():
+    """The fixed night sky this card sits on. Imported lazily: api imports
+    card's caller, not card, and reaching for it at module scope would make
+    that a cycle."""
+    import api
+    import datetime as dt
+    r = api.Request(place=f"{GENERIC_PLACE[0]},{GENERIC_PLACE[1]}",
+                    when=dt.datetime(*GENERIC_WHEN), width=140)
+    return api.compose_chart_only(r)
+
+
+def render_generic(chart_text=None):
+    """The card for pages that are not about one object."""
+    img = _scrim(_background(chart_text if chart_text is not None else generic_chart()))
+    d = ImageDraw.Draw(img)
+
+    # A shell prompt and the wordmark as the headline. No footer: the
+    # headline is the wordmark, and printing it twice on one card reads as a
+    # mistake.
+    #
+    # The prompt is drawn as type rather than pasted as the app icon. The
+    # icon is itself a screenshot of a terminal with a chart in it, so
+    # enlarged to headline height you can see the little chart inside it and
+    # it reads as a thumbnail rather than a mark. Two characters in the same
+    # font as everything else scale cleanly and say the same thing: this is
+    # something you type.
+    f_head = _fit(d, f">_ {GENERIC_HEAD}", 132, W - MARGIN * 2, floor=72)
+    y = MARGIN + 46
+    x = MARGIN
+    d.text((x, y), ">_", font=f_head, fill=ACCENT)
+    x += d.textlength(">_ ", font=f_head)
+    d.text((x, y), GENERIC_HEAD, font=f_head, fill=INK)
+
+    y += f_head.size + 52
+    f_sub = _fit(d, GENERIC_SUB, 54, W - MARGIN * 2, floor=36)
+    d.text((MARGIN, y), GENERIC_SUB, font=f_sub, fill=ACCENT)
+
+    y += f_sub.size + 26
+    f_tail = _fit(d, GENERIC_TAIL, 44, W - MARGIN * 2, floor=30)
+    d.text((MARGIN, y), GENERIC_TAIL, font=f_tail, fill=MUTED)
 
     buf = io.BytesIO()
     img.save(buf, format="PNG")

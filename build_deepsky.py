@@ -66,6 +66,28 @@ COMMON_NAMES = {
     869: "Double Cluster", 884: "Double Cluster", 104: "47 Tucanae",
 }
 
+# Objects RNGC files as "cluster with nebulosity" that everyone else calls a
+# nebula, keyed by NGC number.
+#
+# The catalogue is not wrong -- there is a cluster inside every one of these,
+# and the Trapezium sits in the middle of the Orion Nebula. But the type code
+# decides the glyph and the word, so the chart drew the Orion Nebula with the
+# gold cluster mark and its page read "Cluster in Orion", which is the one
+# thing nobody calls it. Six objects, chosen because the nebulosity is the
+# reason anybody looks: name and type disagreeing is what found them, not
+# taste.
+#
+# Same footing as COMMON_NAMES below -- what kind of object M42 is, is a
+# published fact rather than a judgement.
+TYPE_OVERRIDE = {
+    1976: "neb",   # Orion Nebula
+    2237: "neb",   # Rosette Nebula
+    6514: "neb",   # Trifid Nebula
+    6523: "neb",   # Lagoon Nebula
+    6611: "neb",   # Eagle Nebula
+    2070: "neb",   # Tarantula Nebula
+}
+
 MESSIER_RE = re.compile(r"\bM0*([0-9]{1,3})\b")
 
 # Messier numbers RNGC's cross-reference column simply does not record, keyed
@@ -124,6 +146,7 @@ def main():
         cat = CATEGORY.get(type_code[0])
         if cat is None:
             continue
+        cat = TYPE_OVERRIDE.get(int(num_s), cat)
 
         # Which Messier object this is, from the cross-reference field ONLY.
         #
@@ -179,6 +202,15 @@ def main():
             name = f"NGC{num}{comp}"
         entry = dict(id=f"NGC{num}{comp}", ra=round(ra_j2000, 5),
                     de=round(de_j2000, 5), m=round(mag, 2), t=cat, n=name)
+        # Whether that magnitude was measured or invented. RNGC records none
+        # at all for most diffuse nebulae, and this file substitutes the
+        # cutoff so they still get drawn -- which means m=11.0 is sometimes a
+        # brightness and sometimes a placeholder, with nothing to tell them
+        # apart. Anything reading a magnitude as a fact about the object
+        # needs to know which it has: the object pages will not say "needs a
+        # telescope" on the strength of a number nobody measured.
+        if not mag_s:
+            entry["nomag"] = 1
         if common:
             entry["cn"] = common
         out.append(entry)

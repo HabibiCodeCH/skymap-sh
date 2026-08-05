@@ -267,3 +267,146 @@ def test_card_headline_facts_stay_short(client):
     for name in ("Saturn", "Algol", "Perseids", "M31"):
         facts = client.get(f"/{name}?format=json").json()
         assert len(card._headline_facts(facts)) <= 3
+
+
+# --------------------------------------------------------- card glyphs
+def test_every_card_glyph_has_a_font_that_contains_it():
+    """Read from the fonts' cmap tables, not from rendered pixels.
+
+    A missing glyph does not fail loudly: it draws .notdef, which is a
+    visible box for some codepoints and blank for others, so "does this look
+    wrong" is not a test. Every galaxy, cluster and nebula card shipped a box
+    where its symbol should be, and nothing said so.
+
+    This covers what api.object_glyph() can return, which is a wider set than
+    the chart draws -- meteor showers and asterisms are marked on a card but
+    never on a chart, so gif._PRIMARY_GAPS does not mention them.
+    """
+    from fontTools.ttLib import TTFont
+    import card, gif
+
+    def cmap_of(path):
+        out = set()
+        for t in TTFont(path, fontNumber=0)["cmap"].tables:
+            out |= set(t.cmap.keys())
+        return out
+
+    primary, fallback = cmap_of(card._MONO), cmap_of(gif._FALLBACK_PATH)
+    missing = []
+    for ch in "●•·◆✺✳⁂◈☀◐◑✧☄":
+        drawn = card._glyph_char(ch)
+        chosen = fallback if drawn in card._GAPS else primary
+        if ord(drawn) not in chosen:
+            missing.append((ch, drawn, "fallback" if drawn in card._GAPS else "primary"))
+    assert not missing, f"glyphs that would render as tofu: {missing}"
+
+
+def test_object_glyphs_are_all_covered(client):
+    """The same check, but driven by what the service actually emits rather
+    than a list written by hand next to it."""
+    from fontTools.ttLib import TTFont
+    import card, gif
+
+    def cmap_of(path):
+        out = set()
+        for t in TTFont(path, fontNumber=0)["cmap"].tables:
+            out |= set(t.cmap.keys())
+        return out
+
+    primary, fallback = cmap_of(card._MONO), cmap_of(gif._FALLBACK_PATH)
+    bad = []
+    for name in ("Sirius", "Saturn", "Andromeda Galaxy", "Hercules Cluster",
+                 "Orion Nebula", "Ring Nebula", "Perseids", "Big Dipper",
+                 "Moon", "Sun"):
+        g = client.get(f"/{name}?format=json").json().get("glyph") or ""
+        if not g:
+            continue
+        drawn = card._glyph_char(g)
+        chosen = fallback if drawn in card._GAPS else primary
+        if ord(drawn) not in chosen:
+            bad.append((name, g))
+    assert not bad, f"objects whose card glyph would be tofu: {bad}"
+
+
+def test_every_kind_string_has_a_subtitle_word():
+    """A kind with no entry does not fail, it silently reads "Object" -- which
+    is how every cluster card came to say "OBJECT IN HERCULES". Driven off
+    what resolve_target actually returns across the whole namespace, not off a
+    list written next to the map it is checking."""
+    import datetime as dt
+    import card, sky
+    jd = sky.julian(dt.datetime(2026, 8, 5))
+    lst = (sky.gmst_hours(jd) + 8.54 / 15.0) % 24
+    kinds = set()
+    for n in objects.all_names():
+        t = sky.resolve_target(n, jd, 47.38, lst)
+        if t:
+            kinds.add(t["kind"])
+    missing = sorted(k for k in kinds if k not in card.KIND_WORDS)
+    assert not missing, f"kinds that would render as 'Object': {missing}"
+
+
+def test_visibility_line_never_invented_from_a_placeholder(client):
+    """deepsky.json stores the magnitude cutoff for objects RNGC never
+    measured, so m=11.0 is sometimes a brightness and sometimes a stand-in.
+    Objects carrying the stand-in must not get a "what you need to see it"
+    line derived from it."""
+    import sky
+    placeholders = [o for o in sky._load("deepsky.json") if o.get("nomag")]
+    assert placeholders, "expected some objects to have no measured magnitude"
+    for o in placeholders[:12]:
+        d = client.get(f"/{o['id']}?format=json").json()
+        assert "need" not in d, f"{o['id']} invented a visibility line from a placeholder"
+
+
+def test_visibility_line_appears_when_the_magnitude_is_real(client):
+    d = client.get("/Hercules Cluster?format=json").json()
+    assert d.get("need"), "a measured magnitude should produce a visibility line"
+
+
+# ------------------------------------------------- cards must not go stale
+def _card_state(name, when):
+    """Everything a card shows, at a given moment."""
+    import api, card, sky
+    jd = sky.julian(when)
+    lst = (sky.gmst_hours(jd) + 8.54 / 15.0) % 24
+    t = sky.resolve_target(name, jd, 47.38, lst)
+    f = api.object_facts(t, api.Request(place="Zurich", when=when), name)
+    return card._subtitle(f), tuple(card._headline_facts(f)), f.get("glyph")
+
+
+def test_the_moon_card_does_not_show_a_live_phase():
+    """The phase glyph runs the whole cycle in under two weeks -- across
+    eight days it goes last quarter, new, first quarter. A social card sits
+    in Twitter's cache about a week and Facebook's until re-scraped, so a
+    Moon card shared at last quarter would still show a half Moon on the
+    night of the new Moon, and the phase is the whole content of that card.
+
+    The page keeps the real phase per visitor; only the card is pinned."""
+    import datetime as dt
+    base = dt.datetime(2026, 8, 5)
+    glyphs = {_card_state("Moon", base + dt.timedelta(days=d))[2]
+              for d in (0, 4, 8, 12, 16, 20)}
+    assert glyphs == {"●"}, f"Moon card glyph changed over a lunar month: {glyphs}"
+
+
+@pytest.mark.parametrize("name", ["Sirius", "Betelgeuse", "Andromeda Galaxy",
+                                   "Ring Nebula", "Big Dipper", "Sun", "Moon"])
+def test_cards_are_stable_across_a_cache_lifetime(name):
+    """Nothing a card claims may change within the week or so a platform
+    holds the image. Planets and showers are exempt and tested separately:
+    their drift is real and slow."""
+    import datetime as dt
+    base = dt.datetime(2026, 8, 5)
+    assert _card_state(name, base) == _card_state(name, base + dt.timedelta(days=7)), \
+        f"{name}'s card changed within a cache lifetime"
+
+
+def test_planet_distance_drift_is_below_what_the_card_prints():
+    """Distances do move, but by less than a printed light-minute over a
+    week, so the card reads the same."""
+    import datetime as dt
+    base = dt.datetime(2026, 8, 5)
+    for name in ("Saturn", "Jupiter", "Mars"):
+        assert _card_state(name, base) == _card_state(name, base + dt.timedelta(days=7)), \
+            f"{name} drifted visibly within a week"

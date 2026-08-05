@@ -888,6 +888,51 @@ def _fists_line(alt):
     return sky.fists(alt)
 
 
+def object_glyph(tgt, jd):
+    """(character, "#rrggbb") -- the same mark and colour the chart draws this
+    object with.
+
+    Taken from the tables the chart and /catalog already share rather than a
+    second set, so a card can never show a symbol the map does not use.
+    """
+    kind = tgt.get("kind")
+    if kind == "star":
+        s = next((x for x in sky._load("stars.json") if x.get("n") == tgt["name"]), None)
+        mag = s["m"] if s else tgt.get("mag") or 3.0
+        return sky.glyph_for(mag), _ansi_hex(sky.star_colour(s.get("ci") if s else None))
+    if kind == "planet":
+        return "◆", _ansi_hex(PLANET_COLORS.get(tgt["name"], C.LABEL))
+    if kind == "moon":
+        # The full Moon, always, rather than tonight's phase.
+        #
+        # This mark is the only thing on any card computed from a moment
+        # short enough to matter. The phase glyph runs the whole cycle in
+        # under two weeks -- across eight days it goes last quarter, waning
+        # crescent, new, waxing crescent, first quarter -- and a social card
+        # sits in Twitter's cache for about a week and in Facebook's until
+        # somebody re-scrapes it. A Moon card shared at last quarter would
+        # still be showing a half Moon on the night of the new Moon, and the
+        # phase is the entire content of a Moon card.
+        #
+        # The page keeps the real phase, recomputed per visitor, which is
+        # where a changing fact belongs. Same rule that took the altitude
+        # off these cards: nothing survives here that changes faster than
+        # the cache holding it.
+        return "●", _ansi_hex(C.MOON)
+    if kind == "sun":
+        return "☀", _ansi_hex(_SUN_C)
+    if kind == "asterism":
+        return _ASTERISM_GLYPH[0], _ASTERISM_GLYPH[1]
+    if kind == "radiant":
+        return "☄", _ansi_hex(C.LABEL)
+    o = next((x for x in sky._load("deepsky.json")
+              if tgt["name"] in (x["n"], x.get("cn"), x["id"])), None)
+    if o:
+        g, c = sky.DSO_GLYPH[o["t"]]
+        return g, _ansi_hex(c)
+    return "", "#ffffff"
+
+
 def object_facts(tgt, r, canonical, shown_utc=None):
     """Everything the object page knows, as data. The prose and the JSON are
     both rendered from this, so they cannot drift apart.
@@ -902,8 +947,10 @@ def object_facts(tgt, r, canonical, shown_utc=None):
     when = shown_utc or r.when_utc
     jd = julian(when)
     lst = (gmst_hours(jd) + p.lon / 15.0) % 24
+    glyph, glyph_rgb = object_glyph(tgt, jd)
     out = {"object": canonical, "kind": tgt.get("kind"),
            "place": p.name, "lat": p.lat, "lon": p.lon,
+           "glyph": glyph, "glyph_color": glyph_rgb,
            "shown_utc": when.isoformat() + "Z", "is_now": shown_utc is None}
 
     rts = objects.rise_transit_set(tgt, p.lat, p.lon, when)
@@ -977,6 +1024,29 @@ def object_facts(tgt, r, canonical, shown_utc=None):
             size = objects.dso_size(oid)
     if size:
         out["size_arcmin"] = size
+
+    # An asterism is a shape, not a point: no magnitude, no distance, no
+    # angular size. What it does have is a star count and the magnitude of
+    # its faintest member, which together answer the only question that
+    # matters -- can you actually trace the whole figure, or does one corner
+    # of it disappear unless the sky is properly dark.
+    if tgt.get("kind") == "asterism":
+        a = next((x for x in sky._load("asterisms.json")
+                  if x["name"] == tgt["name"]), None)
+        if a:
+            out["star_count"] = len({h for pair in a["lines"] for h in pair})
+            out["faintest"] = a["faint"]
+
+    # What it takes to see it -- only when the catalogue actually measured a
+    # brightness. deepsky.json carries the cutoff as a placeholder for the
+    # many diffuse nebulae RNGC never measured, so a magnitude alone cannot
+    # be trusted to mean anything. See objects.what_you_need().
+    if tgt.get("kind") not in ("planet", "moon", "sun", "radiant"):
+        mag = (objects.dso_magnitude(tgt["name"])
+               if tgt.get("kind") not in ("star", "asterism") else tgt.get("mag"))
+        need = objects.what_you_need(mag)
+        if need:
+            out["need"] = need
 
     best = objects.best_this_year(tgt, p.lat, p.lon, when)
     if best:
@@ -1216,15 +1286,29 @@ def object_description(facts):
             "wherever you are.").strip()
 
 
-# The head of the shared page template, with the fixed description swapped
+# The generic social-card block every non-object page carries. Object pages
+# replace this wholesale with their own head rather than adding to it, so a
+# page never ends up advertising two different cards.
+_GENERIC_HEAD_BLOCK = """\
+<meta name="description" content="The night sky above you, as plain text. curl skymap.sh">
+<meta property="og:type" content="website">
+<meta property="og:title" content="{title}">
+<meta property="og:description" content="The night sky above you, as plain text. No signup, no API key.">
+<meta property="og:image" content="https://skymap.sh/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:site_name" content="skymap.sh">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:image" content="https://skymap.sh/og.png">"""
+
+
+# The head of the shared page template, with the generic card block swapped
 # for a slot. Derived from PAGE rather than copied, so the object pages keep
 # every later change to the shell -- stylesheet, favicon, the width ladder --
 # without a second copy to maintain, and without any of the six existing
 # PAGE.format() call sites having to learn a new key.
 def _object_page_template():
-    return PAGE.replace(
-        '<meta name="description" content="The night sky above you, as plain '
-        'text. curl skymap.sh">', "{head_extra}", 1)
+    return PAGE.replace(_GENERIC_HEAD_BLOCK, "{head_extra}", 1)
 
 
 def object_head(facts, canonical, place, base_url):
@@ -4192,6 +4276,15 @@ PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>{title}</title>
 <meta name="description" content="The night sky above you, as plain text. curl skymap.sh">
+<meta property="og:type" content="website">
+<meta property="og:title" content="{title}">
+<meta property="og:description" content="The night sky above you, as plain text. No signup, no API key.">
+<meta property="og:image" content="https://skymap.sh/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:site_name" content="skymap.sh">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:image" content="https://skymap.sh/og.png">
 <link rel="icon" href="/favicon.ico" sizes="any">
 <link rel="apple-touch-icon" href="/apple-touch-icon.png">
 <script>
