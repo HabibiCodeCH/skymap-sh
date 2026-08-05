@@ -444,3 +444,65 @@ def test_shower_peak_has_no_dark_hours_figure():
     crashed the card renderer."""
     got = objects.best_this_year(_target("Perseids"), *ZURICH, WHEN)
     assert got.get("dark_hours") is None
+
+
+# ------------------------------------------------- deep-sky positions
+# Published J2000 positions, (RA hours, Dec degrees). These are the check
+# that would have caught a precession sign error shipping to every chart:
+# deepsky.json used to precess B1975 to J2000 with the wrong sign, landing
+# every object near B1950 and putting all 739 of them 24 to 39 arcminutes
+# out -- about a Moon-width, consistently, invisibly.
+_KNOWN_POSITIONS = {
+    "NGC224":  (0.71231, 41.26875),   # M31
+    "NGC598":  (1.56414, 30.66017),   # M33
+    "NGC1976": (5.58814, -5.39111),   # M42
+    "NGC5194": (13.49797, 47.19526),  # M51
+    "NGC6205": (16.69488, 36.46131),  # M13
+    "NGC6720": (18.89308, 33.02875),  # M57
+    "NGC6853": (19.99340, 22.72139),  # M27
+}
+
+
+def _separation_arcmin(ra1_h, de1, ra2_h, de2):
+    r1, d1, r2, d2 = (math.radians(x) for x in (ra1_h * 15, de1, ra2_h * 15, de2))
+    cos = math.sin(d1) * math.sin(d2) + math.cos(d1) * math.cos(d2) * math.cos(r1 - r2)
+    return math.degrees(math.acos(max(-1.0, min(1.0, cos)))) * 60
+
+
+@pytest.mark.parametrize("oid, truth", sorted(_KNOWN_POSITIONS.items()))
+def test_deep_sky_positions_match_published_j2000(oid, truth):
+    o = next((x for x in sky._load("deepsky.json") if x["id"] == oid), None)
+    assert o is not None, f"{oid} missing from deepsky.json"
+    off = _separation_arcmin(o["ra"], o["de"], *truth)
+    assert off < 3.0, f"{oid} is {off:.1f} arcmin from its published position"
+
+
+def test_messier_numbers_are_not_shared_between_objects():
+    """Seven were, before the Messier number started coming from RNGC's
+    cross-reference column instead of its prose -- the Beehive was five
+    different objects. The three names still shared are genuine
+    two-component objects."""
+    seen = {}
+    for o in sky._load("deepsky.json"):
+        n = o["n"]
+        if n.startswith("M") and n[1:].isdigit():
+            seen.setdefault(n, []).append(o["id"])
+    shared = {k: v for k, v in seen.items() if len(v) > 1}
+    assert set(shared) <= {"M76"}, f"unexpected shared Messier numbers: {shared}"
+
+
+def test_the_messier_catalogue_is_essentially_complete():
+    """108 of 110. M25 is an IC object and this catalogue is NGC-only by
+    licence choice; M40 is a double star, not a deep-sky object at all."""
+    have = {int(o["n"][1:]) for o in sky._load("deepsky.json")
+            if o["n"].startswith("M") and o["n"][1:].isdigit()}
+    assert set(range(1, 111)) - have == {25, 40}
+
+
+def test_the_pleiades_are_in_there():
+    """No NGC number exists for them, so they are hand-added. The most
+    looked-at cluster in the sky should not 404."""
+    o = next((x for x in sky._load("deepsky.json") if x["id"] == "M45"), None)
+    assert o is not None
+    assert o["cn"] == "Pleiades"
+    assert _separation_arcmin(o["ra"], o["de"], 3.79067, 24.11333) < 3.0

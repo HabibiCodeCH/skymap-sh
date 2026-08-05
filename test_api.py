@@ -1581,8 +1581,8 @@ class CatalogHtml(unittest.TestCase):
         h = api.catalog_html()
         self.assertIn("NAMED STARS (327)", text)
         self.assertIn("NAMED STARS (327)", h)
-        self.assertIn("DEEP SKY (112)", text)
-        self.assertIn("DEEP SKY (112)", h)
+        self.assertIn("DEEP SKY (122)", text)
+        self.assertIn("DEEP SKY (122)", h)
 
 
 class TwilightFade(unittest.TestCase):
