@@ -1878,3 +1878,45 @@ class LegendMatchesTheRealGlyphs(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class EveryCatalogGroupIsSearchable(unittest.TestCase):
+    """The search bar offered solar system, stars, deep sky and
+    constellations, and silently skipped showers -- the one group that is
+    only worth looking up in the few weeks around its peak. Every one of
+    them already had a working page, so /Perseids resolved and nothing ever
+    suggested it."""
+
+    def test_showers_complete(self):
+        for q, want in (("per", "Perseids"), ("gem", "Geminids"),
+                        ("quad", "Quadrantids"), ("orio", "Orionids")):
+            names = [o["name"] for o in api.complete_objects(q)]
+            self.assertIn(want, names, q)
+
+    def test_every_group_in_the_catalog_can_be_completed(self):
+        """The guard that matters: a new group added to _catalog_data() but
+        not to complete_objects() would be invisible in exactly the way
+        showers were, and nothing else would fail."""
+        d = api._catalog_data()
+        probes = {
+            "solar_system": "satu",
+            "named_stars": "vega",
+            "named_dso": "androm",
+            "showers": "perse",
+            "asterisms": "big",
+        }
+        self.assertEqual(set(probes), set(d),
+                         "a catalog group has been added or renamed; give it "
+                         "a probe here and a loop in complete_objects()")
+        for group, q in probes.items():
+            self.assertTrue(api.complete_objects(q), f"{group} completes nothing")
+
+    def test_a_shower_completion_resolves_to_a_real_page(self):
+        import objects
+        for o in api.complete_objects("per"):
+            self.assertIsNotNone(objects.resolve_name(o.get("q") or o["name"]),
+                                 o["name"])
+
+    def test_the_shower_mark_is_the_one_the_chart_uses(self):
+        got = {o["glyph"] for o in api.complete_objects("perse")}
+        self.assertEqual(got, {api._SHOWER_GLYPH})

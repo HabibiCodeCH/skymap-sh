@@ -5079,6 +5079,15 @@ def complete_objects(prefix, n=8):
         if word_match(_dso_label(o)):
             glyph, glyph_c = sky.DSO_GLYPH[o["t"]]
             out.append({"name": o["n"], "glyph": glyph, "color": _ansi_hex(glyph_c)})
+    # Before the constellations, matching the order the catalog lists them
+    # in. Missing entirely until now: _catalog_data() has always returned
+    # them and every one of them has a working page, so /Perseids resolved
+    # and the search bar simply never offered it -- the one group of objects
+    # that is only worth looking up in the few weeks around its peak.
+    for sh in d["showers"]:
+        if word_match(sh["name"]):
+            out.append({"name": sh["name"], "glyph": _SHOWER_GLYPH,
+                       "color": _ansi_hex(C.LABEL)})
     for nm in d["asterisms"]:
         if word_match(nm):
             out.append({"name": nm, "glyph": _ASTERISM_GLYPH[0], "color": _ASTERISM_GLYPH[1]})
