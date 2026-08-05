@@ -3048,6 +3048,33 @@ def _respond_object(request: Req, place: str | None, canonical: str):
     """An object page. Same content negotiation, caching and stats as every
     other view -- the only thing that differs is what gets composed."""
     mode, colour = _wants(request)
+    # Coordinates get the nearby city's name, the same as every other view.
+    #
+    # The chart, sphere and events routes all bounce raw coordinates to the
+    # city, and the object pages were added later without it -- so a visitor
+    # located by IP saw "46.20,6.10 Wed 5 Aug" in the header of /Saturn while
+    # the chart one click away said "Geneva".
+    #
+    # Two forms, two different answers. Coordinates spelled out in the path
+    # redirect, exactly like the siblings do. The bare /Saturn must NOT:
+    # that URL is deliberately location-free so it can be shared, and
+    # bouncing it to /Geneva/Saturn would rewrite the address bar of anyone
+    # who followed a link. It gets the city's own Place instead -- the same
+    # end state the redirect reaches, without touching the URL. Swapping the
+    # whole Place rather than just relabelling it keeps the coordinates, the
+    # timezone and the cache key agreeing with the name; renaming alone
+    # would file one cache entry under "Geneva" for every visitor within
+    # 55 km of it and serve them each other's sky.
+    if mode == "html":
+        city = _nearby_city_for_redirect(request, place, mode)
+        if city:
+            if place:
+                _stat["geo_redirect"] += 1
+                qs = f"?{request.url.query}" if request.url.query else ""
+                return RedirectResponse(
+                    f"/{quote(city)}/{quote(canonical)}{qs}", status_code=302,
+                    headers={"Cache-Control": "no-store"})
+            place = city
     r = _build(request, place)
     r.find = canonical
     res, daytime, hit = _cached_object(r, canonical)

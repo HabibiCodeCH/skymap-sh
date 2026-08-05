@@ -1120,3 +1120,60 @@ def test_short_names_are_left_on_one_line(client):
         f, lines = card._wrap_fit(d, name, 150, card.W - card.MARGIN * 2, 340)
         assert lines == [name], name
         assert f.size == 150, name
+
+
+# ------------------------------------------------- coordinates become a city
+# The chart, sphere and events routes have each been fixed for this in turn;
+# the object pages shipped without it, so a visitor located by IP saw
+# "46.20,6.10 Wed 5 Aug" in the header of /Saturn while the chart one click
+# away said "Geneva".
+GEO = {**BROWSER, "cf-iplatitude": "46.20", "cf-iplongitude": "6.10"}
+
+
+def test_an_ip_located_visitor_sees_the_city_not_coordinates(client):
+    h = client.get("/Saturn", headers=GEO).text
+    assert "46.20,6.10" not in h
+    assert "Geneva" in h
+
+
+def test_the_bare_object_url_is_never_redirected(client):
+    """/Saturn is deliberately location-free so it can be shared. Bouncing
+    it to /Geneva/Saturn would rewrite the address bar of anyone following a
+    link, which is the opposite of what the shared-link design asks for."""
+    r = client.get("/Saturn", headers=GEO, follow_redirects=False)
+    assert r.status_code == 200
+
+
+def test_the_search_bar_shows_the_city_too(client):
+    h = client.get("/Saturn", headers=GEO).text
+    assert 'name="q" value="Geneva/Saturn"' in h
+
+
+def test_coordinates_spelled_out_in_the_path_do_redirect(client):
+    """Same as the chart, sphere and events routes: an explicit /lat,lon in
+    the URL is tidied up, because there is an address bar to tidy."""
+    r = client.get("/46.20,6.10/Saturn", headers=BROWSER, follow_redirects=False)
+    assert r.status_code == 302
+    assert r.headers["location"] == "/Geneva/Saturn"
+
+
+def test_that_redirect_is_never_cached(client):
+    """It is keyed off this visitor's IP, so an edge cache would bounce
+    everyone sharing that cache entry to Geneva wherever they are."""
+    r = client.get("/46.20,6.10/Saturn", headers=BROWSER, follow_redirects=False)
+    assert r.headers["cache-control"] == "no-store"
+
+
+def test_curl_keeps_the_exact_coordinates(client):
+    """No address bar to tidy, and redirecting would silently break anyone
+    scripting against a specific lat/lon."""
+    d = client.get("/Saturn?format=json",
+                   headers={"user-agent": "curl/8",
+                            "cf-iplatitude": "46.20",
+                            "cf-iplongitude": "6.10"}).json()
+    assert d["place"] == "46.20,6.10"
+
+
+def test_a_named_place_is_left_alone(client):
+    r = client.get("/Tokyo/Saturn", headers=BROWSER, follow_redirects=False)
+    assert r.status_code == 200
