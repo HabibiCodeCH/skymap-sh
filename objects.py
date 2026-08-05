@@ -426,6 +426,71 @@ _MIN_USEFUL_ALT = 20.0
 _ASTRO_DARK = -18.0
 
 
+def best_tonight(tgt, lat, lon, start_utc, min_alt=8.0):
+    """The best moment to look at this object tonight, or None.
+
+    "Best" is when it is highest while the sky is genuinely dark, which is
+    not the same question next_visible() answers. That one returns the FIRST
+    moment an object clears the horizon in a dark sky, which for Saturn was
+    13 degrees in the east while the same page said it reaches 46 at 05:19.
+    A chart drawn at the first qualifying moment shows the least interesting
+    view that qualifies.
+
+    Cheap: the object's transit is a single calculation, the dark window is
+    another, and the answer is the transit clamped into that window. An
+    object that transits in daylight is best at whichever end of the night
+    it is highest, which is the nearer edge of the window to its transit.
+    """
+    jd0 = sky.julian(start_utc)
+
+    # Tonight's astronomical dark, centred on local midnight.
+    s = sky.sun(jd0)
+    half_dark = _half_day(s["dec"], lat, _ASTRO_DARK)
+    if half_dark is math.inf:
+        return None                      # the sun never sets far enough
+    dark_half = 12.0 if half_dark is None else 12.0 - half_dark
+    if dark_half <= 0:
+        return None
+
+    # Local midnight after start_utc, as a julian day.
+    #
+    # East longitude runs AHEAD of UTC, so local midnight falls EARLIER in
+    # UTC -- minus lon/360 of a day, not plus. With the sign the wrong way
+    # round the whole dark window shifted east by twice the offset, and
+    # Andromeda's "best moment" came out at 03:00 UTC with the Sun 11 degrees
+    # below the horizon: bright twilight, and 20 degrees of altitude worse
+    # than the genuinely dark hour it should have picked.
+    midnight = math.floor(jd0 + 0.5 + lon / 360.0) + 0.5 - lon / 360.0
+    if midnight < jd0:
+        midnight += 1.0
+    dusk, dawn = midnight - dark_half / 24.0, midnight + dark_half / 24.0
+
+    rts = rise_transit_set(tgt, lat, lon, _to_utc(midnight))
+    transit = rts.get("transit")
+    if transit is None:
+        return None
+    jd_t = sky.julian(transit)
+    # The transit nearest this night, not one a half-day out.
+    while jd_t < dusk - 0.5:
+        jd_t += 1.0 / _SIDEREAL_RATE
+    while jd_t > dawn + 0.5:
+        jd_t -= 1.0 / _SIDEREAL_RATE
+
+    best = min(max(jd_t, dusk), dawn)
+    ra, dec = (sky.precess(tgt["ra"], tgt["dec"], best) if not tgt.get("body")
+               else _body_radec(tgt["body"], best))
+    alt = sky.altaz(ra, dec, lat, _lst(best, lon))[0]
+    if alt < min_alt:
+        return None
+    return _to_utc(best)
+
+
+def _body_radec(body, jd):
+    b = (sky.moon(jd) if body == "Moon" else
+         sky.sun(jd) if body == "Sun" else sky.planet(body, jd))
+    return b["ra"], b["dec"]
+
+
 def _shower_peak(tgt, lat, lon, start_utc, days):
     """When this shower next peaks, with how well the radiant is placed and
     how much Moon there will be -- the two things that decide whether the

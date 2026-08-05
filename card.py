@@ -222,24 +222,18 @@ _PLANET_ORDER = {"Mercury": 1, "Venus": 2, "Mars": 4, "Jupiter": 5,
 def _subtitle(facts):
     """The category line above the name.
 
-    A planet gets its place in the solar system rather than the constellation
-    it is passing through. The constellation is the right answer for anything
-    fixed to the sky, and the wrong one for a planet: it changes every few
-    weeks, and this image is cached by whoever unfurls it, so the card would
-    quietly start naming the wrong patch of sky. Where a planet sits from the
-    Sun never changes.
+    api.object_descriptor() is the single source for this and for the page's
+    opening sentence, so a card and the page it links to can never describe
+    the same object differently. Title-cased here because it sits above the
+    name as a label rather than inside a sentence.
     """
-    if facts.get("kind") == "planet":
-        n = _PLANET_ORDER.get(facts.get("object"))
-        return f"Planet #{n} in the solar system" if n else "Planet"
-    # The Sun crosses a constellation a month and the Moon one every two or
-    # three days, so naming it here would be wrong within a week of anyone
-    # sharing the card -- and it is not why anybody looks at either.
-    if facts.get("kind") in _FIXED_SUBTITLE:
-        return _FIXED_SUBTITLE[facts["kind"]]
-    kind = KIND_WORDS.get(facts.get("kind"), "Object")
-    con = facts.get("constellation")
-    return f"{kind} in {con}" if con else kind
+    import api
+    d = api.object_descriptor(facts)
+    for lead in ("the ", "a ", "an "):
+        if d.startswith(lead):
+            d = d[len(lead):]
+            break
+    return d[0].upper() + d[1:]
 
 
 # apple-touch-icon rather than favicon.png: the favicon is a 720x720 render
@@ -255,7 +249,7 @@ def _hex_rgb(h):
 
 
 def _wordmark(img, d, size=56):
-    """The favicon and the name, bottom left. Sized to be read in a phone
+    """The icon and the name, bottom left. Sized to be read in a phone
     unfurl, where the whole card is about 350px wide -- a 3.4x reduction, so
     anything under about 48px here lands below 14px there and is decoration
     rather than a word."""

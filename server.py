@@ -2954,6 +2954,12 @@ def root(request: Req):
     return _respond(request, None)
 
 
+def _rendered_obj(text):
+    """ANSI to markup, footer dropped -- the same treatment the place page
+    gives every piece of its ladder."""
+    return api.ansi_to_html(api.strip_footer_line(text))
+
+
 def _respond_object(request: Req, place: str | None, canonical: str):
     """An object page. Same content negotiation, caching and stats as every
     other view -- the only thing that differs is what gets composed."""
@@ -2982,9 +2988,76 @@ def _respond_object(request: Req, place: str | None, canonical: str):
         return JSONResponse(res.data, status_code=res.status, headers=headers)
     base_url = str(request.base_url).rstrip("/")
     text = res.text.replace("{base_url}", base_url)
+    if mode != "html":
+        # The split marker is only meaningful to the browser layout; a
+        # terminal reads straight down through both halves.
+        text = text.replace(api.OBJECT_SLOT, "").replace(api.OBJPROSE_SLOT, "")
     if mode == "html":
+        # One render per rung of the width ladder, exactly as the place page
+        # does it: the browser is handed every width at once and CSS picks
+        # the one that fits, so nothing measures anything and nothing
+        # reloads. Each rung goes through the same _cached_object(), so a
+        # width somebody has already been served at this place in this time
+        # bucket is a cache hit rather than repeated work.
+        #
+        # panel=True is what makes the find view emit the zenith inset and
+        # the prose as separate pieces (ZENITH_SLOT / PROSE_SLOT). Object
+        # pages never asked for it before, which is why they had no inset --
+        # the support was already there.
+        rungs, zenith, prose, static = [], "", "", ""
+        live_head, live_sub = "", ""
+        for _min_ch, cols, panel in api.CHART_LADDER:
+            rr = r.sized(cols, panel)
+            rr.find = canonical
+            rung_res, _daytime, _hit = _cached_object(rr, canonical)
+            rung_text = rung_res.text.replace("{base_url}", base_url)
+            rung_static, _sep, rung_live = rung_text.partition(api.OBJECT_SLOT)
+            # The static half is the same at every width, so it is taken once
+            # and the ladder carries only the chart, which is the one thing
+            # that genuinely differs between rungs.
+            static = static or rung_static
+            chart, rung_zenith, rung_prose = api.split_chart_parts(rung_live)
+            # "Tonight from Zurich" is a sentence, not part of the drawing.
+            # Lifted out of the <pre> so it can be set in the same face and
+            # size as the lede opposite it, and so the two columns start on
+            # the same line.
+            chart_lines = chart.split("\n")
+            for _i, _l in enumerate(chart_lines):
+                if _l.strip():
+                    live_head = live_head or _rendered_obj(_l).strip()
+                    chart = "\n".join(chart_lines[_i + 1:]).lstrip("\n")
+                    break
+            # The object's own prose reads above the chart rather than under
+            # it: whether it is worth going outside is the sentence you want
+            # before the picture, not after.
+            obj_prose_txt, _sep2, chart = chart.partition(api.OBJPROSE_SLOT)
+            if obj_prose_txt.strip() and not live_sub:
+                live_sub = _rendered_obj(obj_prose_txt).strip()
+            chart = chart.lstrip("\n")
+            # All three pieces need converting, not just the chart. Passing
+            # the inset and the prose through raw put their escape sequences
+            # on the page as literal text -- "[38;5;242mzenith 70-90 deg[0m"
+            # -- and the unwrapped result overflowed its column.
+            if rung_zenith:
+                zenith = _rendered_obj(rung_zenith)
+            if rung_prose:
+                # The find view's summary line ("Saturn . 42 deg up . SSE .
+                # mag 1.0") is now said by the heading above the chart, so
+                # only that first line is dropped here. Everything after it
+                # is the object's own prose and stays.
+                _pl = [l for l in rung_prose.split("\n")]
+                for _j, _l in enumerate(_pl):
+                    if _l.strip():
+                        _pl = _pl[_j + 1:]
+                        break
+                prose = _rendered_obj("\n".join(_pl).strip("\n"))
+            rungs.append((cols, panel, _rendered_obj(chart)))
         return HTMLResponse(api.object_html(r, canonical, text, res.data,
-                                            place=place, base_url=base_url),
+                                            place=place, base_url=base_url,
+                                            rungs=rungs, zenith=zenith,
+                                            prose=prose, static=static,
+                                            live_head=live_head,
+                                            live_sub=live_sub),
                             status_code=res.status, headers=headers)
     return PlainTextResponse(api.strip_ansi(text) if not colour else text,
                              status_code=res.status, headers=headers)
@@ -3028,6 +3101,29 @@ def generic_og():
     _stat["og"] += 1
     return Response(card.render_generic(), media_type="image/png",
                     headers={"Cache-Control": "public, max-age=86400, s-maxage=604800"})
+
+
+@app.get("/{obj}/best.ics")
+def object_best_ics(request: Req, obj: str):
+    """The object's best night of the year, as one calendar entry.
+
+    Registered ahead of /{place}/{obj}, which would otherwise read
+    "best.ics" as an object name."""
+    canonical = objects.resolve_name(obj)
+    if canonical is None:
+        return PlainTextResponse("", status_code=404)
+    r = _build(request, None)
+    r.find = canonical
+    res, _daytime, _hit = _cached_object(r, canonical)
+    base_url = str(request.base_url).rstrip("/")
+    ics = api.object_best_ics(r, canonical, res.data, base_url=base_url)
+    if not ics:
+        return PlainTextResponse("", status_code=404)
+    _stat["ics"] += 1
+    return Response(ics, media_type="text/calendar; charset=utf-8",
+                    headers={"Cache-Control": "public, max-age=86400",
+                             "Content-Disposition":
+                                 f'attachment; filename="{quote(canonical)}.ics"'})
 
 
 @app.get("/{obj}/og.png")

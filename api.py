@@ -11,6 +11,7 @@ from urllib.parse import quote
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import sky
+import facts as facts_table
 import objects
 from sky import (C, paint, julian, gmst_hours, altaz, angsep, compass, moon_glyph,
                  phase_name, resolve_target, visibility, next_visible,
@@ -889,8 +890,9 @@ def _fists_line(alt):
 
 
 def object_glyph(tgt, jd):
-    """(character, "#rrggbb") -- the same mark and colour the chart draws this
-    object with.
+    """(character, ansi colour code) -- the same mark and colour the chart
+    draws this object with. Callers that need a hex colour (the social card)
+    convert with _ansi_hex; the page paints the ANSI directly.
 
     Taken from the tables the chart and /catalog already share rather than a
     second set, so a card can never show a symbol the map does not use.
@@ -899,9 +901,9 @@ def object_glyph(tgt, jd):
     if kind == "star":
         s = next((x for x in sky._load("stars.json") if x.get("n") == tgt["name"]), None)
         mag = s["m"] if s else tgt.get("mag") or 3.0
-        return sky.glyph_for(mag), _ansi_hex(sky.star_colour(s.get("ci") if s else None))
+        return sky.glyph_for(mag), sky.star_colour(s.get("ci") if s else None)
     if kind == "planet":
-        return "◆", _ansi_hex(PLANET_COLORS.get(tgt["name"], C.LABEL))
+        return "◆", PLANET_COLORS.get(tgt["name"], C.LABEL)
     if kind == "moon":
         # The full Moon, always, rather than tonight's phase.
         #
@@ -918,19 +920,19 @@ def object_glyph(tgt, jd):
         # where a changing fact belongs. Same rule that took the altitude
         # off these cards: nothing survives here that changes faster than
         # the cache holding it.
-        return "●", _ansi_hex(C.MOON)
+        return "●", C.MOON
     if kind == "sun":
-        return "☀", _ansi_hex(_SUN_C)
+        return "☀", _SUN_C
     if kind == "asterism":
-        return _ASTERISM_GLYPH[0], _ASTERISM_GLYPH[1]
+        return _ASTERISM_GLYPH[0], "\033[38;5;246m"
     if kind == "radiant":
-        return "☄", _ansi_hex(C.LABEL)
+        return "☄", C.LABEL
     o = next((x for x in sky._load("deepsky.json")
               if tgt["name"] in (x["n"], x.get("cn"), x["id"])), None)
     if o:
         g, c = sky.DSO_GLYPH[o["t"]]
-        return g, _ansi_hex(c)
-    return "", "#ffffff"
+        return g, c
+    return "", C.LABEL
 
 
 def object_facts(tgt, r, canonical, shown_utc=None):
@@ -947,10 +949,11 @@ def object_facts(tgt, r, canonical, shown_utc=None):
     when = shown_utc or r.when_utc
     jd = julian(when)
     lst = (gmst_hours(jd) + p.lon / 15.0) % 24
-    glyph, glyph_rgb = object_glyph(tgt, jd)
+    glyph, glyph_ansi = object_glyph(tgt, jd)
     out = {"object": canonical, "kind": tgt.get("kind"),
            "place": p.name, "lat": p.lat, "lon": p.lon,
-           "glyph": glyph, "glyph_color": glyph_rgb,
+           "glyph": glyph, "glyph_color": _ansi_hex(glyph_ansi),
+           "glyph_ansi": glyph_ansi,
            "shown_utc": when.isoformat() + "Z", "is_now": shown_utc is None}
 
     rts = objects.rise_transit_set(tgt, p.lat, p.lon, when)
@@ -1050,15 +1053,47 @@ def object_facts(tgt, r, canonical, shown_utc=None):
 
     best = objects.best_this_year(tgt, p.lat, p.lon, when)
     if best:
+        # The hour worth being outside on that night, not just the date. For
+        # a shower that is the peak itself; for anything else it is the same
+        # calculation the chart above already uses, run for that night.
+        # The best HOUR of that night, for showers as much as anything else.
+        # A shower's peak instant is a point in Earth's orbit and lands in
+        # daylight about half the time -- the Geminids peak at 13:51 local,
+        # which put "14:51 on the 14th" in the calendar when the night worth
+        # setting an alarm for is 02:20 on the 15th.
+        best_at = objects.best_tonight(tgt, p.lat, p.lon,
+                                       best["when_utc"] - dt.timedelta(hours=12))
+        at_local = (best_at + dt.timedelta(hours=p.offset(best_at))
+                    if best_at else None)
         entry = {
-            "date": (best["when_utc"] + dt.timedelta(hours=tz)).date().isoformat(),
+            # One date, everywhere: the day the viewing hour falls on. The
+            # night a shower peaks and the hour worth being outside for it
+            # are usually different dates -- the Geminids peak on the 14th
+            # and the sky is best at 02:20 on the 15th -- and having the
+            # headline, the calendar entry and this line each pick their own
+            # meant the page named two different days for one event.
+            "date": (at_local.date().isoformat() if at_local
+                     else (best["when_utc"] + dt.timedelta(hours=tz)).date().isoformat()),
+            "at": at_local.isoformat() if at_local else None,
             "dark_hours": best.get("dark_hours"),
             "transit_alt": best["transit_alt"],
             "moon_illum": best["moon_illum"]}
         # A shower peaks rather than being "best"; it carries the radiant's
         # altitude on that night instead of a count of dark hours.
         if best.get("is_peak"):
-            entry.update(is_peak=True, radiant_alt=best.get("radiant_alt"),
+            # The radiant's altitude at the hour the page is built around,
+            # not at local midnight. _shower_peak quotes midnight because
+            # that is the convention rates are published under, but the
+            # headline names 02:20 and the prose then said 63 degrees for
+            # midnight while the headline said 76 for 02:20 -- two correct
+            # numbers reading as a contradiction.
+            alt_at = best.get("radiant_alt")
+            if at_local:
+                jd_b = julian(best_at)
+                ra_b, de_b = sky.precess(tgt["ra"], tgt["dec"], jd_b)
+                alt_at = round(altaz(ra_b, de_b, p.lat,
+                                     (gmst_hours(jd_b) + p.lon / 15.0) % 24)[0], 1)
+            entry.update(is_peak=True, radiant_alt=alt_at,
                          zhr=best.get("zhr"))
         out["best_this_year"] = entry
 
@@ -1066,6 +1101,29 @@ def object_facts(tgt, r, canonical, shown_utc=None):
     if collision:
         out["also_a_place"] = {"city": collision[0], "url": f"/{collision[1]}"}
     return out
+
+
+def object_timing(facts):
+    """Rise, set and transit as one condensed line.
+
+    Sits above the chart, where "is it worth going out" gets answered before
+    the picture rather than after it. Arrows instead of a sentence because
+    this is a row of times, not a paragraph: up for rise, down for set, and
+    a caret for the high point, which is the one that decides the evening.
+    Both arrows and the caret are in the bundled font, so no fallback.
+    """
+    if facts.get("never_rises"):
+        return "never rises from here"
+    if facts.get("never_sets"):
+        return f"never sets \u00b7 \u2303 {facts['transit_alt']:.0f}\u00b0 at its highest"
+    if not facts.get("rise"):
+        return ""
+    rise, st = facts["rise"][11:16], facts["set"][11:16]
+    # A set earlier than the rise is the following morning, which has to be
+    # marked or the line reads backwards.
+    over = "+1" if facts["set"][:10] != facts["rise"][:10] else ""
+    return (f"\u2191 {rise}  \u2193 {st}{over}  "
+            f"\u2303 {facts['transit'][11:16]}")
 
 
 def object_prose(facts, tgt, r, width=76):
@@ -1081,23 +1139,14 @@ def object_prose(facts, tgt, r, width=76):
     # it twice on one page reads as a mistake. This block picks up where
     # that leaves off.
     if facts.get("never_rises"):
-        L.append(f"{name} never rises from {facts['place']} — it stays below "
+        L.append(f"{name} never rises from {facts['place']}. It stays below "
                  f"the horizon all year at this latitude.")
 
-    if facts.get("never_sets"):
-        L.append(f"It never sets from here, circling the pole and reaching "
-                 f"{facts['transit_alt']:.0f}° at its highest.")
-    elif facts.get("rise"):
-        rise, st = facts["rise"][11:16], facts["set"][11:16]
-        # A set time earlier than the rise means it sets the following
-        # morning, which has to be said or the line reads as backwards.
-        over = " the next morning" if facts["set"][:10] != facts["rise"][:10] else ""
-        L.append(f"It rises at {rise} and sets at {st}{over}, highest at "
-                 f"{facts['transit'][11:16]} when it reaches "
-                 f"{facts['transit_alt']:.0f}°.")
-
     if facts.get("constellation"):
-        L.append(f"You will find it in {facts['constellation']}.")
+        if _MOVES_AGAINST_THE_SKY(facts):
+            L.append(f"It is currently crossing {facts['constellation']}.")
+        else:
+            L.append(f"You will find it in {facts['constellation']}.")
 
     st = facts.get("star", {})
     if st.get("description"):
@@ -1106,7 +1155,8 @@ def object_prose(facts, tgt, r, width=76):
             ly = st["light_years"]
             conf = st.get("distance_confidence")
             if conf == "good":
-                s += f", {ly:.0f} light years away — the light you are seeing left it in {r.when_local.year - int(ly)}"
+                s += (f", {ly:.0f} light years away, so the light reaching you "
+                      f"left it in {r.when_local.year - int(ly)}")
             elif conf == "rough":
                 s += f", roughly {ly:.0f} light years away"
             else:
@@ -1119,9 +1169,9 @@ def object_prose(facts, tgt, r, width=76):
 
     pl = facts.get("planet", {})
     if pl:
-        L.append(f"It is {pl['distance_au']:.2f} AU away — {pl['light_minutes']:.0f} "
-                 f"light-minutes, so you are seeing it as it was "
-                 f"{pl['light_minutes']:.0f} minutes ago.")
+        L.append(f"It is {pl['distance_au']:.2f} AU away, which is "
+                 f"{pl['light_minutes']:.0f} light-minutes, so you are seeing it "
+                 f"as it was {pl['light_minutes']:.0f} minutes ago.")
         if pl.get("lost_in_glare"):
             L.append(f"It is only {pl['elongation']:.0f}° from the Sun and lost in "
                      f"the glare.")
@@ -1135,7 +1185,7 @@ def object_prose(facts, tgt, r, width=76):
                    "a narrow ellipse in a small telescope" if ra_ < 12 else
                    "clearly open" if ra_ < 22 else
                    "as wide as they ever get")
-            L.append(f"The rings are tilted {ra_:.0f}° towards us — {how}.")
+            L.append(f"The rings are tilted {ra_:.0f}° towards us, {how}.")
         if pl.get("apparent_arcsec"):
             L.append(f"The disc is {pl['apparent_arcsec']:.0f} arcseconds across"
                      + (f", {pl['illuminated']:.0%} lit."
@@ -1147,8 +1197,8 @@ def object_prose(facts, tgt, r, width=76):
     if facts.get("size_arcmin"):
         s = facts["size_arcmin"]
         moons = s["maj"] / 31.0
-        rel = (f" — about {moons:.0f} times the width of the full Moon" if moons >= 2
-               else f" — roughly {moons:.1f} Moon-widths" if moons >= 0.5 else "")
+        rel = (f", about {moons:.0f} times the width of the full Moon" if moons >= 2
+               else f", roughly {moons:.1f} Moon-widths" if moons >= 0.5 else "")
         L.append(f"It spans {s['maj']:g} arcminutes{rel}.")
 
     # Only worth saying when the Moon is both bright and actually near it.
@@ -1164,10 +1214,12 @@ def object_prose(facts, tgt, r, width=76):
         # that matters is how high the radiant gets while it is happening --
         # not how much darkness the year can offer that patch of sky.
         moon = b.get("moon_illum", 0)
+        at_txt = f" at {b['at'][11:16]}" if b.get("at") else ""
         s = (f"The peak is {b['date']}, with the radiant "
-             f"{b['radiant_alt']:.0f}° up at midnight")
+             f"{b['radiant_alt']:.0f}° up{at_txt}")
         if moon > 0.5:
-            s += f" — but the Moon is {moon:.0%} lit that night and will drown most of it"
+            s += (f", though the Moon is {moon:.0%} lit that night and will "
+                  f"drown most of it")
         elif moon < 0.15:
             s += ", and almost no Moon to spoil it"
         L.append(s + ".")
@@ -1189,6 +1241,272 @@ def object_prose(facts, tgt, r, width=76):
     return "\n".join(out).rstrip()
 
 
+def object_infobox(facts, tgt, width=76):
+    """The stats block, as aligned rows.
+
+    A browser gets this as a card floated beside the text, the way an
+    encyclopedia entry does. A terminal gets the same rows in the same order
+    as an aligned table, because the alternative is a second set of facts
+    written for a second audience, and two sets drift.
+
+    Only durable rows belong here. Where the object is tonight lives in the
+    live block further down, under a heading that says so.
+    """
+    rows = []
+
+    def add(label, value):
+        if value:
+            rows.append((label, str(value)))
+
+    add("Type", _KIND_WORD.get(facts.get("kind"), "").capitalize() or None)
+    add("Symbol", PLANET_SYMBOLS.get(facts.get("object")))
+    # Same reasoning as the intro line: durable for a star, live for a planet.
+    if not _MOVES_AGAINST_THE_SKY(facts):
+        add("Constellation", facts.get("constellation"))
+    # Not for asterisms (a shape has no single brightness) and not for
+    # meteor radiants, whose "magnitude" is a stand-in resolve_target sets so
+    # dark_enough() picks the nautical-dark threshold. It is not a brightness
+    # and printing it as one invents a fact.
+    if tgt.get("mag") is not None and tgt.get("kind") not in ("asterism", "radiant"):
+        add("Magnitude", f"{tgt['mag']:.1f}")
+
+    st, pl = facts.get("star", {}), facts.get("planet", {})
+    add("Spectral type", st.get("spectral_type"))
+    if st.get("light_years"):
+        conf = st.get("distance_confidence")
+        ly = f"{st['light_years']:,.0f} light years"
+        add("Distance", ly if conf == "good" else f"about {ly}")
+    if st.get("double_separation"):
+        add("Double star", f"components {st['double_separation']:.1f}″ apart")
+    if st.get("period_days"):
+        add("Variable", f"eclipses every {st['period_days']:.4g} days")
+
+    if pl:
+        add("Distance", f"{pl['distance_au']:.2f} AU, "
+                        f"{pl['light_minutes']:.0f} light-minutes")
+        if pl.get("apparent_arcsec"):
+            add("Apparent size", f"{pl['apparent_arcsec']:.0f}″")
+        if pl.get("illuminated") is not None and pl["illuminated"] < 0.95:
+            add("Illuminated", f"{pl['illuminated']:.0%}")
+        if pl.get("ring_angle") is not None:
+            add("Rings", f"tilted {pl['ring_angle']:.0f}° to us")
+
+    size = facts.get("size_arcmin")
+    if size:
+        s = f"{size['maj']:g}′"
+        if size.get("min"):
+            s += f" × {size['min']:g}′"
+        moons = size["maj"] / 31.0
+        if moons >= 1:
+            s += f" ({moons:.0f}× the full Moon)" if moons >= 2 else " (a Moon-width)"
+        add("Apparent size", s)
+
+    if facts.get("star_count"):
+        add("Stars", facts["star_count"])
+    add("You need", facts.get("need"))
+
+    # The hand-written half: radius, moons, who found it, what we have sent
+    # to look at it. None of it is in any catalogue this repo ships, and none
+    # of it ever changes, which is exactly why it belongs on a page whose
+    # other half is redrawn every five minutes.
+    #
+    # Appended rather than merged, so a computed row and a written one can
+    # never quietly contradict each other -- where both exist, "Distance"
+    # from a parallax and "Distance" as a round published figure, only one is
+    # emitted (see the guard below).
+    b = facts.get("best_this_year")
+    if b and b.get("is_peak"):
+        add("Peak", b["date"])
+        if b.get("zhr"):
+            add("Rate at peak", f"up to {b['zhr']} an hour")
+
+    # Measured values from JPL Horizons, then the hand-written history.
+    # Each skipped where an earlier block already answered the same question,
+    # so an object never carries two answers to one label.
+    have = {k for k, _v in rows}
+    measured = [(k, v) for k, v in facts_table.measured(facts["object"])
+                if k not in have]
+    have |= {k for k, _v in measured}
+    written = [(k, v) for k, v in facts_table.for_object(facts["object"])
+               if k not in have]
+
+    # Grouped, because a planet now carries twenty rows and an
+    # undifferentiated wall of them is a table nobody reads. The headings are
+    # the ones an encyclopedia uses, for the same reason: what it looks like
+    # from here, what it physically is, and what we know about it are three
+    # different questions.
+    blocks = [(None, rows), ("Physical", measured), ("History", written)]
+    return [(t, r) for t, r in blocks if r]
+
+
+def infobox_text(blocks, indent="  "):
+    """The blocks as an aligned table, for a terminal.
+
+    A terminal can only align on a character grid, so the key column is
+    padded to the widest key and long values simply run on. The browser gets
+    the same rows as real markup instead, where they can wrap."""
+    if not blocks:
+        return ""
+    pad = max(len(k) for _t, r in blocks for k, _v in r)
+    out = []
+    for title, rws in blocks:
+        if title:
+            out += ["", f"{indent}{title}"]
+        out += [f"{indent}{k.ljust(pad)}   {v}" for k, v in rws]
+    return "\n".join(out)
+
+
+def infobox_html(blocks):
+    """The same rows as a description list, so values wrap instead of
+    scrolling.
+
+    A <pre> can only scroll: a long value like Saturn's moon count ran off
+    the side of a 390px sidebar with no way to read the rest. A <dl> laid out
+    as a two-column grid wraps the value and keeps the key on the first line
+    of it, which is what makes a wrapped row still read as one fact."""
+    if not blocks:
+        return ""
+    out = ['<dl class="obj-facts">']
+    for title, rows in blocks:
+        if title:
+            out.append(f'<dt class="obj-sec" role="presentation">'
+                       f'{html.escape(title)}</dt><dd class="obj-sec"></dd>')
+        for k, v in rows:
+            # Everything after the first comma is a conversion or a gloss on
+            # the number before it -- "9 Earths across", "1.06x Earth's",
+            # "-139 C". Set smaller and dimmer so the measurement itself
+            # carries the row and the restatement supports it.
+            head, sep, tail = str(v).partition(", ")
+            val = html.escape(head)
+            if sep:
+                val += f'<span class="sec">{html.escape(tail)}</span>'
+            out.append(f"<dt>{html.escape(str(k))}</dt><dd>{val}</dd>")
+    out.append("</dl>")
+    return "".join(out)
+
+
+
+# Names that take a plural verb. Every meteor shower does, by kind; these are
+# the ones that do without being one.
+_PLURAL_NAMES = frozenset({"Pleiades", "Hyades V", "The Pointers"})
+
+# Names that read wrong without a definite article. The Sun, the Moon and
+# every meteor shower take one by kind; these are the rest.
+_TAKES_THE = frozenset({"Pleiades", "Big Dipper", "Little Dipper",
+                        "Summer Triangle", "Winter Triangle", "Spring Triangle",
+                        "Northern Cross", "Southern Cross", "False Cross",
+                        "Great Square", "Winter Hexagon", "Great Diamond",
+                        "Double Cluster", "Teapot", "Sickle", "Keystone",
+                        "Hyades V", "Kite", "Milky Way"})
+
+# Everything in the solar system drifts against the background stars, so
+# anything derived from where it currently sits is a live fact rather than a
+# durable one. Everything else is fixed: Sirius has been in Canis Major for
+# the whole of recorded history and will be for the rest of it.
+_SOLAR_SYSTEM_KINDS = frozenset({"planet", "moon", "sun"})
+
+
+def _MOVES_AGAINST_THE_SKY(facts):
+    return facts.get("kind") in _SOLAR_SYSTEM_KINDS
+
+
+# Order from the Sun. Earth is third, which is why Mars is fourth.
+_PLANET_ORDER = {"Mercury": 1, "Venus": 2, "Mars": 4, "Jupiter": 5,
+                 "Saturn": 6, "Uranus": 7, "Neptune": 8}
+_ORDINALS = {1: "1st", 2: "2nd", 3: "3rd", 4: "4th", 5: "5th",
+             6: "6th", 7: "7th", 8: "8th"}
+
+# What kind of planet, which is the thing the ordinal alone does not say.
+# "The 6th planet in the solar system" is a position in a list; "a gas giant"
+# is what you are actually looking at.
+# The astronomical symbols. Neither bundled font has any of them and DejaVu
+# has all of them, so the PNG path picks them up through the same fallback
+# the deep-sky marks use; a terminal shows them if the reader's own font has
+# them, and a box if not, which is the same deal every other symbol on this
+# site offers.
+PLANET_SYMBOLS = {
+    "Sun": "\u2609", "Moon": "\u263e", "Mercury": "\u263f", "Venus": "\u2640",
+    "Mars": "\u2642", "Jupiter": "\u2643", "Saturn": "\u2644",
+    "Uranus": "\u2645", "Neptune": "\u2646",
+}
+
+_PLANET_CLASS = {
+    "Mercury": "a rocky world", "Venus": "a rocky world",
+    "Mars": "a rocky world",
+    "Jupiter": "a gas giant", "Saturn": "a gas giant",
+    "Uranus": "an ice giant", "Neptune": "an ice giant",
+}
+
+
+def object_descriptor(facts):
+    """What this object is, in a phrase that completes "X is ...".
+
+    One source for the page's opening line and the social card's subtitle, so
+    the two can never say different things about the same object.
+
+    Nothing here may depend on where the reader is or on the date. A planet
+    gets its place from the Sun rather than the constellation it is currently
+    crossing: the order never changes, and the constellation changes every
+    few months for a planet and every two or three days for the Moon.
+    """
+    kind = facts.get("kind")
+    if kind == "planet":
+        name = facts.get("object")
+        n = _PLANET_ORDER.get(name)
+        cls = _PLANET_CLASS.get(name)
+        if n and cls:
+            return f"the {_ORDINALS[n]} planet in the solar system, {cls}"
+        return (f"the {_ORDINALS[n]} planet in the solar system" if n
+                else "a planet in the solar system")
+    if kind == "sun":
+        return "the star we orbit"
+    if kind == "moon":
+        return "Earth's only moon"
+    word = _KIND_WORD.get(kind, "object")
+    article = "an" if word[0] in "aeiou" else "a"
+    con = facts.get("constellation")
+    if con and not _MOVES_AGAINST_THE_SKY(facts):
+        return f"{article} {word} in {con}"
+    return f"{article} {word}"
+
+
+def object_intro(facts, canonical, width=76):
+    """Title, one-line gloss and the paragraph under it.
+
+    Hand-written where we have one, generated from the catalogue where we do
+    not. The generated version is deliberately thin: it can only restate what
+    the infobox already says, and dressing that up as prose is the
+    programmatic filler that costs a site its standing rather than earning
+    it any.
+    """
+    import textwrap
+    # blurbs.py is parked, not deleted: the paragraphs read as generic
+    # astronomy filler next to the facts, which are specific to the object by
+    # construction. The file is still there if the one-line gloss earns a
+    # place later.
+    # blurbs.py is parked: the paragraphs read as generic astronomy filler
+    # next to facts that are specific to the object by construction. The
+    # opening line is the descriptor the social card uses as its subtitle,
+    # so the page and the card say the same thing.
+    gloss, blurb = object_descriptor(facts), None
+
+    # Meteor showers and a few clusters carry plural names, and "Perseids is
+    # the most reliable shower of the year" reads as a typo.
+    verb = "are" if (facts.get("kind") == "radiant"
+                     or canonical in _PLURAL_NAMES) else "is"
+    # Some names carry a definite article in ordinary use and read as a
+    # telegram without it: "Sun is the star we orbit", "Perseids are a
+    # meteor shower". Meteor showers all take one, by kind.
+    subject = (f"The {canonical}"
+               if (facts.get("kind") in ("sun", "moon", "radiant")
+                   or canonical in _TAKES_THE) else canonical)
+    out = [f"{subject} {verb} {gloss}."]
+    if blurb:
+        out.append("")
+        out.extend(textwrap.wrap(blurb, width))
+    return "\n".join(out)
+
+
 def compose_object(r, canonical):
     """The object page: the find view's chart and crosshair, with the object's
     own facts under it.
@@ -1199,6 +1517,51 @@ def compose_object(r, canonical):
     second implementation would be a second set of answers to drift apart.
     """
     r.find = canonical
+    # Now if it is up, the best moment tonight otherwise.
+    #
+    # _compose_find falls back to next_visible(), which returns the FIRST
+    # moment an object clears the horizon in a dark sky. For an object page
+    # that is the wrong question: it drew Saturn at 13 degrees in the east
+    # while the same page said it reaches 46 at 05:19, so the chart showed
+    # the least interesting view that qualified and disagreed with the line
+    # underneath it. When it is genuinely up now, now is still right.
+    #
+    # The shift has to be remembered. _compose_find reports whether IT moved
+    # the clock, and once the clock is moved before calling it, it sees a
+    # request for that moment and truthfully answers "now" -- so the page
+    # said "Right now from Zurich" at half past two in the afternoon with
+    # Saturn nowhere near the sky. shifted_to carries what actually happened.
+    shifted_to = None
+    real_now = r.when_utc
+    jd_now = julian(r.when_utc)
+    lst_now = (gmst_hours(jd_now) + r.place.lon / 15.0) % 24
+    tgt_now = resolve_target(canonical, jd_now, r.place.lat, lst_now)
+    if tgt_now is not None and not r.when_explicit:
+        # A meteor shower is a date, not a tonight. Its radiant clears the
+        # horizon on most nights of the year, so drawing tonight's sky put
+        # the Geminids on a page headed "Zurich tonight" in August, four
+        # months from anything falling. The peak is the only night that
+        # matters, so that is the night to draw.
+        if tgt_now.get("kind") == "radiant":
+            peak = objects.best_this_year(tgt_now, r.place.lat, r.place.lon,
+                                          r.when_utc)
+            at = peak and objects.best_tonight(
+                tgt_now, r.place.lat, r.place.lon,
+                peak["when_utc"] - dt.timedelta(hours=12))
+            if at:
+                shifted_to = at
+                r.when_utc = at
+                r.when_local = at + dt.timedelta(hours=r.place.offset(at))
+                r.find = canonical
+        up_now, _why = visibility(tgt_now, jd_now, r.place.lat, lst_now)
+        if shifted_to is None and not up_now:
+            best = objects.best_tonight(tgt_now, r.place.lat, r.place.lon,
+                                        r.when_utc)
+            if best:
+                shifted_to = best
+                r.when_utc = best
+                r.when_local = best + dt.timedelta(hours=r.place.offset(best))
+                r.find = canonical
     res = _compose_find(r)
     if res.status != 200:
         return res
@@ -1206,12 +1569,12 @@ def compose_object(r, canonical):
     # The find view tells us which moment it actually drew. When the object
     # is below the horizon that is the next time it is up, not now, and the
     # prose has to agree with the picture above it.
-    shown = None
+    shown = shifted_to
     raw = res.data.get("shown_utc")
-    if raw:
+    if raw and shown is None:
         try:
             parsed = dt.datetime.fromisoformat(raw.rstrip("Z"))
-            if abs((parsed - r.when_utc).total_seconds()) > 60:
+            if abs((parsed - real_now).total_seconds()) > 60:
                 shown = parsed
         except ValueError:
             pass
@@ -1224,14 +1587,123 @@ def compose_object(r, canonical):
         return res
 
     facts = object_facts(tgt, r, canonical, shown_utc=shown)
-    prose = object_prose(facts, tgt, r, width=_effective_width(r) - 4)
-    body = "\n".join(paint("  " + l if l else "", C.LABEL, r.color)
+    width = _effective_width(r) - 4
+    c = r.color
+
+    # Evergreen first, live second. Deliberately this way round.
+    #
+    # A crawler sees a different page every time it visits: the altitude has
+    # moved, the chart is redrawn, the rise time is an hour later. There is
+    # nothing for it to decide what /Venus is *about*. And a person arriving
+    # from a shared link is being told an azimuth before they have been told
+    # what they are looking at, which is an answer to a question they have
+    # not asked. What the object is does not change; where it is tonight
+    # depends entirely on the reader. So the first belongs on top, and the
+    # second belongs under a heading that says whose sky it is.
+    # The glyph in the chart's own colour for this object, not the heading's.
+    # Painting the whole line C.HEAD made every mark white, so Saturn's gold
+    # diamond and M31's green spiral both came out looking like plain text.
+    # Glyph AND name in the object's own colour, the way /catalog lists them.
+    # The catalog is where people first see these marks, so a page that
+    # colours the glyph and then prints the name in plain white reads as a
+    # different object than the row they clicked.
+    g = facts.get("glyph") or ""
+    gc = facts.get("glyph_ansi") or C.HEAD
+    head = ("  " + (paint(g, gc, c) + " " if g else "") + paint(canonical, gc, c))
+    intro = "\n".join(paint("  " + l if l else "", C.LABEL, c)
+                      for l in object_intro(facts, canonical, width).split("\n"))
+    blocks = object_infobox(facts, tgt, width)
+    box = infobox_text(blocks)
+    box = "\n".join(paint(l, C.MUTE, c) for l in box.split("\n")) if box else ""
+
+    # The heading names the moment the chart is actually drawn for.
+    #
+    # "Tonight from Zurich" was true and useless: the chart below it is drawn
+    # for one specific minute, chosen as the best of the night, and not
+    # saying which minute left the reader to find it in the timing line.
+    # Naming it makes the heading the answer to "when do I go outside".
+    #
+    # One space, not two, so the heading sits in the same column as the
+    # chart's altitude labels beneath it and the live half has one left edge.
+    # One line above the chart, not three.
+    #
+    # The heading, the timing row and the find view's summary all described
+    # the same moment and repeated each other: the object's name (the title
+    # already says it), its altitude (twice), and nine words of "next optimal
+    # sighting window from" wrapped around a timestamp. What is left is the
+    # when, the where to look, the brightness, and the shape of the night.
+    shown_local = facts.get("shown_utc")
+    if facts.get("is_now"):
+        stamp = "now"
+    elif shown_local:
+        when = dt.datetime.fromisoformat(shown_local.rstrip("Z"))
+        when += dt.timedelta(hours=r.place.offset(when))
+        # Always the date, never "tonight". A page can be drawn for a moment
+        # months away, and a reader who scrolls to it later has no idea when
+        # "tonight" was written. The date is never wrong.
+        stamp = f"{when:%a %-d %b} {when:%H:%M}"
+    else:
+        stamp = "tonight"
+
+    bits = [f"{r.place.name} {stamp}"]
+    if tgt.get("alt") is not None and tgt["alt"] > 0:
+        what = "radiant " if tgt.get("kind") == "radiant" else ""
+        bits.append(f"{what}{tgt['alt']:.0f}\u00b0 up in the {compass(tgt['az'])}")
+    if tgt.get("mag") is not None and tgt.get("kind") not in ("asterism", "radiant"):
+        bits.append(f"mag {tgt['mag']:.1f}")
+    timing = object_timing(facts)
+    if timing:
+        bits.append(timing)
+    live_head = paint(" " + "  \u00b7  ".join(bits), C.HEAD, c)
+
+    # And under it, quietly, what the line above actually is and when the
+    # year's best night falls. The condensed line answers "tonight"; this
+    # answers "is tonight worth it, or should I wait".
+    sub_bits = []
+    b = facts.get("best_this_year")
+    is_shower = bool(b and b.get("is_peak"))
+    if is_shower:
+        sub_bits.append("The chart is drawn for the peak night")
+    elif not facts.get("is_now"):
+        sub_bits.append("Next best sighting opportunity")
+    if b:
+        when = dt.datetime.fromisoformat(b["date"])
+        label = "peaks" if is_shower else "best this year"
+        sub_bits.append(f"{label} on {when:%-d %B %Y}")
+    # Each part is its own sentence, so each starts with a capital.
+    sub_bits = [b[0].upper() + b[1:] for b in sub_bits]
+    live_sub = paint(" " + ". ".join(sub_bits) + ".", C.MUTE, c) if sub_bits else ""
+
+    prose = object_prose(facts, tgt, r, width=width)
+    body = "\n".join(paint("  " + l if l else "", C.LABEL, c)
                      for l in prose.split("\n"))
 
-    text = strip_footer_line(res.text).rstrip() + "\n\n" + body + "\n\n" \
-        + _footer(r.place, r.color) + "\n"
+    parts = ["", head, "", intro]
+    if box:
+        parts += ["", box]
+    # The find view opens with its own header line ("Zurich 06 Aug 2026,
+    # finding Saturn, full panorama"), which directly under "Tonight from
+    # Zurich" says the place and the object twice in two lines.
+    live = strip_footer_line(res.text).rstrip()
+    live_lines = live.split("\n")
+    for i, l in enumerate(live_lines[:4]):
+        if "finding" in l and canonical.split()[0] in l:
+            live_lines.pop(i)
+            break
+    live = "\n".join(live_lines).strip("\n")
+
+    # Only the timing line goes above the chart. Everything else -- what it
+    # is crossing, how far, the rings, the best night this year -- reads
+    # after the picture, because it is context rather than a reason to go
+    # outside in the next hour.
+    parts += [OBJECT_SLOT, live_head, live_sub, OBJPROSE_SLOT, live, "",
+              body, "", _footer(r.place, c), ""]
+    text = "\n".join(parts)
     data = dict(res.data)
     data.update(facts)
+    # Carried so the browser can lay the same rows out as real markup rather
+    # than re-deriving them, and so ?format=json exposes them too.
+    data["infobox"] = [[t, [list(x) for x in r]] for t, r in blocks]
     return Result(text, data, 200)
 
 
@@ -1261,8 +1733,14 @@ def object_title(facts):
            f"{name.lower() if kind == 'planet' else name}{where} tonight"
 
 
+# Every kind sky.resolve_target() can return. Missing keys do not fail, they
+# fall through to "object" and print "a object in Ophiuchus", which is how
+# the cluster, nebula and planetary-nebula pages read before this. There is a
+# test walking the whole namespace so a new type cannot slip through.
 _KIND_WORD = {"planet": "planet", "star": "star", "moon": "moon", "sun": "sun",
-              "asterism": "asterism", "galaxy": "galaxy", "radiant": "meteor shower"}
+              "asterism": "asterism", "radiant": "meteor shower",
+              "galaxy": "galaxy", "cluster": "star cluster", "nebula": "nebula",
+              "planetary nebula": "planetary nebula"}
 
 
 def object_description(facts):
@@ -1343,16 +1821,211 @@ def object_head(facts, canonical, place, base_url):
     ])
 
 
-def object_html(r, canonical, text, data, place=None, base_url=""):
+# The heading keeps the monospace face -- it is the same object name the
+# chart and the catalog draw, and switching to a proportional font for one
+# line makes it read as a different thing. Just bigger, and with the colour
+# the ANSI already carries.
+OBJECT_CSS = """
+<style>
+/* Aligned with the text block below it, not with the page margin.
+   Every body line starts with two monospace spaces, so the heading needs
+   the same two-character indent -- but `ch` resolves against the element's
+   OWN font-size, and a 30px heading's `ch` is nearly three times the body's.
+   So the h1 keeps the body's 11px for measurement and the span inside it
+   carries the size. 2ch then means two body characters, exactly. */
+.obj-title{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  font-size:11px;padding-left:2ch;margin:1.5rem 0 .35rem;
+  line-height:38px;font-weight:600;letter-spacing:-.01em}
+.obj-title span{font-size:30px;vertical-align:middle}
+/* The glyph is a geometric mark and the name is lettering, so they do not
+   share a baseline: a diamond or a spiral sat low against the capitals.
+   Centring the mark on the text's own middle lines them up whatever glyph
+   the object happens to carry. */
+.obj-title span:first-child{display:inline-block;line-height:1;
+  transform:translateY(-.04em)}
+@media (max-width:600px){.obj-title{line-height:30px}.obj-title span{font-size:23px}}
+
+/* The static half and the live half, side by side. Sized off the chart: 110
+   monospace columns at 11px is about 726px, so the sidebar takes what is
+   left of the 1200px page cap. minmax keeps it from collapsing when the
+   chart happens to be narrower. */
+.obj-cols{display:grid;grid-template-columns:minmax(250px,390px) 1fr;
+  gap:0 30px;align-items:start;margin-top:2px}
+.obj-static{border-right:1px solid #1c2027;padding-right:24px}
+.obj-static pre,.obj-live pre{overflow-x:auto}
+
+/* The lede sentence and the fact rows. Proportional text, not monospace:
+   these are sentences and numbers to read, not a drawing to preserve. */
+.obj-lede{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  color:#c9d1d9;font-size:15px;line-height:1.5;margin:.1rem 0 1.1rem}
+/* The live column's heading is the same sentence-sized text as the lede
+   opposite it, and both sit at the top of their column so the two halves
+   start on one line rather than a few pixels apart. */
+.obj-live-head{margin:.1rem 0 .2rem;font-size:16.5px;color:#e6ebf2}
+.obj-subhead{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  font-size:12.5px;line-height:1.4;color:#7d8694;margin:0 0 .8rem}
+.obj-subhead a.ics{color:#8fb6e0;text-decoration:none;
+  border-bottom:1px dotted #4b5568}
+.obj-subhead a.ics:hover{color:#b7d4f5;border-bottom-color:#7f93ad}
+.ics-i{width:1em;height:1em;vertical-align:-.14em;margin-right:.35em}
+.obj-cols>*{margin-top:0}
+.obj-facts{display:grid;grid-template-columns:auto 1fr;gap:.42rem .95rem;
+  margin:0;font-size:13.5px;line-height:1.45}
+.obj-facts dt{color:#7d8694;white-space:nowrap;align-self:start}
+.obj-facts dd{color:#c9d1d9;margin:0;overflow-wrap:anywhere}
+/* The conversion after the number, not the number. */
+.obj-facts .sec{display:block;color:#8b93a3;font-size:12px;line-height:1.35;
+  margin-top:.05rem}
+/* The live half's prose, above its chart, in the chart's own face and size
+   so the two read as one block. */
+.obj-prose{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  font-size:12px;line-height:1.45;color:#adb6c4;margin:0 0 .7rem;
+  white-space:pre-wrap}
+/* Section headings span the pair and sit above their rows. */
+.obj-facts dt.obj-sec{grid-column:1 / -1;color:#8fb6e0;font-size:11px;
+  letter-spacing:.09em;text-transform:uppercase;margin:.85rem 0 .1rem}
+.obj-facts dd.obj-sec{display:none}
+@media (max-width:1000px){
+  .obj-cols{grid-template-columns:1fr;gap:0}
+  .obj-static{border-right:0;padding-right:0;border-bottom:1px solid #1c2027;
+    padding-bottom:12px;margin-bottom:14px}
+}
+</style>"""
+
+
+def _link_best_date(sub_html, canonical, data):
+    """Turn the best-night date into a calendar download.
+
+    A date on a page is a thing to forget; the same date in a calendar is a
+    thing that happens. The link is only added where the date actually
+    appears, so nothing changes for an object that has no best night."""
+    b = (data or {}).get("best_this_year")
+    if not b:
+        return sub_html
+    try:
+        when = dt.datetime.fromisoformat(b["date"])
+    except (ValueError, KeyError):
+        return sub_html
+    shown = f"{when:%-d %B %Y}"
+    if shown not in sub_html:
+        return sub_html
+    href = html.escape(f"/{quote(canonical)}/best.ics")
+    # Drawn as an SVG rather than set as an emoji: this line is monospace
+    # and a colour emoji lands in it as a different typeface at a different
+    # size. The mark inherits the link colour and scales with the text.
+    icon = ('<svg class="ics-i" viewBox="0 0 16 16" aria-hidden="true">'
+            '<rect x="1.5" y="3" width="13" height="11.5" rx="1.5" '
+            'fill="none" stroke="currentColor" stroke-width="1.3"/>'
+            '<path d="M1.5 6.5h13M5 1.5v3M11 1.5v3" stroke="currentColor" '
+            'stroke-width="1.3" stroke-linecap="round"/></svg>')
+    link = (f'<a class="ics" href="{href}" download '
+            f'title="add to calendar">{icon}{shown}</a>')
+    return sub_html.replace(shown, link, 1)
+
+
+def _first_para(text):
+    """The descriptor sentence, which is the SECOND non-empty line: the first
+    is the title, and that is emitted separately as the h1."""
+    seen = 0
+    for l in text.split("\n"):
+        if l.strip():
+            seen += 1
+            if seen == 2:
+                return l
+    return ""
+
+
+def _strip_title(text):
+    """Drop the heading line, which is emitted as an <h1> above the columns
+    rather than left at the top of the static block."""
+    lines = text.split("\n")
+    for i, l in enumerate(lines):
+        if l.strip():
+            return "\n".join(lines[i + 1:]).lstrip("\n")
+    return text
+
+
+def object_html(r, canonical, text, data, place=None, base_url="",
+                rungs=None, zenith="", prose="", static="", live_head="",
+                live_sub=""):
     """The browser page: the same chart and prose everything else gets, in
     the shared shell, with the object's own head."""
-    body = chart_pre(ansi_to_html(text))
-    head = object_head(data, canonical, place, base_url)
+    # Lift the title out of the <pre> and set it as a real heading.
+    #
+    # Inside the block it is locked to the monospace body size, and a page
+    # about one object should say which object at a glance. It also gives
+    # these pages the <h1> they had none of, which is the element a search
+    # engine reads as the subject of the page -- the <title> tag said Saturn
+    # and the document itself never did.
+    #
+    # The terminal keeps it in the text: there is nothing there to make
+    # bigger, and the coloured line is already the loudest thing on screen.
+    lines = text.split("\n")
+    heading, rest = "", text
+    for i, l in enumerate(lines):
+        if l.strip():
+            heading = ansi_to_html(l).strip()
+            rest = "\n".join(lines[i + 1:]).lstrip("\n")
+            break
+    # Two columns: what the object is, and what it is doing tonight.
+    #
+    # The split is not decoration. The left half is identical for every
+    # visitor on every day, which is what a search engine can index and what
+    # somebody arriving from a shared link needs before an altitude means
+    # anything to them. The right half is computed from the reader's own
+    # location and is redrawn every few minutes. Stacked, the durable facts
+    # and the perishable ones looked alike.
+    #
+    # The chart sets the geometry: 110 monospace columns at 11px is about
+    # 726px, so the sidebar takes what is left of the 1200px page cap. Below
+    # 1000px they stack, static first, because on a phone you scroll and the
+    # orientation should arrive before the numbers.
+    title_html = f'<h1 class="obj-title">{heading}</h1>' if heading else ""
+    fallback_static, _, live = rest.partition(OBJECT_SLOT)
+    if rungs:
+        # The live half through the same ladder the place page uses: every
+        # width in the markup, CSS picks one, the zenith inset floated over
+        # it and the prose pinned below.
+        #
+        # The static half is markup rather than preformatted text, because a
+        # <pre> can only scroll and this column has to wrap: Saturn's moon
+        # count ran off the side of the sidebar with no way to read the rest
+        # of it.
+        intro_txt = strip_ansi(_first_para(static)).strip()
+        static_html = (f'<p class="obj-lede">{html.escape(intro_txt)}</p>'
+                       if intro_txt else "") + infobox_html(data.get("infobox"))
+        live_html = ((f'<p class="obj-lede obj-live-head">{live_head}</p>'
+                      if live_head else "")
+                     + (f'<p class="obj-subhead">{_link_best_date(live_sub, canonical, data)}</p>'
+                        if live_sub.strip() else "")
+                     # prose still renders BELOW the chart. Only the summary
+                     # line moved up into the heading; everything else --
+                     # which constellation it is crossing, how far away, the
+                     # ring angle, the best night this year -- reads after
+                     # the picture, and passing "" here silently dropped all
+                     # of it.
+                     + chart_layout(rungs, zenith, prose))
+    elif live.strip():
+        static_html = chart_pre(ansi_to_html(fallback_static))
+        live_html = chart_pre(ansi_to_html(live))
+    else:
+        return title_html + chart_pre(ansi_to_html(rest)), None
+
+    body = title_html + ('<div class="obj-cols">'
+                         f'<aside class="obj-static">{static_html}</aside>'
+                         f'<div class="obj-live">{live_html}</div>'
+                         '</div>')
+    head = object_head(data, canonical, place, base_url) + OBJECT_CSS
+    # controls_html carries the drawer trigger as well as the explore row, so
+    # passing "" here gave the object pages a page with no way to open the
+    # drawer at all -- every other route builds it, and this one silently
+    # did not. /help and /legend pass exactly this.
     return _object_page_template().format(
         title=html.escape(object_title(data)),
         head_extra=head,
         header=header_html(r.place.name),
-        controls="", wide_class="", coming_up_card="",
+        controls=controls_html(EXPLORE),
+        wide_class=" w-wide", coming_up_card="",
         kbd_urls="{}", shortcuts_hint="", body=body)
 
 
@@ -1482,6 +2155,17 @@ CHART_LADDER = ((None, 80, True),    # 94ch rendered at its widest
 # callers and tests write.
 ZENITH_SLOT = "\x00\x01\x00"
 PROSE_SLOT = "\x00\x02\x00"
+# Where an object page divides: everything above it is true wherever you are,
+# everything below it is your sky tonight. A terminal drops the marker and
+# reads straight down; a browser splits on it and sets the two halves side by
+# side. Same mechanism the two slots above already use for the chart layout.
+OBJECT_SLOT = "\x00\x03\x00"
+# And where the live half's own prose ends and its chart begins. The prose
+# reads above the chart, not under it: "it rises at 23:03 and sets at 11:36,
+# highest at 05:19 when it reaches 46 degrees" is the sentence that tells you
+# whether to bother looking, so it belongs before the picture rather than
+# after it.
+OBJPROSE_SLOT = "\x00\x04\x00"
 
 
 def strip_slots(text):
@@ -3257,6 +3941,77 @@ def events_ics(r, base_url="https://skymap.sh", days=EVENTS_WINDOW_DAYS):
     return "\r\n".join(_ics_fold(x) for x in L) + "\r\n"
 
 
+def object_best_ics(r, canonical, facts, base_url="https://skymap.sh"):
+    """One calendar entry for this object's best night of the year.
+
+    A date on a page is a thing to forget. The same date in a calendar is a
+    thing that happens. Reuses the escaping and folding the events feed
+    already does, so a reader who subscribes to both gets consistent
+    entries.
+    """
+    b = facts.get("best_this_year")
+    if not b:
+        return None
+    p = r.place
+    # The calendar day is whichever day the viewing hour falls on. For a
+    # night that runs past midnight those differ, and the entry belongs on
+    # the day somebody would actually be outside.
+    day = (dt.datetime.fromisoformat(b["at"]).date() if b.get("at")
+           else dt.date.fromisoformat(b["date"]))
+    peak = bool(b.get("is_peak"))
+
+    # A timed window where we know the hour, an all-day entry where we do
+    # not. The good hours run past midnight, so the entry starts at the best
+    # moment and runs two hours, rather than claiming a whole calendar day
+    # that is mostly daylight.
+    at = b.get("at")
+    timed = bool(at)
+    if timed:
+        start_dt = dt.datetime.fromisoformat(at)
+        end_dt = start_dt + dt.timedelta(hours=2)
+    else:
+        start = day
+        end = day + dt.timedelta(days=1)
+    if peak:
+        summary = f"{canonical} peak"
+        detail = (f"The {canonical} peak tonight."
+                  + (f" Radiant {b['radiant_alt']:.0f} degrees up at midnight."
+                     if b.get("radiant_alt") is not None else "")
+                  + (f" Up to {b['zhr']} an hour at best." if b.get("zhr") else ""))
+    else:
+        summary = f"{canonical}: best night of the year"
+        detail = (f"{canonical} is best placed tonight from {p.name}: "
+                  f"{b['transit_alt']:.0f} degrees up"
+                  + (f", {b['dark_hours']:.1f} hours of darkness"
+                     if b.get("dark_hours") else "")
+                  + f", moon {b['moon_illum']:.0%} lit.")
+    url = f"{base_url}/{quote(canonical)}"
+    uid = f"best-{_norm_uid(canonical)}-{day:%Y%m%d}@skymap.sh"
+    L = ["BEGIN:VCALENDAR", "VERSION:2.0",
+         "PRODID:-//skymap.sh//object//EN", "CALSCALE:GREGORIAN",
+         "METHOD:PUBLISH",
+         "BEGIN:VEVENT",
+         f"UID:{uid}",
+         f"DTSTAMP:{r.when_utc:%Y%m%dT%H%M%S}Z",
+         # Floating local time, no Z and no TZID -- the same choice the
+         # events feed makes. The hour is quoted in the place's own clock,
+         # and a floating time shows at that wall reading wherever the
+         # reader's device happens to be.
+         (f"DTSTART:{start_dt:%Y%m%dT%H%M%S}" if timed
+          else f"DTSTART;VALUE=DATE:{start:%Y%m%d}"),
+         (f"DTEND:{end_dt:%Y%m%dT%H%M%S}" if timed
+          else f"DTEND;VALUE=DATE:{end:%Y%m%d}"),
+         f"SUMMARY:{_ics_escape(summary)}",
+         f"DESCRIPTION:{_ics_escape(detail + ' ' + url)}",
+         f"URL:{url}",
+         "END:VEVENT", "END:VCALENDAR"]
+    return "\r\n".join(_ics_fold(x) for x in L) + "\r\n"
+
+
+def _norm_uid(name):
+    return re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
+
+
 def _ics_span(e):
     """(start, end) for a calendar entry.
 
@@ -3793,8 +4548,12 @@ def _catalog_data():
     solar_system += [(nm, nm, "◆", PLANET_COLORS[nm]) for nm in
                      ("Mercury", "Venus", "Mars", "Jupiter", "Saturn", "Uranus", "Neptune")]
 
+    # Meteor showers. Every one has had its own page since the object
+    # namespace shipped; the catalogue simply never listed them, so the only
+    # way to find /Perseids was to already know it existed.
+    showers = sorted(sky._load("showers.json"), key=lambda x: -x["zhr"])
     return dict(solar_system=solar_system, asterisms=sorted(a["name"] for a in asterisms),
-               named_stars=named_stars, named_dso=named_dso)
+               showers=showers, named_stars=named_stars, named_dso=named_dso)
 
 
 def catalog_text(color=True):
@@ -3811,12 +4570,19 @@ def catalog_text(color=True):
 
     L = [
         "skymap.sh -- object catalog", "",
-        "Everything below is findable by name, e.g.:",
-        "  curl 'skymap.sh/Zurich?find=Vega'", "",
+        "Everything below has its own page:",
+        "  curl skymap.sh/Vega",
+        "  curl skymap.sh/M31            aliases work: NGC224, Andromeda Galaxy",
+        "  curl skymap.sh/Zurich/Saturn  or name the place yourself", "",
         head(f"SOLAR SYSTEM ({len(d['solar_system'])})"),
     ]
     for _nm, display, glyph, glyph_c in d["solar_system"]:
         L.append(f"  {P(glyph, glyph_c)} {display}")
+    L.append("")
+    L.append(head(f"METEOR SHOWERS ({len(d['showers'])}) -- strongest first"))
+    for sh in d["showers"]:
+        L.append(f"  {P(_SHOWER_GLYPH, C.LABEL)} {sh['name']:<27} "
+                 f"up to {sh['zhr']:>3}/hour")
     L.append("")
     L.append(head(f"CONSTELLATIONS ({len(d['asterisms'])})"))
     L += _columns(d["asterisms"], 18, 5)
@@ -3829,7 +4595,7 @@ def catalog_text(color=True):
         con = sky.CONSTELLATION_NAMES.get(s["c"], s["c"]) if s.get("c") else ""
         L.append(f"  {P(glyph, starcol)} {P(name, starcol)} mag {s['m']:>5.2f}  {con}")
     L.append("")
-    L.append(head(f"DEEP SKY ({len(d['named_dso'])}) -- ?dso=1, brightest first"))
+    L.append(head(f"DEEP SKY ({len(d['named_dso'])}) -- brightest first"))
     for o in d["named_dso"]:
         glyph, glyph_c = sky.DSO_GLYPH[o["t"]]
         label = _dso_label(o)
@@ -3859,36 +4625,52 @@ def _pad_html(visible_len, width):
 
 
 def catalog_html():
-    """Browser twin of catalog_text() -- every object links to /?find=<name>
-    (bare place, so it resolves through the visitor's own geo-IP fallback,
-    the same way a bare `curl skymap.sh` does) opened in a new tab, so
-    browsing the catalog never navigates away from the chart on screen.
-    DSOs additionally turn on ?dso=1&quadrant so the new tab shows the
-    deep-sky layer and quadrant grid, not just a bare star chart."""
+    """Browser twin of catalog_text() -- every object links to its own page.
+
+    These used to point at /?find=<name>, which framed the object on a chart
+    of the current sky. Every one of them now has a page of its own, and a
+    page is the better destination: it carries what the object is as well as
+    where it is tonight, it has a stable URL somebody can share, and it is
+    what a search engine indexes. All 486 catalog entries resolve, so nothing
+    here links into a 404.
+
+    Opened in a new tab, so browsing the catalog never navigates away from
+    the chart on screen."""
     def col(s, ansi):
         return f'<span style="color:{_ansi_hex(ansi)}">{html.escape(s)}</span>'
 
     def head(s):
         return col(s, C.HEAD)
 
+    def _href(name):
+        return html.escape("/" + quote(name))
+
     def link(name, extra=""):
-        href = html.escape(f"/?find={quote(name)}{extra}")
-        return f'<a href="{href}" target="_blank" rel="noopener">{html.escape(name)}</a>'
+        return (f'<a href="{_href(name)}" target="_blank" rel="noopener">'
+                f'{html.escape(name)}</a>')
 
     def link_col(name, ansi, extra="", href_name=None):
-        href = html.escape(f"/?find={quote(href_name or name)}{extra}")
-        return (f'<a href="{href}" target="_blank" rel="noopener">'
+        # href_name matters for the deep sky, where the label reads
+        # "M31 (Andromeda Galaxy)" and only the bare designation resolves.
+        return (f'<a href="{_href(href_name or name)}" target="_blank" rel="noopener">'
                 f'<span style="color:{_ansi_hex(ansi)}">{html.escape(name)}</span></a>')
 
     d = _catalog_data()
 
     L = [
         "skymap.sh -- object catalog", "",
-        "Everything below opens the current sky with that object framed, in a new tab.", "",
+        "Everything below has its own page. Opens in a new tab.", "",
         head(f"SOLAR SYSTEM ({len(d['solar_system'])})"),
     ]
     for nm, display, glyph, glyph_c in d["solar_system"]:
         L.append(f"  {col(glyph, glyph_c)} {link_col(display, glyph_c, href_name=nm)}")
+    L.append("")
+    L.append(head(f"METEOR SHOWERS ({len(d['showers'])}) -- strongest first"))
+    for sh in d["showers"]:
+        nm = sh["name"]
+        L.append(f"  {col(_SHOWER_GLYPH, C.LABEL)} "
+                 f"{link_col(nm, C.LABEL) + _pad_html(len(nm), 27)}"
+                 f" up to {sh['zhr']:>3}/hour")
     L.append("")
     L.append(head(f"CONSTELLATIONS ({len(d['asterisms'])})"))
     for i in range(0, len(d["asterisms"]), 5):
@@ -3920,6 +4702,9 @@ def catalog_html():
 # one either), kept visually distinct from a named star's filled/magnitude
 # glyph and a planet's solid diamond.
 _ASTERISM_GLYPH = ("✧", "#8b949e")
+# The same mark api.object_glyph() gives a meteor radiant, so the catalogue
+# row and the page it links to show the same symbol.
+_SHOWER_GLYPH = "☄"
 
 COMPLETE_OBJECT_CAP = 24   # same reasoning as COMPLETE_PREFIX_CAP
 

@@ -1530,41 +1530,56 @@ class CatalogText(unittest.TestCase):
 
 class CatalogHtml(unittest.TestCase):
     """catalog_html() is the browser-only twin of catalog_text() -- every
-    object is a link to /?find=<name> opened in a new tab, so browsing the
-    catalog never navigates away from the chart on screen. A bare place
-    (no city in the path) resolves through the visitor's own geo-IP fallback
-    in the new tab, same as curl skymap.sh with no place given."""
+    object links to its own page, opened in a new tab so browsing the catalog
+    never navigates away from the chart on screen.
 
-    def test_a_star_links_to_a_bare_find_in_a_new_tab(self):
+    These used to link to /?find=<name>, which framed the object on a chart
+    of the current sky. Every catalogue entry now has a page of its own, and
+    a page is the better destination: it says what the object is as well as
+    where it is tonight, it has a stable URL worth sharing, and it is what a
+    search engine indexes."""
+
+    def test_a_star_links_to_its_own_page_in_a_new_tab(self):
         h = api.catalog_html()
-        self.assertIn('href="/?find=Sirius" target="_blank" rel="noopener"', h)
+        self.assertIn('href="/Sirius" target="_blank" rel="noopener"', h)
 
     def test_moon_link_uses_the_plain_name_not_the_phase_annotated_display(self):
-        # Displayed as "Moon (waning gibbous)" or similar, but resolve_target
-        # only matches the bare word "moon" -- the phase text in parens
-        # would never resolve if it leaked into the href.
+        # Displayed as "Moon (waning gibbous)" or similar, but only the bare
+        # word resolves -- the phase text in parens would 404 if it leaked
+        # into the href.
         import sky
         h = api.catalog_html()
-        self.assertIn('href="/?find=Moon" target="_blank" rel="noopener"', h)
+        self.assertIn('href="/Moon" target="_blank" rel="noopener"', h)
         age = sky.moon(sky.julian(dt.datetime.utcnow()))["age"]
         self.assertIn(f"Moon ({sky.phase_name(age)})", h)
 
     def test_a_multi_word_name_is_url_encoded(self):
         h = api.catalog_html()
-        self.assertIn("find=Big%20Dipper", h)
+        self.assertIn('href="/Big%20Dipper"', h)
 
-    def test_a_dso_links_with_dso_and_quadrant_turned_on(self):
+    def test_a_dso_links_by_designation_not_by_its_whole_label(self):
         h = api.catalog_html()
         # Displayed as "M31 (Andromeda Galaxy)" but the href must use the
-        # canonical short id, not the whole parenthesised label.
-        self.assertIn("href=\"/?find=M31&amp;dso=1&amp;quadrant\"", h)
+        # canonical short id, not the whole parenthesised label, which does
+        # not resolve to anything.
+        self.assertIn('href="/M31"', h)
         self.assertIn(">M31 (Andromeda Galaxy)<", h)
 
-    def test_a_non_dso_link_does_not_carry_dso_or_quadrant(self):
+    def test_no_link_still_points_at_the_old_find_view(self):
         h = api.catalog_html()
-        sirius_link = h[h.index('href="/?find=Sirius"'):][:120]
-        self.assertNotIn("dso=1", sirius_link)
-        self.assertNotIn("quadrant", sirius_link)
+        self.assertNotIn("/?find=", h)
+
+    def test_every_catalog_link_resolves_to_a_real_object(self):
+        """486 entries, and a catalogue that links into a 404 is worse than
+        one that does not link at all."""
+        import objects
+        d = api._catalog_data()
+        targets = ([nm for nm, _d, _g, _c in d["solar_system"]]
+                   + list(d["asterisms"])
+                   + [s["n"] for s in d["named_stars"]]
+                   + [o["n"] for o in d["named_dso"]])
+        broken = [t for t in targets if objects.resolve_name(t) is None]
+        self.assertEqual(broken, [], f"catalog links with no page: {broken}")
 
     def test_planets_get_distinct_colours_not_one_shared_colour(self):
         h = api.catalog_html()

@@ -410,3 +410,479 @@ def test_planet_distance_drift_is_below_what_the_card_prints():
     for name in ("Saturn", "Jupiter", "Mars"):
         assert _card_state(name, base) == _card_state(name, base + dt.timedelta(days=7)), \
             f"{name} drifted visibly within a week"
+
+
+# ------------------------------------------------- the evergreen intro
+def test_every_kind_has_an_intro_word(client):
+    """A kind with no entry does not fail, it falls through to "object" and
+    prints "NGC6304 is a object in Ophiuchus"."""
+    import datetime as dt
+    import api, sky
+    jd = sky.julian(dt.datetime(2026, 8, 5))
+    lst = (sky.gmst_hours(jd) + 8.54 / 15.0) % 24
+    kinds = {sky.resolve_target(n, jd, 47.38, lst)["kind"]
+             for n in objects.all_names()
+             if sky.resolve_target(n, jd, 47.38, lst)}
+    missing = sorted(k for k in kinds if k not in api._KIND_WORD)
+    assert not missing, f"kinds with no word for the intro line: {missing}"
+
+
+@pytest.mark.parametrize("name, want", [
+    ("NGC6304", " is a star cluster in "),
+    ("Perseids", "Perseids are "),
+    ("Pleiades", "Pleiades are "),
+    ("Saturn", "Saturn is the 6th planet in the solar system, a gas giant."),
+])
+def test_intro_line_reads_correctly(client, name, want):
+    assert want in body(client.get(f"/{name}", headers=CURL))
+
+
+def test_a_radiant_has_no_magnitude_row(client):
+    """resolve_target gives a radiant a stand-in magnitude so dark_enough()
+    picks the nautical threshold. It is not a brightness, and an infobox row
+    saying "Magnitude 2.5" invents one.
+
+    Scoped to the infobox on purpose. sky.find_text() prints the same
+    stand-in in the ?find= guide text under every chart, which is the same
+    bug in a shared view -- but that view is the render engine every chart
+    goes through, so fixing it there is its own change, not a side effect of
+    this one."""
+    import api, sky, datetime as dt
+    jd = sky.julian(dt.datetime(2026, 8, 5))
+    lst = (sky.gmst_hours(jd) + 8.54 / 15.0) % 24
+    tgt = sky.resolve_target("Perseids", jd, 47.38, lst)
+    r = api.Request(place="Zurich")
+    facts = api.object_facts(tgt, r, "Perseids")
+    assert "Magnitude" not in api.infobox_text(api.object_infobox(facts, tgt))
+
+
+def test_the_glyph_keeps_its_own_colour(client):
+    """Painting the whole heading line one colour made every mark white, so
+    Saturn's gold diamond and M31's green spiral looked like plain text."""
+    import api
+    saturn = client.get("/Saturn?format=json").json()
+    m31 = client.get("/Andromeda Galaxy?format=json").json()
+    assert saturn["glyph_ansi"] != m31["glyph_ansi"]
+    raw = client.get("/Saturn", headers=CURL).text
+    assert saturn["glyph_ansi"] + saturn["glyph"] in raw, \
+        "the glyph is not painted in its own colour"
+
+
+def test_the_page_does_not_name_the_place_twice_running(client):
+    """The find view opens with its own header, which under "Tonight from
+    Zurich" said the place and the object again two lines later."""
+    lines = [l.strip() for l in body(client.get("/Saturn", headers=CURL)).split("\n")]
+    i = next(i for i, l in enumerate(lines) if l.startswith("Zurich "))
+    assert not any("finding Saturn" in l for l in lines[i:i + 3])
+
+
+def test_blurbs_all_key_to_real_objects():
+    import blurbs
+    bad = [k for k in blurbs.BLURBS if objects.resolve_name(k) != k]
+    assert not bad, f"blurb keys that do not resolve to themselves: {bad}"
+
+
+def test_blurbs_carry_no_em_dashes():
+    import blurbs
+    bad = [k for k, (g, b) in blurbs.BLURBS.items() if "—" in g or "—" in b]
+    assert not bad, f"blurbs containing an em dash: {bad}"
+
+
+def test_objects_without_a_blurb_still_get_an_intro(client):
+    t = body(client.get("/NGC6304", headers=CURL))
+    assert "NGC6304 is a star cluster in Ophiuchus." in t
+
+
+# --------------------------------------------------------- the fact tables
+def test_fact_keys_all_resolve_to_real_objects():
+    import facts, objects
+    bad = [k for k in facts.FACTS if objects.resolve_name(k) != k]
+    assert not bad, f"fact keys that do not resolve to themselves: {bad}"
+
+
+def test_facts_carry_no_em_dashes():
+    import facts
+    bad = [(k, f) for k, rec in facts.FACTS.items()
+           for f, v in rec.items() if "—" in str(v)]
+    assert not bad, f"facts containing an em dash: {bad}"
+
+
+def test_every_fact_field_has_a_label():
+    """A field with no entry in FIELD_ORDER is written and never printed,
+    which is the quiet kind of wrong."""
+    import facts
+    known = {k for k, _label in facts.FIELD_ORDER}
+    used = {f for rec in facts.FACTS.values() for f in rec}
+    assert used <= known, f"fields that would never print: {sorted(used - known)}"
+
+
+@pytest.mark.parametrize("name, label, fragment", [
+    ("Saturn", "Moons", "274"),
+    ("Saturn", "Missions", "Cassini"),
+    ("Uranus", "Discovered", "Herschel"),
+    ("Andromeda Galaxy", "First photographed", "Isaac Roberts"),
+    ("Perseids", "Debris from", "Swift-Tuttle"),
+    ("Algol", "Discovered", "Goodricke"),
+])
+def test_facts_reach_the_page(client, name, label, fragment):
+    t = body(client.get(f"/{name}", headers=CURL))
+    assert label in t and fragment in t
+
+
+def test_a_written_fact_never_overrides_a_computed_one(client):
+    """Algol's distance is computed from its Hipparcos parallax and also
+    written down as a round figure. Printing both would be one object with
+    two distances."""
+    t = body(client.get("/Algol", headers=CURL))
+    assert t.count("Distance") == 1
+
+
+def test_objects_without_facts_still_render(client):
+    """36 objects have entries; the other 1,180 fall back to what the
+    catalogues can compute, and must not break."""
+    t = body(client.get("/NGC6304", headers=CURL))
+    assert "NGC6304 is a star cluster in Ophiuchus." in t
+    assert "Constellation" in t
+
+
+def test_an_object_page_has_the_drawer(client):
+    """controls_html carries the drawer trigger as well as the explore row.
+    Passing "" for controls gave object pages no way to open the drawer at
+    all, and nothing failed -- the page just quietly lacked it."""
+    h = client.get("/Saturn", headers=BROWSER).text
+    for marker in ('id="drawer-trigger"', 'aria-controls="drawer"'):
+        assert marker in h, f"object page is missing {marker}"
+
+
+def test_the_object_page_carries_the_same_controls_as_a_place_page(client):
+    obj = client.get("/Saturn", headers=BROWSER).text
+    place = client.get("/Zurich", headers=BROWSER).text
+    assert obj.count("drawer-trigger") == place.count("drawer-trigger")
+
+
+@pytest.mark.parametrize("name, want", [
+    ("Sun", "The Sun is the star we orbit."),
+    ("Moon", "The Moon is Earth's only moon."),
+    ("Perseids", "The Perseids are a meteor shower"),
+    ("Pleiades", "The Pleiades are a star cluster"),
+    ("Saturn", "Saturn is the 6th planet in the solar system, a gas giant."),
+    ("Sirius", "Sirius is a star in Canis Major."),
+])
+def test_the_opening_line(client, name, want):
+    assert want in body(client.get(f"/{name}", headers=CURL))
+
+
+def test_the_page_and_the_card_describe_an_object_the_same_way(client):
+    """One descriptor feeds both, so a card and the page it links to can
+    never say different things about the same object."""
+    import api, card
+    for name in ("Saturn", "Sirius", "Perseids", "Moon", "Andromeda Galaxy"):
+        d = client.get(f"/{name}?format=json").json()
+        page = api.object_descriptor(d)
+        sub = card._subtitle(d)
+        assert sub.lower().lstrip() in page.lower(), \
+            f"{name}: card says {sub!r}, page says {page!r}"
+
+
+def test_a_planets_evergreen_line_does_not_name_a_constellation(client):
+    """A planet crosses one every few months and the Moon every two or three
+    days, so naming it in the block whose job is to hold still puts a live
+    fact in the first sentence a crawler reads."""
+    for name in ("Saturn", "Mars", "Moon", "Sun"):
+        d = client.get(f"/{name}?format=json").json()
+        assert d["constellation"] not in api_descriptor(d), name
+
+
+def api_descriptor(d):
+    import api
+    return api.object_descriptor(d)
+
+
+def test_a_fixed_objects_evergreen_line_does_name_its_constellation(client):
+    """Sirius has been in Canis Major for the whole of recorded history."""
+    for name in ("Sirius", "Andromeda Galaxy", "Big Dipper"):
+        d = client.get(f"/{name}?format=json").json()
+        assert d["constellation"] in api_descriptor(d), name
+
+
+def test_the_title_is_a_real_heading(client):
+    """The <title> tag said Saturn and the document itself never did: these
+    pages had no h1 at all, which is the element a search engine reads as the
+    subject of the page."""
+    h = client.get("/Saturn", headers=BROWSER).text
+    assert '<h1 class="obj-title">' in h
+    assert h.count("<h1") == 1, "exactly one heading"
+    assert "Saturn</span></h1>" in h
+
+
+def test_the_title_carries_the_objects_own_colour(client):
+    """The catalog lists these in the colour the chart draws them, so a page
+    that colours the glyph and prints the name in plain white reads as a
+    different object than the row that was clicked."""
+    import re
+    for name in ("Saturn", "Betelgeuse", "Andromeda Galaxy"):
+        d = client.get(f"/{name}?format=json").json()
+        h = client.get(f"/{name}", headers=BROWSER).text
+        h1 = re.search(r'<h1 class="obj-title">(.*?)</h1>', h).group(1)
+        assert h1.count(d["glyph_color"]) == 2, \
+            f"{name}: glyph and name should share the object's colour"
+
+
+def test_the_title_is_not_repeated_in_the_body(client):
+    """It is lifted out of the static block into the h1, not copied out of
+    it. The static half is a description list now rather than preformatted
+    text, so this checks the block itself rather than a <pre>."""
+    import re
+    h = client.get("/Saturn", headers=BROWSER).text
+    aside = re.search(r'<aside class="obj-static">(.*?)</aside>', h, re.S).group(1)
+    assert "obj-title" not in aside
+    lede = re.search(r'obj-lede">([^<]+)', aside).group(1)
+    assert lede.startswith("Saturn is"), lede
+
+
+def test_the_terminal_keeps_its_title(client):
+    """There is nothing to make bigger in a terminal, and the coloured line
+    is already the loudest thing on screen."""
+    t = body(client.get("/Saturn", headers=CURL))
+    assert t.strip().split("\n")[0].strip().endswith("Saturn")
+
+
+def test_the_browser_splits_static_from_live(client):
+    """Left half is identical for every visitor on every day, which is what a
+    crawler indexes and what a newcomer needs before an altitude means
+    anything. Right half is computed from their own location."""
+    h = client.get("/Saturn", headers=BROWSER).text
+    for cls in ('class="obj-cols"', 'class="obj-static"', 'class="obj-live"'):
+        assert cls in h, f"missing {cls}"
+
+
+def test_the_static_half_holds_the_durable_facts(client):
+    import re
+    h = client.get("/Saturn", headers=BROWSER).text
+    static = re.search(r'<aside class="obj-static">(.*?)</aside>', h, re.S).group(1)
+    for durable in ("Radius", "Escape velocity", "Discovered", "Missions"):
+        assert durable in static, f"{durable} should be in the static half"
+    for live in ("Tonight from", "Next chance"):
+        assert live not in static, f"{live} should not be in the static half"
+
+
+def test_the_live_half_holds_tonights_sky(client):
+    import re
+    h = client.get("/Saturn", headers=BROWSER).text
+    live = re.search(r'<div class="obj-live">(.*)', h, re.S).group(1)
+    assert re.search(r"Zurich (now|tonight|\w{3} \d)", live)
+    assert "Escape velocity" not in live
+
+
+def test_a_terminal_never_sees_the_split_marker(client):
+    """It is a browser layout hint. A terminal reads straight down through
+    both halves and must not receive a stray control sequence."""
+    import api
+    for path in ("/Saturn", "/Sirius", "/Perseids"):
+        raw = client.get(path, headers=CURL).text
+        assert api.OBJECT_SLOT not in raw
+        assert "\x00" not in raw
+
+
+def test_json_never_sees_the_split_marker(client):
+    import json as _json
+    assert "\x00" not in _json.dumps(client.get("/Saturn?format=json").json())
+
+
+# ------------------------------------------------ the browser layout
+def test_the_object_page_uses_the_full_width(client):
+    assert "w-wide" in client.get("/Saturn", headers=BROWSER).text
+
+
+def test_the_chart_goes_through_the_width_ladder(client):
+    """Every rung in the markup, CSS picks the one that fits, nothing
+    measures and nothing reloads -- the same mechanism the place page uses."""
+    import api
+    h = client.get("/Saturn", headers=BROWSER).text
+    assert h.count('class="chart-pre"') == len(api.CHART_LADDER)
+
+
+def test_the_zenith_is_an_inset(client):
+    """panel=True is what makes the find view emit the inset as its own
+    piece. Object pages never asked for it, so they had none."""
+    assert 'id="chart-zenith"' in client.get("/Saturn", headers=BROWSER).text
+
+
+def test_the_static_facts_wrap_rather_than_scroll(client):
+    """A <pre> can only scroll, and Saturn's moon count ran off the side of
+    the sidebar with no way to read the rest."""
+    import re
+    h = client.get("/Saturn", headers=BROWSER).text
+    aside = re.search(r'<aside class="obj-static">(.*?)</aside>', h, re.S).group(1)
+    assert '<dl class="obj-facts">' in aside
+    assert "<pre" not in aside, "the static half must not be preformatted"
+    rows = re.findall(r"<dt>([^<]+)</dt><dd>(.*?)</dd>", aside)
+    assert len(rows) > 10
+    plain = [re.sub(r"<[^>]+>", "", v) for _k, v in rows]
+    assert any(len(v) > 40 for v in plain), "expected a value long enough to wrap"
+
+
+def test_the_conversion_half_of_a_value_is_marked_secondary(client):
+    """"58,232 km, 9 Earths across" is one measurement and one restatement of
+    it. The restatement is set smaller and dimmer so the number carries the
+    row."""
+    import re
+    h = client.get("/Saturn", headers=BROWSER).text
+    m = re.search(r"<dt>Radius</dt><dd>([^<]*)<span class=\"sec\">([^<]*)</span>", h)
+    assert m, "radius was not split into primary and secondary"
+    assert m.group(1).strip() == "58,232 km"
+    assert "Earths" in m.group(2)
+
+
+def test_a_planet_carries_its_symbol(client):
+    import re
+    for name, sym in (("Saturn", "\u2644"), ("Venus", "\u2640"),
+                      ("Mars", "\u2642"), ("Jupiter", "\u2643")):
+        h = client.get(f"/{name}", headers=BROWSER).text
+        m = re.search(r"<dt>Symbol</dt><dd>([^<]*)", h)
+        assert m and sym in m.group(1), f"{name} is missing {sym}"
+
+
+def test_the_summary_is_in_the_heading_not_repeated_below(client):
+    """The find view's summary line moved up into the condensed heading.
+    Everything else it emits -- constellation, distance, rings, best this
+    year -- still reads below the chart, and dropping that whole block by
+    accident is exactly what happened once."""
+    import re, html as _h
+    h = client.get("/Saturn", headers=BROWSER).text
+    prose = re.search(r'id="chart-prose">(.*?)</pre>', h, re.S).group(1)
+    txt = _h.unescape(re.sub(r"<[^>]+>", "", prose))
+    for keep in ("crossing", "AU away", "rings are tilted", "Best this year"):
+        assert keep in txt, f"the prose lost {keep!r}"
+    assert "mag 1.0" not in txt, "the summary line should not be repeated"
+
+
+def test_the_infobox_rows_reach_json(client):
+    d = client.get("/Saturn?format=json").json()
+    blocks = d["infobox"]
+    titles = [t for t, _r in blocks]
+    assert "Physical" in titles and "History" in titles
+
+
+def test_no_raw_ansi_reaches_the_browser(client):
+    """The inset and the prose need converting as much as the chart does.
+    Passing them through raw put escape sequences on the page as literal
+    text and the unwrapped result overflowed its column."""
+    for path in ("/Saturn", "/Sirius", "/Andromeda Galaxy", "/Perseids"):
+        h = client.get(path, headers=BROWSER).text
+        assert "\x1b[" not in h, f"{path} leaked an escape sequence"
+        assert "[38;5;" not in h, f"{path} leaked a colour code as text"
+
+
+def test_the_inset_and_prose_are_markup(client):
+    import re
+    h = client.get("/Saturn", headers=BROWSER).text
+    # chart-prose no longer exists: the summary line reads above the chart
+    # with the timing line rather than beneath it.
+    m = re.search(r'id="chart-zenith"[^>]*>(.*?)</pre>', h, re.S)
+    assert m, "chart-zenith missing"
+    assert "<span" in m.group(1), "chart-zenith was not converted"
+    m = re.search(r'id="chart-prose">(.*?)</pre>', h, re.S)
+    assert m, "chart-prose missing"
+    assert "<span" in m.group(1), "chart-prose was not converted"
+
+
+def test_the_heading_never_claims_now_when_it_is_not(client):
+    """The clock is moved to the best moment before the find view runs, so
+    that view truthfully reports "now" for a moment that is not now. The
+    shift has to be remembered rather than inferred, or the page says
+    "Right now from Zurich" in the middle of the afternoon."""
+    import datetime as dt
+    d = client.get("/Saturn?format=json").json()
+    if not d.get("is_now"):
+        assert "Right now" not in body(client.get("/Saturn", headers=CURL))
+    shown = dt.datetime.fromisoformat(d["shown_utc"].rstrip("Z"))
+    now = dt.datetime.utcnow()
+    if abs((shown - now).total_seconds()) > 3600:
+        assert d["is_now"] is False, "a shifted chart must not be flagged as now"
+
+
+def test_the_timing_line_is_condensed(client):
+    """Rise, set and high point as arrows above the chart, not a sentence
+    under it."""
+    t = body(client.get("/Saturn", headers=CURL))
+    assert "↑ " in t and "↓ " in t and "⌃ " in t
+    assert "It rises at" not in t, "the sentence form should be gone"
+
+
+def test_the_best_moment_is_actually_dark(client):
+    """next_visible returns the FIRST moment an object clears the horizon.
+    An object page wants the best one, and best means dark: a sign error in
+    the local-midnight calculation had Andromeda's 'best' moment landing in
+    bright twilight, 20 degrees of altitude worse than the real answer."""
+    import datetime as dt
+    import objects, sky
+    now = dt.datetime.utcnow()
+    jd = sky.julian(now)
+    lst = (sky.gmst_hours(jd) + 8.54 / 15.0) % 24
+    for name in ("Andromeda Galaxy", "Ring Nebula"):
+        t = sky.resolve_target(name, jd, 47.38, lst)
+        best = objects.best_tonight(t, 47.38, 8.54, now)
+        if best is None:
+            continue
+        sun_alt = sky.sun_altaz(best, 47.38, 8.54)[0]
+        assert sun_alt < -12, f"{name}: best moment has the sun at {sun_alt:.1f}"
+
+
+# ------------------------------------------------- the best-night calendar
+def test_the_best_night_downloads_as_a_calendar_entry(client):
+    """A date on a page is a thing to forget. The same date in a calendar is
+    a thing that happens."""
+    r = client.get("/Saturn/best.ics")
+    assert r.status_code == 200
+    assert r.headers["content-type"].startswith("text/calendar")
+    body_ = r.text
+    for required in ("BEGIN:VCALENDAR", "BEGIN:VEVENT", "DTSTART:",
+                     "SUMMARY:", "END:VEVENT", "END:VCALENDAR"):
+        assert required in body_, f"missing {required}"
+    assert body_.endswith("\r\n"), "iCalendar wants CRLF line endings"
+
+
+def test_the_calendar_entry_matches_the_page(client):
+    import re
+    d = client.get("/Saturn?format=json").json()
+    ics = client.get("/Saturn/best.ics").text
+    # One date across the page and the calendar. The night a shower peaks
+    # and the hour worth being outside are usually different days, and each
+    # surface picking its own named two days for one event.
+    day = d["best_this_year"]["date"].replace("-", "")
+    assert f"DTSTART:{day}T" in ics
+
+
+def test_a_shower_calendar_entry_says_peak(client):
+    ics = client.get("/Perseids/best.ics").text
+    assert "Perseids peak" in ics
+    assert "an hour at best" in ics
+
+
+def test_the_date_on_the_page_links_to_the_calendar(client):
+    h = client.get("/Saturn", headers=BROWSER).text
+    assert 'href="/Saturn/best.ics"' in h
+    assert "download" in h
+
+
+def test_best_ics_404s_for_an_unknown_object(client):
+    assert client.get("/nonsense/best.ics").status_code == 404
+
+
+def test_a_shower_is_not_sold_as_a_tonight(client):
+    """The Geminids radiant is above the horizon most nights of the year.
+    "Next best sighting opportunity, tonight" read as an invitation to go
+    out for them in August."""
+    t = body(client.get("/Geminids", headers=CURL))
+    assert "Next best sighting opportunity" not in t
+    assert "The chart is drawn for the peak night" in t
+    assert "Peaks on" in t
+    assert "tonight" not in t.split("Peaks on")[0].split("Zurich")[-1]
+
+
+def test_a_shower_headline_says_radiant(client):
+    """12 degrees up is the radiant's altitude, not the shower's."""
+    t = body(client.get("/Geminids", headers=CURL))
+    line = next(l for l in t.split("\n") if l.strip().startswith("Zurich "))
+    assert "radiant" in line, line
