@@ -17,7 +17,7 @@ from fastapi.responses import (PlainTextResponse, HTMLResponse, JSONResponse,
                                StreamingResponse, FileResponse, Response,
                                RedirectResponse)
 
-import api, gif, sky, tle
+import api, gif, objects, sky, tle
 
 app = FastAPI(title="skymap.sh", docs_url=None, redoc_url=None)
 
@@ -73,6 +73,9 @@ DAY_BUCKET = 900            # seconds
 NIGHT_TTL, DAY_TTL = 420, 1200        # origin holds a little past the bucket
 NIGHT_EDGE, DAY_EDGE = 300, 900
 CACHE_MAX = 3000
+# The social card is a 1200x630 raster, not a terminal view, so it gets its
+# own width rather than the chart default.
+OG_WIDTH = 140
 _cache = OrderedDict()      # key -> (expires_at, Result)
 _hits = _misses = 0
 
@@ -89,6 +92,10 @@ STARTED = time.time()
 _stat = Counter()
 _places = Counter()
 _finds = Counter()
+# Which objects get looked up, same shape as _finds and _places. Object pages
+# are their own namespace, so mixing them into _finds would make that
+# leaderboard mean two different things at once.
+_objects = Counter()
 # Separate from _places -- that one only counts the text/ASCII route (via
 # _tally(), which sphere_page() never calls), so which cities people want
 # to actually look around in would otherwise be invisible.
@@ -135,6 +142,7 @@ def _save_stats_state():
         with open(tmp, "w") as f:
             json.dump(dict(started=STARTED, stat=dict(_stat),
                           places=dict(_places), finds=dict(_finds),
+                          objects=dict(_objects),
                           sphere_places=dict(_sphere_places),
                           events_places=dict(_events_places),
                           events_teased=dict(_events_teased),
@@ -165,7 +173,8 @@ def _load_stats_state():
         return
     STARTED = data.get("started", STARTED)
     for counter, key in ((_stat, "stat"), (_places, "places"),
-                         (_finds, "finds"), (_sphere_places, "sphere_places"),
+                         (_finds, "finds"), (_objects, "objects"),
+                         (_sphere_places, "sphere_places"),
                          (_events_places, "events_places"),
                          (_events_teased, "events_teased"),
                          (_referrers, "referrers"), (_geo_hits, "geo")):
@@ -1018,6 +1027,9 @@ def _tally(r, daytime, hit, mode, status, data, colour=True, referrer=None,
     if len(_finds) > _TOP_KEEP:
         for k, _v in _finds.most_common()[_TOP_KEEP:]:
             del _finds[k]
+    if len(_objects) > _TOP_KEEP:
+        for k, _v in _objects.most_common()[_TOP_KEEP:]:
+            del _objects[k]
     if len(_referrers) > _TOP_KEEP:
         for k, _v in _referrers.most_common()[_TOP_KEEP:]:
             del _referrers[k]
@@ -1194,6 +1206,11 @@ def stats_text(n=50, map_slot=False):
         L.append(f"top finds ({len(_finds):,} distinct)")
         for name, c in _finds.most_common(n):
             L.append(f"  {name[:28]:28} {c:>8,}")
+    if _objects:
+        L.append("")
+        L.append(f"top objects ({len(_objects):,} distinct)")
+        for name, c in _objects.most_common(n):
+            L.append(f"  {name[:28]:28} {c:>8,}")
     if _referrers:
         L.append("")
         L.append(f"top referrers ({len(_referrers):,} distinct)")
@@ -1227,6 +1244,7 @@ def stats_json(n=50):
         places_distinct=len(_places), finds_distinct=len(_finds),
         top_places=dict(_places.most_common(n)),
         top_finds=dict(_finds.most_common(n)),
+        top_objects=dict(_objects.most_common(n)),
         referrers_distinct=len(_referrers),
         top_referrers=dict(_referrers.most_common(n)),
         bsky=_read_bsky_stats(),
@@ -2545,6 +2563,17 @@ SITEMAP_STATIC = ("/", "/demo", "/help", "/legend")
 def sitemap():
     urls = [f"https://skymap.sh{p}" for p in SITEMAP_STATIC]
     urls += [f"https://skymap.sh/{quote(p)}" for p in SITEMAP_PLACES]
+    # The object pages, which are the one part of this service with a stable
+    # URL per thing rather than a live render per place. Only the ones worth
+    # indexing -- see objects.sitemap_names(), which leaves out the bare
+    # catalogue numbers whose pages have nothing specific to say.
+    #
+    # /{place}/{object} is deliberately absent and deliberately NOT
+    # disallowed in robots.txt: it carries rel="canonical" back to the bare
+    # object path, and a crawler has to be allowed to fetch a page in order
+    # to read that tag. Blocking it would leave the duplicates indexable by
+    # URL alone with no canonical ever seen.
+    urls += [f"https://skymap.sh/{quote(n)}" for n in objects.sitemap_names()]
     body = ('<?xml version="1.0" encoding="UTF-8"?>\n'
             '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n' +
             "".join(f"<url><loc>{u}</loc></url>\n" for u in urls) +
@@ -2925,10 +2954,122 @@ def root(request: Req):
     return _respond(request, None)
 
 
+def _respond_object(request: Req, place: str | None, canonical: str):
+    """An object page. Same content negotiation, caching and stats as every
+    other view -- the only thing that differs is what gets composed."""
+    mode, colour = _wants(request)
+    r = _build(request, place)
+    r.find = canonical
+    res, daytime, hit = _cached_object(r, canonical)
+    _tally(r, daytime, hit, mode, res.status, res.data, colour,
+           referrer=_referrer_domain(request), mobile=_is_mobile(request))
+    _stat["view:object"] += 1
+    _objects[canonical] += 1
+    edge = DAY_EDGE if daytime else NIGHT_EDGE
+    headers = {"X-Cache": "HIT" if hit else "MISS"}
+    # /{place}/{object} is the same page as /{object} with the location
+    # spelled out, and there are 40,803 cities times 1,220 objects of them.
+    # Canonical points every one at the bare object path so that a crawler
+    # indexes ~1,200 URLs rather than fifty million near-identical ones.
+    if place:
+        headers["Link"] = f'<https://skymap.sh/{quote(canonical)}>; rel="canonical"'
+    if mode == "html":
+        headers["Cache-Control"] = f"private, max-age={edge // 4}"
+    else:
+        headers["Cache-Control"] = (f"public, max-age={edge // 4}, "
+                                    f"s-maxage={edge}, stale-while-revalidate=600")
+    if mode == "json":
+        return JSONResponse(res.data, status_code=res.status, headers=headers)
+    base_url = str(request.base_url).rstrip("/")
+    text = res.text.replace("{base_url}", base_url)
+    if mode == "html":
+        return HTMLResponse(api.object_html(r, canonical, text, res.data,
+                                            place=place, base_url=base_url),
+                            status_code=res.status, headers=headers)
+    return PlainTextResponse(api.strip_ansi(text) if not colour else text,
+                             status_code=res.status, headers=headers)
+
+
+def _cached_object(r, canonical):
+    """Same cache and the same buckets as the sky views, with the object
+    page marked as its own kind of entry -- r.find is already set to the
+    object, so without the marker an object page and a ?find= chart for the
+    same target would serve each other's render.
+
+    The object namespace is closed and validated before this is reached, so
+    unlike a place name it cannot be used to mint unbounded cache misses."""
+    global _hits, _misses
+    daytime = api.is_daytime(r)
+    q, stamp = _cache_key(r, daytime)
+    key = (("object",) + q, stamp)
+    now = time.time()
+    hit = _cache.get(key)
+    if hit and hit[0] > now:
+        _cache.move_to_end(key)
+        _hits += 1
+        return hit[1], daytime, True
+    _misses += 1
+    r.color = True                      # cache the coloured render; strip on the way out
+    res = api.compose_object(r, canonical)
+    _cache[key] = (now + (DAY_TTL if daytime else NIGHT_TTL), res)
+    _cache.move_to_end(key)
+    while len(_cache) > CACHE_MAX:
+        _cache.popitem(last=False)
+    return res, daytime, False
+
+
+@app.get("/{obj}/og.png")
+def object_og(request: Req, obj: str):
+    """The social card for an object page. Registered ahead of
+    /{place}/{obj}, which would otherwise read "og.png" as an object name.
+
+    Currently the object's own chart. The purpose-built card is a separate
+    piece of design work; keeping the URL stable now means the og:image tag
+    already points somewhere real and does not have to change when the
+    picture behind it does.
+    """
+    canonical = objects.resolve_name(obj)
+    if canonical is None:
+        return PlainTextResponse("", status_code=404)
+    r = _build(request, None)
+    r.find = canonical
+    r.width = OG_WIDTH
+    art = api.compose_chart_only(r)
+    _stat["og"] += 1
+    edge = DAY_EDGE if api.is_daytime(r) else NIGHT_EDGE
+    return Response(gif.frame_to_png(art), media_type="image/png",
+                    headers={"Cache-Control": f"public, max-age={edge}, s-maxage={edge}"})
+
+
+@app.get("/{place}/{obj}")
+def place_object(request: Req, place: str, obj: str):
+    """`/Zurich/Venus` -- the explicit form, where the location is spelled
+    out instead of guessed from the request's IP.
+
+    The slot decides what a segment means, not the name in it. The first
+    segment is a place even when it is also an object (`/Venus/Saturn` is
+    Saturn seen from Venus, Texas) and the second is an object even when it
+    is also a place. That keeps the two forms readable and is why the
+    collision rule only ever has to apply to a bare one-segment path.
+    """
+    canonical = objects.resolve_name(obj)
+    if canonical is None or api.lookup_place(place) is None:
+        return _respond(request, f"{place}/{obj}")     # falls through to the 404
+    return _respond_object(request, place, canonical)
+
+
 @app.get("/{place:path}")
 def place(request: Req, place: str):
     if place.startswith(("favicon", ".well-known")):
         return PlainTextResponse("", status_code=404)
+    # Objects win a bare path, every time, whatever the city's population.
+    # /Jupiter is the planet, /Heze is a star, and both pages carry a line
+    # pointing at the town. See api.object_collision() for why a threshold
+    # would be worse than a rule.
+    if "/" not in place:
+        canonical = objects.resolve_name(place)
+        if canonical is not None:
+            return _respond_object(request, None, canonical)
     redirect = _mobile_sphere_redirect(request, place)
     if redirect:
         return redirect

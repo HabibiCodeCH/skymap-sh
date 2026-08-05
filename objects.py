@@ -12,6 +12,8 @@ imported by api.py, so nothing here can regress a chart.
 """
 import datetime as dt
 import math
+import re
+import unicodedata
 
 import sky
 
@@ -24,6 +26,126 @@ D = math.pi / 180
 # clearing the horizon rather than the centre.
 _REFRACTION = -0.5667
 _HORIZON = {"sun": -0.8333, "moon": 0.125}
+
+
+# ------------------------------------------------------- the namespace
+# Which path segments are objects. The index exists so routing can answer
+# "is /Venus a thing?" without running any ephemeris, and it is built from
+# exactly the catalogues sky.resolve_target() scans, in exactly the order it
+# scans them. Anything this says is an object, resolve_target() can resolve;
+# anything it rejects, resolve_target() would reject too. Two lists that
+# disagree would 404 pages that work and offer pages that do not.
+#
+# Paths already routed to something else. Reserved here as well as by route
+# order, because a name colliding with one of these should never even be
+# offered as an object.
+RESERVED = frozenset("""
+    stats help usage catalog legend demo about complete healthz robots.txt
+    sitemap.xml llms.txt favicon.ico animate beacon events sphere gif-capacity
+    milkyway.json apple-touch-icon.png vendor horizon.png animate.gif
+""".split())
+
+_index_cache = None
+
+
+def _norm(s):
+    """Fold to something a URL can carry: no accents, no case, no
+    punctuation. This is what makes /venus, /VENUS and /Venus the same page,
+    and it is why the accented forms resolve without a separate alias list."""
+    s = unicodedata.normalize("NFKD", s or "")
+    s = "".join(c for c in s if not unicodedata.combining(c))
+    return re.sub(r"[^a-z0-9]", "", s.lower())
+
+
+def _index():
+    """normalised name -> canonical name to hand to resolve_target()."""
+    global _index_cache
+    if _index_cache is not None:
+        return _index_cache
+
+    idx = {}
+
+    def add(name, canonical=None):
+        key = _norm(name)
+        # First writer wins, matching resolve_target()'s own first-match
+        # scan. Without this, a faint NGC object sharing a name with a bright
+        # star would silently take the path off it.
+        if key and key not in idx and key not in RESERVED:
+            idx[key] = canonical or name
+
+    for nm in ("Sun", "Moon", "Mercury", "Venus", "Mars", "Jupiter",
+               "Saturn", "Uranus", "Neptune"):
+        add(nm)
+    for s in sky._load("stars.json"):
+        if s.get("n"):
+            add(s["n"])
+    for a in sky._load("asterisms.json"):
+        add(a["name"])
+    for sh in sky._load("showers.json"):
+        add(sh["name"])
+        # "Perseid" and "Perseids radiant" as well, because people type all
+        # three and resolve_target() already accepts them.
+        add(sh["name"].rstrip("s"), sh["name"])
+        add(sh["name"] + " radiant", sh["name"])
+    # Deep sky last, and brightest first within it, so that when two entries
+    # share a name the brighter one owns the path. deepsky.json is already
+    # magnitude-sorted, but sorting here makes the guarantee explicit rather
+    # than inherited -- it is what keeps /M31 on the Andromeda Galaxy rather
+    # than on NGC205, which build_deepsky.py also labels M31.
+    for o in sorted(sky._load("deepsky.json"), key=lambda o: o["m"]):
+        add(o["n"])
+        add(o["id"])
+        if o.get("cn"):
+            add(o["cn"])
+    _index_cache = idx
+    return idx
+
+
+def resolve_name(segment):
+    """A URL path segment -> the canonical object name, or None.
+
+    Deliberately name-only: no position, no time, no observer. Routing needs
+    to know whether a path is an object before it knows where the visitor is.
+    """
+    if not segment or len(segment) > 64:
+        return None
+    return _index().get(_norm(segment))
+
+
+def all_names():
+    """Every canonical object name, once each."""
+    return sorted(set(_index().values()))
+
+
+# Faintest a star can be and still deserve its own indexed page. Magnitude 3
+# is roughly where a star stops being one somebody could point out and start
+# being a catalogue entry, and a page nobody would ever search for is a page
+# that dilutes the ones they would.
+_SITEMAP_STAR_MAG = 3.0
+
+
+def sitemap_names():
+    """The objects worth submitting to a search engine.
+
+    Not all 1,220. Most of the catalogue is bare NGC numbers whose pages can
+    only ever say what type they are and where they sit -- generated text
+    with nothing specific in it, which is exactly the thin programmatic
+    content search engines demote a whole site for. The pages still exist and
+    still work; they are simply not advertised.
+    """
+    out = {"Sun", "Moon", "Mercury", "Venus", "Mars", "Jupiter", "Saturn",
+           "Uranus", "Neptune"}
+    out |= {s["n"] for s in sky._load("stars.json")
+            if s.get("n") and s["m"] <= _SITEMAP_STAR_MAG}
+    out |= {a["name"] for a in sky._load("asterisms.json")}
+    out |= {sh["name"] for sh in sky._load("showers.json")}
+    # Deep sky only where it has a name people use, or a Messier number.
+    for o in sky._load("deepsky.json"):
+        if o.get("cn"):
+            out.add(o["cn"])
+        elif o["n"].startswith("M") and o["n"][1:].isdigit():
+            out.add(o["n"])
+    return sorted(out)
 
 
 # ------------------------------------------------------- constellations
@@ -54,6 +176,45 @@ def _precess_to_b1875(ra_h, dec_d):
     w = (math.sin(theta) * math.cos(dec) * math.cos(ra + zeta)
          + math.cos(theta) * math.sin(dec))
     return (math.degrees(math.atan2(x, y) + z) / 15.0) % 24, math.degrees(math.asin(w))
+
+
+# The 88 IAU constellations by their standard three-letter abbreviation.
+# Needed because the boundary file speaks in abbreviations and "you will find
+# it in Psc" is not a sentence anyone wants to read.
+CONSTELLATION_NAMES = {
+    "And": "Andromeda", "Ant": "Antlia", "Aps": "Apus", "Aqr": "Aquarius",
+    "Aql": "Aquila", "Ara": "Ara", "Ari": "Aries", "Aur": "Auriga",
+    "Boo": "Bootes", "Cae": "Caelum", "Cam": "Camelopardalis",
+    "Cnc": "Cancer", "CVn": "Canes Venatici", "CMa": "Canis Major",
+    "CMi": "Canis Minor", "Cap": "Capricornus", "Car": "Carina",
+    "Cas": "Cassiopeia", "Cen": "Centaurus", "Cep": "Cepheus",
+    "Cet": "Cetus", "Cha": "Chamaeleon", "Cir": "Circinus",
+    "Col": "Columba", "Com": "Coma Berenices", "CrA": "Corona Australis",
+    "CrB": "Corona Borealis", "Crv": "Corvus", "Crt": "Crater",
+    "Cru": "Crux", "Cyg": "Cygnus", "Del": "Delphinus", "Dor": "Dorado",
+    "Dra": "Draco", "Equ": "Equuleus", "Eri": "Eridanus", "For": "Fornax",
+    "Gem": "Gemini", "Gru": "Grus", "Her": "Hercules", "Hor": "Horologium",
+    "Hya": "Hydra", "Hyi": "Hydrus", "Ind": "Indus", "Lac": "Lacerta",
+    "Leo": "Leo", "LMi": "Leo Minor", "Lep": "Lepus", "Lib": "Libra",
+    "Lup": "Lupus", "Lyn": "Lynx", "Lyr": "Lyra", "Men": "Mensa",
+    "Mic": "Microscopium", "Mon": "Monoceros", "Mus": "Musca",
+    "Nor": "Norma", "Oct": "Octans", "Oph": "Ophiuchus", "Ori": "Orion",
+    "Pav": "Pavo", "Peg": "Pegasus", "Per": "Perseus", "Phe": "Phoenix",
+    "Pic": "Pictor", "Psc": "Pisces", "PsA": "Piscis Austrinus",
+    "Pup": "Puppis", "Pyx": "Pyxis", "Ret": "Reticulum", "Sge": "Sagitta",
+    "Sgr": "Sagittarius", "Sco": "Scorpius", "Scl": "Sculptor",
+    "Sct": "Scutum", "Ser": "Serpens", "Sex": "Sextans", "Tau": "Taurus",
+    "Tel": "Telescopium", "Tri": "Triangulum", "TrA": "Triangulum Australe",
+    "Tuc": "Tucana", "UMa": "Ursa Major", "UMi": "Ursa Minor",
+    "Vel": "Vela", "Vir": "Virgo", "Vol": "Volans", "Vul": "Vulpecula",
+}
+
+
+def constellation_name(ra_h, dec_d):
+    """The constellation as a word rather than a code. None if the position
+    somehow falls outside every boundary, which it should not."""
+    abbr = constellation(ra_h, dec_d)
+    return CONSTELLATION_NAMES.get(abbr, abbr)
 
 
 def constellation(ra_h, dec_d):

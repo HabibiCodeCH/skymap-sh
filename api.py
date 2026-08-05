@@ -11,6 +11,7 @@ from urllib.parse import quote
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import sky
+import objects
 from sky import (C, paint, julian, gmst_hours, altaz, angsep, compass, moon_glyph,
                  phase_name, resolve_target, visibility, next_visible,
                  solar_elongation, find_text, find_marker, sky_read, render, render_linear,
@@ -854,6 +855,389 @@ def _compose_find(r):
                 mag=round(tgt["mag"], 2) if tgt.get("mag") is not None else None,
                 shown_utc=shown_utc.isoformat() + "Z", guide=guide)
     return Result("\n".join(out), data)
+
+
+# ---------------------------------------------------------------- object pages
+def object_collision(canonical):
+    """The city that shares this object's path, as (display, escape url), or
+    None when nothing collides.
+
+    Objects win every collision -- always, whatever the city's population.
+    The rule is worth stating plainly because the alternative is worse: a
+    population threshold would send /Jupiter to a planet and /Heze to a town
+    with no way to explain which way any given path resolves. A closed,
+    curated namespace that always wins is predictable, and predictable is
+    what a URL someone types from memory has to be.
+
+    The cost is real and this function is how it is paid back: whoever loses
+    the path gets a working link to the other thing, printed on the page.
+    """
+    hits = city_matches(canonical)
+    if not hits:
+        return None
+    lat, lon, _zone, iso2, _country, admin, _pop, display = hits[0]
+    # A US state disambiguates better than "US" does, and it is what the
+    # documented syntax already accepts.
+    where = admin if iso2 == "us" and admin else iso2.upper()
+    return display, f"{display},{where}"
+
+
+def _fists_line(alt):
+    """Reuses sky.fists() so the object page says the same thing the find
+    view says, in the same words."""
+    return sky.fists(alt)
+
+
+def object_facts(tgt, r, canonical, shown_utc=None):
+    """Everything the object page knows, as data. The prose and the JSON are
+    both rendered from this, so they cannot drift apart.
+
+    shown_utc is the moment the chart above was actually drawn for, which is
+    not always now: when the object is below the horizon the find view draws
+    the next time it is up instead. The prose has to describe that same
+    moment or the page contradicts itself -- it read "Face NE, 2 fists up" on
+    the chart and "Face WNW, 3 fists up" in the sentence underneath.
+    """
+    p = r.place
+    when = shown_utc or r.when_utc
+    jd = julian(when)
+    lst = (gmst_hours(jd) + p.lon / 15.0) % 24
+    out = {"object": canonical, "kind": tgt.get("kind"),
+           "place": p.name, "lat": p.lat, "lon": p.lon,
+           "shown_utc": when.isoformat() + "Z", "is_now": shown_utc is None}
+
+    rts = objects.rise_transit_set(tgt, p.lat, p.lon, when)
+    tz = p.offset(when)
+
+    def local(x):
+        return (x + dt.timedelta(hours=tz)).isoformat() if x else None
+
+    out["transit"] = local(rts.get("transit"))
+    out["transit_alt"] = rts.get("transit_alt")
+    if rts.get("circumpolar"):
+        out["never_sets"] = True
+    elif rts.get("never_rises"):
+        out["never_rises"] = True
+    else:
+        out["rise"] = local(rts.get("rise"))
+        out["set"] = local(rts.get("set"))
+        out["hours_up"] = rts.get("up_hours")
+
+    # Which constellation, for anything with a fixed position and for the
+    # planets alike -- the boundaries do not care what kind of object it is.
+    ra, dec = tgt.get("ra"), tgt.get("dec")
+    if ra is None and tgt.get("body"):
+        b = (sky.moon(jd) if tgt["body"] == "Moon" else
+             sky.sun(jd) if tgt["body"] == "Sun" else sky.planet(tgt["body"], jd))
+        ra, dec = b["ra"], b["dec"]
+    if ra is not None:
+        out["constellation"] = objects.constellation_name(ra, dec)
+
+    # How far the Moon is from it, and how lit -- the two facts that decide
+    # whether tonight is worth the trip for anything faint.
+    if tgt.get("kind") not in ("moon", "sun"):
+        mo = sky.moon(jd)
+        ma, mz = altaz(mo["ra"], mo["dec"], p.lat, lst)
+        out["moon_separation"] = round(angsep(tgt["alt"], tgt["az"], ma, mz))
+        out["moon_illum"] = round(mo["illum"], 2)
+
+    if tgt.get("kind") == "planet":
+        out["planet"] = objects.planet_facts(tgt["name"], jd, p.lat, lst)
+
+    if tgt.get("kind") == "star":
+        hr = next((s["hr"] for s in sky._load("stars.json")
+                   if s.get("n") == tgt["name"]), None)
+        if hr is not None:
+            info = objects.star_info(hr)
+            star = {}
+            desc = objects.describe_spectrum(info.get("sp"))
+            if desc:
+                star["description"] = desc
+            if info.get("sp"):
+                star["spectral_type"] = info["sp"]
+            d = objects.distance_ly(hr)
+            if d:
+                star["light_years"], star["distance_confidence"] = d[0], d[1]
+            if info.get("sep"):
+                star["double_separation"] = info["sep"]
+            nm = objects.next_minimum(hr, r.when_utc)
+            if nm:
+                star["next_minimum"] = local(nm)
+                star["period_days"] = objects.variable_info(hr).get("period")
+            if star:
+                out["star"] = star
+
+    size = objects.dso_size(tgt.get("id") or "")
+    if not size and tgt.get("kind") not in ("planet", "star", "moon", "sun"):
+        # Deep-sky targets arrive named rather than keyed, so the catalogue
+        # id has to be looked back up.
+        oid = next((o["id"] for o in sky._load("deepsky.json")
+                    if tgt["name"] in (o["n"], o.get("cn"), o["id"])), None)
+        if oid:
+            size = objects.dso_size(oid)
+    if size:
+        out["size_arcmin"] = size
+
+    best = objects.best_this_year(tgt, p.lat, p.lon, r.when_utc)
+    if best:
+        out["best_this_year"] = {
+            "date": (best["when_utc"] + dt.timedelta(hours=tz)).date().isoformat(),
+            "dark_hours": best["dark_hours"],
+            "transit_alt": best["transit_alt"],
+            "moon_illum": best["moon_illum"]}
+
+    collision = object_collision(canonical)
+    if collision:
+        out["also_a_place"] = {"city": collision[0], "url": f"/{collision[1]}"}
+    return out
+
+
+def object_prose(facts, tgt, r, width=76):
+    """The facts as sentences. House style: plain statements, the numbers
+    carried inside them rather than listed beside them."""
+    L = []
+    tz_name = ""
+    kind = facts.get("kind")
+    name = facts["object"]
+
+    # Deliberately no "face this way and look that high" line here: the find
+    # view directly above already says it, in the same words, and printing
+    # it twice on one page reads as a mistake. This block picks up where
+    # that leaves off.
+    if facts.get("never_rises"):
+        L.append(f"{name} never rises from {facts['place']} — it stays below "
+                 f"the horizon all year at this latitude.")
+
+    if facts.get("never_sets"):
+        L.append(f"It never sets from here, circling the pole and reaching "
+                 f"{facts['transit_alt']:.0f}° at its highest.")
+    elif facts.get("rise"):
+        rise, st = facts["rise"][11:16], facts["set"][11:16]
+        # A set time earlier than the rise means it sets the following
+        # morning, which has to be said or the line reads as backwards.
+        over = " the next morning" if facts["set"][:10] != facts["rise"][:10] else ""
+        L.append(f"It rises at {rise} and sets at {st}{over}, highest at "
+                 f"{facts['transit'][11:16]} when it reaches "
+                 f"{facts['transit_alt']:.0f}°.")
+
+    if facts.get("constellation"):
+        L.append(f"You will find it in {facts['constellation']}.")
+
+    st = facts.get("star", {})
+    if st.get("description"):
+        s = f"It is a {st['description']}"
+        if st.get("light_years"):
+            ly = st["light_years"]
+            conf = st.get("distance_confidence")
+            if conf == "good":
+                s += f", {ly:.0f} light years away — the light you are seeing left it in {r.when_local.year - int(ly)}"
+            elif conf == "rough":
+                s += f", roughly {ly:.0f} light years away"
+            else:
+                s += ", at a distance that is genuinely uncertain"
+        L.append(s + ".")
+    if st.get("next_minimum"):
+        L.append(f"It is an eclipsing variable: it next dims at "
+                 f"{st['next_minimum'][11:16]} on {st['next_minimum'][:10]}, "
+                 f"and again every {st['period_days']:.4g} days.")
+
+    pl = facts.get("planet", {})
+    if pl:
+        L.append(f"It is {pl['distance_au']:.2f} AU away — {pl['light_minutes']:.0f} "
+                 f"light-minutes, so you are seeing it as it was "
+                 f"{pl['light_minutes']:.0f} minutes ago.")
+        if pl.get("lost_in_glare"):
+            L.append(f"It is only {pl['elongation']:.0f}° from the Sun and lost in "
+                     f"the glare.")
+        else:
+            article = "an" if pl["side"][0] in "aeiou" else "a"
+            L.append(f"It sits {pl['elongation']:.0f}° from the Sun, so it is "
+                     f"{article} {pl['side']} object.")
+        if pl.get("ring_angle") is not None:
+            ra_ = pl["ring_angle"]
+            how = ("almost edge-on, and very hard to pick out" if ra_ < 5 else
+                   "a narrow ellipse in a small telescope" if ra_ < 12 else
+                   "clearly open" if ra_ < 22 else
+                   "as wide as they ever get")
+            L.append(f"The rings are tilted {ra_:.0f}° towards us — {how}.")
+        if pl.get("apparent_arcsec"):
+            L.append(f"The disc is {pl['apparent_arcsec']:.0f} arcseconds across"
+                     + (f", {pl['illuminated']:.0%} lit."
+                        if pl["illuminated"] < 0.95 else "."))
+        if pl.get("retrograde"):
+            L.append("It is retrograde at the moment, drifting westwards "
+                     "against the stars.")
+
+    if facts.get("size_arcmin"):
+        s = facts["size_arcmin"]
+        moons = s["maj"] / 31.0
+        rel = (f" — about {moons:.0f} times the width of the full Moon" if moons >= 2
+               else f" — roughly {moons:.1f} Moon-widths" if moons >= 0.5 else "")
+        L.append(f"It spans {s['maj']:g} arcminutes{rel}.")
+
+    # Only worth saying when the Moon is both bright and actually near it.
+    # A full Moon 145 degrees away is not what stops you seeing something.
+    sep, illum = facts.get("moon_separation"), facts.get("moon_illum", 0)
+    if sep is not None and illum > 0.4 and sep < 60:
+        L.append(f"The Moon is {illum:.0%} lit and only {sep}° away, which will "
+                 f"wash out anything faint nearby.")
+
+    b = facts.get("best_this_year")
+    if b:
+        L.append(f"Best this year: {b['date']}, when it reaches "
+                 f"{b['transit_alt']:.0f}° with {b['dark_hours']:.1f} hours of "
+                 f"darkness and the Moon {b['moon_illum']:.0%} lit.")
+
+    also = facts.get("also_a_place")
+    if also:
+        L.append(f"{name} is also a place. For the sky above the town, use "
+                 f"skymap.sh{also['url']}.")
+
+    import textwrap
+    out = []
+    for para in L:
+        out.extend(textwrap.wrap(para, width))
+        out.append("")
+    return "\n".join(out).rstrip()
+
+
+def compose_object(r, canonical):
+    """The object page: the find view's chart and crosshair, with the object's
+    own facts under it.
+
+    Built on _compose_find deliberately rather than beside it. That view
+    already solves the hard parts -- where the thing is, whether it is up,
+    when it is next up if it is not, and a chart with a mark on it -- and a
+    second implementation would be a second set of answers to drift apart.
+    """
+    r.find = canonical
+    res = _compose_find(r)
+    if res.status != 200:
+        return res
+
+    # The find view tells us which moment it actually drew. When the object
+    # is below the horizon that is the next time it is up, not now, and the
+    # prose has to agree with the picture above it.
+    shown = None
+    raw = res.data.get("shown_utc")
+    if raw:
+        try:
+            parsed = dt.datetime.fromisoformat(raw.rstrip("Z"))
+            if abs((parsed - r.when_utc).total_seconds()) > 60:
+                shown = parsed
+        except ValueError:
+            pass
+
+    when = shown or r.when_utc
+    jd = julian(when)
+    lst = (gmst_hours(jd) + r.place.lon / 15.0) % 24
+    tgt = resolve_target(canonical, jd, r.place.lat, lst)
+    if tgt is None:
+        return res
+
+    facts = object_facts(tgt, r, canonical, shown_utc=shown)
+    prose = object_prose(facts, tgt, r, width=_effective_width(r) - 4)
+    body = "\n".join(paint("  " + l if l else "", C.LABEL, r.color)
+                     for l in prose.split("\n"))
+
+    text = strip_footer_line(res.text).rstrip() + "\n\n" + body + "\n\n" \
+        + _footer(r.place, r.color) + "\n"
+    data = dict(res.data)
+    data.update(facts)
+    return Result(text, data, 200)
+
+
+def object_title(facts):
+    """The <title>, which is also what a search result shows as its heading.
+    Front-loaded with the object because that is the word someone searched
+    for, and no site name padding -- it costs characters that the useful part
+    needs."""
+    name = facts["object"]
+    kind = _KIND_WORD.get(facts.get("kind"), "")
+    where = f" from {facts['place']}" if facts.get("place") else ""
+    return f"{name}: where to see {'the ' if kind in ('planet',) else ''}" \
+           f"{name.lower() if kind == 'planet' else name}{where} tonight"
+
+
+_KIND_WORD = {"planet": "planet", "star": "star", "moon": "moon", "sun": "sun",
+              "asterism": "asterism", "galaxy": "galaxy", "radiant": "meteor shower"}
+
+
+def object_description(facts):
+    """The meta description. One sentence of the most durable facts, because
+    a crawler may see this page months apart and a description that changed
+    every visit is a description that ranks for nothing."""
+    name, bits = facts["object"], []
+    if facts.get("constellation"):
+        bits.append(f"in {facts['constellation']}")
+    st = facts.get("star", {})
+    if st.get("description"):
+        bits.append(f"a {st['description']}")
+        if st.get("light_years") and st.get("distance_confidence") == "good":
+            bits.append(f"{st['light_years']:.0f} light years away")
+    if facts.get("size_arcmin"):
+        bits.append(f"{facts['size_arcmin']['maj']:g} arcminutes across")
+    b = facts.get("best_this_year")
+    lead = f"{name}, {', '.join(bits)}." if bits else f"{name}."
+    tail = (f" Best seen around {b['date']}." if b else "")
+    return (lead + tail + " Rise and set times, altitude and a chart for "
+            "wherever you are.").strip()
+
+
+# The head of the shared page template, with the fixed description swapped
+# for a slot. Derived from PAGE rather than copied, so the object pages keep
+# every later change to the shell -- stylesheet, favicon, the width ladder --
+# without a second copy to maintain, and without any of the six existing
+# PAGE.format() call sites having to learn a new key.
+def _object_page_template():
+    return PAGE.replace(
+        '<meta name="description" content="The night sky above you, as plain '
+        'text. curl skymap.sh">', "{head_extra}", 1)
+
+
+def object_head(facts, canonical, place, base_url):
+    """Title, description, canonical and the social card tags.
+
+    The canonical is the load-bearing one. /{place}/{object} is the same page
+    with the location spelled out, and there are 40,803 cities times 1,220
+    objects of those. Pointing every one at the bare /{object} keeps a
+    crawler on roughly 1,200 real pages instead of fifty million
+    near-identical ones, which is the difference between a namespace and a
+    doorway farm.
+    """
+    title = html.escape(object_title(facts))
+    desc = html.escape(object_description(facts))
+    url = f"https://skymap.sh/{quote(canonical)}"
+    og = f"{base_url}/{quote(canonical)}/og.png"
+    return "\n".join([
+        f'<meta name="description" content="{desc}">',
+        f'<link rel="canonical" href="{url}">',
+        '<meta property="og:type" content="article">',
+        f'<meta property="og:title" content="{title}">',
+        f'<meta property="og:description" content="{desc}">',
+        f'<meta property="og:url" content="{url}">',
+        f'<meta property="og:image" content="{og}">',
+        '<meta property="og:image:width" content="1200">',
+        '<meta property="og:image:height" content="630">',
+        '<meta property="og:site_name" content="skymap.sh">',
+        '<meta name="twitter:card" content="summary_large_image">',
+        f'<meta name="twitter:title" content="{title}">',
+        f'<meta name="twitter:description" content="{desc}">',
+        f'<meta name="twitter:image" content="{og}">',
+    ])
+
+
+def object_html(r, canonical, text, data, place=None, base_url=""):
+    """The browser page: the same chart and prose everything else gets, in
+    the shared shell, with the object's own head."""
+    body = chart_pre(ansi_to_html(text))
+    head = object_head(data, canonical, place, base_url)
+    return _object_page_template().format(
+        title=html.escape(object_title(data)),
+        head_extra=head,
+        header=header_html(r.place.name),
+        controls="", wide_class="", coming_up_card="",
+        kbd_urls="{}", shortcuts_hint="", body=body)
 
 
 # ---------------------------------------------------------------- sky views
