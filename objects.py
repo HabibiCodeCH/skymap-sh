@@ -383,6 +383,42 @@ _MIN_USEFUL_ALT = 20.0
 _ASTRO_DARK = -18.0
 
 
+def _shower_peak(tgt, lat, lon, start_utc, days):
+    """When this shower next peaks, with how well the radiant is placed and
+    how much Moon there will be -- the two things that decide whether the
+    peak is worth staying up for.
+
+    events.py already computes peak dates from solar longitude, which is the
+    right way round: a shower happens when the Earth reaches a point in its
+    orbit, not when the radiant is convenient.
+    """
+    import events as ev_mod                     # local: events imports sky, not us
+    jd0 = sky.julian(start_utc)
+    name = tgt["name"].replace(" radiant", "")
+    for e in ev_mod.meteor_showers(jd0, jd0 + days):
+        if not e.get("name", "").lower().startswith(name.lower()[:6]):
+            continue
+        when = e["when_utc"]
+        jd = sky.julian(when)
+        ra, dec = sky.precess(tgt["ra"], tgt["dec"], jd)
+        # Radiant altitude at local midnight, which is when a shower is
+        # normally watched and when the rate quoted for it applies.
+        #
+        # Local midnight of the peak DATE, not the peak moment offset by the
+        # longitude -- the peak can fall at any hour, and measuring from it
+        # put the Geminids radiant 10 degrees below the horizon from Zurich
+        # on a night when Gemini is nearly overhead.
+        local_midnight = sky.julian(dt.datetime(when.year, when.month, when.day)) \
+            - lon / 360.0
+        alt = sky.altaz(ra, dec, lat, _lst(local_midnight, lon))[0]
+        return {"when_utc": when, "transit_alt": round(90.0 - abs(lat - dec), 1),
+                "radiant_alt": round(alt, 1),
+                "moon_illum": round(sky.moon(jd)["illum"], 2),
+                "dark_hours": None, "is_peak": True,
+                "zhr": tgt.get("zhr")}
+    return None
+
+
 def best_this_year(tgt, lat, lon, start_utc, days=365):
     """The night in the next year when this object is best placed.
 
@@ -393,6 +429,14 @@ def best_this_year(tgt, lat, lon, start_utc, days=365):
     """
     if tgt.get("kind") in ("sun", "moon"):
         return None                     # neither has a "best night"; they have phases
+
+    # A meteor shower's best night is the night it peaks, and nothing else.
+    # Scoring the radiant like an ordinary target finds when that patch of
+    # sky is highest in the dark, which for the Perseids is December -- four
+    # months after the only night anyone should be out for them. The radiant
+    # being well placed matters only once the Earth is actually in the debris.
+    if tgt.get("kind") == "radiant":
+        return _shower_peak(tgt, lat, lon, start_utc, days)
 
     fixed = not tgt.get("body")
     best = None

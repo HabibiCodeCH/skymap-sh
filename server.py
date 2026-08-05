@@ -17,7 +17,7 @@ from fastapi.responses import (PlainTextResponse, HTMLResponse, JSONResponse,
                                StreamingResponse, FileResponse, Response,
                                RedirectResponse)
 
-import api, gif, objects, sky, tle
+import api, card, gif, objects, sky, tle
 
 app = FastAPI(title="skymap.sh", docs_url=None, redoc_url=None)
 
@@ -3034,10 +3034,13 @@ def object_og(request: Req, obj: str):
     r = _build(request, None)
     r.find = canonical
     r.width = OG_WIDTH
+    res, _daytime, _hit = _cached_object(r, canonical)
     art = api.compose_chart_only(r)
+    facts = dict(res.data)
+    facts["where_line"] = api.object_where_line(facts)
     _stat["og"] += 1
     edge = DAY_EDGE if api.is_daytime(r) else NIGHT_EDGE
-    return Response(gif.frame_to_png(art), media_type="image/png",
+    return Response(card.render(facts, art), media_type="image/png",
                     headers={"Cache-Control": f"public, max-age={edge}, s-maxage={edge}"})
 
 

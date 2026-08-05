@@ -978,13 +978,19 @@ def object_facts(tgt, r, canonical, shown_utc=None):
     if size:
         out["size_arcmin"] = size
 
-    best = objects.best_this_year(tgt, p.lat, p.lon, r.when_utc)
+    best = objects.best_this_year(tgt, p.lat, p.lon, when)
     if best:
-        out["best_this_year"] = {
+        entry = {
             "date": (best["when_utc"] + dt.timedelta(hours=tz)).date().isoformat(),
-            "dark_hours": best["dark_hours"],
+            "dark_hours": best.get("dark_hours"),
             "transit_alt": best["transit_alt"],
             "moon_illum": best["moon_illum"]}
+        # A shower peaks rather than being "best"; it carries the radiant's
+        # altitude on that night instead of a count of dark hours.
+        if best.get("is_peak"):
+            entry.update(is_peak=True, radiant_alt=best.get("radiant_alt"),
+                         zhr=best.get("zhr"))
+        out["best_this_year"] = entry
 
     collision = object_collision(canonical)
     if collision:
@@ -1083,7 +1089,19 @@ def object_prose(facts, tgt, r, width=76):
                  f"wash out anything faint nearby.")
 
     b = facts.get("best_this_year")
-    if b:
+    if b and b.get("is_peak"):
+        # A shower has a peak night rather than a best night, and the number
+        # that matters is how high the radiant gets while it is happening --
+        # not how much darkness the year can offer that patch of sky.
+        moon = b.get("moon_illum", 0)
+        s = (f"The peak is {b['date']}, with the radiant "
+             f"{b['radiant_alt']:.0f}° up at midnight")
+        if moon > 0.5:
+            s += f" — but the Moon is {moon:.0%} lit that night and will drown most of it"
+        elif moon < 0.15:
+            s += ", and almost no Moon to spoil it"
+        L.append(s + ".")
+    elif b:
         L.append(f"Best this year: {b['date']}, when it reaches "
                  f"{b['transit_alt']:.0f}° with {b['dark_hours']:.1f} hours of "
                  f"darkness and the Moon {b['moon_illum']:.0%} lit.")
@@ -1145,6 +1163,20 @@ def compose_object(r, canonical):
     data = dict(res.data)
     data.update(facts)
     return Result(text, data, 200)
+
+
+def object_where_line(facts):
+    """"12° above the eastern horizon" -- the one line the social card leads
+    with, and the only thing on it that changes hour to hour."""
+    alt, az = facts.get("alt"), facts.get("az")
+    if alt is None or az is None:
+        return None
+    if facts.get("never_rises"):
+        return "never rises from here"
+    if alt <= 0:
+        rise = facts.get("rise")
+        return f"below the horizon, rises {rise[11:16]}" if rise else "below the horizon"
+    return f"{alt:.0f}° above the horizon in the {compass(az)}"
 
 
 def object_title(facts):

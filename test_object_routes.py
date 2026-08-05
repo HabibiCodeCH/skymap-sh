@@ -229,3 +229,41 @@ def test_an_object_below_the_horizon_still_answers(client):
 def test_never_rising_object_says_so(client):
     d = client.get("/Southern Cross?format=json").json()
     assert d.get("never_rises") or d.get("visible") is False
+
+
+# ------------------------------------------------------------- social card
+def test_card_is_the_right_shape_for_an_unfurl(client):
+    """1200x630 is what every unfurl expects, and the og:image:width tag
+    promises it."""
+    from PIL import Image
+    import io
+    img = Image.open(io.BytesIO(client.get("/Saturn/og.png").content))
+    assert img.size == (1200, 630)
+
+
+@pytest.mark.parametrize("name", ["Saturn", "M31", "Algol", "Perseids",
+                                   "Betelgeuse", "Big Dipper", "Moon", "Venus"])
+def test_card_renders_for_every_kind_of_object(client, name):
+    """One per branch of the fact picker. Showers in particular carry a
+    different shape -- a peak night with no dark-hours figure -- and
+    formatting that None is what returned a 500 instead of an image."""
+    r = client.get(f"/{name}/og.png")
+    assert r.status_code == 200
+    assert r.content[:8] == b"\x89PNG\r\n\x1a\n"
+    assert len(r.content) > 5000, "suspiciously small for a rendered card"
+
+
+def test_card_survives_facts_it_has_never_seen(client):
+    """The renderer is handed whatever the page produced. It must not be the
+    thing that breaks when a field is missing."""
+    import card
+    assert card.render({}, None)[:8] == b"\x89PNG\r\n\x1a\n"
+    assert card.render({"object": "Test"}, None)[:8] == b"\x89PNG\r\n\x1a\n"
+
+
+def test_card_headline_facts_stay_short(client):
+    """Three lines is the budget; a fourth runs into the wordmark."""
+    import card
+    for name in ("Saturn", "Algol", "Perseids", "M31"):
+        facts = client.get(f"/{name}?format=json").json()
+        assert len(card._headline_facts(facts)) <= 3

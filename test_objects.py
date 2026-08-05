@@ -405,3 +405,42 @@ def test_catalogue_files_are_compact(name):
     raw = open(f"{sky.BASE}/{name}").read()
     assert ", " not in raw[:2000], f"{name} looks pretty-printed"
     json.loads(raw)
+
+
+# ---------------------------------------------------------- meteor showers
+@pytest.mark.parametrize("name, month", [
+    ("Perseids", 8), ("Geminids", 12), ("Quadrantids", 1), ("Lyrids", 4),
+])
+def test_shower_best_night_is_the_actual_peak(name, month):
+    """A shower's best night is the night the Earth reaches the debris, not
+    the night its radiant happens to sit highest in a dark sky. Scored like
+    an ordinary object the Perseids came back as 9 December -- four months
+    after the only night worth going out for."""
+    got = objects.best_this_year(_target(name), *ZURICH, WHEN)
+    assert got is not None, f"no peak found for {name}"
+    assert got["is_peak"] is True
+    assert got["when_utc"].month == month
+
+
+def test_shower_radiant_altitude_is_measured_at_local_midnight():
+    """Gemini is nearly overhead at midnight in December from Zurich. Reading
+    the altitude from the peak moment offset by longitude, rather than from
+    local midnight of the peak date, put it 10 degrees below the horizon."""
+    got = objects.best_this_year(_target("Geminids"), *ZURICH, WHEN)
+    assert got["radiant_alt"] > 45
+    assert got["radiant_alt"] <= got["transit_alt"] + 0.5
+
+
+def test_shower_radiant_altitude_never_exceeds_the_geometric_maximum():
+    for name in ("Perseids", "Geminids", "Quadrantids", "Lyrids", "Orionids"):
+        got = objects.best_this_year(_target(name), *ZURICH, WHEN)
+        if got:
+            assert got["radiant_alt"] <= got["transit_alt"] + 0.5, name
+
+
+def test_shower_peak_has_no_dark_hours_figure():
+    """A peak is one night, so "hours of darkness available" is not a number
+    that means anything for it -- and formatting the None it returns is what
+    crashed the card renderer."""
+    got = objects.best_this_year(_target("Perseids"), *ZURICH, WHEN)
+    assert got.get("dark_hours") is None
