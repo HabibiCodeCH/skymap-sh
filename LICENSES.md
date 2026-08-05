@@ -61,6 +61,69 @@ Deliberately not used: Mellinger's panorama is permission-required, and
 Stellarium's sky textures are derived from it under negotiated terms rather
 than inheriting the GPL, so neither is ours to ship.
 
+## Added later: the object-page data
+
+Four side files that say what an object *is*, for the object pages. Each is
+keyed to a catalogue already shipped here and joined at read time. Nothing in
+this section modifies `stars.json` or `deepsky.json` — those are what every
+chart on the site draws from, and a side file cannot regress a chart.
+
+| File | Contents | Origin | Licence |
+|---|---|---|---|
+| `starinfo.json` | 2,887 stars — spectral type, distance in light years with its error, double-star separation, variable-star designation | Spectral type and duplicity from the **Yale BSC5** already used for `stars.json`; distance from the **Hipparcos Catalogue** (ESA 1997, I/239), joined on HD number | **Public domain.** BSC5 as above. Hipparcos is ESA, distributed through the ADC/CDS with no copyright notice or usage restriction, same provenance as BSC5 and the RNGC. |
+| `constellations.json` | 357 boundary rows covering all 88 constellations | **VI/42**, "Identification of a Constellation From Position" (Roman 1987), a rearrangement of the IAU boundaries Delporte drew in 1930 | **Public domain.** NASA/ADC, authored by Nancy Grace Roman, no copyright notice. The boundaries themselves are the IAU's official delimitation — a published fact, same reasoning as `showers.json`. |
+| `variables.json` | 569 variable stars — type, period, epoch, brightness range or amplitude | **General Catalogue of Variable Stars** (Samus+), B/gcvs | **Public domain**, no copyright notice, same ADC/CDS provenance. |
+| `dsoinfo.json` | Angular sizes for 51 Messier objects | **Hand-authored** in `build_dsoinfo.py` from published visual dimensions | Yours. How big M31 looks is a measured quantity, not a creative work — the same reasoning `showers.json` and the common-name table in `build_deepsky.py` already rest on. |
+
+`stars.json` gains nothing and loses nothing: there is no build script for it in
+this repo, so regenerating it would mean reconstructing how it was originally
+made and risking a silent change to every chart. `starinfo.json` is a separate
+file for exactly that reason.
+
+### Two sources deliberately not used
+
+**NGC 2000.0 (VII/118)** has angular size and constellation for every NGC and
+IC object in one file, which is precisely what `dsoinfo.json` wants. Its ReadMe
+carries an explicit restriction:
+
+> This catalog is copyrighted by Sky Publishing Corporation … for scientific
+> research purposes only. The data should not be used for commercial purposes
+> without the explicit permission of Sky Publishing Corporation.
+
+That contradicts the promise at the top of this file, so it is out for the same
+reason OpenNGC is.
+
+**SIMBAD** also has the sizes, and covers 584 of the 739 objects in
+`deepsky.json` rather than 51. CDS's own terms state their datasets carry
+"Open Licence or ODbL or CC-BY" without saying which applies to which dataset.
+**ODbL is share-alike**, so that is an unpinned licence with a copyleft option
+on it, and this repo promises to bundle no copyleft data. There is also a
+difference in kind between quoting individual measured facts and extracting
+several hundred rows from a database, which is what database rights cover.
+Hand-authoring the well-known sizes avoids both questions. If CDS ever pins
+SIMBAD to plain CC BY in writing, this decision is worth revisiting — the
+coverage is much better.
+
+### BSC5 parallax is present and unused
+
+BSC5 carries its own parallax column. `build_starinfo.py` ignores it and uses
+Hipparcos instead, deliberately. BSC5's parallaxes are pre-Hipparcos
+ground-based measurements that fail worst on exactly the bright, distant stars
+an object page gets visited for: measured against modern values they put
+Antares at 136 light years instead of 550, Spica at 142 instead of 250, and
+give Deneb a negative parallax. Only 36% of rows have one at all. Hipparcos
+gets those right and ships a standard error with each, so the page can hedge
+or stay silent instead of stating a wrong number confidently.
+
+### A note on fetching
+
+`cdsarc.cds.unistra.fr` now sits behind a bot wall that returns a ~4 KB block
+page for every data file; the ReadMe files still come through. This breaks the
+`curl` line documented in `build_deepsky.py`. The build scripts added here
+fetch through VizieR's `asu-tsv` endpoint instead, and BSC5 comes from
+Harvard's mirror (`tdc-www.harvard.edu`, http only — their TLS certificate does
+not match the hostname).
+
 ## Runtime dependency you still need to add
 
 `demo.tle` is synthetic. For real ISS passes, fetch on a daily cron:
@@ -75,13 +138,16 @@ a day is both correct and polite, since TLEs are only issued a few times daily.
 
 Not legally required, but it costs a footer line and it is the right thing:
 
-> Star positions from the Yale Bright Star Catalogue (Hoffleit & Warren 1991).
-> Deep-sky objects from the Revised NGC (Sulentic & Tifft, 1973), after
-> Dreyer's New General Catalogue (1888). Planetary positions from JPL
-> approximate elements; Sun and Moon from Meeus. Satellite elements from
-> CelesTrak. City data from SimpleMaps World Cities (CC BY 4.0). Milky Way
-> outline from d3-celestial (Olaf Frohn, BSD-3-Clause), after the Milky Way
-> Outline Catalog (Jose R. Vieira).
+> Star positions and spectral types from the Yale Bright Star Catalogue
+> (Hoffleit & Warren 1991). Stellar distances from the Hipparcos Catalogue
+> (ESA 1997). Constellation boundaries after Delporte (1930), via Roman
+> (1987). Variable-star data from the General Catalogue of Variable Stars
+> (Samus et al.). Deep-sky objects from the Revised NGC (Sulentic & Tifft,
+> 1973), after Dreyer's New General Catalogue (1888). Planetary positions
+> from JPL approximate elements; Sun and Moon from Meeus. Satellite elements
+> from CelesTrak. City data from SimpleMaps World Cities (CC BY 4.0). Milky
+> Way outline from d3-celestial (Olaf Frohn, BSD-3-Clause), after the Milky
+> Way Outline Catalog (Jose R. Vieira).
 
 The city data and the Milky Way outline are the two items that legally require
 the credit rather than merely deserving it -- CC BY on one, the BSD notice on

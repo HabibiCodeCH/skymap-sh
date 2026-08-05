@@ -9,6 +9,14 @@ stats_hourly.jsonl
 stats_state.json
 countries.geo.json
 mw.json
+# Source catalogues for the object-page data. Same treatment as mw.json and
+# rngc.dat: the build scripts carry the fetch commands, the built JSON is
+# committed, the multi-megabyte inputs are not.
+bsc5.dat
+bsc5.dat.gz
+hip.tsv
+gcvs.tsv
+constbnd.tsv
 .DS_Store
 PROJECT_STATE.md
 NOTES.md
