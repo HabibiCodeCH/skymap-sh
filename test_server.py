@@ -3713,5 +3713,89 @@ class StatsSurviveTheDeploy(unittest.TestCase):
         self.assertIn("stats_hourly.jsonl", ignored)
 
 
+class UnfurlersGetTheHead(unittest.TestCase):
+    """Every social card on the site looked missing from the outside while
+    being correct in a browser.
+
+    _wants() only reached its HTML branch when "text/html" was in the Accept
+    header, and unfurlers send */*. So all of them fell through to the
+    plain-text page, which has no <head> and therefore no card tags at all.
+    The images were always fine and always reachable; nothing ever pointed a
+    crawler at them.
+    """
+
+    BOTS = {
+        "facebook": "facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)",
+        "twitter": "Twitterbot/1.0",
+        "linkedin": "LinkedInBot/1.0 (compatible; Mozilla/5.0)",
+        "slack": "Slackbot-LinkExpanding 1.0 (+https://api.slack.com/robots)",
+        "discord": "Mozilla/5.0 (compatible; Discordbot/2.0; +https://discordapp.com)",
+        "whatsapp": "WhatsApp/2.23.20.0",
+        "telegram": "TelegramBot (like TwitterBot)",
+        "bluesky": "Bluesky Cardyb/1.1",
+        "google": "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)",
+    }
+
+    def setUp(self):
+        client_cm = TestClient(server.app)
+        self.client = client_cm.__enter__()
+        self.addCleanup(client_cm.__exit__, None, None, None)
+
+    def test_every_unfurler_gets_the_card_tags(self):
+        for name, ua in self.BOTS.items():
+            r = self.client.get("/Venus", headers={"user-agent": ua,
+                                                   "accept": "*/*"})
+            self.assertIn('property="og:image"', r.text, name)
+            self.assertIn('property="og:title"', r.text, name)
+            self.assertIn('name="twitter:card"', r.text, name)
+
+    def test_a_crawler_with_no_accept_header_at_all_still_gets_it(self):
+        r = self.client.get("/Venus",
+                            headers={"user-agent": self.BOTS["facebook"]})
+        self.assertIn('property="og:image"', r.text)
+
+    def test_it_applies_to_places_and_the_home_page_too(self):
+        # This was never an object-page bug: the generic card was just as
+        # invisible, on every page of the site.
+        for path in ("/", "/Paris", "/catalog"):
+            r = self.client.get(path, headers={"user-agent": self.BOTS["twitter"],
+                                               "accept": "*/*"})
+            self.assertIn('property="og:image"', r.text, path)
+
+    def test_the_card_url_a_crawler_is_given_actually_serves_an_image(self):
+        r = self.client.get("/Venus", headers={"user-agent": self.BOTS["slack"],
+                                               "accept": "*/*"})
+        url = re.search(r'property="og:image" content="[^"]*?(/[^"]+)"', r.text)
+        self.assertTrue(url, "no og:image to follow")
+        img = self.client.get(url.group(1))
+        self.assertEqual(img.status_code, 200)
+        self.assertEqual(img.headers["content-type"], "image/png")
+
+    def test_a_terminal_still_gets_text(self):
+        # The whole point of the site. A crawler is matched first, but curl
+        # must not be caught by it.
+        r = self.client.get("/Venus", headers={"user-agent": "curl/8.4.0"})
+        self.assertNotIn("<html", r.text[:200])
+        self.assertNotIn("property=", r.text)
+
+    def test_crawlers_are_matched_before_the_terminal_list(self):
+        # TERMINALS contains "fetch" and "http/", which are exactly the kind
+        # of fragment a bot UA carries by accident. Order is what stops one
+        # of those being served a plain-text page.
+        r = self.client.get("/Venus",
+                            headers={"user-agent": "SomeBot/1.0 fetch (+http://x)",
+                                     "accept": "*/*"})
+        self.assertNotIn("<html", r.text[:200])   # not a known crawler: text
+        r = self.client.get("/Venus",
+                            headers={"user-agent": "Twitterbot/1.0 fetch",
+                                     "accept": "*/*"})
+        self.assertIn('property="og:image"', r.text)   # known: html wins
+
+    def test_an_explicit_format_still_wins(self):
+        d = self.client.get("/Venus?format=json",
+                            headers={"user-agent": self.BOTS["facebook"]}).json()
+        self.assertEqual(d["object"], "Venus")
+
+
 if __name__ == "__main__":
     unittest.main()

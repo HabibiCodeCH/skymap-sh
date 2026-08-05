@@ -25,6 +25,30 @@ app = FastAPI(title="skymap.sh", docs_url=None, redoc_url=None)
 TERMINALS = ("curl", "wget", "httpie", "http/", "powershell", "libcurl", "lwp",
              "python-requests", "fetch")
 
+# Link unfurlers and search crawlers.
+#
+# These ask for */* rather than text/html, and _wants() only reached its HTML
+# branch when text/html was in the Accept header -- so every one of them fell
+# through to the plain-text page, which has no <head> and therefore no card
+# tags at all. Every social card on the site looked broken from the outside
+# while being perfectly correct in a browser, which is why a card debugger
+# reported them missing rather than wrong.
+#
+# Matched ahead of TERMINALS, not after: a crawler is definitively not a
+# terminal, and that list contains "fetch" and "http/", which are exactly the
+# kind of fragments a bot's UA string can carry by accident.
+CRAWLERS = ("facebookexternalhit", "facebookcatalog", "twitterbot",
+            "linkedinbot", "slackbot", "discordbot", "whatsapp",
+            "telegrambot", "cardyb", "mastodon", "pinterest", "redditbot",
+            "embedly", "iframely", "quora link preview", "skypeuripreview",
+            "vkshare", "tumblr", "flipboard", "opengraph", "snapchat",
+            "googlebot", "bingbot", "applebot", "duckduckbot", "yandexbot",
+            "baiduspider", "petalbot", "ia_archiver")
+
+
+def _is_crawler(ua):
+    return any(b in ua for b in CRAWLERS)
+
 # Phone browsers only -- iPadOS Safari's UA is indistinguishable from desktop
 # Safari by design, so it isn't and can't be matched here; it lands on the
 # text page like a laptop would. The plain-text/ASCII view has no real value
@@ -1614,6 +1638,10 @@ def _wants(request: Req):
 
     if q.get("format") == "json":
         return "json", False
+    # An unfurler asks for */* and needs the <head>. Ahead of the terminal
+    # test on purpose: see CRAWLERS.
+    if _is_crawler(ua):
+        return "html", True
     if not terminal and "text/html" in accept:
         return "html", True
     if q.get("plain") or (not terminal and "text/plain" in accept):
