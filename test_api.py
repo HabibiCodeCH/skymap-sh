@@ -1364,6 +1364,71 @@ class ImageExportsAreWiderThanATerminal(unittest.TestCase):
         self.assertGreater(self.png_size(width=200)[0], self.png_size()[0])
 
 
+class TheExportMatchesWhatIsOnScreen(unittest.TestCase):
+    """A shared PNG should be the picture someone was looking at. Two ways
+    it was not: the header said something different from the page's, and a
+    paused animation frame exported the moment the run started from."""
+
+    WHEN = dt.datetime(2026, 8, 5, 3, 2)
+    PLACE = "-23.90,-69.10"
+
+    def line(self, text, n):
+        import gif
+        return " ".join(gif.ANSI.sub("", text).split("\n")[n].split())
+
+    def top_line(self, text):
+        return self.line(text, 0)
+
+    def test_the_png_header_matches_the_widest_rung_exactly(self):
+        # The browser ships nine rungs and each trims the top line to its
+        # own width, so a narrow one says less than a wide one. An export
+        # has no rung and must carry what the widest view carries -- an
+        # earlier version matched a narrow rung and silently dropped the
+        # planets, the darkness and the star count.
+        png = self.top_line(api.compose_chart_only(
+            api.Request(place=self.PLACE, when=self.WHEN, color=False)))
+        widest = max(api.CHART_LADDER, key=lambda rung: rung[1])
+        page = api.compose(api.Request(place=self.PLACE, when=self.WHEN,
+                                       color=False, panel=True,
+                                       width=widest[1])).text
+        self.assertEqual(png, self.line(page, 1))
+
+    def test_nothing_is_trimmed_off_the_export_header(self):
+        # A place with a lot to say: several planets and a star count.
+        png = self.top_line(api.compose_chart_only(
+            api.Request(place="-14.50,17.50", color=False,
+                        when=dt.datetime(2026, 8, 5, 22, 40))))
+        self.assertIn("stars", png)
+        self.assertIn("Bortle", png)
+
+    def test_the_png_header_carries_the_facts_the_page_shows(self):
+        png = self.top_line(api.compose_chart_only(
+            api.Request(place=self.PLACE, when=self.WHEN, color=False)))
+        for fact in ("Bortle", "full dark", "stars"):
+            self.assertIn(fact, png)
+
+    def test_the_redundant_mode_label_is_dropped_like_the_page_does(self):
+        # The axis is labelled 0-70 down the left edge; saying "horizon
+        # panorama" as well costs the width the summary needs.
+        plain = self.top_line(api.compose_chart_only(
+            api.Request(place=self.PLACE, when=self.WHEN, color=False)))
+        self.assertNotIn("horizon panorama", plain)
+
+    def test_a_facing_window_keeps_its_label(self):
+        # That one is not obvious from looking, so it stays.
+        facing = self.top_line(api.compose_chart_only(
+            api.Request(place=self.PLACE, when=self.WHEN, color=False,
+                        facing="SW")))
+        self.assertIn("facing SW", facing)
+
+    def test_the_page_wires_the_png_link_to_the_paused_frame(self):
+        # The anchor is written once at render time, so without this a
+        # frame eleven hours into a run exported the starting moment.
+        self.assertIn("skymapAnimSyncPng", api.PAGE)
+        self.assertIn("skymapAnimFrameTime(A.at)", api.PAGE)
+        self.assertIn("horizon.png", api.PAGE)
+
+
 class HelpTextIsCurrent(unittest.TestCase):
     """HELP is free text, easy for the UI to drift out from under -- a
     handful of content checks so a future feature/shortcut change is more
