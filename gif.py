@@ -8,6 +8,7 @@ import io, os, re
 from PIL import Image, ImageDraw, ImageFont
 
 import api
+import brand
 
 ANSI = re.compile(r"\033\[(?:38;5;(\d+)|0)m")
 
@@ -30,7 +31,7 @@ FG_DEFAULT = (204, 204, 204)
 
 # One footer line on every image this module produces -- GIF frames and the
 # static PNG export both go through frame_to_image, so both get it for free.
-WATERMARK_TEXT = "made with skymap.sh by @habibicode"
+WATERMARK_TEXT = f"made with {brand.SITE} by {brand.AT_HANDLE}"
 WATERMARK_SIZE = 11
 WATERMARK_COLOR = (160, 168, 178)      # brighter than the site's own muted
                                         # ".t" label grey (#6e7681) -- still
