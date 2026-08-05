@@ -1920,3 +1920,58 @@ class EveryCatalogGroupIsSearchable(unittest.TestCase):
     def test_the_shower_mark_is_the_one_the_chart_uses(self):
         got = {o["glyph"] for o in api.complete_objects("perse")}
         self.assertEqual(got, {api._SHOWER_GLYPH})
+
+
+class OnePictureHeader(unittest.TestCase):
+    """The still export and the animation frames are two renders on purpose
+    -- an animation ramps the magnitude limit so stars fade in as the sky
+    darkens -- but the line above the chart is one idea, and it has drifted
+    twice. The Milky Way band was left off the still; the summary was left
+    off the frames, so a shared GIF carried the old two-part CLI header
+    while the page it came from carried the Moon, the planets, the twilight
+    state and the Bortle estimate."""
+
+    def _head(self, text):
+        return api.strip_ansi(text).splitlines()[0].strip()
+
+    def test_a_frame_carries_the_same_header_as_the_still(self):
+        # At night, when both render the same panorama.
+        r = api.Request(place="Geneva", when=dt.datetime(2026, 8, 5, 22, 25),
+                        width=140)
+        self.assertEqual(self._head(api.compose_chart_only(r)),
+                         self._head(api.compose_frame(r)[0]))
+
+    def test_a_frame_header_is_the_summary_not_the_cli_two_parter(self):
+        r = api.Request(place="Geneva", when=dt.datetime(2026, 8, 5, 22, 25),
+                        width=140)
+        head = self._head(api.compose_frame(r)[0])
+        self.assertIn("·", head)
+        self.assertIn("Bortle", head)
+        # The old form: place, then lat/lon, then a date, then a mode name.
+        self.assertNotIn("46.20°N", head)
+        self.assertNotIn("horizon panorama", head)
+
+    def test_it_works_at_every_hour_including_when_a_body_is_not_drawn(self):
+        # A frame only asks the renderer for the bodies it is drawing, so at
+        # midday its stats carry no Moon and at night no Sun. The header
+        # fills both from the ephemeris rather than trusting what was drawn,
+        # which is what stopped this raising KeyError.
+        for hour in range(0, 24, 3):
+            r = api.Request(place="Geneva",
+                            when=dt.datetime(2026, 8, 5, hour, 25), width=140)
+            head = self._head(api.compose_frame(r)[0])
+            self.assertTrue(head, hour)
+            self.assertIn("Geneva", head, hour)
+
+    def test_the_frame_stats_are_not_mutated(self):
+        # compose_frame runs once per animation frame; the header must not
+        # scribble on the render stats it was handed.
+        r = api.Request(place="Geneva", when=dt.datetime(2026, 8, 5, 12, 25),
+                        width=140)
+        art, st = api.render_linear(r.when_utc, r.place.lat, r.place.lon,
+                                    color=False, width=140, height=24)
+        before = {k: dict(v) if isinstance(v, dict) else v for k, v in st.items()}
+        api._export_head(r, st, "")
+        for k, v in before.items():
+            if isinstance(v, dict):
+                self.assertEqual(st[k], v, k)

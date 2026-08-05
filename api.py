@@ -4515,7 +4515,7 @@ def compose_frame(r, dusk_lead_minutes=0, dawn_lag_minutes=0):
     # line_limit ties constellation lines/names to the same fading threshold as
     # the stars (see mag_limit above) -- they pop in/out star-by-star through
     # twilight instead of snapping on/off at a fixed show_lines boolean.
-    art, _st = render_linear(r.when_utc, p.lat, p.lon, color=c, show_lines=r.lines,
+    art, st = render_linear(r.when_utc, p.lat, p.lon, color=c, show_lines=r.lines,
                              mag_limit=mag_limit, line_limit=mag_limit, tle=None,
                              inset=False, alt_lo=0.0, alt_hi=alt_hi,
                              width=_effective_width(r), height=_horizon_height(r),
@@ -4538,7 +4538,7 @@ def compose_frame(r, dusk_lead_minutes=0, dawn_lag_minutes=0):
     elif sun_alt >= -18:   mode = "astronomical twilight"
     else:                  mode = "horizon panorama"
 
-    head = _horizon_head(r, mode)
+    head = _export_head(r, st, mode)
     return paint(head, C.HEAD, c) + "\n\n" + art, sun_alt
 
 
@@ -4599,6 +4599,60 @@ def _find_chart_only(r):
     head = (f"  {p.name}   {shown_local:%d %b %Y %H:%M}   "
             f"finding {tgt['name']}, {where}")
     return paint(head, C.HEAD, c) + "\n\n" + art
+
+
+def _export_head(r, st, mode):
+    """The header a picture carries: the same one-row summary the browser
+    puts above its chart.
+
+    Shared because it has now drifted twice. The still export and the
+    animation frames are two renders on purpose -- an animation ramps the
+    magnitude limit so stars fade in as the sky darkens, which a still has
+    no need for -- but the line above the chart is one idea, and each time
+    it changed only one of them learned about it. The Milky Way band was
+    left off the still; the summary was left off the frames, so a shared GIF
+    carried the old two-part CLI header while the page it came from carried
+    the Moon, the planets, the twilight state and the Bortle estimate.
+
+    "horizon panorama" is dropped on the plain view for the reason the
+    browser drops it: the axis is labelled 0-70 down the left edge and says
+    so already. A facing window or a quadrant crop is not obvious from
+    looking, so those keep their label.
+    """
+    if not r.facing and not r.quadrant_requested:
+        mode = ""
+    # The summary needs the Sun's altitude to say how dark it is, and an
+    # animation frame does not always ask the renderer to draw the Sun --
+    # so its stats can come back without one. Computed here rather than
+    # taken on trust, which also means this cannot break again the next
+    # time a caller changes which bodies it draws. Copied, not mutated: the
+    # caller's stats are its own.
+    # The Sun's altitude decides how dark the summary says it is, and the
+    # Moon's decides whether it says "below the horizon" -- but a frame only
+    # asks the renderer for the bodies it is actually drawing, so at midday
+    # there is no Moon in its stats and at night no Sun. Filled in here from
+    # the ephemeris rather than taken on trust, so this cannot break again
+    # the next time a caller changes which bodies it draws.
+    #
+    # Copied, never mutated: the caller's stats belong to the caller, and
+    # compose_frame is called once per animation frame.
+    jd = julian(r.when_utc)
+    lst = (gmst_hours(jd) + r.place.lon / 15.0) % 24
+    fixed = {}
+    for key, ephem in (("sun", sun), ("moon", sky.moon)):
+        have = st.get(key) or {}
+        if "alt" not in have:
+            real = ephem(jd)
+            alt, az = altaz(real["ra"], real["dec"], r.place.lat, lst)
+            fixed[key] = dict(real, **have, alt=alt, az=az)
+    if fixed:
+        st = dict(st, **fixed)
+    # Untrimmed (10_000): the browser trims per rung because nine of them
+    # share one page width, but a picture has no rung and should carry what
+    # the widest view carries.
+    summary = _sky_summary(st, r.place.lat, 10_000,
+                           note=sky_note(r.place.lat, r.place.lon))
+    return _horizon_head(r, mode, summary=summary)
 
 
 def compose_chart_only(r):
@@ -4679,15 +4733,7 @@ def compose_chart_only(r):
     # from looking, so those keep their label.
     if not r.facing and not r.quadrant_requested:
         mode = ""
-    # Untrimmed, unlike the page's. The trim exists because the browser
-    # ships nine rungs and a top line longer than its own chart would set
-    # the page width and break the breakpoints -- so each rung drops
-    # whatever does not fit, and a narrow one says less than a wide one.
-    # An export has no rung. It should carry what the widest view carries,
-    # or the picture says less than the page it was taken from, which is
-    # the whole complaint. The image is sized to its longest line anyway.
-    summary = _sky_summary(st, p.lat, 10_000, note=sky_note(p.lat, p.lon))
-    head = _horizon_head(r, mode, summary=summary)
+    head = _export_head(r, st, mode)
     return paint(head, C.HEAD, c) + "\n\n" + art
 
 
