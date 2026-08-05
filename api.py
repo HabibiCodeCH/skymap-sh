@@ -3080,7 +3080,26 @@ def compose_chart_only(r):
     mode = (f"facing {r.facing.upper()}, {int(round(st['span']))}° wide"
             f"{' (' + st['clamped'] + ')' if st['clamped'] else ''}, true shape"
             if r.facing else "horizon panorama")
-    head = _horizon_head(r, mode)
+    # The same one-row summary the browser puts above the chart -- Moon,
+    # planets, how dark it is, the Bortle estimate, the star count. The
+    # export used to carry the CLI's two-part header instead, so the
+    # picture someone shared said less than the page they took it from,
+    # and said it differently.
+    # "horizon panorama" is dropped on the plain view for the same reason
+    # the browser drops it: the axis is labelled 0-70 down the left edge and
+    # says so already. A facing window or a quadrant crop is not obvious
+    # from looking, so those keep their label.
+    if not r.facing and not r.quadrant_requested:
+        mode = ""
+    # Untrimmed, unlike the page's. The trim exists because the browser
+    # ships nine rungs and a top line longer than its own chart would set
+    # the page width and break the breakpoints -- so each rung drops
+    # whatever does not fit, and a narrow one says less than a wide one.
+    # An export has no rung. It should carry what the widest view carries,
+    # or the picture says less than the page it was taken from, which is
+    # the whole complaint. The image is sized to its longest line anyway.
+    summary = _sky_summary(st, p.lat, 10_000, note=sky_note(p.lat, p.lon))
+    head = _horizon_head(r, mode, summary=summary)
     return paint(head, C.HEAD, c) + "\n\n" + art
 
 
@@ -4082,6 +4101,26 @@ function skymapAnimShow(i){{
   if(!A||!A.frames.length)return;
   A.at=Math.max(0,Math.min(A.frames.length-1,i));
   A.pre.innerHTML=ansiToHtml(A.frames[A.at]);
+  skymapAnimSyncPng();
+}}
+
+// "Share as a PNG" points at whatever frame is on screen. The link is
+// written once when the page renders, so pausing on hour eleven of a run
+// and sharing it exported the moment the animation *started* from -- the
+// picture and the thing you were looking at were different skies, silently.
+// skymapAnimFrameTime already works the moment out for the deep-sky
+// refetch; this is the same answer put on the anchor.
+function skymapAnimSyncPng(){{
+  var A=window.skymapAnim;
+  var link=document.querySelector('.share-row a[href*="horizon.png"]');
+  if(!A||!link)return;
+  var t=skymapAnimFrameTime(A.at);
+  if(!t)return;
+  if(!link.dataset.baseHref)link.dataset.baseHref=link.getAttribute('href');
+  var u=link.dataset.baseHref.split('?');
+  var qs=new URLSearchParams(u[1]||'');
+  qs.set('t',t);
+  link.setAttribute('href',u[0]+'?'+qs.toString());
 }}
 function skymapAnimAtEnd(A){{
   return A.done&&A.at>=A.frames.length-1;
