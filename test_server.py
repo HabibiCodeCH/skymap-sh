@@ -3281,16 +3281,32 @@ class MobileRedirectsToSphere(unittest.TestCase):
         cc = self.client.get("/Tokyo", headers=MOBILE).headers["cache-control"]
         self.assertIn("no-store", cc)
 
-    def test_terminal_and_json_keep_full_edge_caching(self):
-        # The reason for not simply sending Vary: User-Agent. Curl and
-        # ?format=json are the bulk of the traffic and are identical for
-        # every visitor, so they stay shared-cacheable.
-        for headers in (TERMINAL, {"user-agent": "curl/8.0", "accept": "*/*"}):
+    def test_only_json_keeps_edge_caching(self):
+        """Text and HTML are two representations of one url, chosen by the
+        user agent, and a shared cache stores one object per url. Cloudflare
+        honours Vary for Accept-Encoding and nothing else, so no header makes
+        it keep both -- it stored the curl render of a page and served that
+        text/plain to Twitterbot, which then reported the card as missing.
+
+        ?format=json has a url of its own, so it is safe to share.
+        """
+        for headers in (TERMINAL, {"user-agent": "curl/8.0", "accept": "*/*"},
+                        {"user-agent": "Twitterbot/1.0", "accept": "*/*"},
+                        BROWSER):
             cc = self.client.get("/Tokyo", headers=headers).headers["cache-control"]
-            self.assertIn("s-maxage", cc)
-            self.assertIn("public", cc)
+            self.assertIn("private", cc, headers)
+            self.assertNotIn("s-maxage", cc, headers)
         cc = self.client.get("/Tokyo?format=json", headers=TERMINAL).headers["cache-control"]
         self.assertIn("s-maxage", cc)
+        self.assertIn("public", cc)
+
+    def test_the_cards_themselves_stay_shared_cacheable(self):
+        # They have their own urls and no negotiation on them, so the edge
+        # can and should keep them.
+        for path in ("/Venus/og.png", "/og.png"):
+            cc = self.client.get(path).headers["cache-control"]
+            self.assertIn("public", cc, path)
+            self.assertIn("s-maxage", cc, path)
 
     def test_googlebot_mobile_crawler_is_not_redirected(self):
         # Googlebot's and Bingbot's mobile crawlers send an Android/iPhone

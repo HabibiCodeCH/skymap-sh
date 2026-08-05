@@ -1887,9 +1887,18 @@ def object_title(facts):
     needs."""
     name = facts["object"]
     kind = _KIND_WORD.get(facts.get("kind"), "")
-    where = f" from {facts['place']}" if facts.get("place") else ""
-    return f"{name}: where to see {'the ' if kind in ('planet',) else ''}" \
-           f"{name.lower() if kind == 'planet' else name}{where} tonight"
+    # No place in here. This is the <title> and the twitter:title, and both
+    # are read by an unfurler once and then shown to everybody who sees the
+    # post -- so "from Zurich" on a link somebody shared in Tokyo is wrong
+    # for every reader but the one who posted it, and on a crawler it names
+    # whichever city its datacentre sits in. The page says where you are,
+    # per visitor, further down.
+    #
+    # "the" only for the two that take it. Planets are proper nouns and were
+    # coming out as "where to see the venus tonight", article, lowercase and
+    # all.
+    article = "the " if kind in ("moon", "sun") else ""
+    return f"{name}: where to see {article}{name} tonight"
 
 
 # Every kind sky.resolve_target() can return. Missing keys do not fail, they

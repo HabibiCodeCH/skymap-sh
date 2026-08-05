@@ -2008,16 +2008,22 @@ def _respond(request: Req, place: str | None):
     # used to bounce themselves to `/?w=NNN` (a different cache key) and now
     # they stay on the bare URL, which is exactly the entry a phone needs.
     #
-    # Vary: User-Agent would also be correct but fragments the cache across
-    # every UA string in existence. Marking only the browser path private is
-    # narrower: curl and ?format=json keep full edge caching, which is the
-    # overwhelming majority of traffic, and the origin renders a warm page
-    # in a few milliseconds anyway.
-    if mode == "html":
-        cache = f"private, max-age={edge // 4}"
-    else:
+    # Only ?format=json keeps edge caching, because only it has a URL of its
+    # own. Text and HTML are two representations of ONE url chosen by the
+    # user agent, and a shared cache stores one object per url: Cloudflare
+    # honours Vary for Accept-Encoding and nothing else, so no header we can
+    # send makes it keep both. It stored the curl render of /Venus and then
+    # served that text/plain to Twitterbot, which reported the card missing
+    # -- correctly, since it was looking at a terminal chart.
+    #
+    # So the negotiated page is private and the CDN keeps out of it. The
+    # process-local render cache (X-Cache below) is untouched and does the
+    # real work anyway; what is lost is one edge hop for curl.
+    if mode == "json":
         cache = (f"public, max-age={edge // 4}, s-maxage={edge}, "
                  f"stale-while-revalidate=600")
+    else:
+        cache = f"private, max-age={edge // 4}"
     headers = {"Cache-Control": cache,
                "X-Cache": "HIT" if hit else "MISS"}
     if mode == "json":
@@ -3169,11 +3175,14 @@ def _respond_object(request: Req, place: str | None, canonical: str):
     # indexes ~1,200 URLs rather than fifty million near-identical ones.
     if place:
         headers["Link"] = f'<https://skymap.sh/{quote(canonical)}>; rel="canonical"'
-    if mode == "html":
-        headers["Cache-Control"] = f"private, max-age={edge // 4}"
-    else:
+    # Same rule as the chart route, for the same reason: text and HTML share
+    # one url, a shared cache keeps one of them, and the one it kept was the
+    # terminal render.
+    if mode == "json":
         headers["Cache-Control"] = (f"public, max-age={edge // 4}, "
                                     f"s-maxage={edge}, stale-while-revalidate=600")
+    else:
+        headers["Cache-Control"] = f"private, max-age={edge // 4}"
     if mode == "json":
         return JSONResponse(res.data, status_code=res.status, headers=headers)
     base_url = str(request.base_url).rstrip("/")
