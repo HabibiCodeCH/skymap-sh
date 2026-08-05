@@ -49,6 +49,10 @@ CRAWLERS = ("facebookexternalhit", "facebookcatalog", "twitterbot",
 def _is_crawler(ua):
     return any(b in ua for b in CRAWLERS)
 
+
+def _crawler_req(request):
+    return _is_crawler((request.headers.get("user-agent") or "").lower())
+
 # Phone browsers only -- iPadOS Safari's UA is indistinguishable from desktop
 # Safari by design, so it isn't and can't be matched here; it lands on the
 # text page like a laptop would. The plain-text/ASCII view has no real value
@@ -353,7 +357,11 @@ _SPARK = "▁▂▃▄▅▆▇█"
 # html is a browser, json is a script -- and a phone is html, so it is split
 # back out in _tally rather than being a mode of its own.
 CLIENT_OF = {"text": "cli", "html": "web", "json": "json"}
-CLIENTS = ("cli", "web", "mobile", "json")
+# "bot" is its own client, not a flavour of web. An unfurler fetches a page
+# once per share and never reads it, so counting it beside real visitors
+# inflated exactly the numbers anyone would look at /stats to learn: how
+# many people came, from where, and which objects they wanted.
+CLIENTS = ("cli", "web", "mobile", "json", "bot")
 
 # notfound rides alongside requests rather than inside it. A request for a
 # place that doesn't exist isn't a cache hit or a miss and has no day or
@@ -361,7 +369,7 @@ CLIENTS = ("cli", "web", "mobile", "json")
 # it slightly wrong. Kept separate, the header's running total reconciles
 # exactly: its request count is the log's requests plus its notfounds.
 _ZERO_FILL = ("requests", "hit", "miss", "day", "night", "notfound",
-              "cli", "web", "mobile", "json", "object")
+              "cli", "web", "mobile", "json", "bot", "object")
 
 
 def _merge_hour_rows(rows):
@@ -976,7 +984,7 @@ def _referrer_domain(request: Req):
 
 
 def _tally(r, daytime, hit, mode, status, data, colour=True, referrer=None,
-           mobile=False, obj=None):
+           mobile=False, obj=None, crawler=False):
     _roll_hour()
     _stat["requests"] += 1
     _stat["hit" if hit else "miss"] += 1
@@ -991,8 +999,17 @@ def _tally(r, daytime, hit, mode, status, data, colour=True, referrer=None,
     # taken *out* of web rather than counted twice. Recorded per hour rather
     # than only all-time so /stats can chart the mix over the window -- the
     # all-time mode: counters can't say whether the CLI share is growing.
-    _hour_stat[CLIENT_OF[mode] if not (mobile and mode == "html")
-               else "mobile"] += 1
+    _hour_stat["bot" if crawler else
+               (CLIENT_OF[mode] if not (mobile and mode == "html")
+                else "mobile")] += 1
+    if crawler:
+        # Everything below this point answers a question about readers --
+        # which places, which objects, where in the world, which referrer.
+        # A crawler is none of those, and one share of a link produces a
+        # fetch from every platform it lands on. Load is still counted
+        # above; the leaderboards are not.
+        _stat["ua:crawler"] += 1
+        return
     if mobile:
         _stat["ua:mobile"] += 1
     # Object lookups per hour: the leaderboard says which object, never
@@ -1973,6 +1990,7 @@ def _respond(request: Req, place: str | None):
     r = _build(request, place)
     res, daytime, hit = _cached(r)
     _tally(r, daytime, hit, mode, res.status, res.data, colour,
+           crawler=_crawler_req(request),
            referrer=_referrer_domain(request), mobile=_is_mobile(request))
     edge = DAY_EDGE if daytime else NIGHT_EDGE
     # A browser page is private; a terminal or JSON response is not.
@@ -3135,9 +3153,14 @@ def _respond_object(request: Req, place: str | None, canonical: str):
     r.find = canonical
     res, daytime, hit = _cached_object(r, canonical)
     _tally(r, daytime, hit, mode, res.status, res.data, colour,
+           crawler=_crawler_req(request),
            referrer=_referrer_domain(request), mobile=_is_mobile(request),
            obj=canonical)
-    _objects[canonical] += 1
+    # Outside _tally, so it needs the same guard: which objects people look
+    # up is a question about readers, and a crawler fetching a card for a
+    # shared link is not one.
+    if not _crawler_req(request):
+        _objects[canonical] += 1
     edge = DAY_EDGE if daytime else NIGHT_EDGE
     headers = {"X-Cache": "HIT" if hit else "MISS"}
     # /{place}/{object} is the same page as /{object} with the location

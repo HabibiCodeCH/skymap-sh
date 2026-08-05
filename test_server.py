@@ -753,10 +753,14 @@ class ClientMixAndFinds(unittest.TestCase):
         self.assertEqual(len(set(cols.values())), 1, cols)
 
     def test_the_tail_percentages_add_up_even_with_unrecorded_hours(self):
-        # The four fields only exist from the day they shipped, so most of a
+        # The mix fields only exist from the day they shipped, so most of a
         # 48h window has requests and no mix at all. Counted in the
         # denominator those hours dragged every tail to 0-1%, which is the
         # one thing this block says it will never do.
+        #
+        # Five clients now, not four: unfurlers are counted as "bot" rather
+        # than folded into web, so one share of a link cannot look like a
+        # reader in the numbers anyone actually reads /stats for.
         hour = dt.datetime.utcnow().strftime("%Y-%m-%dT%H:00")
         before = (dt.datetime.utcnow() - dt.timedelta(hours=1)).strftime(
             "%Y-%m-%dT%H:00")
@@ -770,9 +774,9 @@ class ClientMixAndFinds(unittest.TestCase):
             "\n".join(server._client_mix_block(server._dense_hours(rows, 2),
                                                cols=2)))
         tails = [int(p) for p in re.findall(r"(\d+)%", plain)]
-        self.assertEqual(len(tails), 4, plain)
+        self.assertEqual(len(tails), len(server.CLIENTS), plain)
         self.assertEqual(sum(tails), 100, plain)
-        self.assertEqual(tails, [40, 30, 20, 10], plain)
+        self.assertEqual(tails, [40, 30, 20, 10, 0], plain)
 
     def test_the_four_shares_are_taken_against_the_same_bucket(self):
         # Each sparkline is that client's share of the same hour, so the
@@ -3795,6 +3799,58 @@ class UnfurlersGetTheHead(unittest.TestCase):
         d = self.client.get("/Venus?format=json",
                             headers={"user-agent": self.BOTS["facebook"]}).json()
         self.assertEqual(d["object"], "Venus")
+
+
+class UnfurlersDoNotCountAsReaders(unittest.TestCase):
+    """One share of a link produces a fetch from every platform it lands on.
+    Counted beside real visitors, that inflates exactly the numbers /stats
+    exists to answer: how many people came, from where, and what they looked
+    up."""
+
+    BOT = {"user-agent": "Bluesky Cardyb/1.1", "accept": "*/*"}
+    WEB = {"user-agent": "Mozilla/5.0 (Macintosh) Chrome/126",
+           "accept": "text/html"}
+
+    def setUp(self):
+        client_cm = TestClient(server.app)
+        self.client = client_cm.__enter__()
+        self.addCleanup(client_cm.__exit__, None, None, None)
+
+    def _delta(self, counter, path, headers):
+        before = dict(counter)
+        self.client.get(path, headers=headers)
+        return {k: v - before.get(k, 0) for k, v in counter.items()
+                if v - before.get(k, 0)}
+
+    def test_a_crawler_is_kept_out_of_the_object_leaderboard(self):
+        self.assertEqual(self._delta(server._objects, "/Venus", self.BOT), {})
+        self.assertEqual(self._delta(server._objects, "/Venus", self.WEB),
+                         {"Venus": 1})
+
+    def test_a_crawler_is_kept_out_of_the_place_leaderboard(self):
+        self.assertEqual(self._delta(server._places, "/Paris", self.BOT), {})
+        self.assertTrue(self._delta(server._places, "/Paris", self.WEB))
+
+    def test_a_crawler_gets_its_own_client_bucket(self):
+        self.assertEqual(self._delta(server._hour_stat, "/Venus",
+                                     self.BOT).get("bot"), 1)
+        self.assertIsNone(self._delta(server._hour_stat, "/Venus",
+                                      self.BOT).get("web"))
+
+    def test_a_crawler_does_not_land_in_the_view_counters(self):
+        d = self._delta(server._stat, "/Venus", self.BOT)
+        self.assertEqual([k for k in d if k.startswith("view:")], [])
+        self.assertEqual(d.get("ua:crawler"), 1)
+
+    def test_the_load_it_causes_is_still_counted(self):
+        # Separating readers from bots must not hide the traffic itself:
+        # requests, hits and misses are about the server, not the audience.
+        d = self._delta(server._stat, "/Venus", self.BOT)
+        self.assertEqual(d.get("requests"), 1)
+
+    def test_bot_is_a_real_client_not_a_flavour_of_web(self):
+        self.assertIn("bot", server.CLIENTS)
+        self.assertIn("bot", server._ZERO_FILL)
 
 
 if __name__ == "__main__":
