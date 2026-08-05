@@ -4,12 +4,22 @@ The constellation test is the load-bearing one: it checks our boundary lookup
 against BSC5's own constellation assignment for every star that carries one,
 which is 2,121 independent cases rather than a handful of hand-picked vectors.
 """
+import datetime as dt
 import json
+import math
 
 import pytest
 
 import objects
 import sky
+
+ZURICH = (47.38, 8.54)
+WHEN = dt.datetime(2026, 8, 5)
+
+
+def _target(name, lat=ZURICH[0], lon=ZURICH[1], when=WHEN):
+    jd = sky.julian(when)
+    return sky.resolve_target(name, jd, lat, (sky.gmst_hours(jd) + lon / 15.0) % 24)
 
 
 # ---------------------------------------------------------- constellations
@@ -193,6 +203,197 @@ def test_dso_minor_axis_never_exceeds_major():
 
 def test_dso_size_is_empty_not_an_error_for_unknown_id():
     assert objects.dso_size("NGC999999") == {}
+
+
+# -------------------------------------------------- rise, transit and set
+def test_sun_rise_and_set_agree_with_sky_py():
+    """sky.py samples the Sun's arc at ten-minute steps and interpolates;
+    this is closed form. They should land within a couple of minutes, and a
+    larger gap means one of them is wrong."""
+    mine = objects.rise_transit_set(_target("Sun"), *ZURICH, WHEN)
+    theirs = sky.sun_events(WHEN, *ZURICH)
+    for ours, name in ((mine["rise"], "sunrise"), (mine["set"], "sunset")):
+        gap = abs((ours - theirs[name]).total_seconds()) / 60
+        assert gap < 5, f"{name} differs by {gap:.1f} minutes"
+
+
+def test_transit_altitude_is_the_geometric_one():
+    """An object's greatest altitude is 90 - |latitude - declination|,
+    exactly. Anything else means the transit search drifted."""
+    for name in ("Sirius", "Vega", "M31"):
+        t = _target(name)
+        got = objects.rise_transit_set(t, *ZURICH, WHEN)
+        want = 90.0 - abs(ZURICH[0] - t["dec"])
+        assert got["transit_alt"] == pytest.approx(want, abs=0.6)
+
+
+def test_rise_and_set_straddle_transit():
+    got = objects.rise_transit_set(_target("Sirius"), *ZURICH, WHEN)
+    assert got["rise"] < got["transit"] < got["set"]
+    assert got["up_hours"] == pytest.approx(
+        (got["set"] - got["rise"]).total_seconds() / 3600, abs=0.05)
+
+
+@pytest.mark.parametrize("name, lat, expect", [
+    ("Polaris", 70, "circumpolar"),
+    ("Polaris", -33, "never_rises"),
+    ("Southern Cross", 47.38, "never_rises"),
+    ("Southern Cross", -33, "circumpolar"),
+])
+def test_circumpolar_and_never_rising(name, lat, expect):
+    """At extreme latitudes half the catalogue is one or the other, and these
+    are answers rather than errors."""
+    got = objects.rise_transit_set(_target(name, lat=lat), lat, 8.54, WHEN)
+    assert got.get(expect) is True
+    assert "transit" in got, "a transit time is still meaningful either way"
+
+
+@pytest.mark.parametrize("date, expect", [
+    (dt.datetime(2026, 6, 21), "circumpolar"),      # midnight sun
+    (dt.datetime(2026, 12, 21), "never_rises"),     # polar night
+])
+def test_arctic_sun(date, expect):
+    lat, lon = 69.6, 18.96                           # Tromso
+    got = objects.rise_transit_set(_target("Sun", lat=lat, lon=lon, when=date),
+                                    lat, lon, date)
+    assert got.get(expect) is True
+
+
+# ------------------------------------------------------ best night of year
+def test_best_night_lands_in_the_right_season():
+    """Andromeda is an autumn object from the northern hemisphere and Orion a
+    winter one. If these drift into the wrong half of the year the scan is
+    weighting something incorrectly."""
+    m31 = objects.best_this_year(_target("M31"), *ZURICH, WHEN)
+    assert m31["when_utc"].month in (9, 10, 11, 12)
+    orion = objects.best_this_year(_target("Orion Nebula"), *ZURICH, WHEN)
+    assert orion["when_utc"].month in (11, 12, 1, 2)
+
+
+def test_best_night_prefers_a_dark_moon():
+    """Moonlight is the discount in the score, so the winner should never be
+    a night with a bright Moon when a darker one was available."""
+    for name in ("M31", "M13", "Orion Nebula"):
+        got = objects.best_this_year(_target(name), *ZURICH, WHEN)
+        assert got["moon_illum"] < 0.35, f"{name} chose a moonlit night"
+
+
+def test_best_night_is_none_when_never_visible():
+    assert objects.best_this_year(_target("Southern Cross"), *ZURICH, WHEN) is None
+
+
+def test_best_night_skipped_for_sun_and_moon():
+    for name in ("Sun", "Moon"):
+        assert objects.best_this_year(_target(name), *ZURICH, WHEN) is None
+
+
+def test_best_night_is_cheap():
+    """Closed form per night, not a sampled sky. The naive version costs
+    about 200 ms, seven times the most expensive thing the service does."""
+    import time
+    t = _target("M31")
+    start = time.perf_counter()
+    objects.best_this_year(t, *ZURICH, WHEN)
+    assert (time.perf_counter() - start) < 0.05
+
+
+# ----------------------------------------------------------- planet facts
+def test_planet_apparent_sizes_are_plausible():
+    """Ranges a planet's disc actually spans, seen from Earth."""
+    jd = sky.julian(WHEN)
+    lst = (sky.gmst_hours(jd) + ZURICH[1] / 15.0) % 24
+    bounds = {"Mercury": (4, 14), "Venus": (9, 67), "Mars": (3, 26),
+              "Jupiter": (29, 51), "Saturn": (14, 21),
+              "Uranus": (3, 4.2), "Neptune": (2, 2.5)}
+    for name, (lo, hi) in bounds.items():
+        got = objects.planet_facts(name, jd, ZURICH[0], lst)["apparent_arcsec"]
+        assert lo <= got <= hi, f"{name} {got} arcsec outside {lo}-{hi}"
+
+
+def test_outer_planets_are_always_nearly_full():
+    jd = sky.julian(WHEN)
+    lst = (sky.gmst_hours(jd) + ZURICH[1] / 15.0) % 24
+    for name in ("Jupiter", "Saturn", "Uranus", "Neptune"):
+        assert objects.planet_facts(name, jd, ZURICH[0], lst)["illuminated"] > 0.95
+
+
+def test_inner_planets_stay_near_the_sun():
+    """Mercury never gets more than about 28 degrees from the Sun and Venus
+    never more than about 47. A larger elongation means the angle is being
+    computed in the wrong frame -- which is exactly what using sky.planet()'s
+    'elon' field (heliocentric longitude) instead would produce."""
+    for name, limit in (("Mercury", 30), ("Venus", 48)):
+        worst = max(
+            objects.planet_facts(name, sky.julian(WHEN + dt.timedelta(days=d)),
+                                  ZURICH[0], 0.0)["elongation"]
+            for d in range(0, 400, 5))
+        assert worst <= limit, f"{name} reached {worst} degrees from the Sun"
+
+
+def test_saturn_rings_open_after_the_2025_crossing():
+    """2025 was a ring-plane crossing, so the rings were edge-on and all but
+    invisible. They widen from there towards a maximum near 27 degrees."""
+    angles = [objects.planet_facts("Saturn", sky.julian(dt.datetime(y, 8, 5)),
+                                    ZURICH[0], 0.0)["ring_angle"]
+              for y in (2025, 2026, 2027, 2029, 2032)]
+    assert angles[0] < 6, "should be nearly edge-on just after the crossing"
+    assert angles == sorted(angles), "should open steadily over these years"
+    assert max(angles) < 28, "cannot open wider than the tilt allows"
+
+
+def test_light_minutes_match_the_distance():
+    jd = sky.julian(WHEN)
+    f = objects.planet_facts("Saturn", jd, ZURICH[0], 0.0)
+    assert f["light_minutes"] == pytest.approx(f["distance_au"] * 8.3167, rel=0.01)
+
+
+# ------------------------------------------------------- spectra and variables
+@pytest.mark.parametrize("name, want", [
+    ("Betelgeuse", "red supergiant"),
+    ("Vega", "white main-sequence star"),
+    ("Arcturus", "orange giant"),
+    ("Rigel", "blue-white supergiant"),
+    ("Aldebaran", "orange giant"),
+])
+def test_spectral_descriptions(name, want):
+    hr = next(s["hr"] for s in sky._load("stars.json") if s.get("n") == name)
+    assert objects.describe_spectrum(objects.star_info(hr).get("sp")) == want
+
+
+@pytest.mark.parametrize("sp", ["", None, "?", "Xq"])
+def test_unreadable_spectra_say_nothing(sp):
+    """A wrong description of a star is worse than no description."""
+    assert objects.describe_spectrum(sp) is None
+
+
+def test_yerkes_prefix_notation():
+    """BSC5 still uses the old prefixes for a few dozen stars: gK4 is a K4
+    giant, not a star of class 'g'."""
+    assert objects.describe_spectrum("gK4") == "orange giant"
+    assert objects.describe_spectrum("sgG9") == "yellow subgiant"
+    assert objects.describe_spectrum("dF5") == "yellow-white main-sequence star"
+
+
+def test_algol_minima_are_one_period_apart():
+    hr = next(s["hr"] for s in sky._load("stars.json") if s.get("n") == "Algol")
+    period = objects.variable_info(hr)["period"]
+    first = objects.next_minimum(hr, WHEN)
+    assert first is not None and first > WHEN
+    second = objects.next_minimum(hr, first + dt.timedelta(minutes=1))
+    gap = (second - first).total_seconds() / 86400
+    assert gap == pytest.approx(period, abs=1e-3)
+
+
+def test_pulsating_variables_get_no_minimum():
+    """The GCVS epoch marks maximum light for pulsating stars, so reporting
+    it as a minimum would be wrong in a way nobody would notice."""
+    hr = next(s["hr"] for s in sky._load("stars.json") if s.get("n") == "Betelgeuse")
+    assert objects.next_minimum(hr, WHEN) is None
+
+
+def test_next_minimum_is_none_for_ordinary_stars():
+    hr = next(s["hr"] for s in sky._load("stars.json") if s.get("n") == "Vega")
+    assert objects.next_minimum(hr, WHEN) is None
 
 
 # ------------------------------------------------------------ file hygiene

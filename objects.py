@@ -10,11 +10,20 @@ Kept out of sky.py deliberately. sky.py is the render engine and every chart
 on the site goes through it; this is a leaf that imports from it and is
 imported by api.py, so nothing here can regress a chart.
 """
+import datetime as dt
 import math
 
 import sky
 
 D = math.pi / 180
+
+# Standard refraction allowance at the horizon. A body is called "risen" when
+# its centre is 34 arcminutes below the geometric horizon, because the
+# atmosphere lifts it into view by about that much. The Sun and Moon get an
+# extra half-diameter on top, since what people watch for is the upper limb
+# clearing the horizon rather than the centre.
+_REFRACTION = -0.5667
+_HORIZON = {"sun": -0.8333, "moon": 0.125}
 
 
 # ------------------------------------------------------- constellations
@@ -90,6 +99,346 @@ def dso_size(dso_id):
     Only the well-known Messier objects have one -- see build_dsoinfo.py for
     why there is no catalogue behind this."""
     return sky._load("dsoinfo.json").get(dso_id, {})
+
+
+# ------------------------------------------------------ rise, transit, set
+# The sidereal day is shorter than the solar one, so local sidereal time runs
+# fast against the clock by this much. Converting "the object is due south at
+# sidereal time X" into "which is 21:47 tonight" is the whole job here.
+_SIDEREAL_RATE = 1.00273790935
+
+
+def _lst(jd, lon):
+    return (sky.gmst_hours(jd) + lon / 15.0) % 24
+
+
+def _horizon_alt(kind):
+    return _HORIZON.get(kind, _REFRACTION)
+
+
+def rise_transit_set(tgt, lat, lon, when_utc):
+    """When the object crosses the horizon and when it is highest, for the
+    day containing when_utc.
+
+    Returns a dict with utc datetimes, or flags instead:
+
+        {"transit": dt, "rise": dt, "set": dt, "transit_alt": deg}
+        {"transit": dt, "transit_alt": deg, "circumpolar": True}
+        {"transit": dt, "transit_alt": deg, "never_rises": True}
+
+    Circumpolar and never-rising are not error cases -- at Tromso half the
+    catalogue is one or the other for months, and "it never sets" is a more
+    useful answer than a missing line.
+    """
+    kind = tgt.get("kind", "")
+    jd0 = sky.julian(when_utc)
+
+    # Declination is what decides the geometry, and for anything outside the
+    # solar system it does not move at all over a day. For the Sun, Moon and
+    # planets it does, so the position is re-read at the transit time found
+    # from the first pass and the answer refined once -- one iteration is
+    # enough for everything except the Moon, which gets two.
+    def radec(jd):
+        if tgt.get("body"):
+            b = (sky.moon(jd) if tgt["body"] == "Moon" else
+                 sky.sun(jd) if tgt["body"] == "Sun" else
+                 sky.planet(tgt["body"], jd))
+            return b["ra"], b["dec"]
+        return sky.precess(tgt["ra"], tgt["dec"], jd)
+
+    jd_t = jd0
+    for _ in range(3 if kind == "moon" else 2):
+        ra, dec = radec(jd_t)
+        # Hours until the object is next due south, converted from sidereal
+        # to solar time.
+        delta = (ra - _lst(jd_t, lon)) % 24
+        jd_t = jd_t + (delta / 24.0) / _SIDEREAL_RATE
+
+    ra, dec = radec(jd_t)
+    transit_alt = 90.0 - abs(lat - dec)
+    out = {"transit": _to_utc(jd_t), "transit_alt": round(transit_alt, 1)}
+
+    h0 = _horizon_alt(kind)
+    denom = math.cos(lat * D) * math.cos(dec * D)
+    if abs(denom) < 1e-9:
+        out["circumpolar" if transit_alt > h0 else "never_rises"] = True
+        return out
+    cos_h = (math.sin(h0 * D) - math.sin(lat * D) * math.sin(dec * D)) / denom
+    if cos_h < -1:
+        out["circumpolar"] = True
+        return out
+    if cos_h > 1:
+        out["never_rises"] = True
+        return out
+
+    # Half the time the object spends above the horizon, in solar hours.
+    half = math.degrees(math.acos(cos_h)) / 15.0 / _SIDEREAL_RATE
+    out["rise"] = _to_utc(jd_t - half / 24.0)
+    out["set"] = _to_utc(jd_t + half / 24.0)
+    out["up_hours"] = round(2 * half, 2)
+    return out
+
+
+def _to_utc(jd):
+    """Julian day -> naive UTC datetime, matching what the rest of the
+    codebase passes around."""
+    return dt.datetime(2000, 1, 1, 12) + dt.timedelta(days=jd - 2451545.0)
+
+
+def _half_day(dec, lat, h0):
+    """Hours between an object at declination dec crossing altitude h0 and
+    its transit. None when it never reaches h0; math.inf when it never drops
+    below it."""
+    denom = math.cos(lat * D) * math.cos(dec * D)
+    if abs(denom) < 1e-9:
+        return math.inf if 90.0 - abs(lat - dec) > h0 else None
+    c = (math.sin(h0 * D) - math.sin(lat * D) * math.sin(dec * D)) / denom
+    if c < -1:
+        return math.inf
+    if c > 1:
+        return None
+    return math.degrees(math.acos(c)) / 15.0 / _SIDEREAL_RATE
+
+
+def _overlap(a0, a1, b0, b1):
+    """Hours two time windows share. Plain numbers, both already in hours
+    measured from the same origin."""
+    return max(0.0, min(a1, b1) - max(a0, b0))
+
+
+# ------------------------------------------------- best night of the year
+# The inversion: not "where is it tonight" but "when this year should I look".
+#
+# Done as arithmetic per night rather than by sampling the sky. For anything
+# outside the solar system declination is fixed, so the altitude it reaches
+# is the same every night of the year -- 90 - |lat - dec|, one number, no
+# search. What actually varies is WHEN it gets there relative to darkness,
+# and where the Moon is. Both of those are closed form too.
+#
+# Sampling each night at ten-minute steps instead costs about 200 ms, roughly
+# seven times the most expensive thing the service currently does, on every
+# uncached object page. This costs a few milliseconds.
+_MIN_USEFUL_ALT = 20.0
+_ASTRO_DARK = -18.0
+
+
+def best_this_year(tgt, lat, lon, start_utc, days=365):
+    """The night in the next year when this object is best placed.
+
+    "Best" is the hours it spends both usefully high and in a genuinely dark
+    sky, discounted by moonlight. Returns None for something that never gets
+    high enough from this latitude, which is a real answer rather than a
+    failure -- plenty of the catalogue never clears 20 degrees from Zurich.
+    """
+    if tgt.get("kind") in ("sun", "moon"):
+        return None                     # neither has a "best night"; they have phases
+
+    fixed = not tgt.get("body")
+    best = None
+    for n in range(days):
+        # Local midnight, near enough: the dark window is centred on it, and
+        # working from there keeps a night in one piece instead of split
+        # across two calendar dates.
+        jd = sky.julian(start_utc) + n - lon / 360.0
+
+        if fixed:
+            ra, dec = sky.precess(tgt["ra"], tgt["dec"], jd)
+        else:
+            b = sky.planet(tgt["body"], jd)
+            ra, dec = b["ra"], b["dec"]
+
+        half_up = _half_day(dec, lat, _MIN_USEFUL_ALT)
+        if half_up is None:
+            continue                    # never gets high enough on this night
+
+        s = sky.sun(jd)
+        half_dark = _half_day(s["dec"], lat, _ASTRO_DARK)
+        if half_dark is math.inf:
+            continue                    # sun never sets far enough: no dark at all
+        # Sun's transit is noon; darkness is centred on midnight, half a day
+        # away, and runs half_dark either side of it. None means the sun
+        # never climbs to -18, so the whole night is astronomically dark.
+        dark_half = 12.0 if half_dark is None else 12.0 - half_dark
+
+        # Both windows measured in hours from this jd, via each body's transit.
+        obj_transit = ((ra - _lst(jd, lon)) % 24) / _SIDEREAL_RATE
+        sun_transit = ((s["ra"] - _lst(jd, lon)) % 24) / _SIDEREAL_RATE
+        midnight = sun_transit + 12.0
+
+        hours = 0.0
+        for shift in (-24.0, 0.0, 24.0):    # the object may transit either side
+            hours += _overlap(obj_transit + shift - (half_up if half_up is not math.inf else 12.0),
+                              obj_transit + shift + (half_up if half_up is not math.inf else 12.0),
+                              midnight - dark_half, midnight + dark_half)
+        if hours <= 0:
+            continue
+
+        # Moonlight. Illumination alone, not whether the Moon is up: a full
+        # Moon anywhere in the sky washes out a faint galaxy, and computing
+        # its rise time per night for a factor this soft is not worth it.
+        illum = sky.moon(jd)["illum"]
+        transit_alt = 90.0 - abs(lat - dec)
+        score = hours * (transit_alt / 90.0) * (1.0 - 0.75 * illum)
+        if best is None or score > best["score"]:
+            best = {"score": score, "jd": jd, "dark_hours": round(hours, 2),
+                    "transit_alt": round(transit_alt, 1),
+                    "moon_illum": round(illum, 2),
+                    "when_utc": _to_utc(jd)}
+    if best:
+        best.pop("score")
+    return best
+
+
+# ------------------------------------------------------------ the planets
+# Equatorial radii in km. Apparent diameter is the one planet number people
+# can act on -- it decides whether a telescope will show a disc or a dot.
+_RADIUS_KM = {"Mercury": 2439.7, "Venus": 6051.8, "Mars": 3396.2,
+              "Jupiter": 71492.0, "Saturn": 60268.0,
+              "Uranus": 25559.0, "Neptune": 24764.0}
+_AU_KM = 149597870.7
+_AU_LIGHT_MIN = 8.3167
+
+_INNER = ("Mercury", "Venus")
+
+# Saturn's north pole, J2000. Drifts by a few arcminutes per century, far
+# below anything that changes how open the rings look.
+_SATURN_POLE_RA, _SATURN_POLE_DEC = 40.589, 83.537
+
+
+def planet_facts(name, jd, lat, lst):
+    """The numbers a planet page turns into sentences."""
+    b = sky.planet(name, jd)
+    out = {"distance_au": round(b["dist"], 3),
+           "light_minutes": round(b["dist"] * _AU_LIGHT_MIN, 1),
+           "magnitude": round(b["mag"], 2)}
+
+    # Illuminated fraction from the phase angle Sun-planet-Earth. Matters for
+    # the inner planets, where Venus can be a thin crescent, and barely at all
+    # for the outer ones, which never show us much of a phase.
+    out["illuminated"] = round((1 + math.cos(b["phase"] * D)) / 2, 3)
+    out["phase_angle"] = round(b["phase"], 1)
+
+    r_km = _RADIUS_KM.get(name)
+    if r_km:
+        out["apparent_arcsec"] = round(
+            2 * math.degrees(math.atan(r_km / (b["dist"] * _AU_KM))) * 3600, 1)
+
+    # How far from the Sun, in the sky. sky.solar_elongation() answers this
+    # too but works in the horizontal frame and so needs an observer; the
+    # Sun-Earth-planet angle does not depend on where you are standing, so it
+    # is computed straight from the equatorial coordinates instead. Same
+    # angsep(), given declinations and right ascensions rather than
+    # altitudes and azimuths.
+    s = sky.sun(jd)
+    elong = sky.angsep(b["dec"], b["ra"] * 15, s["dec"], s["ra"] * 15)
+    out["elongation"] = round(elong, 1)
+
+    # Which side of the Sun, which is what "morning star" and "evening star"
+    # actually mean: east of the Sun sets after it, west of it rises before.
+    dra = ((b["ra"] - s["ra"] + 12) % 24) - 12
+    out["side"] = "evening" if dra > 0 else "morning"
+    if name in _INNER:
+        out["lost_in_glare"] = elong < 12
+
+    # Retrograde: is the planet's right ascension decreasing? Measured over a
+    # day, which is long enough to beat the noise in the approximate elements
+    # and short enough that a stationary point is not smeared over.
+    ra_then = sky.planet(name, jd + 1.0)["ra"]
+    out["retrograde"] = (((ra_then - b["ra"] + 12) % 24) - 12) < 0
+
+    if name == "Saturn":
+        out["ring_angle"] = _saturn_ring_angle(b)
+    return out
+
+
+def _saturn_ring_angle(b):
+    """How far the rings are tilted open, in degrees. Zero is edge-on and
+    effectively invisible; about 27 is as wide as they ever get.
+
+    This is the Saturnicentric latitude of the Earth -- the angle between our
+    line of sight and Saturn's ring plane -- which falls straight out of the
+    angle between Saturn's pole and the direction we see the planet from.
+    """
+    ra, dec = b["ra"] * 15 * D, b["dec"] * D
+    pra, pdec = _SATURN_POLE_RA * D, _SATURN_POLE_DEC * D
+    sin_b = (math.sin(pdec) * math.sin(dec)
+             + math.cos(pdec) * math.cos(dec) * math.cos(pra - ra))
+    return round(abs(math.degrees(math.asin(max(-1, min(1, sin_b))))), 1)
+
+
+# --------------------------------------------------------------- the stars
+# Harvard class -> the colour someone actually sees. Deliberately the colour
+# and not the temperature: "orange" is what you check against the sky, 4,000 K
+# is not.
+_CLASS_COLOUR = {"O": "blue", "B": "blue-white", "A": "white",
+                 "F": "yellow-white", "G": "yellow", "K": "orange",
+                 "M": "red", "C": "deep red", "S": "deep red",
+                 "R": "deep red", "N": "deep red", "W": "blue"}
+
+# Yerkes luminosity class -> what kind of star it is. Longest codes first:
+# "Iab" and "Ia" both start with "I", and testing "I" first would call every
+# supergiant a plain one and every giant a supergiant.
+_LUMINOSITY = [("Iab", "supergiant"), ("Ia", "supergiant"), ("Ib", "supergiant"),
+               ("VII", "white dwarf"), ("VI", "subdwarf"),
+               ("IV", "subgiant"), ("III", "giant"), ("II", "bright giant"),
+               ("V", "main-sequence star"), ("I", "supergiant")]
+
+# The older prefix notation BSC5 still uses for a few dozen stars.
+_PREFIX = {"sg": "subgiant", "g": "giant", "d": "main-sequence star",
+           "c": "supergiant"}
+
+
+def describe_spectrum(sp):
+    """A spectral type as words. "M1-2Ia-Iab" -> "red supergiant".
+
+    None when the string is too odd to read confidently, which is the right
+    answer -- a wrong description of a star is worse than no description.
+    """
+    if not sp:
+        return None
+    kind = None
+    for pre in ("sg", "g", "d", "c"):          # sg before g, same reason as above
+        if sp.startswith(pre) and len(sp) > len(pre) and sp[len(pre)] in _CLASS_COLOUR:
+            kind = _PREFIX[pre]
+            sp = sp[len(pre):]
+            break
+    colour = _CLASS_COLOUR.get(sp[:1])
+    if not colour:
+        return None
+    if kind is None:
+        # Luminosity class is whatever roman numerals appear after the
+        # temperature digits, and plenty of entries carry none at all.
+        tail = sp[1:]
+        for code, word in _LUMINOSITY:
+            if code in tail:
+                kind = word
+                break
+    if kind is None:
+        return colour + " star"
+    return f"{colour} {kind}"
+
+
+def next_minimum(hr, when_utc):
+    """When an eclipsing variable next dims, as a UTC datetime. None unless
+    the star is an eclipser with both a period and an epoch on file.
+
+    This is the most satisfying line an object page can carry, because it is
+    a real prediction: Algol drops by more than a magnitude every 2.87 days,
+    on a schedule fixed since before anyone alive was watching.
+
+    Only eclipsing types (the E family) are handled. For pulsating variables
+    the GCVS epoch marks maximum light rather than minimum, and quietly
+    reporting one as the other would be wrong in a way nobody would catch.
+    """
+    rec = variable_info(hr)
+    period, epoch = rec.get("period"), rec.get("epoch")
+    if not period or not epoch or not str(rec.get("type", "")).startswith("E"):
+        return None
+    jd = sky.julian(when_utc)
+    # GCVS epochs are given as JD - 2400000 in this export.
+    epoch_jd = epoch + 2400000.0 if epoch < 100000 else epoch
+    n = math.ceil((jd - epoch_jd) / period)
+    return _to_utc(epoch_jd + n * period)
 
 
 def distance_ly(hr):
