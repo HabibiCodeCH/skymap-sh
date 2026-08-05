@@ -9,10 +9,11 @@ import datetime as dt
 import io
 import unittest
 
-from PIL import Image
+from PIL import Image, ImageDraw
 
 import api
 import gif
+import sky
 
 
 def _frames(start, count=20, step_minutes=30):
@@ -23,6 +24,93 @@ def _frames(start, count=20, step_minutes=30):
         body, _sun_alt = api.compose_frame(r)
         out.append(body)
     return out
+
+
+class NoGlyphRendersAsTofu(unittest.TestCase):
+    """A font without a glyph does not fail, it draws .notdef -- and every
+    shared PNG showed empty boxes where the terminal showed a bright star,
+    a quarter Moon, the Sun, a galaxy, a cluster or a nebula.
+
+    Checked against the fonts' own cmap tables, not against rendered
+    bitmaps. Two earlier attempts at this compared bitmaps and both shipped
+    a fix that left the bug in place -- .notdef is a visible box for some
+    codepoints and blank for others, so "does this look like a box" is not
+    a test. This is the fact, read from the font."""
+
+    @classmethod
+    def setUpClass(cls):
+        try:
+            from fontTools.ttLib import TTFont
+        except ImportError:
+            raise unittest.SkipTest("fonttools not installed (test-only dep)")
+
+        def cmap_of(path):
+            f = TTFont(path, fontNumber=0)
+            out = set()
+            for t in f["cmap"].tables:
+                out |= set(t.cmap.keys())
+            return out
+
+        cls.primary = cmap_of(gif._FONT_CANDIDATES[0])
+        cls.fallback = cmap_of(gif._FALLBACK_PATH)
+
+    def chart_characters(self):
+        """Every character real charts actually produce -- taken from the
+        renderer rather than hand-listed, which is what let the cluster mark
+        slip past a previous version of this test."""
+        seen = set()
+        for kwargs in ({}, {"dso": True}, {"night": True}):
+            for place, when in (("Geneva", dt.datetime(2026, 8, 5, 23, 0)),
+                                ("Rio de Janeiro", dt.datetime(2026, 8, 5, 1, 22)),
+                                ("Prague", dt.datetime(2026, 8, 5, 6, 21)),
+                                ("Tromso", dt.datetime(2026, 12, 21, 22, 0))):
+                r = api.Request(place=place, when=when, color=True,
+                                width=110, **kwargs)
+                seen |= {c for c in gif.ANSI.sub("", api.compose(r).text)
+                         if c.strip()}
+        return seen
+
+    def drawn_as(self, ch):
+        """(character, cmap) the PNG will actually use for this."""
+        ch = gif.PNG_SUBSTITUTE.get(ch, ch)
+        return ch, (self.fallback if ch in gif._PRIMARY_GAPS else self.primary)
+
+    def test_every_character_a_chart_can_draw_has_a_glyph(self):
+        for ch in sorted(self.chart_characters()):
+            drawn, cmap = self.drawn_as(ch)
+            self.assertIn(
+                ord(drawn), cmap,
+                f"{ch!r} (drawn as {drawn!r}) has no glyph -- it will export "
+                f"as an empty box. Add it to gif._PRIMARY_GAPS if DejaVu has "
+                f"it, or to gif.PNG_SUBSTITUTE if neither font does.")
+
+    def test_the_recorded_gaps_are_really_gaps(self):
+        # If a JetBrains Mono update fills one of these, the fallback should
+        # stop being used for it rather than quietly overriding the design.
+        for ch in gif._PRIMARY_GAPS:
+            self.assertNotIn(ord(ch), self.primary, f"{ch!r} is no longer missing")
+
+    def test_the_substituted_character_is_missing_from_both_fonts(self):
+        # Substitution is the last resort; anything DejaVu has should be
+        # drawn properly rather than swapped for a lookalike.
+        for original in gif.PNG_SUBSTITUTE:
+            self.assertNotIn(ord(original), self.primary)
+            self.assertNotIn(ord(original), self.fallback)
+
+    def test_the_fallback_keeps_the_monospace_grid(self):
+        # Two fonts on one character grid only works if a cell is the same
+        # width in both; a mismatch would shear every row it appears in.
+        self.assertAlmostEqual(gif._font.getlength("M"),
+                               gif._fallback_font.getlength("M"), places=2)
+
+    def test_the_two_quarter_moons_stay_distinguishable(self):
+        # sky.py picks U+25D0/25D1 because they are the one pair that
+        # mirrors, so waxing cannot be mistaken for waning. An earlier fix
+        # substituted half-black squares and lost exactly that.
+        for ch in ("◐", "◑"):
+            self.assertIn(ord(ch), self.fallback)
+        self.assertNotIn("◐", gif.PNG_SUBSTITUTE)
+        self.assertNotIn("◑", gif.PNG_SUBSTITUTE)
 
 
 class BasePalette(unittest.TestCase):

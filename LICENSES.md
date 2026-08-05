@@ -46,6 +46,21 @@ Timezones were resolved at build time with `tzfpy`, so the service needs no
 timezone library at runtime. `build_cities.py` regenerates the file; that is the
 only place tzfpy is used, and it is not in `requirements.txt` for that reason.
 
+## Added later: the Milky Way outline
+
+| File | Contents | Origin | Licence |
+|---|---|---|---|
+| `milkyway.json` | Five nested brightness contours, baked to a 720x360 density grid | `mw.json` from d3-celestial (Olaf Frohn), itself derived from the Milky Way Outline Catalog (Jose R. Vieira) | **BSD-3-Clause** — permissive, commercial fine, attribution required. |
+
+The source outline is not committed (`.gitignore`, same as `countries.geo.json`);
+`build_milkyway.py` carries the curl line that fetches it and regenerates the
+grid. The BSD notice requires the copyright line be reproduced, which is what
+the attribution section below is for.
+
+Deliberately not used: Mellinger's panorama is permission-required, and
+Stellarium's sky textures are derived from it under negotiated terms rather
+than inheriting the GPL, so neither is ours to ship.
+
 ## Runtime dependency you still need to add
 
 `demo.tle` is synthetic. For real ISS passes, fetch on a daily cron:
@@ -64,7 +79,10 @@ Not legally required, but it costs a footer line and it is the right thing:
 > Deep-sky objects from the Revised NGC (Sulentic & Tifft, 1973), after
 > Dreyer's New General Catalogue (1888). Planetary positions from JPL
 > approximate elements; Sun and Moon from Meeus. Satellite elements from
-> CelesTrak. City data from SimpleMaps World Cities (CC BY 4.0).
+> CelesTrak. City data from SimpleMaps World Cities (CC BY 4.0). Milky Way
+> outline from d3-celestial (Olaf Frohn, BSD-3-Clause), after the Milky Way
+> Outline Catalog (Jose R. Vieira).
 
-The city data is the one item that legally requires the credit rather than
-merely deserving it.
+The city data and the Milky Way outline are the two items that legally require
+the credit rather than merely deserving it -- CC BY on one, the BSD notice on
+the other.

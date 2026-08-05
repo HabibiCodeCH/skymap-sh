@@ -3005,6 +3005,39 @@ class SphereGoldenIsAddressableAndCounted(unittest.TestCase):
         self.assertEqual(resp.status_code, 302)
         self.assertIn("golden=1", resp.headers["location"])
 
+    def test_the_beacon_counts_a_switch_made_in_session(self):
+        # The common case: land on the star sphere, tap `light`. replaceState
+        # rewrites the address without a request, so this is the only thing
+        # that can see it -- and it is most of the usage.
+        server._stat["sphere_golden_on"] = 0
+        self.client.get("/beacon/golden")
+        self.assertEqual(
+            self.client.get("/stats/sphere?format=json").json()["sphere_golden_on"], 1)
+
+    def test_the_beacon_answers_post_because_sendBeacon_only_posts(self):
+        # navigator.sendBeacon always POSTs. Declared GET-only this would
+        # 405, and a fire-and-forget beacon would never tell anyone.
+        for method in ("GET", "POST"):
+            resp = self.client.request(method, "/beacon/golden")
+            self.assertEqual(resp.status_code, 204, method)
+            self.assertIn("no-store", resp.headers["cache-control"])
+
+    def test_the_beacon_does_not_spend_the_visitors_rate_limit(self):
+        # Flicking between the two modes fires this far more often than a
+        # page view, and it must not eat the allowance meant for charts.
+        self.assertIn("/beacon/golden", server.RATE_EXEMPT)
+
+    def test_arrivals_and_switches_are_counted_separately(self):
+        server._stat["sphere_golden"] = 0
+        server._stat["sphere_golden_on"] = 0
+        self.client.get("/Geneva/sphere?golden=1")   # arrived
+        self.client.get("/beacon/golden")            # switched
+        d = self.client.get("/stats/sphere?format=json").json()
+        self.assertEqual((d["sphere_golden"], d["sphere_golden_on"]), (1, 1))
+        text = self.client.get("/stats/sphere").text
+        self.assertIn("arrived", text)
+        self.assertIn("switched", text)
+
     def test_the_page_reads_the_parameter_and_the_toggle_writes_it(self):
         body = self.client.get("/Geneva/sphere").text
         self.assertIn("searchParams.get('golden')", body)

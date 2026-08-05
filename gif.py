@@ -49,12 +49,60 @@ def _load_font(size):
 
 _font = _load_font(FONT_SIZE)
 _wm_font = _load_font(WATERMARK_SIZE)
+
 _CELL_W = _font.getlength("M") or FONT_SIZE * 0.6
 # A bit more than the font's own line height -- the constellation lines are
 # drawn as tight per-cell glyphs (- / | \), so this can't grow much further
 # without visibly breaking them into dashes.
 _CELL_H = int(FONT_SIZE * 1.45)
 _WM_STRIP_H = int(WATERMARK_SIZE * 2.2)
+
+
+_PROBE = FONT_SIZE * 3          # comfortably bigger than any glyph
+
+# A font that has the glyphs JetBrains Mono does not, drawn from only for
+# those. JetBrains Mono is missing the bright star, both quarter Moons, the
+# Sun and three of the four deep-sky marks -- seven characters the chart
+# emits regularly. A missing glyph does not fail loudly, it draws .notdef,
+# an empty box, so every shared PNG has been showing tofu where the terminal
+# showed the real thing and nothing anywhere said so.
+#
+# Substituting lookalikes was the first attempt and it was wrong twice over:
+# the obvious replacements are missing from this font as well, and the ones
+# that are present are not the thing -- a half-black square is not a Moon.
+# DejaVu Sans Mono has every character the chart can produce, and at this
+# size its advance width is identical (10.00), so the monospace grid the
+# whole renderer depends on is unchanged.
+_FALLBACK_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                              "fonts", "DejaVuSansMono.ttf")
+try:
+    _fallback_font = ImageFont.truetype(_FALLBACK_PATH, FONT_SIZE)
+except OSError:
+    _fallback_font = None
+
+
+# Exactly which characters each font lacks, read from their cmap tables
+# rather than guessed from rendered bitmaps. Two earlier attempts guessed,
+# and both shipped a fix that left the bug in place: a missing glyph draws
+# .notdef, but .notdef is a visible box for some codepoints and blank for
+# others, so "does this look like a box" is not a test.
+#
+# JetBrains Mono has 1,372 codepoints and DejaVu Sans Mono 3,359. These are
+# the seven the chart draws that the bundled font has no glyph for.
+_PRIMARY_GAPS = frozenset("★◐◑☀✺✳⁂")
+
+# U+2042 ASTERISM is in neither font. It is the star-cluster mark, which is
+# the commonest deep-sky type, so it alone filled a ?dso=1 export with boxes.
+# U+2234 is in both and says the same thing -- three points close together,
+# which is what a cluster is.
+PNG_SUBSTITUTE = {"⁂": "∴"}
+
+
+def font_for(ch):
+    """The bundled font, unless it has no glyph for this and DejaVu does."""
+    if _fallback_font is not None and ch in _PRIMARY_GAPS:
+        return _fallback_font
+    return _font
 
 
 def _xterm_rgb(n):
@@ -81,7 +129,8 @@ def _glyph(ch, color):
     tile = _glyph_cache.get((ch, color))
     if tile is None:
         tile = Image.new("RGBA", (int(_CELL_W) + 1, _CELL_H), (0, 0, 0, 0))
-        ImageDraw.Draw(tile).text((0, 0), ch, font=_font, fill=color)
+        ch = PNG_SUBSTITUTE.get(ch, ch)
+        ImageDraw.Draw(tile).text((0, 0), ch, font=font_for(ch), fill=color)
         _glyph_cache[(ch, color)] = tile
     return tile
 

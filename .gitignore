@@ -8,6 +8,7 @@ gif_cache/
 stats_hourly.jsonl
 stats_state.json
 countries.geo.json
+mw.json
 .DS_Store
 PROJECT_STATE.md
 NOTES.md

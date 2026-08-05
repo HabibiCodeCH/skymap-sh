@@ -86,6 +86,41 @@ class ConfidentNearbyCity(unittest.TestCase):
         self.assertIsNone(api._confident_nearby_city(90.0, 0.0))
 
 
+class CoordinatesOnlyClaimACityTheyAreActuallyIn(unittest.TestCase):
+    """The browser bounces raw coordinates to a nearby city's name, which
+    replaces the coordinates in the URL and in everything computed from
+    them. It used to claim any city within ~55 km, which made a spot 31 km
+    up in the Jura render as Geneva -- a different valley, and a sky three
+    and a half magnitudes darker. The reach now comes from the city's own
+    population, because cities are not one size."""
+
+    def test_a_dark_site_outside_town_is_not_that_town(self):
+        self.assertIsNone(api._confident_nearby_city(46.42, 5.90))
+
+    def test_and_its_sky_is_genuinely_different(self):
+        # The reason this matters rather than being pedantry about names.
+        jura = api.sky_brightness(46.42, 5.90)
+        city = api.sky_brightness(46.20, 6.15)
+        self.assertGreater(jura[0] - city[0], 3.0)
+        self.assertGreater(api.milkyway_floor(46.42, 5.90), 0)
+        self.assertEqual(api.milkyway_floor(46.20, 6.15), 0)
+
+    def test_a_city_still_claims_its_own_centre_and_edges(self):
+        self.assertEqual(api._confident_nearby_city(46.20, 6.15), "Geneva")
+        self.assertEqual(api._confident_nearby_city(46.24, 6.09), "Geneva")
+
+    def test_a_big_city_reaches_further_than_a_small_one(self):
+        # 30 km from the middle of London is still London; 30 km from the
+        # middle of Geneva is not Geneva. One rule, two answers, because the
+        # radius comes from the population.
+        self.assertEqual(api._confident_nearby_city(51.75, -0.35), "London")
+        self.assertIsNone(api._confident_nearby_city(46.42, 5.90))
+
+    def test_the_middle_of_an_ocean_claims_nothing(self):
+        self.assertIsNone(api._confident_nearby_city(30.0, -40.0))
+        self.assertIsNone(api._confident_nearby_city(90.0, 0.0))
+
+
 class CompleteCities(unittest.TestCase):
     """complete_cities backs the command bar's ghost completion (GET
     /complete, SPEC-command-bar.md #4) -- narrower than suggest(): prefix
@@ -1068,6 +1103,69 @@ class FullDarkMeansAstronomicalDark(unittest.TestCase):
         self.assertGreater(d["hours_to_dark"], 0)
 
 
+class LightPollutionDecidesTheMilkyWay(unittest.TestCase):
+    """Walker's Law over cities.json, which the spec chose because it needs
+    no new data, no licence and no runtime dependency. The estimate is crude
+    and labelled as such; what it has to get right is the decision it drives
+    -- whether to draw a band someone could not actually see."""
+
+    def test_cities_are_bright_and_remote_places_are_dark(self):
+        for name, lat, lon, worst, best in (
+                ("central London", 51.507, -0.128, 8, 9),
+                ("Geneva", 46.20, 6.15, 8, 9),
+                ("Tokyo", 35.69, 139.69, 8, 9),
+                ("Atacama", -24.63, -70.40, 1, 2),
+                ("Mauna Kea", 19.82, -155.47, 1, 2)):
+            b = api.sky_brightness(lat, lon)[1]
+            self.assertTrue(worst <= b <= best, f"{name} came out Bortle {b}")
+
+    def test_a_city_centre_does_not_return_a_runaway_number(self):
+        # Walker's Law is r^-2.5 and diverges as you approach a city. Without
+        # the population-radius floor, central Geneva came out at 14.1
+        # mag/arcsec2 against a real 17.5-18 -- and standing in a city is the
+        # commonest request there is.
+        for lat, lon in ((51.507, -0.128), (46.20, 6.15), (35.69, 139.69)):
+            mag = api.sky_brightness(lat, lon)[0]
+            self.assertGreater(mag, 15.5)
+
+    def test_driving_out_of_town_darkens_the_sky(self):
+        city = api.sky_brightness(46.20, 6.15)[0]
+        jura = api.sky_brightness(46.42, 5.90)[0]
+        self.assertGreater(jura, city + 2.0)
+
+    def test_no_milky_way_from_a_city_and_all_of_it_from_a_dark_site(self):
+        self.assertEqual(api.milkyway_floor(46.20, 6.15), 0)     # Geneva
+        self.assertEqual(api.milkyway_floor(-24.63, -70.40), 1)  # Atacama
+
+    def test_twilight_suppresses_it_even_at_a_dark_site(self):
+        dark = (-24.63, -70.40)
+        self.assertEqual(api._milkyway_floor_now(*dark, sun_alt=-5), 0)
+        self.assertEqual(api._milkyway_floor_now(*dark, sun_alt=-10), 0)
+        self.assertGreater(api._milkyway_floor_now(*dark, sun_alt=-14), 1)
+        self.assertEqual(api._milkyway_floor_now(*dark, sun_alt=-30), 1)
+
+    def test_a_city_stays_dark_at_every_sun_altitude(self):
+        for alt in (-5, -14, -20, -40):
+            self.assertEqual(api._milkyway_floor_now(46.20, 6.15, alt), 0)
+
+    def test_the_note_is_short_and_says_it_is_an_estimate(self):
+        note = api.sky_note(-24.63, -70.40)
+        self.assertIn("Bortle", note)
+        self.assertIn("est.", note)
+        self.assertLess(len(note), 30)
+
+    def test_the_note_names_the_town_when_that_is_why_there_is_no_band(self):
+        self.assertIn("Geneva", api.sky_note(46.20, 6.15))
+        self.assertNotIn("(", api.sky_note(-24.63, -70.40))
+
+    def test_the_estimate_is_memoised(self):
+        import time
+        api.sky_brightness(48.85, 2.35)
+        t = time.time()
+        api.sky_brightness(48.85, 2.35)
+        self.assertLess(time.time() - t, 0.002)
+
+
 class GoldenHourOnTheDayView(unittest.TestCase):
     """The day view's golden-hour line and its JSON. Times are the cheap
     half: every sunrise calculator has them. The bearings and the shadow are
@@ -1231,6 +1329,39 @@ class GoldenHourOnTheDayView(unittest.TestCase):
         r = api.Request(place="Geneva", when=dt.datetime(2026, 8, 4, 19, 30),
                         color=False, width=100)
         self.assertNotIn("\033", api.compose(r).text)
+
+
+class ImageExportsAreWiderThanATerminal(unittest.TestCase):
+    """A PNG is a raster, not somebody's window: nothing has to fit, and the
+    extra columns are what make it legible at a glance rather than a thin
+    strip. The terminal default stays where it is."""
+
+    WHEN = dt.datetime(2026, 8, 5, 3, 0)
+
+    def png_size(self, **kw):
+        import io
+        from PIL import Image
+        import gif
+        r = api.Request(place="-24.63,-70.40", when=self.WHEN, color=True, **kw)
+        return Image.open(io.BytesIO(gif.frame_to_png(api.compose_chart_only(r)))).size
+
+    def test_the_export_is_wider_than_the_terminal_default(self):
+        self.assertEqual(api.PNG_WIDTH, 140)
+        self.assertGreater(api.PNG_WIDTH, api.DEFAULT_HORIZON_WIDTH)
+
+    def test_the_terminal_default_is_untouched(self):
+        r = api.Request(place="Geneva", when=self.WHEN)
+        self.assertEqual(api._effective_width(r), api.DEFAULT_HORIZON_WIDTH)
+
+    def test_height_follows_width_so_the_aspect_holds(self):
+        # Widening without this gave a letterbox: 140 columns of chart in
+        # the row count of a 110-column one.
+        w1, h1 = self.png_size()
+        w2, h2 = self.png_size(width=200)
+        self.assertAlmostEqual(w1 / h1, w2 / h2, delta=0.08)
+
+    def test_an_explicit_width_still_wins(self):
+        self.assertGreater(self.png_size(width=200)[0], self.png_size()[0])
 
 
 class HelpTextIsCurrent(unittest.TestCase):

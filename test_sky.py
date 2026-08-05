@@ -356,6 +356,124 @@ class MoonPhaseGlyph(unittest.TestCase):
         self.assertIn("◑", art)
 
 
+class MilkyWayGrid(unittest.TestCase):
+    """The band comes from a density grid baked by build_milkyway.py. These
+    check it against the sky rather than against itself -- the galactic
+    poles are the emptiest sky there is, and the brightest cells have to sit
+    where the galactic centre actually is."""
+
+    def test_both_galactic_poles_are_empty(self):
+        # (192.86, +27.13) and its opposite. If the grid were rotated or
+        # flipped, these are the first places it would show.
+        self.assertEqual(sky.milkyway_at(192.86 / 15, 27.13), 0)
+        self.assertEqual(sky.milkyway_at((192.86 + 180) / 15 % 24, -27.13), 0)
+
+    def test_the_brightest_cells_sit_on_the_galactic_centre(self):
+        g = sky._load("milkyway.json")
+        pts = [(c * g["ra_step"] / 15, 90 - r * g["dec_step"])
+               for r, row in enumerate(g["rows_data"])
+               for c, ch in enumerate(row) if ch == "5"]
+        self.assertTrue(pts)
+        ra = sum(p[0] for p in pts) / len(pts)
+        dec = sum(p[1] for p in pts) / len(pts)
+        # Sgr A* is at RA 17.76h, Dec -29.0.
+        self.assertAlmostEqual(ra, 17.76, delta=0.4)
+        self.assertAlmostEqual(dec, -29.0, delta=3.0)
+
+    def test_the_band_runs_through_the_constellations_it_must(self):
+        # Cygnus, Cassiopeia and Sagittarius are in the Milky Way; the Big
+        # Dipper and Bootes are at the north galactic pole and cannot be.
+        for name, ra, dec in (("Deneb/Cygnus", 20.69, 45.28),
+                              ("Cassiopeia", 0.95, 60.72),
+                              ("Sagittarius", 18.4, -25.4)):
+            self.assertGreater(sky.milkyway_at(ra, dec), 0, name)
+        for name, ra, dec in (("Big Dipper", 12.9, 55.96),
+                              ("Arcturus/Bootes", 14.26, 19.18)):
+            self.assertEqual(sky.milkyway_at(ra, dec), 0, name)
+
+    def test_altaz_round_trips_back_to_the_same_ra_dec(self):
+        # radec_from_altaz is the inverse of altaz, and the band is looked
+        # up once per cell through it -- a sign error would put the whole
+        # Milky Way somewhere else entirely.
+        jd = sky.julian(dt.datetime(2026, 8, 5, 22, 0))
+        lst = (sky.gmst_hours(jd) + 6.15 / 15.0) % 24
+        for ra, dec in ((17.76, -29.0), (5.0, 45.0), (12.0, -60.0)):
+            alt, az = sky.altaz(ra, dec, 46.2, lst)
+            ra2, dec2 = sky.radec_from_altaz(alt, az, 46.2, lst)
+            self.assertAlmostEqual(dec2, dec, places=6)
+            self.assertAlmostEqual((ra2 - ra + 12) % 24 - 12, 0, places=6)
+
+    def test_unprecess_undoes_precess(self):
+        jd = sky.julian(dt.datetime(2026, 8, 5, 22, 0))
+        ra, dec = 17.76, -29.0
+        r2, d2 = sky.unprecess(*sky.precess(ra, dec, jd), jd)
+        # Within an arcsecond or two: mirroring the epoch negates the
+        # elapsed years exactly but leaves the rate coefficients evaluated
+        # at the mirrored date, so this is an inverse to well inside the
+        # half-degree the grid is sampled at, not to machine precision.
+        self.assertLess(abs(d2 - dec) * 3600, 10)
+        self.assertLess(abs((r2 - ra + 12) % 24 - 12) * 15 * 3600, 10)
+
+
+class MilkyWayOnTheChart(unittest.TestCase):
+    """Drawn into the soft layer, so it can never take a cell a star, a
+    planet or a label wanted."""
+
+    WHEN = dt.datetime(2026, 8, 5, 3, 0)
+    ATACAMA = (-24.63, -70.40)
+
+    def band_cells(self, art):
+        rows = art.split("\n")
+        cut = next((i for i, l in enumerate(rows) if l.startswith("     \u2500")), len(rows))
+        return sum(sum(1 for c in l[5:] if c in ":*#@") for l in rows[:cut])
+
+    def test_a_dark_sky_gets_a_band(self):
+        art, _st = sky.render_linear(self.WHEN, *self.ATACAMA, color=False,
+                                     width=140, inset=False, milkyway=1)
+        self.assertGreater(self.band_cells(art), 150)
+
+    def test_a_floor_of_zero_draws_nothing(self):
+        off, _ = sky.render_linear(self.WHEN, *self.ATACAMA, color=False,
+                                   width=140, inset=False, milkyway=0)
+        self.assertEqual(self.band_cells(off), 0)
+
+    def test_a_higher_floor_draws_strictly_less(self):
+        counts = [self.band_cells(sky.render_linear(
+            self.WHEN, *self.ATACAMA, color=False, width=140,
+            inset=False, milkyway=f)[0]) for f in (1, 2, 3, 4)]
+        self.assertEqual(counts, sorted(counts, reverse=True))
+        self.assertGreater(counts[0], counts[-1])
+
+    def test_the_band_never_takes_a_cell_from_a_star(self):
+        # The whole reason it goes in the soft layer. Every non-band glyph
+        # on the plain chart must still be there with the band drawn.
+        plain, _ = sky.render_linear(self.WHEN, *self.ATACAMA, color=False,
+                                     width=140, inset=False)
+        band, _ = sky.render_linear(self.WHEN, *self.ATACAMA, color=False,
+                                    width=140, inset=False, milkyway=1)
+        # U+00B7 is excluded because it is two things: the faint-star glyph
+        # and the background gridline dot. The band deliberately replaces
+        # the gridline (a band with a hole every sixth column reads as
+        # damage) and deliberately does not replace a star, and from the
+        # rendered text alone the two are the same character. Everything
+        # with a glyph of its own is checked.
+        for a, b in zip(plain.split("\n"), band.split("\n")):
+            for i, ch in enumerate(a):
+                if ch not in " .:*#@\u00b7" and i < len(b):
+                    self.assertEqual(b[i], ch,
+                                     f"the band overwrote {ch!r} at column {i}")
+
+    def test_the_band_does_not_swallow_faint_stars(self):
+        # The other half of the same promise, checked where the character
+        # ambiguity does not apply: the number of stars the renderer reports
+        # cannot change because a band was drawn behind them.
+        _plain, st_plain = sky.render_linear(self.WHEN, *self.ATACAMA,
+                                             color=False, width=140, inset=False)
+        _band, st_band = sky.render_linear(self.WHEN, *self.ATACAMA, color=False,
+                                           width=140, inset=False, milkyway=1)
+        self.assertEqual(len(st_band["visible"]), len(st_plain["visible"]))
+
+
 class SunBands(unittest.TestCase):
     """Golden and blue hour as Sun-altitude windows. Away from the tropics
     the Sun does not cross both edges of the golden band every day, and the
