@@ -3,4 +3,6 @@ uvicorn[standard]>=0.29
 sgp4>=2.23
 Pillow>=10.0
 httpx>=0.27  # test-only: starlette's TestClient needs it
+fonttools>=4.50  # test-only: reads the bundled fonts' cmaps, so a
+                 # glyph the chart draws but no font has fails loudly
 atproto>=0.0.55  # bsky_bot.py only
