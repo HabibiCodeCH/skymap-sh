@@ -1957,6 +1957,19 @@ def _object_page_template():
     return PAGE.replace(_GENERIC_HEAD_BLOCK, "{head_extra}", 1)
 
 
+# Every canonical on the site points at the apex. www.skymap.sh serves the
+# site directly rather than redirecting, so every page exists at two
+# hostnames; this is what tells a crawler which of the two is the page.
+# A redirect at the edge would be tidier still, but this needs no DNS.
+CANONICAL_HOST = "https://skymap.sh"
+
+
+def home_head():
+    """The generic card tags, plus a canonical at the apex."""
+    return (_GENERIC_HEAD_BLOCK.format(title="skymap.sh")
+            + f'\n<link rel="canonical" href="{CANONICAL_HOST}/">')
+
+
 def place_head(place, base_url):
     """The same head as an object page, for a place page.
 
@@ -1965,8 +1978,10 @@ def place_head(place, base_url):
     the site exists but not that the link is about Paris. This gives each
     one its own, and nothing on it depends on when the crawler asked.
 
-    No canonical: unlike /{place}/{object}, a place page is the only URL for
-    that place, so there is nothing to point at.
+    The canonical is the apex form of this same page. It is not collapsing
+    two paths the way the object pages' one does -- a place page is the only
+    path for that place -- it is naming the host, since www.skymap.sh serves
+    every page a second time.
     """
     name = html.escape(place.name)
     title = f"skymap.sh: {name}"
@@ -1975,6 +1990,7 @@ def place_head(place, base_url):
     og = f"{base_url}/{quote(place.name)}/og.png"
     return "\n".join([
         f'<meta name="description" content="{desc}">',
+        f'<link rel="canonical" href="{CANONICAL_HOST}/{quote(place.name)}">',
         '<meta property="og:type" content="website">',
         f'<meta property="og:title" content="{title}">',
         f'<meta property="og:description" content="{desc}">',

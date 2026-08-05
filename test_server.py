@@ -3869,5 +3869,44 @@ class UnfurlersDoNotCountAsReaders(unittest.TestCase):
         self.assertIn("bot", server._ZERO_FILL)
 
 
+class CanonicalNamesTheApex(unittest.TestCase):
+    """www.skymap.sh serves the site directly rather than redirecting, so
+    every page exists at two hostnames. The canonical is what tells a
+    crawler which of the two is the page."""
+
+    def setUp(self):
+        client_cm = TestClient(server.app)
+        self.client = client_cm.__enter__()
+        self.addCleanup(client_cm.__exit__, None, None, None)
+
+    def _canonical(self, path, headers=None):
+        h = headers or {"user-agent": "Mozilla/5.0", "accept": "text/html"}
+        m = re.search(r'<link rel="canonical" href="([^"]+)"',
+                      self.client.get(path, headers=h).text)
+        return m.group(1) if m else None
+
+    def test_the_home_page_has_one(self):
+        # Reached by an unfurler, since a browser is redirected to its city.
+        self.assertEqual(
+            self._canonical("/", {"user-agent": "Twitterbot/1.0",
+                                  "accept": "*/*"}),
+            "https://skymap.sh/")
+
+    def test_a_place_page_has_one(self):
+        self.assertEqual(self._canonical("/Paris"), "https://skymap.sh/Paris")
+
+    def test_an_object_still_collapses_to_its_bare_path(self):
+        # A different job from naming the host: 40,803 cities times 1,220
+        # objects all point at the one object page.
+        self.assertEqual(self._canonical("/Zurich/Venus"),
+                         "https://skymap.sh/Venus")
+
+    def test_every_canonical_is_the_apex_over_https(self):
+        for path in ("/Paris", "/Venus", "/Zurich/Venus", "/Tokyo"):
+            c = self._canonical(path)
+            self.assertTrue(c.startswith("https://skymap.sh/"), (path, c))
+            self.assertNotIn("www.", c, path)
+
+
 if __name__ == "__main__":
     unittest.main()

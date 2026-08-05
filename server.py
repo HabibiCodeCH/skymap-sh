@@ -2234,7 +2234,9 @@ def _respond(request: Req, place: str | None):
             # datacentre sits in leaks it into every post the link appears
             # in -- as coordinates, at that, since a bare IP fallback keeps
             # them as its display name.
-            body = api.PAGE.format(title="skymap.sh",
+            body = api._object_page_template().format(
+                               title="skymap.sh",
+                               head_extra=api.home_head(),
                                header=header, controls=controls,
                                wide_class=" w-wide" if fits_width else "",
                                coming_up_card=coming_up_card,
