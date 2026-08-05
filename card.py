@@ -152,6 +152,16 @@ def _headline_facts(facts):
     out = []
     st, pl = facts.get("star", {}), facts.get("planet", {})
 
+    gx = facts.get("galaxy") or {}
+    if gx:
+        # Not the Bortle line, however much it is the best fact on the page.
+        # Whether the band shows depends on where the reader is standing,
+        # and this image is fetched once and shown to everybody.
+        # One line, not two. "just", because the number is meaningless
+        # without a shrug next to it. The distance to the centre is on the
+        # page; a card gets the one fact worth reading at thumbnail size.
+        out.append(f"just {gx['diameter_ly']:,} light years across")
+
     if st.get("description"):
         out.append(st["description"])
 
@@ -214,6 +224,10 @@ KIND_WORDS = {
     "planetary nebula": "Planetary nebula",
 }
 
+# Nothing reads this: _subtitle() takes its text from
+# api.object_descriptor(), which is the single source the card and the page
+# share. Left in place rather than removed, but do not add to it -- an entry
+# here has no effect.
 _FIXED_SUBTITLE = {"sun": "The star we orbit", "moon": "Earth's only moon"}
 
 # Order from the Sun. Earth is third, which is why Mars is fourth and not

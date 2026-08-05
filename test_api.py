@@ -1899,6 +1899,7 @@ class EveryCatalogGroupIsSearchable(unittest.TestCase):
         showers were, and nothing else would fail."""
         d = api._catalog_data()
         probes = {
+            "ours": "milky",
             "solar_system": "satu",
             "named_stars": "vega",
             "named_dso": "androm",

@@ -1595,6 +1595,12 @@ def object_descriptor(facts):
         return "the star we orbit"
     if kind == "moon":
         return "Earth's only moon"
+    if kind == "milkyway":
+        # Not "a galaxy in Sagittarius". That is where its centre happens to
+        # lie, and it reads as though we were looking at the thing from
+        # outside it. The constellation is still a row in the fact table,
+        # where it answers "which way do I look" rather than "what is it".
+        return "our home galaxy"
     word = _KIND_WORD.get(kind, "object")
     article = "an" if word[0] in "aeiou" else "a"
     con = facts.get("constellation")
@@ -4987,7 +4993,15 @@ def _catalog_data():
     # namespace shipped; the catalogue simply never listed them, so the only
     # way to find /Perseids was to already know it existed.
     showers = sorted(sky._load("showers.json"), key=lambda x: -x["zhr"])
-    return dict(solar_system=solar_system, asterisms=sorted(a["name"] for a in asterisms),
+    # Its own group rather than an entry in the deep sky, which is sorted
+    # brightest-first and prints a magnitude per row. There is no honest
+    # magnitude for the whole band -- that is why the page suppresses it --
+    # so putting it there would have meant inventing a number to fill a
+    # column, on the one page whose job is to be a list of true things.
+    ours = [("Milky Way", "barred spiral, centre in Sagittarius",
+             sky.DSO_GLYPH["gal"][0], sky.DSO_GLYPH["gal"][1])]
+    return dict(ours=ours,
+               solar_system=solar_system, asterisms=sorted(a["name"] for a in asterisms),
                showers=showers, named_stars=named_stars, named_dso=named_dso)
 
 
@@ -5009,6 +5023,12 @@ def catalog_text(color=True):
         "  curl skymap.sh/Vega",
         "  curl skymap.sh/M31            aliases work: NGC224, Andromeda Galaxy",
         "  curl skymap.sh/Zurich/Saturn  or name the place yourself", "",
+        head("OUR GALAXY"),
+    ] + [
+        f"  {P(g, gc)} {P(f'{nm:22}', C.HEAD)} {note}"
+        for nm, note, g, gc in d["ours"]
+    ] + [
+        "",
         head(f"SOLAR SYSTEM ({len(d['solar_system'])})"),
     ]
     for _nm, display, glyph, glyph_c in d["solar_system"]:
@@ -5095,6 +5115,13 @@ def catalog_html():
     L = [
         "skymap.sh -- object catalog", "",
         "Everything below has its own page. Opens in a new tab.", "",
+        head("OUR GALAXY"),
+    ] + [
+        f"  {col(g, gc)} {link_col(nm, C.HEAD)}{_pad_html(len(nm), 22)} "
+        f"{html.escape(note)}"
+        for nm, note, g, gc in d["ours"]
+    ] + [
+        "",
         head(f"SOLAR SYSTEM ({len(d['solar_system'])})"),
     ]
     for nm, display, glyph, glyph_c in d["solar_system"]:
@@ -5169,6 +5196,10 @@ def complete_objects(prefix, n=8):
     # are the same for everything except the Moon, whose label carries its
     # current phase -- and the dropdown used to submit the label, so picking
     # the Moon searched for "Moon (last quarter)" and found nothing.
+    for nm, _note, glyph, glyph_c in d["ours"]:
+        if word_match(nm):
+            out.append({"name": nm, "glyph": glyph,
+                       "color": _ansi_hex(glyph_c)})
     for nm, display, glyph, glyph_c in d["solar_system"]:
         if word_match(display):
             out.append({"name": display, "q": nm, "glyph": glyph,
