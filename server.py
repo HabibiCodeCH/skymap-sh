@@ -2305,6 +2305,20 @@ def gif_capacity():
         headers={"Cache-Control": "no-store"})
 
 
+@app.get("/milkyway.json")
+def milkyway_json():
+    """The Milky Way density grid, for the 3D view to draw from.
+
+    A static asset rather than part of each place's sphere.json: the sky's
+    own structure does not depend on where you are standing, so sending it
+    per place would be the same 6 KB again for every visitor and every
+    location. Cached hard -- it only changes when build_milkyway.py runs,
+    which is never at runtime."""
+    return FileResponse(os.path.join(sky.BASE, "milkyway.json"),
+                        media_type="application/json",
+                        headers={"Cache-Control": "public, max-age=31536000, immutable"})
+
+
 @app.api_route("/beacon/golden", methods=["GET", "POST"])
 def beacon_golden():
     """Someone switched into golden hour without loading a new page.

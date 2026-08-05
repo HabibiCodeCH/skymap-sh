@@ -81,6 +81,62 @@ def precess(ra_h, dec_d, jd):
     ddec = (n_dec * math.cos(ra)) * yrs
     return (ra_h + dra / 15) % 24, dec_d + ddec
 
+# The Milky Way, as a density grid (build_milkyway.py). Five nested
+# brightness contours baked to half-degree cells, so drawing it is a lookup
+# rather than a point-in-polygon test against thousands of edges.
+#
+# The ramp is the band's whole vocabulary. Deliberately dim: this sits in the
+# soft layer, under everything, and its job is to be the thing stars are seen
+# against rather than to compete with them.
+MW_RAMP = " .:*#@"
+MW_COLS = ["", "\033[38;5;236m", "\033[38;5;238m", "\033[38;5;60m",
+           "\033[38;5;61m", "\033[38;5;103m"]
+
+
+def mw_colour(level, floor):
+    """The colour a contour is drawn in, dimmed for the sky it is under.
+
+    Without this a light-polluted site came out *brighter* than a dark one:
+    a high floor leaves only the inner contours, and those carry the top of
+    the ramp, so the worse the sky the more vividly the little that survived
+    was painted. Shifting the ramp down by the floor puts that right -- the
+    same patch of sky is dimmer from a worse place, which is the whole point
+    of knowing the Bortle number."""
+    return MW_COLS[max(1, level - (int(floor) - 1))]
+
+
+def milkyway_at(ra_h, dec_d):
+    """Brightness 0 (nothing) to 5 (the core) at a J2000 position."""
+    g = _load("milkyway.json")
+    row = int((90.0 - dec_d) / g["dec_step"])
+    if row < 0 or row >= g["rows"]:
+        return 0
+    col = int((ra_h * 15.0 % 360.0) / g["ra_step"]) % g["cols"]
+    return ord(g["rows_data"][row][col]) - 48
+
+
+def radec_from_altaz(alt, az, lat, lst_h):
+    """alt/az -> RA hours, Dec. The exact inverse of altaz() below, needed
+    because the Milky Way is a property of the sky rather than of an object:
+    there is nothing to place, only a question to ask once per cell."""
+    a, z, la = alt * D, az * D, lat * D
+    sd = math.sin(a) * math.sin(la) + math.cos(a) * math.cos(la) * math.cos(z)
+    dec = math.asin(max(-1, min(1, sd)))
+    y = -math.sin(z) * math.cos(a)
+    x = (math.sin(a) - math.sin(dec) * math.sin(la)) / max(math.cos(la), 1e-9)
+    return (lst_h - math.atan2(y, x) / D / 15.0) % 24, dec / D
+
+
+def unprecess(ra_h, dec_d, jd):
+    """Date -> J2000, the way back from precess().
+
+    The grid is J2000, like the star catalogue, but a chart works in
+    coordinates of date. Mirroring the epoch about J2000 negates the elapsed
+    years, which is the term that does the work -- the rate coefficients
+    barely move over the decades this covers."""
+    return precess(ra_h, dec_d, 2 * 2451545.0 - jd)
+
+
 def altaz(ra_h, dec_d, lat, lst_h):
     """RA (hours), Dec (deg) -> altitude, azimuth (deg, az from N through E)."""
     ha = (lst_h - ra_h) * 15 * D
@@ -1211,7 +1267,7 @@ def render_linear(when_utc, lat, lon, W=176, H=22, color=True, show_lines=True,
                   alt_lo=None, alt_hi=None, target=None, overlay=None,
                   bodies=None, inset=True, width=None, height=None, dso_limit=None,
                   quadrant=None, quadrants=False, side_panel=False,
-                  alt_bands=None, notes=None):
+                  alt_bands=None, notes=None, milkyway=False):
     """Horizon panorama. facing=None gives the full 360 deg sweep; facing='SW'
     gives a window centred there, which is narrow enough to be undistorted.
 
@@ -1355,6 +1411,37 @@ def render_linear(when_utc, lat, lon, W=176, H=22, color=True, show_lines=True,
         for c in range(0, W, 6):
             if grid[r][c] == " ":
                 grid[r][c], tint[r][c], soft[r][c] = "·", "\033[38;5;234m", True
+
+    # The Milky Way. Painted after the gridline dots and before everything
+    # else, into the soft layer, so every star, planet, line and label still
+    # lands on top of it -- free() counts a soft cell as available, which is
+    # what stops a band across the sky from costing anything its real estate.
+    # It replaces the gridline dots where it covers them: a band with a hole
+    # every sixth column reads as damage rather than as sky, and the altitude
+    # labels down the left still carry the scale.
+    #
+    # One inverse transform per cell rather than one per catalogue entry.
+    # The Milky Way is a property of the sky, not a list of objects, so the
+    # question runs the other way round from everything else here.
+    # milkyway is the faintest contour worth drawing here, or 0 for none:
+    # 1 is a dark sky showing the whole band, 4 is a bad one where only the
+    # core is above the light pollution, and 0 is a city where none of it
+    # would be visible and drawing it would be a lie about the sky.
+    if milkyway:
+        floor = int(milkyway)
+        for r in range(H):
+            a = alt_lo + (H - 1 - r) * alt_rng / (H - 1) if H > 1 else alt_lo
+            if a < -2:
+                continue
+            for c in range(W):
+                if grid[r][c] != " " and not soft[r][c]:
+                    continue
+                az = (centre + (c / (W - 1) * span - span / 2)) % 360 if W > 1 else centre
+                ra, de = radec_from_altaz(a, az, lat, lst)
+                v = milkyway_at(*unprecess(ra, de, jd))
+                if v >= floor:
+                    grid[r][c], tint[r][c] = MW_RAMP[v], mw_colour(v, floor)
+                    soft[r][c] = True
 
     # Altitude bands: a stripe of the sky called out by how high the Sun is
     # in it, drawn full width because that is what the band actually is -- a

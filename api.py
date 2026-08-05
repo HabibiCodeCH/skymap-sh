@@ -214,16 +214,141 @@ def _nearest_city(lat, lon, prefer_radius_deg=0.5, max_radius_deg=5):
     return best
 
 
+# Sky brightness from the city list, by Walker's Law in the National Park
+# Service form: a city of P people contributes 1.13e7 * P * r^-2.5 nanolamberts
+# at r metres. Crude -- plus or minus a Bortle class or two -- but it needs no
+# new data, no new licence and no runtime dependency, and it is the model the
+# NPS itself used before satellite measurements existed.
+#
+# The floor is not optional. r^-2.5 runs away as you approach a city, so the
+# bare formula puts central Geneva at 14.1 mag/arcsec2 and London at 9.9,
+# against a real 17.5-18. Clamping r to the city's own radius -- what you get
+# from its population at a plausible density -- fixes exactly the case most
+# requests come from, which is somebody standing in a city.
+_WALKER_K = 1.13e7
+_CITY_DENSITY = 2000.0          # people per square km, for the radius floor
+_NATURAL_NL = 60.0              # a genuinely dark sky, about 21.9 mag/arcsec2
+_LP_RADIUS_KM = 300.0           # past this a city contributes ~nothing
+_BORTLE_MAG = [(21.75, 1), (21.6, 2), (21.3, 3), (20.8, 4),
+               (20.1, 5), (19.1, 6), (18.0, 7), (17.5, 8)]
+_BORTLE_CACHE = {}
+
+
+def sky_brightness(lat, lon):
+    """(mag/arcsec2, Bortle) for a place, estimated. Memoised per 0.1-degree
+    cell, the same grain the geo headers already round to."""
+    # Computed at the cell centre, not at the caller's exact point. The
+    # memo is per 0.1 degree, and Walker's Law varies enough over that --
+    # 2 km is 0.5 mag near a town -- that whoever asked first was deciding
+    # the answer for everyone else in the cell. /46.42,5.90 reported Bortle
+    # 5 and /46.40,5.90 reported 6, for the same place, depending only on
+    # which had been looked up first since the process started.
+    key = (round(lat, 1), round(lon, 1))
+    hit = _BORTLE_CACHE.get(key)
+    if hit:
+        return hit
+    lat, lon = key
+    total = 0.0
+    coslat = math.cos(math.radians(lat))
+    for hits in _cities().values():
+        for h in hits:
+            pop = h[6]
+            if not pop:
+                continue
+            dy = (h[0] - lat) * 111.32
+            dx = (h[1] - lon) * 111.32 * coslat
+            r = math.hypot(dy, dx)
+            if r > _LP_RADIUS_KM:
+                continue
+            own = math.sqrt(pop / _CITY_DENSITY / math.pi)   # its own radius
+            total += _WALKER_K * pop * (max(r, own) * 1000.0) ** -2.5
+    mag = 21.9 - 2.5 * math.log10((total + _NATURAL_NL) / _NATURAL_NL)
+    bortle = next((b for lim, b in _BORTLE_MAG if mag >= lim), 9)
+    if len(_BORTLE_CACHE) >= _NEAREST_MAX:
+        _BORTLE_CACHE.clear()
+    _BORTLE_CACHE[key] = (mag, bortle)
+    return mag, bortle
+
+
+# The faintest contour still visible under a given sky, or 0 for none at
+# all. A floor rather than a count, because the contours are nested and
+# wildly unequal in area: the outer one covers 15% of the sky and the
+# brightest 0.09%, so "show the top two levels" shows essentially nothing.
+# Expressed this way the mapping says what it means -- how far down into the
+# faint outer band you can still see.
+#
+#   floor 1  the whole band, 15% of the sky
+#   floor 2  3.7%      floor 3  1.4%      floor 4  0.35%
+#
+# Roughly: obvious and structured to Bortle 3, clearly there at 4, washed
+# out at 5, a faint patch near the zenith at 6, essentially gone by 7.
+_BORTLE_FLOOR = {1: 1, 2: 1, 3: 1, 4: 2, 5: 2, 6: 3, 7: 4, 8: 0, 9: 0}
+
+
+def milkyway_floor(lat, lon):
+    return _BORTLE_FLOOR[sky_brightness(lat, lon)[1]]
+
+
+def _milkyway_floor_now(lat, lon, sun_alt):
+    """The same, with twilight raising the floor. A dark site still shows
+    nothing while the sky is bright, and the band comes up through the last
+    of the twilight rather than switching on at a threshold."""
+    if sun_alt > -12:
+        return 0
+    floor = milkyway_floor(lat, lon)
+    if not floor:
+        return 0
+    if sun_alt > -15:
+        floor += 2
+    elif sun_alt > -18:
+        floor += 1
+    return 0 if floor > 5 else floor
+
+
+def sky_note(lat, lon):
+    """One short clause for the chart's top line: how dark it is here. The
+    estimate is crude and says so -- "est." is doing real work in that
+    string. The nearest city is named only when it is the reason the Milky
+    Way is absent, where it answers the obvious next question."""
+    _mag, b = sky_brightness(lat, lon)
+    near = _nearest_city(lat, lon, prefer_radius_deg=0.5, max_radius_deg=1.5)
+    where = f" ({near[7]})" if near and not _BORTLE_FLOOR[b] else ""
+    return f"Bortle {b} est.{where}"
+
+
+# How far out a city can still honestly be called "here". Derived from its
+# own population rather than fixed, because cities are not one size: a flat
+# 55 km claimed Geneva for a spot 31 km up in the Jura, which is a different
+# town, a different valley and -- now that the chart says so -- a sky three
+# and a half magnitudes darker, Bortle 5 against Geneva's 9. The same 55 km
+# is entirely fair for London, which really is that big.
+#
+# sqrt(pop / density / pi) is the radius of a disc holding that many people
+# at _CITY_DENSITY, the same figure the light-pollution estimate uses. 1.4x
+# for the suburbs the population count tends to miss, and a 4 km floor so a
+# village does not shrink to a point.
+_CITY_CLAIM_MARGIN = 1.4
+_CITY_CLAIM_MIN_KM = 4.0
+
+
+def _city_radius_km(pop):
+    return math.sqrt(max(pop, 1) / _CITY_DENSITY / math.pi)
+
+
 def _confident_nearby_city(lat, lon):
-    """A well-known city close enough (~55 km, prefer_radius_deg's "most
-    populous within this ring" band) that showing its name in place of raw
-    coordinates is a claim worth making -- unlike _nearest_city's own
-    default up-to-~550 km fallback, which only ever backs a soft "near X"
-    hint (resolve_place, Place.near), not a stand-in identity. Collapses
-    both radii to the same tight value so a city 200 km away (real, but not
-    confidently "here") never qualifies."""
-    hit = _nearest_city(lat, lon, prefer_radius_deg=0.5, max_radius_deg=0.5)
-    return hit[7] if hit else None
+    """The city these coordinates are actually *in*, or None.
+
+    Distinct from _nearest_city's own up-to-550 km fallback, which only ever
+    backs a soft "near X" hint -- this one replaces the coordinates in the
+    URL and in everything computed from them, so it has to be a claim worth
+    making rather than the closest thing on the list."""
+    hit = _nearest_city(lat, lon, prefer_radius_deg=0.5, max_radius_deg=1.0)
+    if not hit:
+        return None
+    dy = (hit[0] - lat) * 111.32
+    dx = (hit[1] - lon) * 111.32 * math.cos(math.radians(lat))
+    reach = max(_city_radius_km(hit[6]) * _CITY_CLAIM_MARGIN, _CITY_CLAIM_MIN_KM)
+    return hit[7] if math.hypot(dy, dx) <= reach else None
 
 
 _NEAREST_CACHE = {}
@@ -750,6 +875,17 @@ def _effective_width(r):
     return r.width or DEFAULT_HORIZON_WIDTH
 
 
+# The PNG and the Bluesky image are rasters, not terminals: nothing has to
+# fit anyone's window, and the extra columns are what make the chart legible
+# at a glance rather than a thin strip. 140 renders 1452x829, against 1152x668
+# at the terminal default -- an explicit ?w= still wins.
+PNG_WIDTH = 140
+
+
+def _png_export_width(r):
+    return r.width or PNG_WIDTH
+
+
 # --- the width ladder ----------------------------------------------------------
 # A browser gets every rung of this in one response and CSS picks exactly one.
 # Nothing measures anything, nothing reloads, and the chart is right on first
@@ -997,6 +1133,13 @@ def _horizon_height(r):
     return round(_effective_width(r) / HORIZON_COLS_PER_ROW)
 
 
+def _png_export_height(r):
+    """Rows to match _png_export_width's columns. Height follows width here
+    or the wider export comes out as a letterbox -- the aspect is the whole
+    reason the two are computed from one number."""
+    return round(_png_export_width(r) / HORIZON_COLS_PER_ROW)
+
+
 def _sun_path_mode(r):
     """'the Sun's path today' only when when_local's date is the real
     current date at that place -- an explicit ?t= on another day isn't
@@ -1139,7 +1282,7 @@ def _head_when(r, when_local=None):
     return f"{w:{'%d %b %H:%M' if w.year == now_year else '%d %b %Y %H:%M'}}"
 
 
-def _sky_summary(st, lat, width, n_stars=0):
+def _sky_summary(st, lat, width, n_stars=0, note=""):
     """Trimmed to `width`, brightest-last. It sits above the chart, so a
     summary longer than the chart is one that decides how wide the page is
     -- which is exactly the job the prose used to do from below, and the
@@ -1166,7 +1309,12 @@ def _sky_summary(st, lat, width, n_stars=0):
              (2, ", ".join(f"{p['name']} {p['alt']:.0f}°{compass(p['az'])}"
                            for p in pl) if pl else "no planets"),
              (1, dark),
-             (3, f"{len(st['visible'])} stars")]
+             # How dark it is *here*, which is the other half of how dark it
+             # is tonight -- and the reason the Milky Way is or is not on the
+             # chart. Ranks above the star count: the count is a number about
+             # the catalogue, this is a fact about the sky you are under.
+             (3, note),
+             (4, f"{len(st['visible'])} stars")]
     # n_stars defaults to none: the bright stars are labelled on the chart a
     # few rows below this line, which is the one place they cannot be
     # misread as a list of somewhere else.
@@ -1176,6 +1324,7 @@ def _sky_summary(st, lat, width, n_stars=0):
     if bright:
         parts.append((4, ", ".join(f"{s['n']} {a:.0f}°{compass(z)}"
                                    for s, a, z in bright)))
+    parts = [pt for pt in parts if pt[1]]
     while len(parts) > 1 and len(" · ".join(t for _p, t in parts)) > width:
         parts.remove(max(parts, key=lambda pt: pt[0]))
     return " · ".join(t for _p, t in parts)
@@ -1351,6 +1500,7 @@ def _compose_sky(r):
     sun_alt, _ = altaz(su["ra"], su["dec"], p.lat, lst)
     mag_limit = _fade_mag_limit(sun_alt)
     dso_limit = DSO_LIMIT if r.dso else None
+    mw_floor = _milkyway_floor_now(p.lat, p.lon, sun_alt)
     if r.view == "disc" and not r.facing:
         art, st = render(r.when_utc, p.lat, p.lon, height=34, color=c,
                          show_lines=r.lines, width=r.width, mag_limit=mag_limit,
@@ -1373,7 +1523,8 @@ def _compose_sky(r):
                                 # crash with a KeyError.
                                 bodies=_fade_visible_bodies(sun_alt, jd) | {"Sun", "Moon"},
                                 dso_limit=dso_limit, quadrant=r.quadrant,
-                                quadrants=r.quadrant_requested, side_panel=r.panel)
+                                quadrants=r.quadrant_requested, side_panel=r.panel,
+                                milkyway=mw_floor)
         quad_bit = f", quadrant {st['quad_applied']}" if st.get("quad_applied") else ""
         # a quadrant crop replaces the zenith inset (there's no room, and no
         # need -- the crop already narrows the view), so the header must stop
@@ -1403,7 +1554,7 @@ def _compose_sky(r):
     if r.panel:
         spare = _effective_width(r) - len(_head_prefix(r)) - 3
         spare -= len(mode) + 3 if mode else 0
-        summary = _sky_summary(st, p.lat, max(20, spare))
+        summary = _sky_summary(st, p.lat, max(20, spare), note=sky_note(p.lat, p.lon))
     head = _horizon_head(r, mode, summary=summary)
     # Panel mode still wraps wide -- prose sits in its own full-width block
     # below the chart+zenith row (see the side_panel branch below), not
@@ -1589,6 +1740,16 @@ def _compose_sphere(r):
         # body at the thing. Empty on all but a handful of nights a year.
         markers=_markers_json(r),
         golden=_sphere_golden(r),
+        # How faint a contour is still worth drawing here, or 0 for a sky
+        # too bright for any of it. The grid itself is a static asset the
+        # page fetches once (/milkyway.json) -- the sky's structure is the
+        # same everywhere, only how much of it you can see is local.
+        milkyway_floor=_milkyway_floor_now(p.lat, p.lon, sun_alt),
+        # Local sidereal time, so the page can turn the Milky Way's
+        # RA/Dec grid into the same alt/az everything else arrives in
+        # without a second copy of the sidereal-time maths in JS.
+        lst_hours=round(lst, 6),
+        bortle=sky_brightness(p.lat, p.lon)[1],
     )
 
 
@@ -2776,7 +2937,12 @@ def compose_frame(r, dusk_lead_minutes=0, dawn_lag_minutes=0):
                              # -- byte-identical output. The paused-frame "d"
                              # in the browser refetches a single frame with
                              # it on, and that needs somewhere to land.
-                             dso_limit=DSO_LIMIT if r.dso else None)
+                             dso_limit=DSO_LIMIT if r.dso else None,
+                             # An animation is the one place the band is
+                             # worth the most: it appears as the sky darkens
+                             # and goes again at dawn, which is exactly the
+                             # thing a still chart cannot show.
+                             milkyway=_milkyway_floor_now(p.lat, p.lon, sun_alt))
 
     if sun_alt >= -1:      mode = _sun_path_mode(r)
     elif sun_alt >= -6:    mode = "civil twilight"
@@ -2828,8 +2994,8 @@ def _find_chart_only(r):
         # visible" rather than at a chart. ?find=Sun reaches it now, and a
         # partial eclipse an hour before sunset was drawing Lyra, the
         # Northern Cross and three planets into a bright sky.
-        extra = dict(span=360.0, height=_horizon_height(r),
-                     width=_effective_width(r),
+        extra = dict(span=360.0, height=_png_export_height(r),
+                     width=_png_export_width(r),
                      mag_limit=_fade_mag_limit(sun_alt),
                      line_limit=_fade_mag_limit(sun_alt),
                      bodies=_fade_visible_bodies(sun_alt, jd_shown) | {"Sun", "Moon"})
@@ -2873,8 +3039,8 @@ def compose_chart_only(r):
         art, _st = render_linear(r.when_utc, p.lat, p.lon, color=c, show_lines=False,
                                  mag_limit=_fade_mag_limit(sa_now), alt_lo=0.0, alt_hi=alt_hi,
                                  overlay=(arc, SUN_COL, "SUN", (sa_now, sz_now)),
-                                 bodies=show, inset=False, width=_effective_width(r),
-                                 height=_horizon_height(r))
+                                 bodies=show, inset=False, width=_png_export_width(r),
+                                 height=_png_export_height(r))
         head = _horizon_head(r, _sun_path_mode(r))
         return paint(head, C.HEAD, c) + "\n\n" + art
     if r.view == "disc" and not r.facing:
@@ -2895,8 +3061,8 @@ def compose_chart_only(r):
     mag_limit = _fade_mag_limit(sun_alt)
     art, st = render_linear(r.when_utc, p.lat, p.lon, color=c, show_lines=r.lines,
                             tle=r.tle, facing=r.facing, span=r.span,
-                            width=r.width if r.facing else _effective_width(r),
-                            height=None if r.facing else _horizon_height(r),
+                            width=r.width if r.facing else _png_export_width(r),
+                            height=None if r.facing else _png_export_height(r),
                             mag_limit=mag_limit, line_limit=mag_limit,
                             # Same "Sun"+"Moon" forcing as _compose_sky above,
                             # for consistency -- this path doesn't call
@@ -2905,7 +3071,12 @@ def compose_chart_only(r):
                             # silently drop the Moon glyph the main view kept.
                             bodies=_fade_visible_bodies(sun_alt, jd) | {"Sun", "Moon"},
                             dso_limit=DSO_LIMIT if r.dso else None, quadrant=r.quadrant,
-                            quadrants=r.quadrant_requested, inset=False)
+                            quadrants=r.quadrant_requested, inset=False,
+                            # The PNG is the shareable artefact, so it is the
+                            # last place the band should be missing -- and it
+                            # is a separate render from _compose_sky's, which
+                            # is exactly how it got left off.
+                            milkyway=_milkyway_floor_now(p.lat, p.lon, sun_alt))
     mode = (f"facing {r.facing.upper()}, {int(round(st['span']))}° wide"
             f"{' (' + st['clamped'] + ')' if st['clamped'] else ''}, true shape"
             if r.facing else "horizon panorama")
@@ -5671,6 +5842,77 @@ function setGolden(on) {{
   updateLabelVisibility();
 }}
 
+// ---- the Milky Way ------------------------------------------------------
+// Drawn from the same density grid the flat chart uses, fetched once as a
+// static asset: the sky's own structure is the same wherever you stand, so
+// it does not belong in a per-place payload. 6 KB gzipped, cached for a
+// year, shared across every place anyone ever looks at.
+//
+// Points rather than a texture or a mesh. The band has no edges -- it is a
+// gradient with a dark rift through it -- and a cloud of small dots at the
+// dome radius reads as exactly that, while a mapped texture would need an
+// image and a sphere to paint it on.
+var MW_COLOURS = [0x000000, 0x1c2233, 0x252d42, 0x323c56, 0x46536f, 0x5d6d8c];
+var mwPoints = null, MW_LST = 0, MW_LAT = 0;
+
+function addMilkyWay(grid, floor) {{
+  if (mwPoints || !floor) return;
+  var pos = [], col = [], c = new THREE.Color();
+  // Every other cell in each direction: the grid is half a degree and the
+  // band is diffuse, so drawing all 259,200 would cost four times as much
+  // for a difference nobody can see on a phone.
+  // Every cell, not every other one. Sampling coarsely and drawing big
+  // points to cover the gaps is what made the band look like brickwork; a
+  // dense cloud of small points is what a diffuse glow actually is.
+  for (var r = 0; r < grid.rows; r++) {{
+    var row = grid.rows_data[r];
+    var dec = 90 - (r + 0.5) * grid.dec_step;
+    for (var i = 0; i < grid.cols; i++) {{
+      var v = row.charCodeAt(i) - 48;
+      if (v < floor) continue;
+      var ra = (i + 0.5) * grid.ra_step / 15;
+      // The grid is J2000 and the payload's alt/az are of date, but this is
+      // a diffuse band and precession over a few decades is a fraction of
+      // one cell -- far below anything visible here.
+      // Just outside the shell everything else sits on, so it is behind
+      // the stars in depth as well as in draw order.
+      var p = raDecToVec(ra, dec).multiplyScalar(1.06);
+      pos.push(p.x, p.y, p.z);
+      // Shifted down by the floor, so a worse sky paints the little that
+      // survives it more faintly rather than more vividly.
+      c.setHex(MW_COLOURS[Math.max(1, v - (floor - 1))]);
+      col.push(c.r, c.g, c.b);
+    }}
+  }}
+  if (!pos.length) return;
+  var geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(pos), 3));
+  geo.setAttribute('color', new THREE.BufferAttribute(new Float32Array(col), 3));
+  mwPoints = new THREE.Points(geo, new THREE.PointsMaterial({{
+    size: RADIUS * 0.011, vertexColors: true, transparent: true,
+    opacity: 0.5, depthWrite: false, depthTest: false,
+    blending: THREE.AdditiveBlending, sizeAttenuation: true}}));
+  // Painted first and never into the depth buffer, so it is background in
+  // the strict sense: the horizon, the ground, every star and every label
+  // draws over it. It was sitting on top of the horizon line before, which
+  // is the one thing a backdrop must never do.
+  mwPoints.renderOrder = -10;
+  scene.add(mwPoints);
+}}
+
+// RA/Dec -> the same dome position toVec() puts alt/az on. The payload
+// already carries every object in alt/az, so this is the one place the
+// page needs to go the other way.
+function raDecToVec(raH, dec) {{
+  var lst = MW_LST, lat = MW_LAT * Math.PI / 180;
+  var ha = (lst - raH) * 15 * Math.PI / 180, d = dec * Math.PI / 180;
+  var sinAlt = Math.sin(d) * Math.sin(lat) + Math.cos(d) * Math.cos(lat) * Math.cos(ha);
+  var alt = Math.asin(Math.max(-1, Math.min(1, sinAlt)));
+  var az = Math.atan2(-Math.cos(d) * Math.sin(ha),
+                      Math.sin(d) * Math.cos(lat) - Math.cos(d) * Math.sin(lat) * Math.cos(ha));
+  return toVec(alt * 180 / Math.PI, ((az * 180 / Math.PI) % 360 + 360) % 360);
+}}
+
 // A meteor shower's radiant: the one thing this view can do that no flat
 // chart can, which is let you physically turn and face it. Drawn as a ring
 // rather than a glyph because a radiant is not an object -- there is nothing
@@ -6091,6 +6333,18 @@ fetch('/' + PLACE + '/sphere.json' + window.location.search).then(function(r) {{
   }});
 
   addMarkers(data.markers);
+  // The band, if this sky is dark enough for any of it. Fetched separately
+  // and never blocking: the sphere is already on screen by the time this
+  // lands, and a sky without it is the sky you had a moment ago rather than
+  // a broken one.
+  MW_LST = data.lst_hours;
+  MW_LAT = data.lat;
+  if (data.milkyway_floor) {{
+    fetch('/milkyway.json')
+      .then(function(r) {{ return r.json(); }})
+      .then(function(grid) {{ addMilkyWay(grid, data.milkyway_floor); }})
+      .catch(function() {{}});
+  }}
   // Built once, up front, and left hidden. The whole layer is ~1.5 KB
   // gzipped on top of a payload that already carries 630 stars, so paying
   // for it eagerly buys an instant toggle with no second round trip -- the
