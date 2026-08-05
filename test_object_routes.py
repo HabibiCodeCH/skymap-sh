@@ -1212,7 +1212,12 @@ def test_whether_you_can_see_it_depends_on_where_you_stand(client):
     dark = client.get("/-24.63,-70.40/Milky Way?format=json").json()["galaxy"]
     assert bright["visible_here"] is False
     assert dark["visible_here"] is True
-    assert dark["floor_deg"] > 0
+    # A contour level from the density grid, not an altitude: 1 is a dark
+    # sky showing the whole band, 4 is one where only the core survives.
+    # It was being printed as "visible above 3 degrees", which is not what
+    # the number means.
+    assert dark["floor"] == 1
+    assert "floor_deg" not in dark
 
 
 def test_the_page_says_so_in_words(client):
@@ -1220,7 +1225,7 @@ def test_the_page_says_so_in_words(client):
     atacama = server.api.strip_ansi(
         client.get("/-24.63,-70.40/Milky Way", headers=CURL).text)
     assert "too bright" in zurich
-    assert "visible above" in atacama
+    assert "the whole band" in atacama
 
 
 def test_it_carries_the_facts_worth_having(client):
@@ -1271,3 +1276,17 @@ def test_the_url_survives_being_shared(client):
     # and the spaceless forms people actually type still resolve
     for path in ("/milkyway", "/MilkyWay"):
         assert client.get(path, headers=CURL).status_code == 200, path
+
+
+def test_the_band_is_described_by_how_much_of_it_shows(client):
+    """Not a yes or no, and never a number pretending to be an angle. The
+    grid has five contours and the floor says which survive the light
+    pollution here."""
+    seen = {}
+    for place in ("Zurich", "Rome", "Exmoor", "Atacama"):
+        d = client.get(f"/{place}/Milky Way?format=json").json()["galaxy"]
+        seen[place] = d["shows"]
+        assert "°" not in d["shows"], place
+    assert seen["Zurich"] != seen["Atacama"]
+    assert "whole band" in seen["Atacama"]
+    assert "too bright" in seen["Zurich"]

@@ -3908,5 +3908,40 @@ class CanonicalNamesTheApex(unittest.TestCase):
             self.assertNotIn("www.", c, path)
 
 
+class TheSearchScriptDeclaresWhatItUses(unittest.TestCase):
+    """A ReferenceError in that script kills the whole dropdown silently:
+    the bar still looks fine, it just never suggests anything again. No
+    other test executes the JS, so an identifier used but never declared
+    shipped once and would have shipped again."""
+
+    def setUp(self):
+        client_cm = TestClient(server.app)
+        self.client = client_cm.__enter__()
+        self.addCleanup(client_cm.__exit__, None, None, None)
+
+    def test_every_identifier_the_dropdown_uses_is_declared(self):
+        page = self.client.get("/Zurich", headers=BROWSER).text
+        for name in ("PLACE_MARK", "PAGES", "buildItems", "prefixOf",
+                     "tailOf", "toPath", "asCoords", "renderDropdown",
+                     "closeDropdown", "fetchMatches"):
+            self.assertIn(f"var {name}", page,
+                          f"{name} is used by the dropdown but never declared")
+
+    def test_the_place_marks_are_the_two_agreed_glyphs(self):
+        page = self.client.get("/Zurich", headers=BROWSER).text
+        m = re.search(r"var PLACE_MARK=\{([^}]*)\}", page)
+        self.assertTrue(m, "no PLACE_MARK table")
+        self.assertIn("263e", m.group(1))    # crescent, dark sky
+        self.assertIn("25b2", m.group(1))    # triangle, heritage
+
+    def test_those_glyphs_need_no_font_fallback(self):
+        # gif.py keeps a substitution table for characters the PNG font
+        # lacks. A mark that needed one would draw an empty box on a card.
+        import gif
+        for ch in ("\u263e", "\u25b2"):
+            self.assertNotIn(ch, gif._PRIMARY_GAPS)
+            self.assertIsNone(gif.PNG_SUBSTITUTE.get(ch))
+
+
 if __name__ == "__main__":
     unittest.main()

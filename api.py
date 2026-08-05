@@ -61,6 +61,41 @@ ALIASES = {
 }
 
 
+# Dark-sky sites are folded into the city index rather than kept beside it,
+# so every path a place name already travels -- lookup, "did you mean",
+# completion, the coordinate redirect, /stats -- works on them without
+# knowing they exist. One shape in, one shape out.
+#
+# Population zero, which is true and also does the right thing twice: the
+# index is ranked most-populous-first, so a real town sharing a name always
+# wins the path, and the search dropdown draws them with its smallest dot.
+_DARKSKY_POP = 0
+
+# Where a named site sorts in the search bar, as if it were a town of this
+# size. Big enough to beat the hamlets it would otherwise lose to, small
+# enough that any city somebody would name first still wins.
+SPECIAL_PLACE_RANK = 50_000
+
+
+# Which of the index's entries are places you travel to rather than live in.
+# Kept beside the index instead of as a ninth column: a row is unpacked
+# strictly into eight names in lookup_place, so widening it breaks that at a
+# distance for a flag only the search bar cares about.
+_SPECIAL_PLACES = {}
+
+
+def _place_rows(filename):
+    """A hand-authored place file in cities.json's own row shape."""
+    try:
+        with open(f"{sky.BASE}/{filename}", encoding="utf-8") as f:
+            sites = json.load(f).get("sites", [])
+    except (OSError, ValueError):
+        return []
+    return [(s["name"], [s["lat"], s["lon"], s["tz"], "", s.get("country", ""),
+                         "", _DARKSKY_POP, s["name"]])
+            for s in sites]
+
+
 def _cities():
     global _CITY_INDEX
     if _CITY_INDEX is None:
@@ -69,6 +104,19 @@ def _cities():
                 _CITY_INDEX = json.load(f)
         except (OSError, ValueError):
             _CITY_INDEX = {}
+        # Appended, never inserted first: a name that is both a town and a
+        # dark-sky site resolves to the town, which is what somebody typing
+        # it almost always meant.
+        for filename, kind in (("darksky.json", "dark"),
+                               ("unesco.json", "unesco")):
+            for name, row in _place_rows(filename):
+                key = norm_name(name)
+                # First file wins a shared name, and dark sky comes first:
+                # Mesa Verde is both, and the sky is what this site is for.
+                if key in _SPECIAL_PLACES:
+                    continue
+                _CITY_INDEX.setdefault(key, []).append(row)
+                _SPECIAL_PLACES[key] = kind
     return _CITY_INDEX
 
 
@@ -181,13 +229,26 @@ def complete_cities(prefix, n=8, with_pop=False):
     out = []
     for k, hits in _cities().items():
         if k.startswith(key):
-            out.append((-hits[0][6], hits[0][7]))
+            # A named site has no population, so ranking on the real number
+            # buried it: "Cherry Springs" lost its own name to eight
+            # villages called Cherry-something and never appeared at all.
+            # Ranking them first was worse -- "new" then offered Newgrange
+            # before New York.
+            #
+            # So they sort as though they were a small city: above the
+            # hamlets, below anywhere anyone would name first. This is a
+            # sort key and nothing else; the dot the dropdown draws still
+            # comes from the real population, which is zero.
+            pop = hits[0][6]
+            rank = SPECIAL_PLACE_RANK if _SPECIAL_PLACES.get(k) else pop
+            out.append((-rank, -pop, hits[0][7]))
     out.sort()
     seen, res = set(), []
-    for negpop, name in out:
+    for _rank, negpop, name in out:
         if name not in seen:
             seen.add(name)
-            res.append({"name": name, "size": city_size(-negpop)}
+            res.append({"name": name, "size": city_size(-negpop),
+                        "kind": _SPECIAL_PLACES.get(norm_name(name))}
                        if with_pop else name)
         if len(res) >= n:
             break
@@ -306,6 +367,19 @@ def sky_brightness(lat, lon):
 # Roughly: obvious and structured to Bortle 3, clearly there at 4, washed
 # out at 5, a faint patch near the zenith at 6, essentially gone by 7.
 _BORTLE_FLOOR = {1: 1, 2: 1, 3: 1, 4: 2, 5: 2, 6: 3, 7: 4, 8: 0, 9: 0}
+
+
+# What each contour floor means in words. The band is drawn from a density
+# grid with five levels, so "how much of it you get" is the honest answer to
+# whether you can see it -- not a yes or no, and not an altitude.
+_MILKYWAY_SHOWS = {
+    0: "too bright, the band does not show",
+    1: "the whole band, structure and all",
+    2: "most of the band, the faintest parts washed out",
+    3: "the brighter parts only",
+    4: "the core only, and faintly",
+    5: "the core only, and faintly",
+}
 
 
 def milkyway_floor(lat, lon):
@@ -1043,9 +1117,17 @@ def object_facts(tgt, r, canonical, shown_utc=None):
         # zero means the sky where you are standing is too bright for it at
         # any altitude.
         try:
+            # A CONTOUR level, not an altitude. milkyway_at() returns 0 to 5
+            # across the band and the floor is the faintest contour still
+            # above the light pollution here: 1 is a dark sky showing the
+            # whole thing, 4 is a bad one where only the core survives, 0 is
+            # a city where drawing any of it would be a lie. This was being
+            # printed as "visible above 3 degrees", which is not what the
+            # number means and not a fact about anything.
             floor = milkyway_floor(p.lat, p.lon)
-            out["galaxy"]["floor_deg"] = floor
+            out["galaxy"]["floor"] = floor
             out["galaxy"]["visible_here"] = bool(floor)
+            out["galaxy"]["shows"] = _MILKYWAY_SHOWS.get(floor)
         except Exception:                                   # noqa: BLE001
             pass
 
@@ -1409,10 +1491,7 @@ def object_infobox(facts, tgt, width=76):
         add("Centre", f"{gx['centre_ly']:,} light years away, in Sagittarius")
         add("Stars", gx["stars"])
         # The row that decides whether any of the others matter tonight.
-        if gx.get("visible_here") is False:
-            add("From here", "too bright, the band does not show")
-        elif gx.get("floor_deg"):
-            add("From here", f"visible above {gx['floor_deg']}°")
+        add("From here", gx.get("shows"))
 
     if pl:
         add("Distance", f"{pl['distance_au']:.2f} AU, "
@@ -5775,14 +5854,26 @@ document.documentElement.classList.add('js');
             text-transform:uppercase;color:#6e7681}}
  .bar-option{{display:flex;align-items:center;gap:8px;padding:6px 8px;
               border-radius:4px;cursor:pointer;font-size:13px;color:#c9d1d9}}
- .bar-option .glyph{{width:1.2em;text-align:center;flex-shrink:0;
-                    color:#6e7681}}
- /* Town, city, major city. Line-height is pinned so the three sizes sit on
-    one baseline and the rows stay the same height -- without it a bigger
-    dot makes its own row taller and the list steps as you scroll it. */
- .bar-option .glyph.sz1{{font-size:7px;line-height:1.2em}}
- .bar-option .glyph.sz2{{font-size:10px;line-height:1.2em}}
- .bar-option .glyph.sz3{{font-size:13px;line-height:1.2em;color:#8b949e}}
+ /* One box for every mark in the list, whatever it is. font-size and
+    line-height are pinned HERE rather than only on the size classes: a
+    crescent or a triangle carries no size class, so it was inheriting the
+    row's 13px and an unpinned line-height, which put it on a different
+    baseline and in a taller row than the dots above and below it.
+    inline-flex centres it in both directions instead of relying on the
+    text baseline, which the three dot sizes and the two marks do not
+    share. */
+ /* Fixed pixels, not em. The size classes below change this element's own
+    font-size, and 1.2em is measured against THAT -- so the box was 8px wide
+    for a village and 13px for a dark-sky site, and every name in the list
+    started at a slightly different x. A mark is a fixed slot; only what
+    sits inside it changes size. */
+ .bar-option .glyph{{width:16px;height:16px;flex-shrink:0;color:#6e7681;
+                    display:inline-flex;align-items:center;
+                    justify-content:center;font-size:11px;line-height:1}}
+ /* Town, city, major city. Only the size changes; the box does not. */
+ .bar-option .glyph.sz1{{font-size:7px}}
+ .bar-option .glyph.sz2{{font-size:10px}}
+ .bar-option .glyph.sz3{{font-size:13px;color:#8b949e}}
  .bar-option:hover,.bar-option.active{{background:#1c2128}}
  /* Opens under the bar, in the same stack as the dropdown and never at the
     same time as it. Not a centred overlay: it answers a question about the
@@ -6283,6 +6374,12 @@ function skymapRenderGif(btn){{
     // "Tokyo/ven" offers Venus and no cities at all, which is also why the
     // place suggestions are not merely ranked lower there -- a city would
     // build /Tokyo/Paris, and there is no such page.
+    // A crescent for somewhere you go at night, a silhouette for a
+    // monument, a dot for somewhere people live. Both are plain BMP
+    // characters present in the two bundled fonts as well as every system
+    // one, so neither needs a PNG_SUBSTITUTE entry.
+    var PLACE_MARK={{dark:'\\u263e', unesco:'\\u25b2'}};
+
     var buildItems=function(cities,objects,v){{
       var out=[],pre=prefixOf(v),tail=tailOf(v),f=fold(tail);
       // Names, not paths. The prefix is already sitting in the bar a few
@@ -6304,11 +6401,16 @@ function skymapRenderGif(btn){{
         // string from a week-old cached response (see /complete's docstring).
         var name=(typeof c==='string')?c:c.name;
         var size=(typeof c==='string')?0:(c.size||0);
+        var mark=(typeof c==='string')?null:PLACE_MARK[c.kind];
         // The row reads "Tokyo"; the slash only appears once it is chosen,
         // in the bar, where it is an invitation to name an object. Landing
         // on /Tokyo/ rather than /Tokyo is free: they are one page.
-        out.push({{group:'Places',label:name,glyph:'\\u25cf',color:'',
-                  size:size,href:toPath(name)+'/'}});
+        //
+        // A named site keeps its mark at full size; only the city dot is
+        // scaled by population, and a scaled crescent would read as a phase
+        // rather than as a category.
+        out.push({{group:'Places',label:name,glyph:mark||'\\u25cf',color:'',
+                  size:mark?0:size,href:toPath(name)+'/'}});
       }});
       PAGES.forEach(function(p){{
         if(fold(p).startsWith(f))
