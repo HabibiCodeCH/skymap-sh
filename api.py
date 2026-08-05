@@ -1025,6 +1025,30 @@ def object_facts(tgt, r, canonical, shown_utc=None):
         if tgt["name"] == "Jupiter":
             out["moons_tonight"] = objects.galilean_line(jd)
 
+    if tgt.get("kind") == "milkyway":
+        # Round numbers on purpose. The distance to the centre is measured
+        # to about 26,700 +/- 100 ly and the diameter is argued over between
+        # 90,000 and 120,000 depending on where you decide the disc stops,
+        # so quoting either to four figures would be a false precision the
+        # rest of this page does not have.
+        out["galaxy"] = {
+            "centre_ly": 26_000,
+            "diameter_ly": 100_000,
+            "stars": "100 to 400 billion",
+            "kind": "barred spiral",
+        }
+        # The whole question for this object, and the one thing a chart
+        # cannot answer: from most of Europe the band is simply not there.
+        # milkyway_floor returns the altitude above which it is drawn, and
+        # zero means the sky where you are standing is too bright for it at
+        # any altitude.
+        try:
+            floor = milkyway_floor(p.lat, p.lon)
+            out["galaxy"]["floor_deg"] = floor
+            out["galaxy"]["visible_here"] = bool(floor)
+        except Exception:                                   # noqa: BLE001
+            pass
+
     if tgt.get("kind") == "moon":
         out["moon"] = objects.moon_facts(jd)
         mo = sky.moon(jd)
@@ -1349,8 +1373,13 @@ def object_infobox(facts, tgt, width=76):
     # This is the same sentence the social card leads with, which is where it
     # was already earning its place -- it just never made it onto the page
     # the card links to.
+    # The most specific words available: "Red supergiant" over "Star",
+    # "Barred spiral galaxy" over "Galaxy". One row either way -- the
+    # generic kind is the fallback, not a second line.
     star_kind = (facts.get("star") or {}).get("description")
+    gal_kind = (facts.get("galaxy") or {}).get("kind")
     add("Type", (star_kind.capitalize() if star_kind else
+                 f"{gal_kind.capitalize()} galaxy" if gal_kind else
                  _KIND_WORD.get(facts.get("kind"), "").capitalize() or None))
     add("Symbol", PLANET_SYMBOLS.get(facts.get("object")))
     # Same reasoning as the intro line: durable for a star, live for a planet.
@@ -1360,7 +1389,7 @@ def object_infobox(facts, tgt, width=76):
     # meteor radiants, whose "magnitude" is a stand-in resolve_target sets so
     # dark_enough() picks the nautical-dark threshold. It is not a brightness
     # and printing it as one invents a fact.
-    if tgt.get("mag") is not None and tgt.get("kind") not in ("asterism", "radiant"):
+    if tgt.get("mag") is not None and tgt.get("kind") not in ("asterism", "radiant", "milkyway"):
         add("Magnitude", f"{tgt['mag']:.1f}")
 
     st, pl = facts.get("star", {}), facts.get("planet", {})
@@ -1373,6 +1402,17 @@ def object_infobox(facts, tgt, width=76):
         add("Double star", f"components {st['double_separation']:.1f}″ apart")
     if st.get("period_days"):
         add("Variable", f"eclipses every {st['period_days']:.4g} days")
+
+    gx = facts.get("galaxy") or {}
+    if gx:
+        add("Diameter", f"{gx['diameter_ly']:,} light years")
+        add("Centre", f"{gx['centre_ly']:,} light years away, in Sagittarius")
+        add("Stars", gx["stars"])
+        # The row that decides whether any of the others matter tonight.
+        if gx.get("visible_here") is False:
+            add("From here", "too bright, the band does not show")
+        elif gx.get("floor_deg"):
+            add("From here", f"visible above {gx['floor_deg']}°")
 
     if pl:
         add("Distance", f"{pl['distance_au']:.2f} AU, "
@@ -1575,7 +1615,15 @@ def object_sources(facts):
     """
     kind = facts.get("kind")
     out = []
-    if kind in ("planet", "moon", "sun"):
+    if kind == "milkyway":
+        # It is in no catalogue of things to point at, so the deep-sky
+        # credit that used to appear here was simply wrong: the Revised NGC
+        # has nothing to say about the galaxy it was compiled from inside.
+        out.append("Galactic centre position (Sgr A*) from the IAU "
+                   "galactic coordinate definition")
+        out.append("sky brightness from the World Atlas of Artificial Night "
+                   "Sky Brightness")
+    elif kind in ("planet", "moon", "sun"):
         out.append("Physical data from NASA/JPL Horizons")
         out.append("positions from JPL approximate elements")
     elif kind == "star":
@@ -1796,7 +1844,7 @@ def compose_object(r, canonical):
     if tgt.get("alt") is not None and tgt["alt"] > 0:
         what = "radiant " if tgt.get("kind") == "radiant" else ""
         bits.append(f"{what}{tgt['alt']:.0f}\u00b0 up in the {compass(tgt['az'])}")
-    if tgt.get("mag") is not None and tgt.get("kind") not in ("asterism", "radiant"):
+    if tgt.get("mag") is not None and tgt.get("kind") not in ("asterism", "radiant", "milkyway"):
         bits.append(f"mag {tgt['mag']:.1f}")
     timing = object_timing(facts)
     if timing:
@@ -1809,11 +1857,18 @@ def compose_object(r, canonical):
     sub_bits = []
     b = facts.get("best_this_year")
     is_shower = bool(b and b.get("is_peak"))
-    if is_shower:
+    # Some things are up and still not there. The band needs a dark sky, not
+    # merely a set Sun, so from a city the honest line is that it never
+    # shows -- "next best sighting opportunity" promised one that will not
+    # come, on the same page that had just said the sky is too bright.
+    never = (facts.get("galaxy") or {}).get("visible_here") is False
+    if never:
+        sub_bits.append(f"Never shows in {facts.get('place', 'this sky')}")
+    elif is_shower:
         sub_bits.append("The chart is drawn for the peak night")
     elif not facts.get("is_now"):
         sub_bits.append("Next best sighting opportunity")
-    if b:
+    if b and not never:
         when = dt.datetime.fromisoformat(b["date"])
         # "this year" was wrong: best_this_year searches 365 days from
         # today, not to the end of December. In August it was routinely
@@ -1906,6 +1961,7 @@ def object_title(facts):
 # the cluster, nebula and planetary-nebula pages read before this. There is a
 # test walking the whole namespace so a new type cannot slip through.
 _KIND_WORD = {"planet": "planet", "star": "star", "moon": "moon", "sun": "sun",
+              "milkyway": "galaxy",
               "asterism": "asterism", "radiant": "meteor shower",
               "galaxy": "galaxy", "cluster": "star cluster", "nebula": "nebula",
               "planetary nebula": "planetary nebula"}

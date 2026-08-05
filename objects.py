@@ -77,6 +77,12 @@ def _index():
     for nm in ("Sun", "Moon", "Mercury", "Venus", "Mars", "Jupiter",
                "Saturn", "Uranus", "Neptune"):
         add(nm)
+    # The galaxy we are inside. Added by hand because it is in none of the
+    # catalogues -- deepsky.json lists things you point at, and this is the
+    # one object that is behind you as well.
+    add("Milky Way")
+    add("Galactic Centre", "Milky Way")
+    add("Galactic Center", "Milky Way")
     for s in sky._load("stars.json"):
         if s.get("n"):
             add(s["n"])
@@ -135,7 +141,7 @@ def sitemap_names():
     still work; they are simply not advertised.
     """
     out = {"Sun", "Moon", "Mercury", "Venus", "Mars", "Jupiter", "Saturn",
-           "Uranus", "Neptune"}
+           "Uranus", "Neptune", "Milky Way"}
     out |= {s["n"] for s in sky._load("stars.json")
             if s.get("n") and s["m"] <= _SITEMAP_STAR_MAG}
     out |= {a["name"] for a in sky._load("asterisms.json")}

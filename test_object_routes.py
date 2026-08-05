@@ -1177,3 +1177,97 @@ def test_curl_keeps_the_exact_coordinates(client):
 def test_a_named_place_is_left_alone(client):
     r = client.get("/Tokyo/Saturn", headers=BROWSER, follow_redirects=False)
     assert r.status_code == 200
+
+
+# ------------------------------------------------------------- the Milky Way
+# The one object that is behind you as well as in front of you, so it is in
+# none of the catalogues and had to be added by hand.
+
+def test_the_milky_way_resolves(client):
+    for path in ("/Milky%20Way", "/milkyway", "/galactic%20centre"):
+        r = client.get(path, headers=CURL)
+        assert r.status_code == 200, path
+        assert "Milky Way" in body(r), path
+
+
+def test_it_is_anchored_on_the_galactic_centre(client):
+    """The band crosses the whole sky, so "where is it" has no single
+    answer -- but "which way do I look" does, and it is Sagittarius."""
+    d = client.get("/Milky Way?format=json").json()
+    assert d["constellation"] == "Sagittarius"
+
+
+def test_it_never_prints_a_magnitude(client):
+    """2.0 is a sentinel that buys the nautical-dark answer out of
+    dark_enough(), exactly as a meteor radiant's 2.5 does. It is not a
+    brightness and printing it as one invents a fact."""
+    h = client.get("/Milky Way", headers=CURL).text
+    assert "Magnitude" not in server.api.strip_ansi(h)
+
+
+def test_whether_you_can_see_it_depends_on_where_you_stand(client):
+    """The whole question for this object, and the one a chart cannot
+    answer: from most of Europe the band is simply not there."""
+    bright = client.get("/Zurich/Milky Way?format=json").json()["galaxy"]
+    dark = client.get("/-24.63,-70.40/Milky Way?format=json").json()["galaxy"]
+    assert bright["visible_here"] is False
+    assert dark["visible_here"] is True
+    assert dark["floor_deg"] > 0
+
+
+def test_the_page_says_so_in_words(client):
+    zurich = server.api.strip_ansi(client.get("/Zurich/Milky Way", headers=CURL).text)
+    atacama = server.api.strip_ansi(
+        client.get("/-24.63,-70.40/Milky Way", headers=CURL).text)
+    assert "too bright" in zurich
+    assert "visible above" in atacama
+
+
+def test_it_carries_the_facts_worth_having(client):
+    t = server.api.strip_ansi(client.get("/Milky Way", headers=CURL).text)
+    for want in ("Barred spiral galaxy", "100,000 light years",
+                 "26,000 light years", "Sagittarius"):
+        assert want in t, want
+
+
+def test_only_one_type_row(client):
+    t = server.api.strip_ansi(client.get("/Milky Way", headers=CURL).text)
+    assert t.count("Type ") == 1
+
+
+def test_it_does_not_promise_a_sighting_that_cannot_happen(client):
+    """Some things are up and still not there. The page said the sky was
+    too bright and then offered a next best sighting opportunity, two lines
+    apart."""
+    zurich = server.api.strip_ansi(client.get("/Zurich/Milky Way", headers=CURL).text)
+    assert "Never shows in" in zurich
+    assert "Next best sighting" not in zurich
+    # and no best-night date either, for the same reason
+    assert "Best in the next 12 months" not in zurich
+
+
+def test_a_dark_sky_still_gets_its_best_night(client):
+    dark = server.api.strip_ansi(
+        client.get("/-24.63,-70.40/Milky Way", headers=CURL).text)
+    assert "Never shows" not in dark
+    assert "Best in the next 12 months" in dark
+
+
+def test_the_sources_do_not_credit_a_catalogue_that_has_nothing_to_say(client):
+    """It fell through to the deep-sky branch and credited the Revised NGC
+    for a position that never came from it. A wrong citation is worse than
+    none on a page whose point is that the numbers are traceable."""
+    h = client.get("/Milky Way", headers=BROWSER).text
+    assert "Sulentic" not in h
+    assert "Dreyer" not in h
+    assert "Sgr A*" in h
+
+
+def test_the_url_survives_being_shared(client):
+    """Multi-word objects carry a space, so the canonical has to be encoded
+    or a pasted link breaks at the space."""
+    h = client.get("/Milky Way", headers=BROWSER).text
+    assert 'href="https://skymap.sh/Milky%20Way"' in h
+    # and the spaceless forms people actually type still resolve
+    for path in ("/milkyway", "/MilkyWay"):
+        assert client.get(path, headers=CURL).status_code == 200, path

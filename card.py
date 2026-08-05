@@ -208,6 +208,8 @@ def _headline_facts(facts):
 KIND_WORDS = {
     "planet": "Planet", "star": "Star", "moon": "Moon", "sun": "Sun",
     "asterism": "Asterism", "radiant": "Meteor shower",
+    # The one galaxy nobody has ever seen from outside.
+    "milkyway": "Our galaxy",
     "galaxy": "Galaxy", "cluster": "Cluster", "nebula": "Nebula",
     "planetary nebula": "Planetary nebula",
 }

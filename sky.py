@@ -1025,6 +1025,29 @@ def resolve_target(name, jd, lat, lst):
                             ra=cra, dec=cdec,
                             lead=min(m for _r, _d, m in pts),
                             faint=max(m for _r, _d, m in pts))
+    # The Milky Way, anchored on the galactic centre.
+    #
+    # The band crosses the whole sky, so "where is it" has no single answer
+    # -- but "which way do I look" does, and it is Sagittarius. The core is
+    # the bright part, the part worth waiting up for, and the part that
+    # decides whether tonight is any good: when it is below the horizon
+    # there is still a band overhead, and it is the faint outer arm.
+    #
+    # Sgr A* in J2000, which is the conventional centre and within a
+    # fraction of a degree of the visual brightest point.
+    if q in ("milky way", "the milky way", "galactic centre",
+             "galactic center", "milkyway"):
+        gc_ra, gc_dec = 17.7611, -29.0078
+        ra, de = precess(gc_ra, gc_dec, jd)
+        a, z = altaz(ra, de, lat, lst)
+        return dict(name="Milky Way", alt=a, az=z,
+                    # Not a magnitude anyone quotes for a whole galaxy seen
+                    # from inside it. 2.0 asks dark_enough() for the
+                    # nautical-dark answer, which is the honest threshold:
+                    # the band needs a properly dark sky, not merely a set
+                    # Sun.
+                    mag=2.0, kind="milkyway", ra=gc_ra, dec=gc_dec)
+
     # Meteor radiants. Only the position lives here -- showers.json is static
     # RA/Dec, so this needs no import of events.py (which imports this module;
     # the other direction would be a cycle). When a shower peaks is events.py's
@@ -1101,7 +1124,12 @@ def find_text(t, visible, lat, wrap_width=76):
     L.append(f"Face {compass(t['az'])} and look {fists(t['alt'])} \u2014 a closed fist at "
              f"arm's length is about 10\u00b0.")
     if t.get("mag") is not None:
-        L.append(f"Magnitude {t['mag']:.1f}." if t["kind"] != "asterism" else "")
+        # Radiants and the Milky Way carry a sentinel magnitude that buys a
+        # darkness threshold out of dark_enough(); it is not a brightness
+        # and printing it as one invents a fact. Asterisms have no single
+        # one to give.
+        L.append(f"Magnitude {t['mag']:.1f}."
+                 if t["kind"] not in ("asterism", "radiant", "milkyway") else "")
     mark = find_marker(t, visible)
     if mark:
         nm, d, vert, side = mark
