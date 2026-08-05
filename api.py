@@ -2308,7 +2308,15 @@ def chart_ladder_css():
         # The prose keeps the chart's font but not its width: pinned above
         # the shortcut bar, where it stays put while the chart above it
         # changes rung, place or time.
+        # The prose keeps the chart's font on a chart page, where it reads as
+        # a caption to the drawing. An object page sets it in the page's own
+        # face instead: there it is sentences among other sentences, sitting
+        # under a lede and a fact list that are already set that way, and a
+        # second typeface for one block read as a different document.
         f" #chart-prose{{font-size:{CHART_FONT_PX}px;margin:6px 0 0}}",
+        " .obj-live #chart-prose{font-family:ui-monospace,SFMono-Regular,"
+        "Menlo,Consolas,monospace;font-size:13.5px;line-height:1.5;"
+        "color:#adb6c4;margin:10px 0 0;white-space:pre-wrap}",
     ]
     return "\n".join(lines)
 

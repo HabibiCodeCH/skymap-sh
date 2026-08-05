@@ -314,6 +314,10 @@ DSO_GLYPH = {
     "pln": ("◈", "\033[38;5;51m"),    # planetary nebula -- cyan
 }
 DSO_NAMES = {"gal": "galaxy", "clu": "cluster", "neb": "nebula", "pln": "planetary nebula"}
+
+# The crosshair colour, used by the panorama and by the zenith inset, so the
+# mark reads the same wherever the thing being looked for happens to be.
+TARGET_C = "\033[38;5;213m"
 DSO_LEGEND = ("deep sky:  " +
               "  ".join(f"{DSO_GLYPH[k][0]} {DSO_NAMES[k]}" for k in DSO_NAMES))
 
@@ -703,7 +707,8 @@ def iss_track(tle_path, when_utc, lat, lon, minutes=110, step=0.5):
     return (best or None), None
 
 
-def _zenith_inset(items, alt_max, color, indent, IW=21, IH=11, lat=0.0):
+def _zenith_inset(items, alt_max, color, indent, IW=21, IH=11, lat=0.0,
+                  target=None):
     """Small all-sky disc for the cap the panorama cannot honestly show.
     North up and east left, as the full disc has it -- turned half a circle
     south of the equator, so north sits at the bottom and south at the top.
@@ -747,6 +752,27 @@ def _zenith_inset(items, alt_max, color, indent, IW=21, IH=11, lat=0.0):
         if nm:
             named.append((nm, col))
 
+    # The crosshair, when the thing being looked for is inside this cap.
+    #
+    # The panorama stops at alt_max and marks its target there; anything
+    # higher was drawn in here as an ordinary dot and marked nowhere. So a
+    # find on a high object -- the Geminids radiant at 76 degrees, say --
+    # produced a chart with the answer on it and nothing pointing at it.
+    #
+    # Drawn last so it sits over whatever shares its cell, and named first so
+    # its label heads the list rather than appearing among the field stars.
+    target_label = None
+    if target is not None and target.get("alt", 0) > alt_max:
+        r = (90.0 - target["alt"]) / span
+        put(turn * -math.sin(target["az"] * D) * r,
+            turn * math.cos(target["az"] * D) * r,
+            "\u25ce", TARGET_C, over=True)
+        # Its label goes UNDER the disc, not in the column of names beside
+        # it. That column is sized by its longest entry, and a name like
+        # "GEMINIDS RADIANT" widened the whole inset enough to push it out
+        # across the panorama it is supposed to sit on top of.
+        target_label = target["name"].upper()
+
     head = f"zenith {alt_max}-90°"
     lines = [" " * indent + paint(head, C.MUTE, color)]
     for r in range(IH):
@@ -757,6 +783,11 @@ def _zenith_inset(items, alt_max, color, indent, IW=21, IH=11, lat=0.0):
             nm, col = named[r - 1]
             extra = "   " + paint(nm, col, color)
         lines.append(" " * indent + row.rstrip() + extra)
+    if target_label:
+        # No glyph beside the label. The mark is already on the disc above
+        # and the label carries the same colour, which is the legend.
+        lines.append(" " * indent + paint("  " + target_label,
+                                          TARGET_C, color))
     return lines
 
 
@@ -1677,7 +1708,7 @@ def render_linear(when_utc, lat, lon, W=176, H=22, color=True, show_lines=True,
         text(z, a, o["cn"], col)
 
     if target is not None:
-        TC = "\033[38;5;213m"
+        TC = TARGET_C
         place(target["az"], target["alt"], "◎", TC, over=True)
         c0, r0 = col_of(target["az"]), row_of(target["alt"])
         if c0 is not None and r0 is not None:            # crosshair arms
@@ -1739,7 +1770,8 @@ def render_linear(when_utc, lat, lon, W=176, H=22, color=True, show_lines=True,
     zenith_lines = None
     if facing is None and not alt_cropped and quad_applied is None and inset:
         zenith_lines = _zenith_inset(inset_items, alt_max, color,
-                                     0 if side_panel else LM, lat=lat)
+                                     0 if side_panel else LM, lat=lat,
+                                     target=target)
         if not side_panel:
             out.append("")
             out.extend(zenith_lines)

@@ -886,3 +886,39 @@ def test_a_shower_headline_says_radiant(client):
     t = body(client.get("/Geminids", headers=CURL))
     line = next(l for l in t.split("\n") if l.strip().startswith("Zurich "))
     assert "radiant" in line, line
+
+
+# ------------------------------------------------ the high-altitude crosshair
+def test_a_high_target_is_marked_in_the_zenith_inset(client):
+    """The panorama stops at 70 degrees and marks its target there. Anything
+    higher was drawn into the inset as an ordinary dot and marked nowhere, so
+    a find on a high object produced a chart with the answer on it and
+    nothing pointing at it."""
+    t = body(client.get("/Geminids", headers=CURL))
+    assert "zenith 70-90" in t
+    inset = t[t.index("zenith 70-90"):]
+    assert "◎" in inset, "the target is not marked in the inset"
+    assert "GEMINIDS RADIANT" in inset
+
+
+def test_the_inset_label_sits_below_the_disc(client):
+    """The column of names beside the disc is sized by its longest entry, and
+    "GEMINIDS RADIANT" widened the inset enough to push it out across the
+    panorama it sits on top of."""
+    t = body(client.get("/Geminids", headers=CURL))
+    lines = t[t.index("zenith 70-90"):].split("\n")
+    disc = [l for l in lines[1:12] if l.strip()]
+    assert all("GEMINIDS" not in l for l in disc), "label is beside the disc"
+    assert any(l.strip() == "GEMINIDS RADIANT" for l in lines[:15])
+    # And the disc keeps its own width rather than being stretched by a name.
+    assert max(len(l.rstrip()) for l in disc) < 40
+
+
+def test_a_low_target_is_still_marked_in_the_panorama(client):
+    """The inset change must not move the mark for everything else."""
+    t = body(client.get("/Zurich?find=Saturn", headers=CURL))
+    assert t.count("◎") >= 1
+
+
+def test_a_chart_with_no_target_carries_no_crosshair(client):
+    assert "◎" not in body(client.get("/Zurich", headers=CURL))
