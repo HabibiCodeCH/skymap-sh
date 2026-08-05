@@ -5,6 +5,7 @@ Run:  python3 test_api.py
 """
 import datetime as dt
 import os
+import json
 import unittest
 import api
 import sky
@@ -169,6 +170,43 @@ class CompleteCities(unittest.TestCase):
         self.assertEqual(api.complete_cities(long_prefix), [])
 
 
+class CitySizeBands(unittest.TestCase):
+    """The dropdown draws a bigger dot for a bigger city, which needs a
+    population band the endpoint can send. with_pop is opt-in so the plain
+    string form (and everything that reads it) is unchanged."""
+
+    def test_bands_are_the_ordinary_meanings_of_the_words(self):
+        self.assertEqual(api.city_size(8_000_000), 3)   # major city
+        self.assertEqual(api.city_size(1_000_000), 3)   # on the line
+        self.assertEqual(api.city_size(250_000), 2)     # city
+        self.assertEqual(api.city_size(100_000), 2)     # on the line
+        self.assertEqual(api.city_size(4_000), 1)       # town
+        self.assertEqual(api.city_size(0), 1)
+
+    def test_default_shape_is_still_bare_strings(self):
+        for row in api.complete_cities("lon"):
+            self.assertIsInstance(row, str)
+
+    def test_with_pop_adds_a_band_to_every_row(self):
+        rows = api.complete_cities("lon", with_pop=True)
+        self.assertTrue(rows)
+        for row in rows:
+            self.assertIn(row["size"], (1, 2, 3))
+            self.assertIsInstance(row["name"], str)
+
+    def test_the_band_tracks_the_ranking_already_used(self):
+        # Rows come back most populous first, so the bands can only ever
+        # descend. A row banded higher than the one above it would mean the
+        # size came from somewhere other than the sort key.
+        bands = [r["size"] for r in api.complete_cities("lon", with_pop=True)]
+        self.assertEqual(bands, sorted(bands, reverse=True))
+
+    def test_london_is_a_major_city(self):
+        rows = api.complete_cities("london", with_pop=True)
+        self.assertEqual(rows[0]["name"], "London")
+        self.assertEqual(rows[0]["size"], 3)
+
+
 class CompleteObjects(unittest.TestCase):
     """complete_objects backs the find field's dropdown (GET
     /complete/objects) -- same _catalog_data() /catalog renders from, so a
@@ -257,35 +295,101 @@ class EverySuggestionIsActuallyFindable(unittest.TestCase):
         self.assertIsNone(sky.resolve_target("()", jd, self.LAT, lst))
 
 
-class HeaderFindField(unittest.TestCase):
-    """header_html's find_value param -- None (every page but the chart
-    view) omits the find field entirely; a string (possibly empty, the
-    chart view) renders it pre-filled."""
+class OneSearchBar(unittest.TestCase):
+    """There is exactly one input. The separate find field is gone: it only
+    ever existed on chart pages, so /events and /catalog had nowhere to type
+    an object, and it split one question across two boxes."""
 
-    def test_find_value_none_omits_the_field(self):
-        self.assertNotIn('id="find"', api.header_html("Zurich"))
-        self.assertNotIn('id="findbar"', api.header_html("Zurich"))
+    def test_no_second_field_anywhere(self):
+        for html_out in (api.header_html("Zurich/"),
+                         api.header_html("Zurich/Venus"),
+                         api.header_html("catalog")):
+            self.assertNotIn('id="find"', html_out)
+            self.assertNotIn('id="findbar"', html_out)
+            self.assertEqual(html_out.count('name="q"'), 1)
 
-    def test_find_value_present_renders_the_field(self):
-        html_out = api.header_html("Zurich", find_value="")
-        self.assertIn('id="find"', html_out)
-        self.assertIn('id="find-dropdown"', html_out)
+    def test_the_bar_carries_its_dropdown_and_help_on_every_page(self):
+        for value in ("Zurich", "catalog", "help", "stats"):
+            html_out = api.header_html(value)
+            self.assertIn('id="bar-dropdown"', html_out, value)
+            self.assertIn('id="help-pill"', html_out, value)
+            self.assertIn('id="search-help"', html_out, value)
 
-    def test_find_value_is_prefilled_and_escaped(self):
-        html_out = api.header_html("Zurich", find_value='<script>Venus')
-        self.assertIn('value="&lt;script&gt;Venus"', html_out)
+    def test_copy_pill_is_gone(self):
+        self.assertNotIn('id="copy"', api.header_html("Zurich"))
+
+
+class SearchBarIsThePath(unittest.TestCase):
+    """The bar shows exactly what follows skymap.sh/ and nothing else, so
+    the command it displays is the command it runs. No side-channel saying
+    which place is really meant."""
+
+    def test_no_hidden_place_state(self):
+        # An earlier version carried the place beside the query so the
+        # server could recombine them, which let the bar read
+        # "skymap.sh/venus" while the destination was /Tokyo/Venus.
+        for value in ("Tokyo/", "Tokyo/Venus", "catalog"):
+            html_out = api.header_html(value)
+            self.assertNotIn("data-place", html_out)
+            self.assertNotIn('name="from"', html_out)
+
+    def test_the_value_is_rendered_verbatim(self):
+        for value in ("Tokyo/", "Tokyo/Venus", "Venus", "catalog"):
+            self.assertIn(f'name="q" value="{value}"', api.header_html(value))
+
+    def test_the_value_is_escaped(self):
+        html_out = api.header_html('"><script>')
+        self.assertNotIn("<script>", html_out)
+        self.assertIn("&lt;script&gt;", html_out)
+
+
+class SearchHelpPanel(unittest.TestCase):
+    """The pill's panel, which is the only thing on the page that says the
+    one bar takes all three kinds of thing."""
+
+    def test_names_all_three_kinds(self):
+        for word in ("Locations", "Objects", "Pages"):
+            self.assertIn(f"<dt>{word}</dt>", api.SEARCH_HELP)
+
+    def test_mentions_coordinates_and_links_the_catalog(self):
+        self.assertIn("coordinates", api.SEARCH_HELP)
+        self.assertIn('href="/catalog"', api.SEARCH_HELP)
+
+    def test_lists_exactly_the_pages_the_dropdown_offers(self):
+        # One tuple drives the panel's text and the dropdown's list (spliced
+        # into PAGE as /*PAGES*/), so the advertised set cannot drift from
+        # the offered one.
+        for page in api.SEARCH_PAGES:
+            self.assertIn(page, api.SEARCH_HELP)
+        self.assertIn(json.dumps(list(api.SEARCH_PAGES)), api.PAGE)
+
+    def test_stats_is_not_advertised_but_still_resolves(self):
+        # Deliberately absent until the page is worth pointing at. Typing it
+        # still works -- that is the ?q= redirect's job, not this list's.
+        self.assertNotIn("stats", api.SEARCH_PAGES)
 
 
 class ExploreVariants(unittest.TestCase):
     """EXPLORE (every page but the chart view) keeps its own #find input in
-    the drawer; EXPLORE_DATETIME (the chart view) doesn't, since that page
-    gets a promoted #find in the header instead."""
+    the drawer; EXPLORE_DATETIME (the chart view) doesn't."""
 
     def test_explore_has_a_find_input(self):
         self.assertIn('id="find"', api.EXPLORE)
 
     def test_explore_datetime_has_no_find_input(self):
         self.assertNotIn('id="find"', api.EXPLORE_DATETIME)
+
+    def test_explore_datetime_reads_the_missing_find_null_safely(self):
+        # The chart page used to be guaranteed a #find in the header, so
+        # this read it straight. Merging that field into the search bar took
+        # the guarantee away, and an unguarded .value on a missing element
+        # throws before location.href is reached -- "go" would have done
+        # nothing at all on the one page type that has a chart.
+        self.assertIn("var fEl=document.getElementById('find');",
+                      api.EXPLORE_DATETIME)
+        self.assertIn("var f=fEl?fEl.value.trim():'';", api.EXPLORE_DATETIME)
+        self.assertNotIn("document.getElementById('find').value",
+                         api.EXPLORE_DATETIME)
 
     def test_explore_datetime_still_has_date_time_and_go(self):
         self.assertIn('id="whenDate"', api.EXPLORE_DATETIME)
@@ -543,11 +647,11 @@ class SidePanelLayout(unittest.TestCase):
                         when=dt.datetime(2026, 7, 30, 21, 10), panel=True)
         chart, _zen, prose = api.split_chart_parts(api.compose(r).text)
         self.assertNotIn("closed fist", prose)
-        # The footer ("Follow @habibicode") rides in this block too and is
+        # The footer ("Follow @skymapsh") rides in this block too and is
         # stripped for the browser by strip_duplicate_ui_lines, so what
         # matters here is that the guide itself is a single row.
         body = [l for l in api.strip_ansi(prose).split("\n")
-                if l.strip() and "@habibicode" not in l]
+                if l.strip() and "@skymapsh" not in l]
         self.assertEqual(len(body), 1, body)
         self.assertIn("Venus · ", body[0])
         head = [l for l in api.strip_ansi(chart).split("\n") if l.strip()][0]
@@ -577,7 +681,7 @@ class SidePanelLayout(unittest.TestCase):
 
 
 class StripFooterLine(unittest.TestCase):
-    """strip_footer_line removes _footer's "Follow @habibicode..." line from
+    """strip_footer_line removes _footer's "Follow @skymapsh..." line from
     an already-composed render -- used only by server.py's HTML branch, so
     curl/CLI output (which never calls it) keeps the invitation inline."""
 
@@ -586,8 +690,24 @@ class StripFooterLine(unittest.TestCase):
         # api.strip_footer_line matches on the plain (uncoloured) form. The
         # blank line *before* the footer survives (it was there anyway);
         # only the footer line and the blank *after* it are removed.
-        text = "\n".join(["header", "", "  Follow @habibicode for skymap.sh updates", ""])
+        text = "\n".join(["header", "", "  Follow @skymapsh for skymap.sh updates", ""])
         self.assertEqual(api.strip_footer_line(text), "header\n")
+
+    def test_matches_after_the_prose_indent_has_been_stripped(self):
+        # The object page takes the chart's two-space margin off its prose
+        # (strip_prose_indent) before this runs, so matching the marker with
+        # its indent attached silently missed and the footer came back at
+        # the foot of every object page.
+        text = "\n".join(["header", "", "Follow @skymapsh for skymap.sh updates", ""])
+        self.assertEqual(api.strip_footer_line(text), "header\n")
+
+    def test_the_two_run_in_either_order(self):
+        raw = "\n".join(["  A sentence.", "",
+                         "  Follow @skymapsh for skymap.sh updates", ""])
+        first = api.strip_prose_indent(api.strip_footer_line(raw))
+        second = api.strip_footer_line(api.strip_prose_indent(raw))
+        self.assertEqual(first, second)
+        self.assertNotIn("Follow", first)
 
     def test_leaves_everything_else_untouched(self):
         r = api.Request(place="Zurich", when=dt.datetime(2026, 7, 30, 22, 0))
@@ -839,9 +959,16 @@ class CommandBar(unittest.TestCase):
 
     def test_the_input_itself_has_a_real_label(self):
         # The screen-reader experience should be one labelled text input --
-        # everything else in the bar is aria-hidden (see above).
+        # everything else in the bar is aria-hidden (see above). The label
+        # names all three kinds now that the separate find field is gone;
+        # "City, or lat,lon" described half of what the box accepts.
         html = api.header_html("Geneva")
-        self.assertIn('aria-label="City, or lat,lon"', html)
+        self.assertIn('aria-label="A place, an object, or a page"', html)
+
+    def test_the_input_announces_its_dropdown(self):
+        html = api.header_html("Geneva")
+        self.assertIn('role="combobox"', html)
+        self.assertIn('aria-controls="bar-dropdown"', html)
 
     def test_ios_autocorrect_and_autocapitalize_are_off(self):
         # Mandatory per the spec -- iOS otherwise rewrites a meaningful

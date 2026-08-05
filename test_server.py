@@ -249,7 +249,7 @@ class AnimateBrowserVsTerminal(unittest.TestCase):
     def test_the_resting_hint_says_tab_and_leaves_out_gif(self):
         body = self.client.get("/Ibiza", headers=BROWSER).text
         hint = re.search(r'<p class="kbd-hint">(.*?)</p>', body, re.S).group(1)
-        self.assertIn("<kbd>tab</kbd> place", hint)
+        self.assertIn("<kbd>tab</kbd> search", hint)
         # p still focuses the place field, it just isn't the one advertised.
         self.assertNotIn("<kbd>p</kbd>", hint)
         # Share as a GIF is a labelled button in the drawer already.
@@ -691,13 +691,23 @@ class ClientMixAndFinds(unittest.TestCase):
         self.assertEqual(self._mix()["mobile"], 1)
         self.assertEqual(self._mix()["web"], 0)
 
-    def test_finds_are_counted_per_hour_not_just_by_object(self):
-        # _finds already keeps the leaderboard by name, which cannot answer
-        # "is anyone using this" over time.
-        self.client.get("/Zurich?find=Vega", headers=TERMINAL)
-        self.client.get("/Zurich?find=Altair", headers=TERMINAL)
+    def test_object_lookups_are_counted_per_hour_not_just_by_name(self):
+        # The leaderboard says which object, never whether anyone is still
+        # using it over time.
+        before = server._hour_stat["object"]
+        self.client.get("/Vega", headers=TERMINAL)
+        self.client.get("/Tokyo/Altair", headers=TERMINAL)
         self.client.get("/Zurich", headers=TERMINAL)
-        self.assertEqual(server._hour_stat["find"], 2)
+        self.assertEqual(server._hour_stat["object"] - before, 2)
+
+    def test_a_legacy_find_chart_is_a_chart_not_an_object_lookup(self):
+        # ?find= still renders, but it is a horizon chart with a crosshair
+        # on it. Object pages set r.find to draw that same crosshair, which
+        # is why "has a find" stopped meaning "is a find".
+        before = server._hour_stat["object"], server._stat["view:horizon"]
+        self.client.get("/Zurich?find=Vega", headers=TERMINAL)
+        after = server._hour_stat["object"], server._stat["view:horizon"]
+        self.assertEqual((after[0] - before[0], after[1] - before[1]), (0, 1))
 
     def test_the_new_fields_reach_the_log_only_when_there_is_something(self):
         orig = server.HOURLY_LOG
@@ -705,9 +715,9 @@ class ClientMixAndFinds(unittest.TestCase):
         server.HOURLY_LOG = os.path.join(tempfile.mkdtemp(), "hourly.jsonl")
         hour = dt.datetime.utcnow().strftime("%Y-%m-%dT%H:00")
         server._flush_hour(hour, server.Counter({"requests": 3, "cli": 2,
-                                                 "web": 1, "find": 4}))
+                                                 "web": 1, "object": 4}))
         row = server._read_hourly_history(days=1)[0]
-        self.assertEqual((row["cli"], row["web"], row["find"]), (2, 1, 4))
+        self.assertEqual((row["cli"], row["web"], row["object"]), (2, 1, 4))
         for empty in ("mobile", "json"):
             self.assertNotIn(empty, row)      # never written as a zero
         # but a reader still gets a number for them
@@ -721,12 +731,12 @@ class ClientMixAndFinds(unittest.TestCase):
         for label in ("cli", "web", "mobile", "json"):
             self.assertIn(label, stats)
         self.assertIn("share of requests by client", stats)
-        self.assertIn("FINDS PER HOUR", stats)
-        self.assertIn("FINDS PER DAY", stats)
+        self.assertIn("OBJECT LOOKUPS PER HOUR", stats)
+        self.assertIn("OBJECT LOOKUPS PER DAY", stats)
         for path in ("/stats/hourly", "/stats/daily"):
             body = self.client.get(path, headers=TERMINAL).text
             self.assertNotIn("share of requests by client", body, path)
-            self.assertNotIn("FINDS PER", body, path)
+            self.assertNotIn("OBJECT LOOKUPS PER", body, path)
 
     def test_the_day_charts_all_start_at_the_same_column(self):
         # Each _side_by_side used to pad to its own block's widest line, so
@@ -736,7 +746,7 @@ class ClientMixAndFinds(unittest.TestCase):
                                                      headers=TERMINAL).text)
         cols = {}
         for line in text.splitlines():
-            for marker in ("REQUESTS PER DAY", "FINDS PER DAY"):
+            for marker in ("REQUESTS PER DAY", "OBJECT LOOKUPS PER DAY"):
                 if marker in line:
                     cols[marker] = line.index(marker)
         self.assertEqual(len(cols), 2, cols)
@@ -1828,20 +1838,20 @@ class KeyboardShortcuts(unittest.TestCase):
         resp = self.client.get("/Zurich", headers=BROWSER)
         self.assertIn('<p class="kbd-hint">', resp.text)
 
-    def test_hint_and_js_bind_p_and_f_to_the_place_and_find_fields(self):
-        # p/f aren't in KBD (they're unconditional, same as the JS -- no
-        # server-side toggle state involved), so check the hint text and
-        # the keydown handler directly instead.
+    def test_tab_reaches_the_one_search_bar_and_no_letter_duplicates_it(self):
+        # Not in KBD (unconditional, same as the JS -- no server-side toggle
+        # state involved), so check the hint text and the keydown handler
+        # directly instead.
         resp = self.client.get("/Zurich", headers=BROWSER)
-        # The hint advertises tab (the one people try first); p still works
-        # and is still bound below, it just isn't what the line spends its
-        # single row of space on.
-        self.assertIn("<kbd>tab</kbd> place", resp.text)
-        self.assertIn("<kbd>f</kbd> find", resp.text)
+        self.assertIn("<kbd>tab</kbd> search", resp.text)
         self.assertIn("e.key==='Tab'", resp.text)
-        self.assertIn("e.key==='f'", resp.text)
-        # "p" was dropped: a single letter that jumps focus into a
-        # text field kills every shortcut pressed after it.
+        self.assertNotIn("<kbd>f</kbd> find", resp.text)
+        # "f" meant "jump to the find field" and there is no find field any
+        # more. It is not re-pointed at the search bar either: that would
+        # spend a scarce single letter on a duplicate of tab.
+        self.assertNotIn("e.key==='f'", resp.text)
+        # "p" was dropped earlier for its own reason: a single letter that
+        # jumps focus into a text field kills every shortcut pressed after it.
         self.assertNotIn("e.key==='p'", resp.text)
         self.assertNotIn("e.key==='/'", resp.text)
 
@@ -2118,12 +2128,13 @@ class WidthLadder(unittest.TestCase):
         for gone in ("applyFit", "computeFit", "location.replace", "var FIT_W"):
             self.assertNotIn(gone, resp.text, gone)
 
-    def test_a_browser_find_is_tallied_once(self):
-        # Was two: the page load, then the auto-fit reload carrying the same
-        # find= through _tally a second time. One find, one count.
-        before = server._stat["requests"], server._hour_stat["find"]
-        self.client.get("/Zurich?find=Venus&t=2026-07-30T23:00", headers=BROWSER)
-        after = server._stat["requests"], server._hour_stat["find"]
+    def test_a_browser_object_page_is_tallied_once(self):
+        # Was two: the page load, then the auto-fit reload going through
+        # _tally a second time. One lookup, one count. The ladder renders
+        # every width in one response now, so there is no second request.
+        before = server._stat["requests"], server._hour_stat["object"]
+        self.client.get("/Zurich/Venus?t=2026-07-30T23:00", headers=BROWSER)
+        after = server._stat["requests"], server._hour_stat["object"]
         self.assertEqual((after[0] - before[0], after[1] - before[1]), (1, 1))
 
     def test_animate_can_read_the_visible_rung_width(self):
@@ -2336,7 +2347,7 @@ class SidePanel(unittest.TestCase):
 
 
 class FollowLineOnlyOnCli(unittest.TestCase):
-    """The "Follow @habibicode..." line stays in curl/plain-text output
+    """The "Follow @skymapsh..." line stays in curl/plain-text output
     (matches the CLI, which shares this same compose() text) but is
     stripped from the browser HTML page -- the header's social icons carry
     that invitation there instead."""
@@ -2348,11 +2359,11 @@ class FollowLineOnlyOnCli(unittest.TestCase):
 
     def test_terminal_output_keeps_the_follow_line(self):
         resp = self.client.get("/Zurich?t=2026-07-30T23:00", headers=TERMINAL)
-        self.assertIn("Follow @habibicode", server.api.strip_ansi(resp.text))
+        self.assertIn("Follow @skymapsh", server.api.strip_ansi(resp.text))
 
     def test_html_page_does_not_have_the_follow_line(self):
         resp = self.client.get("/Zurich?t=2026-07-30T23:00", headers=BROWSER)
-        self.assertNotIn("Follow @habibicode", resp.text)
+        self.assertNotIn("Follow @skymapsh", resp.text)
 
 
 class HeaderSocialIcons(unittest.TestCase):
@@ -2373,7 +2384,7 @@ class HeaderSocialIcons(unittest.TestCase):
         self.assertIn("https://github.com/HabibiCodeCH/skymap-sh", resp.text)
         self.assertIn("https://www.reddit.com/r/skymap/", resp.text)
         self.assertIn("https://bsky.app/profile/skymap.sh", resp.text)
-        self.assertIn("https://x.com/habibicode", resp.text)
+        self.assertIn("https://x.com/skymapsh", resp.text)
         self.assertNotIn("Created by", resp.text)
 
     def test_icons_appear_in_the_requested_order(self):
@@ -2383,7 +2394,7 @@ class HeaderSocialIcons(unittest.TestCase):
             "https://github.com/HabibiCodeCH/skymap-sh",
             "https://www.reddit.com/r/skymap/",
             "https://bsky.app/profile/skymap.sh",
-            "https://x.com/habibicode",
+            "https://x.com/skymapsh",
         )]
         self.assertEqual(positions, sorted(positions))
 
@@ -2423,9 +2434,9 @@ class CatalogPage(unittest.TestCase):
 
 
 class CompleteEndpoint(unittest.TestCase):
-    """GET /complete backs the command bar's ghost completion (SPEC-command-
-    bar.md #4) -- cities.json (~3.9 MB) never ships to the browser, this is
-    the server-side substitute."""
+    """GET /complete backs the search bar's place suggestions -- cities.json
+    (~3.9 MB) never ships to the browser, this is the server-side
+    substitute."""
 
     def setUp(self):
         client_cm = TestClient(server.app)
@@ -2435,8 +2446,14 @@ class CompleteEndpoint(unittest.TestCase):
     def test_returns_ranked_json_matches(self):
         resp = self.client.get("/complete?q=new")
         self.assertEqual(resp.status_code, 200)
-        names = resp.json()
-        self.assertEqual(names[0], "New York")
+        rows = resp.json()
+        self.assertEqual(rows[0]["name"], "New York")
+
+    def test_rows_carry_the_size_band_the_dropdown_draws(self):
+        rows = self.client.get("/complete?q=new").json()
+        self.assertEqual(rows[0]["size"], 3)
+        for row in rows:
+            self.assertIn(row["size"], (1, 2, 3))
 
     def test_missing_q_is_not_an_error(self):
         resp = self.client.get("/complete")
@@ -2493,122 +2510,6 @@ class CompleteObjectsEndpoint(unittest.TestCase):
             self.assertEqual(resp.status_code, 200)
 
 
-class FindFieldWiring(unittest.TestCase):
-    """The promoted find field (next to the command bar, /stats showed find
-    as the second-most-viewed feature after the chart) is chart-page only
-    -- every other page keeps find tucked in the drawer, unchanged."""
-
-    def setUp(self):
-        client_cm = TestClient(server.app)
-        self.client = client_cm.__enter__()
-        self.addCleanup(client_cm.__exit__, None, None, None)
-
-    def test_chart_page_has_a_promoted_find_field(self):
-        resp = self.client.get("/Zurich", headers=BROWSER)
-        self.assertIn('id="findbar"', resp.text)
-        self.assertIn('id="find-dropdown"', resp.text)
-
-    def test_chart_page_find_field_appears_once_not_duplicated(self):
-        # EXPLORE_DATETIME (the drawer's copy on this page) must not also
-        # carry its own #find, or two elements would share the same id.
-        resp = self.client.get("/Zurich", headers=BROWSER)
-        self.assertEqual(resp.text.count('id="find"'), 1)
-
-    def test_chart_page_find_is_prefilled_from_the_query_string(self):
-        resp = self.client.get("/Zurich?find=Venus", headers=BROWSER)
-        self.assertIn('id="find" type="text" value="Venus"', resp.text)
-
-    def test_no_close_x_when_not_actively_searching(self):
-        resp = self.client.get("/Zurich", headers=BROWSER)
-        self.assertNotIn('class="find-close"', resp.text)
-
-    def test_close_x_appears_once_actively_searching(self):
-        resp = self.client.get("/Zurich?find=Venus", headers=BROWSER)
-        self.assertIn('class="find-close"', resp.text)
-
-    def test_close_x_drops_find_but_keeps_the_place(self):
-        resp = self.client.get("/Zurich?find=Venus", headers=BROWSER)
-        href = resp.text.split('class="find-close" href="')[1].split('"')[0]
-        self.assertTrue(href.startswith("/Zurich"))
-        self.assertNotIn("find=", href)
-
-    def test_close_x_preserves_other_params_like_t(self):
-        resp = self.client.get("/Zurich?find=Venus&t=2026-07-30T21:30", headers=BROWSER)
-        href = resp.text.split('class="find-close" href="')[1].split('"')[0]
-        self.assertIn("t=2026-07-30T21", href)
-        self.assertNotIn("find=", href)
-
-    def test_non_chart_pages_keep_find_in_the_drawer_only(self):
-        resp = self.client.get("/catalog", headers=BROWSER)
-        self.assertNotIn('id="findbar"', resp.text)
-        self.assertEqual(resp.text.count('id="find"'), 1)
-
-    def test_fetches_the_object_completion_endpoint(self):
-        resp = self.client.get("/Zurich", headers=BROWSER)
-        self.assertIn("fetch('/complete/objects?q='", resp.text)
-
-    def test_selecting_a_suggestion_submits_the_explore_form(self):
-        resp = self.client.get("/Zurich", headers=BROWSER)
-        self.assertIn("form.requestSubmit()", resp.text)
-
-    def test_f_shortcut_expands_the_collapsed_field_before_focusing(self):
-        resp = self.client.get("/Zurich", headers=BROWSER)
-        f_branch = resp.text.split("e.key==='f'")[1].split("if(e.key==='m')")[0]
-        self.assertIn("findbar.classList.add('expanded')", f_branch)
-        self.assertIn("find.focus()", f_branch)
-
-    def test_escape_in_find_collapses_the_field_and_blurs_in_one_press(self):
-        # Used to only close the dropdown (or fall through to the global
-        # handler's blur), leaving .expanded on below findbar-collapse-
-        # width -- the box stayed visibly open with no obvious way out.
-        resp = self.client.get("/Zurich", headers=BROWSER)
-        # Two IIFEs handle 'Escape' -- the global keyboard-shortcuts one
-        # (drawer priority) comes first, the find field's own comes last
-        # (see its "Deliberately after the keyboard-shortcuts IIFE" note),
-        # so this is the one that matters here.
-        escape_branch = resp.text.rsplit("e.key==='Escape'){", 1)[1].split("}}", 1)[0]
-        self.assertIn("closeDropdown()", escape_branch)
-        self.assertIn("findbar.classList.remove('expanded')", escape_branch)
-        self.assertIn("findInput.blur()", escape_branch)
-
-
-class GhostCompletionWiring(unittest.TestCase):
-    """The client JS that drives ghost completion is present on every page
-    (same reasoning as the command bar itself -- header_html renders it
-    unconditionally, see CommandBarValue)."""
-
-    def setUp(self):
-        client_cm = TestClient(server.app)
-        self.client = client_cm.__enter__()
-        self.addCleanup(client_cm.__exit__, None, None, None)
-
-    def test_fetches_the_complete_endpoint(self):
-        resp = self.client.get("/Zurich", headers=BROWSER)
-        self.assertIn("fetch('/complete?q='", resp.text)
-
-    def test_debounced_and_aborts_the_in_flight_request(self):
-        resp = self.client.get("/Zurich", headers=BROWSER)
-        self.assertIn("setTimeout(fetchMatches,120)", resp.text)
-        self.assertIn("new AbortController()", resp.text)
-        self.assertIn("completeAbort.abort()", resp.text)
-
-    def test_tab_and_end_of_line_arrow_right_accept(self):
-        resp = self.client.get("/Zurich", headers=BROWSER)
-        self.assertIn("e.key==='Tab'", resp.text)
-        self.assertIn("e.key==='ArrowRight'&&atEnd", resp.text)
-
-    def test_an_exact_match_suppresses_the_ghost(self):
-        # Typing "London" in full used to still ghost-suggest "derry":
-        # the exact match itself fails the c.length>v.length check (nothing
-        # left to add), so the next-longest candidate sharing that prefix
-        # (Londonderry) won instead, and Tab/-> turned a complete, correct
-        # search into the wrong city.
-        resp = self.client.get("/Zurich", headers=BROWSER)
-        complete_fn = resp.text.split("var complete=function(){")[1]
-        complete_fn = complete_fn.split("var completeAbort=null")[0]
-        self.assertIn("fold(c)===fold(v)", complete_fn)
-
-
 class DrawerWiring(unittest.TestCase):
     """The drawer trigger + toggle/outside-click/Escape JS (SPEC-command-
     bar.md #9) is present on every page (see header_html/controls_html), so
@@ -2647,9 +2548,15 @@ class DrawerWiring(unittest.TestCase):
 
     def test_escape_closes_the_drawer_before_blurring_a_focused_field(self):
         resp = self.client.get("/Zurich", headers=BROWSER)
-        escape_branch = resp.text.split("e.key==='Escape'")[1].split("if(tag===")[0]
-        self.assertIn("skymapCloseDrawer", escape_branch)
-        self.assertLess(escape_branch.index("skymapCloseDrawer"),
+        # Anchored on the drawer's own branch rather than "the first Escape
+        # on the page". The search bar now has two Escape handlers of its
+        # own and they come first in source order, which is correct: both
+        # are gated on something being open (the suggestions, the help
+        # panel), so they only act when there is something nearer to close.
+        branches = resp.text.split("e.key==='Escape'")
+        escape_branch = next(b for b in branches if "ae.blur()" in b)
+        self.assertIn("window.skymapCloseDrawer()", escape_branch)
+        self.assertLess(escape_branch.index("window.skymapCloseDrawer()"),
                         escape_branch.index("ae.blur()"))
 
     def test_present_on_non_chart_pages_too(self):
@@ -2703,12 +2610,11 @@ class DrawerWiring(unittest.TestCase):
         self.assertIn("window.skymapCloseDrawer();", resp.text)
 
 
-class CommandBarSubmitDelegation(unittest.TestCase):
-    """Enter in the command bar (SPEC-command-bar.md #7) delegates to the
-    explore form's own submit rather than a second, separately-encoded
-    navigation path -- so it picks up find=/t= too, not just the place, and
-    a visible ghost completion is accepted first (otherwise Enter on "zur"
-    would submit the literal, unresolvable text "zur", not "Zürich")."""
+class CommandBarSubmitGoesToTheTypedPath(unittest.TestCase):
+    """Enter goes to the path the bar is showing. It used to hand the text
+    to the explore form to rebuild a URL from, which was fine while the bar
+    held a bare place name -- once it holds "Tokyo/Venus", a rebuild that
+    never saw the slash turns it back into /Venus."""
 
     def setUp(self):
         client_cm = TestClient(server.app)
@@ -2720,21 +2626,29 @@ class CommandBarSubmitDelegation(unittest.TestCase):
         self.assertIn("bar.addEventListener('submit',function(e){", resp.text)
         self.assertIn("e.preventDefault();", resp.text)
 
-    def test_pending_ghost_is_accepted_before_delegating(self):
+    def test_a_highlighted_suggestion_wins_over_the_typed_text(self):
         resp = self.client.get("/Zurich", headers=BROWSER)
-        self.assertIn("q.value+=ghost.textContent;", resp.text)
+        self.assertIn("if(active>=0&&matches[active]){", resp.text)
+        self.assertIn("location.href=matches[active].href;", resp.text)
 
-    def test_delegates_to_the_explore_form_not_a_second_navigation_path(self):
+    def test_each_segment_is_encoded_separately_so_the_slash_survives(self):
+        # encodeURIComponent on the whole string would turn the one
+        # character doing the work into %2F.
         resp = self.client.get("/Zurich", headers=BROWSER)
-        self.assertIn("exploreForm.requestSubmit()", resp.text)
+        self.assertIn("v.split('/').map(encodeURIComponent).join('/')", resp.text)
+        self.assertNotIn("location.href='/'+encodeURIComponent(q.value);",
+                         resp.text)
 
-    def test_falls_back_to_direct_navigation_when_no_explore_form_exists(self):
-        # Every page server.py renders has one, but the command bar's own
-        # markup (header_html) doesn't require it -- a page reusing just the
-        # bar (e.g. a hand-built static page) must not have Enter silently
-        # do nothing just because #explore isn't there.
+    def test_the_drawer_datetime_still_rides_along(self):
+        # The explore form is no longer delegated to, so the one thing it
+        # still contributed has to be picked up here instead.
         resp = self.client.get("/Zurich", headers=BROWSER)
-        self.assertIn("location.href='/'+encodeURIComponent(q.value);", resp.text)
+        self.assertIn("location.href=toPath(v)+(t?'?t='+encodeURIComponent(t):'');",
+                      resp.text)
+
+    def test_an_empty_bar_goes_home(self):
+        resp = self.client.get("/Zurich", headers=BROWSER)
+        self.assertIn("if(!v){location.href='/';return;}", resp.text)
 
 
 class ExploreFormEmptySubmitGoesHome(unittest.TestCase):
@@ -2772,43 +2686,6 @@ class ExploreFormEmptySubmitGoesHome(unittest.TestCase):
         onsubmit = resp.text.split('onsubmit="', 1)[1].split('">', 1)[0]
         self.assertIn("encodeURIComponent(p)+'/'", onsubmit)
         self.assertNotIn("find=", onsubmit)
-
-
-class CopyButtonWiring(unittest.TestCase):
-    """The copy button (SPEC-command-bar.md #6) copies the *resolved*
-    command -- q.value plus any accepted-but-pending ghost completion --
-    quoted when the place has a space, with a feature-detect that hides the
-    button entirely on http/non-localhost origins where the Clipboard API
-    doesn't exist rather than wiring up a click that would do nothing."""
-
-    def setUp(self):
-        client_cm = TestClient(server.app)
-        self.client = client_cm.__enter__()
-        self.addCleanup(client_cm.__exit__, None, None, None)
-
-    def test_copies_the_resolved_value_including_the_ghost(self):
-        resp = self.client.get("/Zurich", headers=BROWSER)
-        self.assertIn("var place=q.value+ghost.textContent;", resp.text)
-
-    def test_quotes_only_when_the_place_has_a_space(self):
-        resp = self.client.get("/Zurich", headers=BROWSER)
-        self.assertIn("place.includes(' ')", resp.text)
-        self.assertIn("\"'skymap.sh/\"+place+\"'\"", resp.text)
-        self.assertIn("'skymap.sh/'+place", resp.text)
-
-    def test_writes_a_real_curl_command_to_the_clipboard(self):
-        resp = self.client.get("/Zurich", headers=BROWSER)
-        self.assertIn("navigator.clipboard.writeText('curl '+path)", resp.text)
-
-    def test_hides_the_button_when_clipboard_api_is_unavailable(self):
-        resp = self.client.get("/Zurich", headers=BROWSER)
-        self.assertIn("if(!navigator.clipboard){", resp.text)
-        self.assertIn("copyBtn.hidden=true;", resp.text)
-
-    def test_feedback_swaps_the_label_and_restores_it(self):
-        resp = self.client.get("/Zurich", headers=BROWSER)
-        self.assertIn("copyBtn.textContent='✓ copied';", resp.text)
-        self.assertIn("},1400);", resp.text)
 
 
 class CommandBarNoJsFallback(unittest.TestCase):
@@ -2851,16 +2728,17 @@ class CommandBarValue(unittest.TestCase):
         self.client = client_cm.__enter__()
         self.addCleanup(client_cm.__exit__, None, None, None)
 
-    def test_chart_page_shows_the_place_name(self):
+    def test_chart_page_shows_the_place_name_and_a_trailing_slash(self):
         # The real display name is "Zürich" (with the umlaut), not the
-        # ASCII "Zurich" typed in the URL -- the field shows the resolved
-        # name, same as the old #place input always did.
+        # ASCII "Zurich" typed in the URL. The slash is the invitation to
+        # name an object; /Zürich/ and /Zürich are one page, so it costs
+        # nothing when it is never used.
         resp = self.client.get("/Zurich", headers=BROWSER)
-        self.assertIn('value="Zürich"', resp.text)
+        self.assertIn('value="Zürich/"', resp.text)
 
     def test_multi_word_place_shows_its_real_name_not_the_slug(self):
         resp = self.client.get("/New%20York", headers=BROWSER)
-        self.assertIn('value="New York"', resp.text)
+        self.assertIn('value="New York/"', resp.text)
         self.assertNotIn('value="NewYork"', resp.text)
 
     def test_catalog_page_shows_catalog(self):
@@ -3598,7 +3476,7 @@ class CoordinatesRedirectToNearbyCity(unittest.TestCase):
     def test_the_search_bar_shows_the_city_name_after_following_the_redirect(self):
         resp = self.client.get("/46.20,6.15", headers=BROWSER)
         self.assertEqual(resp.status_code, 200)
-        self.assertIn('value="Geneva"', resp.text)
+        self.assertIn('value="Geneva/"', resp.text)
 
 
 class BareDomainGeoRedirectsToNearbyCity(unittest.TestCase):
@@ -3706,6 +3584,68 @@ class OtherPlaceRoutesAlsoRedirectCoordinates(unittest.TestCase):
         self.assertEqual(resp.status_code, 302)
         self.assertEqual(resp.headers["location"],
                          "/Geneva/sphere?t=2026-07-30T23:00")
+
+
+class SearchBarSubmitsAPath(unittest.TestCase):
+    """The bar holds what follows skymap.sh/, slashes and all, so a plain
+    form submit only has to put it back after the slash. This is the
+    scriptless path; with JS the bar navigates to the same URL directly."""
+
+    def setUp(self):
+        client_cm = TestClient(server.app)
+        self.client = client_cm.__enter__()
+        self.addCleanup(client_cm.__exit__, None, None, None)
+
+    def _to(self, qs):
+        return self.client.get(f"/?{qs}", follow_redirects=False,
+                               headers=BROWSER).headers["location"]
+
+    def test_two_segments_stay_two_segments(self):
+        # quote() leaves "/" alone by default. Encoding it would make one
+        # segment called "Tokyo/Venus", which is not a page.
+        self.assertEqual(self._to("q=Tokyo/Venus"), "/Tokyo/Venus")
+
+    def test_a_bare_object_is_still_a_bare_object(self):
+        self.assertEqual(self._to("q=Venus"), "/Venus")
+
+    def test_a_trailing_slash_survives(self):
+        # What a chart page's bar holds before anything is typed after it.
+        self.assertEqual(self._to("q=Tokyo/"), "/Tokyo/")
+
+    def test_a_page_name_is_untouched(self):
+        self.assertEqual(self._to("q=catalog"), "/catalog")
+
+    def test_other_params_survive(self):
+        self.assertIn("t=2026-07-30T23:00",
+                      self._to("q=Tokyo/Venus&t=2026-07-30T23:00"))
+
+    def test_there_is_no_second_mechanism_for_the_place(self):
+        # from= existed briefly and is gone: the path carries the place, so
+        # a parameter that also carried it could only ever disagree.
+        self.assertEqual(self._to("q=Venus&from=Tokyo"), "/Venus?from=Tokyo")
+
+
+class SearchBarPathsResolve(unittest.TestCase):
+    """The URLs the bar builds are real pages, end to end."""
+
+    def setUp(self):
+        client_cm = TestClient(server.app)
+        self.client = client_cm.__enter__()
+        self.addCleanup(client_cm.__exit__, None, None, None)
+
+    def test_every_shape_the_bar_can_hold_is_a_page(self):
+        for path in ("/Tokyo", "/Tokyo/", "/Tokyo/Venus", "/Venus",
+                     "/catalog", "/Tokyo/events"):
+            resp = self.client.get(path, headers=BROWSER)
+            self.assertEqual(resp.status_code, 200, path)
+
+    def test_the_bar_shows_the_path_of_the_page_it_is_on(self):
+        for path, shown in (("/Tokyo", "Tokyo/"),
+                            ("/Tokyo/Venus", "Tokyo/Venus"),
+                            ("/Venus", "Venus"),
+                            ("/catalog", "catalog")):
+            resp = self.client.get(path, headers=BROWSER)
+            self.assertIn(f'name="q" value="{shown}"', resp.text, path)
 
 
 if __name__ == "__main__":

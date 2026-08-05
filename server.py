@@ -91,10 +91,13 @@ from collections import Counter
 STARTED = time.time()
 _stat = Counter()
 _places = Counter()
+# Frozen. This was the "which object" leaderboard back when finding one meant
+# a crosshair on your own chart; objects have their own pages now and _objects
+# below counts them. Nothing increments this any more, but it is still loaded
+# and saved so the historical numbers stay on disk instead of being wiped by
+# the first save after the change. Not shown anywhere.
 _finds = Counter()
-# Which objects get looked up, same shape as _finds and _places. Object pages
-# are their own namespace, so mixing them into _finds would make that
-# leaderboard mean two different things at once.
+# Which objects get looked up, same shape as _places.
 _objects = Counter()
 # Separate from _places -- that one only counts the text/ASCII route (via
 # _tally(), which sphere_page() never calls), so which cities people want
@@ -233,10 +236,10 @@ def _flush_hour(hour_key, hstat):
     # never trimmed is a cost with no reader.
     if hstat["notfound"]:
         row["notfound"] = hstat["notfound"]
-    # Same rule for the client mix and the find count: written only when
-    # there is something to say, so a quiet hour stays one short line in a
-    # file that is never trimmed.
-    for k in CLIENTS + ("find",):
+    # Same rule for the client mix and the object-lookup count: written only
+    # when there is something to say, so a quiet hour stays one short line in
+    # a file that is never trimmed.
+    for k in CLIENTS + ("object",):
         if hstat[k]:
             row[k] = hstat[k]
     top_ref = _top_hour_referrers(hstat)
@@ -287,7 +290,7 @@ def _hourly_rows(days):
                             hit=_hour_stat["hit"], miss=_hour_stat["miss"],
                             day=_hour_stat["day"], night=_hour_stat["night"],
                             notfound=_hour_stat["notfound"],
-                            find=_hour_stat["find"],
+                            object=_hour_stat["object"],
                             **{k: _hour_stat[k] for k in CLIENTS},
                             top_referrers=_top_hour_referrers(_hour_stat))]
     return rows
@@ -322,7 +325,7 @@ CLIENTS = ("cli", "web", "mobile", "json")
 # it slightly wrong. Kept separate, the header's running total reconciles
 # exactly: its request count is the log's requests plus its notfounds.
 _ZERO_FILL = ("requests", "hit", "miss", "day", "night", "notfound",
-              "cli", "web", "mobile", "json", "find")
+              "cli", "web", "mobile", "json", "object")
 
 
 def _merge_hour_rows(rows):
@@ -630,24 +633,27 @@ def _client_mix_block(entries, cols=CHART_COLS, width=1, legend=True):
 
 def _finds_block(entries, unit, cols=CHART_COLS, width=1, tick_every=None,
                  tick_for=None, rows=FINDS_ROWS):
-    """How many charts were asked to point at something, over the window.
+    """How many objects were looked up, over the window.
 
     Counts, not a percentage, so this is a small bar chart rather than a
-    sparkline -- "six finds this hour" is the number worth reading, and a
+    sparkline -- "six lookups this hour" is the number worth reading, and a
     share of requests would just track traffic. Short on purpose: it sits
     under two full-height charts already."""
     groups, per = _chunks(entries, cols // width)
-    vals = [sum(e["find"] for e in g) for g in groups]
+    # Either key: rows written before object pages replaced "find" carry
+    # the same quantity under the old name, so reading both keeps one
+    # continuous series instead of a cliff on the day this shipped.
+    vals = [sum(e.get("object", e.get("find", 0)) for e in g) for g in groups]
     total = sum(vals)
     bucket = f"{per} {unit}s" if per > 1 else unit
     tick = tick_every(per) if tick_every else max(5, -(-6 // width))
     tick_of = tick_for(per)
-    L = [f"finds per {bucket}".upper(), ""]
+    L = [f"object lookups per {bucket}".upper(), ""]
     L += _bar_chart(vals, lambda i: tick_of(groups[i][0]), rows=rows,
                     width=width, tick=tick)
     gut = " " * (CHART_PAD + 2)
-    L.append(f"{gut}{total:,} find(s) in this window" if total
-             else f"{gut}no finds in this window")
+    L.append(f"{gut}{total:,} lookup(s) in this window" if total
+             else f"{gut}no lookups in this window")
     return L
 
 
@@ -937,7 +943,7 @@ def _referrer_domain(request: Req):
 
 
 def _tally(r, daytime, hit, mode, status, data, colour=True, referrer=None,
-           mobile=False):
+           mobile=False, obj=None):
     _roll_hour()
     _stat["requests"] += 1
     _stat["hit" if hit else "miss"] += 1
@@ -956,14 +962,18 @@ def _tally(r, daytime, hit, mode, status, data, colour=True, referrer=None,
                else "mobile"] += 1
     if mobile:
         _stat["ua:mobile"] += 1
-    # Finds per hour: how many charts were asked to point at something,
-    # regardless of what. _finds already keeps the leaderboard by object,
-    # which cannot answer "is anyone using this" over time.
-    if r.find:
-        _hour_stat["find"] += 1
+    # Object lookups per hour: the leaderboard says which object, never
+    # whether anyone is still using it over time.
+    #
+    # Keyed on obj, not on r.find. Object pages set r.find to draw their
+    # crosshair, so "has a find" stopped meaning "is a find" the moment
+    # objects got pages of their own -- one lookup was landing in a find
+    # counter, an object counter and two view counters at once.
+    if obj:
+        _hour_stat["object"] += 1
     if status != 200:
         _stat[f"status:{status}"] += 1
-    _stat["view:find" if r.find else
+    _stat["view:object" if obj else
           f"view:{'facing' if r.facing else r.view}"] += 1
     # ISS is shown to everyone now, so this counts something more useful than
     # "asked for it": how often a visitor's chart actually included a real pass.
@@ -1016,17 +1026,18 @@ def _tally(r, daytime, hit, mode, status, data, colour=True, referrer=None,
     # then a flashed dot settles to white because the cell the heat is
     # counted against isn't the cell that flashed.
     _geo_recent.append((time.time(), lat, lon))
-    if r.find:
-        _finds[r.find.strip().title()[:40]] += 1
+    # _finds is no longer written to. It was the "which object" leaderboard
+    # from when finding one meant a crosshair on your own chart; an object
+    # is its own page now, _objects counts it, and every object page was
+    # landing in both. The counter is still loaded and saved so the
+    # historical numbers survive on disk rather than being erased by the
+    # first save after this change.
     if referrer:
         _referrers[referrer] += 1
         _hour_stat[f"ref:{referrer}"] += 1
     if len(_places) > _TOP_KEEP:
         for k, _v in _places.most_common()[_TOP_KEEP:]:
             del _places[k]
-    if len(_finds) > _TOP_KEEP:
-        for k, _v in _finds.most_common()[_TOP_KEEP:]:
-            del _finds[k]
     if len(_objects) > _TOP_KEEP:
         for k, _v in _objects.most_common()[_TOP_KEEP:]:
             del _objects[k]
@@ -1118,7 +1129,11 @@ def stats_text(n=50, map_slot=False):
         L.append(f"  {'png':12} {_stat['png']:>8,}")
         L.append("")
     L.append("views")
-    for k in sorted(k for k in _stat if k.startswith("view:")):
+    # view:find keeps its historical total in _stat (and on disk) but is no
+    # longer written to, so it is skipped here: a line that can only ever
+    # show the same number again reads as a stuck counter, not as history.
+    for k in sorted(k for k in _stat if k.startswith("view:")
+                    and k != "view:find"):
         L.append(f"  {k[5:]:12} {_stat[k]:>8,}")
     if _stat["iss"]:
         L.append(f"  {'iss':12} {_stat['iss']:>8,}")
@@ -1201,11 +1216,9 @@ def stats_text(n=50, map_slot=False):
     L.append(f"top places ({len(_places):,} distinct)")
     for name, c in _places.most_common(n):
         L.append(f"  {name[:28]:28} {c:>8,}")
-    # The find leaderboard moved to /stats/objects, which is the same
-    # question asked properly: object pages and ?find= are two ways of
-    # reaching the same thing, and listing them separately here answered
-    # "which object" twice with two different numbers. The per-hour find
-    # CHART stays -- that answers "is anyone using it", which no list does.
+    # The "which object" leaderboard lives on /stats/objects. The per-hour
+    # chart stays here -- that answers "is anyone still using it", which no
+    # leaderboard does.
     if _referrers:
         L.append("")
         L.append(f"top referrers ({len(_referrers):,} distinct)")
@@ -1231,14 +1244,17 @@ def stats_json(n=50):
                     golden_shown=_stat["golden:shown"],
                     golden_off=_stat["golden:off"],
                     top_teased=dict(_events_teased.most_common(n))),
-        views={k[5:]: v for k, v in _stat.items() if k.startswith("view:")},
+        views={k[5:]: v for k, v in _stat.items()
+               if k.startswith("view:") and k != "view:find"},
         pages={k[5:]: v for k, v in _stat.items() if k.startswith("page:")},
         modes={k[5:]: v for k, v in _stat.items() if k.startswith("mode:")},
         errors={k[7:]: v for k, v in _stat.items() if k.startswith("status:")},
         params={k[6:]: v for k, v in _stat.items() if k.startswith("param:")},
-        places_distinct=len(_places), finds_distinct=len(_finds),
+        places_distinct=len(_places),
         top_places=dict(_places.most_common(n)),
-        top_finds=dict(_finds.most_common(n)),
+        # No top_finds: it was the same leaderboard as top_objects, fed by
+        # the same requests, and is frozen now.
+        objects_distinct=len(_objects),
         top_objects=dict(_objects.most_common(n)),
         referrers_distinct=len(_referrers),
         top_referrers=dict(_referrers.most_common(n)),
@@ -2055,13 +2071,11 @@ def _respond(request: Req, place: str | None):
             # the g key exists exactly where the quadrant keys do not.
             kbd["golden"] = api._golden_toggle_url(r)
         controls = api.controls_html(explore, animate_btn, quadrant_btn, sphere_btn, extra)
-        # _toggle_qs(r) already drops find= (documented, matches the
-        # quadrant button/d shortcut) -- None rather than "" when there's
-        # no active search, so header_html knows not to render an X next
-        # to an empty, not-yet-searched field.
-        find_close_url = f"/{r.place.slug}{api._toggle_qs(r)}" if r.find else None
-        header = api.header_html(r.place.name, find_value=r.find or "",
-                                 find_close_url=find_close_url)
+        # Trailing slash: the bar is a path, and on a chart the next segment
+        # is the invitation. Typing after it searches objects, so "Tokyo/"
+        # then "ven" reads as the URL it will go to. /Tokyo/ and /Tokyo are
+        # the same page, so the slash costs nothing if it is never used.
+        header = api.header_html(f"{r.place.name}/")
         # The width ladder applies to any plain horizon panorama, find=
         # included -- find draws the full panorama now, not a crop, so it
         # goes through the same _effective_width(r) as the ordinary view
@@ -2281,14 +2295,19 @@ def demo_animate_gif():
 
 @app.get("/complete")
 def complete(request: Req):
-    """Command-bar ghost completion (SPEC-command-bar.md #4) -- up to 8
-    canonical city names starting with ?q=, most populous first. cities.json
-    is ~3.9 MB and never goes to the browser; this is the server-side
+    """The search bar's place suggestions -- up to 8 canonical city names
+    starting with ?q=, most populous first, each with a 1/2/3 size band so
+    the dropdown can show a bigger dot for a bigger city. cities.json is
+    ~3.9 MB and never goes to the browser; this is the server-side
     substitute. Aggressively cached (completions are static data and should
     never reach origin twice for the same prefix) and prefix-capped, so a
-    pathological ?q= can't turn this into a scanning oracle."""
+    pathological ?q= can't turn this into a scanning oracle.
+
+    The rows used to be bare strings. The cache here runs a week deep, so
+    for a week after a deploy some browsers still get the old shape; the
+    dropdown script reads either, and an old row simply gets no dot."""
     q = request.query_params.get("q", "")[:api.COMPLETE_PREFIX_CAP]
-    return JSONResponse(api.complete_cities(q),
+    return JSONResponse(api.complete_cities(q, with_pop=True),
                         headers={"Cache-Control": "public, max-age=86400, "
                                                   "s-maxage=604800, immutable"})
 
@@ -2459,40 +2478,32 @@ def stats_live(request: Req):
 def stats_objects_text(n=60):
     """Which objects people actually look up.
 
-    Object pages and ?find= are two routes to the same question, so both are
-    counted here rather than kept as separate leaderboards that disagree.
+    One column, one number. This used to print page and find side by side
+    and sum them into a "total" -- but an object page incremented both, so
+    the total was roughly double the truth and the two columns were the
+    same measurement printed twice. Finding an object means opening its
+    page now; there is no second route left to keep a second column for.
     """
     total_obj = sum(_objects.values())
-    total_find = sum(_finds.values())
     L = [f"skymap.sh -- objects",
          "",
          f"object pages served   {total_obj:>10,}   {len(_objects):,} distinct",
-         f"?find= on a chart     {total_find:>10,}   {len(_finds):,} distinct",
          ""]
-    merged = Counter()
-    merged.update(_objects)
-    merged.update(_finds)
-    if not merged:
+    if not _objects:
         L.append("nothing looked up yet")
         return "\n".join(L) + "\n"
-    L.append(f"{'object':<30}{'page':>8}{'find':>8}{'total':>9}")
-    L.append("-" * 55)
-    for name, c in merged.most_common(n):
-        L.append(f"{name[:30]:<30}{_objects.get(name, 0):>8,}"
-                 f"{_finds.get(name, 0):>8,}{c:>9,}")
+    L.append(f"{'object':<34}{'views':>9}")
+    L.append("-" * 43)
+    for name, c in _objects.most_common(n):
+        L.append(f"{name[:34]:<34}{c:>9,}")
     return "\n".join(L) + "\n"
 
 
 def stats_objects_json(n=200):
-    merged = Counter()
-    merged.update(_objects)
-    merged.update(_finds)
     return dict(
-        object_pages=sum(_objects.values()), finds=sum(_finds.values()),
-        distinct=len(merged),
-        top=[dict(name=nm, pages=_objects.get(nm, 0), finds=_finds.get(nm, 0),
-                  total=c)
-             for nm, c in merged.most_common(n)])
+        object_pages=sum(_objects.values()),
+        distinct=len(_objects),
+        top=[dict(name=nm, views=c) for nm, c in _objects.most_common(n)])
 
 
 @app.get("/stats/objects", response_class=PlainTextResponse)
@@ -2992,11 +3003,18 @@ def _mobile_sphere_redirect(request, place):
 def root(request: Req):
     q = request.query_params.get("q", "").strip()
     if q:
-        # The command bar (header_html/PAGE's script) is a real <form
+        # The search bar (header_html/PAGE's script) is a real <form
         # method="get" action="/">, so pressing Enter works with no JS at
         # all -- it just lands here first and gets bounced on to the real
-        # place URL, one redirect heavier than the JS-driven version but
+        # URL, one redirect heavier than the scripted version but
         # functionally identical.
+        #
+        # quote() leaves "/" alone by default, which is the whole point: the
+        # bar holds a path, so "Tokyo/Venus" arrives here as one string and
+        # has to stay two segments. There is no separate "which place was I
+        # on" parameter to recombine -- an earlier version had one, and it
+        # let the bar read skymap.sh/venus while the destination was
+        # /Tokyo/Venus.
         rest = [f"{k}={v}" for k, v in request.query_params.items() if k != "q"]
         qs = f"?{'&'.join(rest)}" if rest else ""
         return RedirectResponse(f"/{quote(q)}{qs}", status_code=302)
@@ -3020,8 +3038,8 @@ def _respond_object(request: Req, place: str | None, canonical: str):
     r.find = canonical
     res, daytime, hit = _cached_object(r, canonical)
     _tally(r, daytime, hit, mode, res.status, res.data, colour,
-           referrer=_referrer_domain(request), mobile=_is_mobile(request))
-    _stat["view:object"] += 1
+           referrer=_referrer_domain(request), mobile=_is_mobile(request),
+           obj=canonical)
     _objects[canonical] += 1
     edge = DAY_EDGE if daytime else NIGHT_EDGE
     headers = {"X-Cache": "HIT" if hit else "MISS"}
@@ -3102,7 +3120,10 @@ def _respond_object(request: Req, place: str | None, canonical: str):
                     if _l.strip():
                         _pl = _pl[_j + 1:]
                         break
-                prose = _rendered_obj("\n".join(_pl).strip("\n"))
+                # The margin comes off the text and goes on the box, so a
+                # wrapped line starts where the line above it did.
+                prose = _rendered_obj(
+                    api.strip_prose_indent("\n".join(_pl).strip("\n")))
             rungs.append((cols, panel, _rendered_obj(chart)))
         return HTMLResponse(api.object_html(r, canonical, text, res.data,
                                             place=place, base_url=base_url,

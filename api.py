@@ -10,7 +10,9 @@ import copy, datetime as dt, html, json, math, re, unicodedata
 from urllib.parse import quote
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+import art
 import sky
+import brand
 import facts as facts_table
 import objects
 from sky import (C, paint, julian, gmst_hours, altaz, angsep, compass, moon_glyph,
@@ -143,7 +145,24 @@ COMPLETE_PREFIX_CAP = 24    # matches the client's own cap (SPEC-command-bar.md
                             # endpoint, not just called from our own JS.
 
 
-def complete_cities(prefix, n=8):
+# Population bands for the dropdown's dot. Three, not a continuous scale: the
+# dot is 8px across and nobody reads a size ramp at that size, but "one of
+# these is the big one" lands instantly. The thresholds are the ordinary
+# meanings of the words -- a million is a major city, a hundred thousand is a
+# city, below that is a town -- rather than percentiles of the file, which
+# would shift every time cities.json is rebuilt.
+CITY_BANDS = ((1_000_000, 3), (100_000, 2))
+
+
+def city_size(pop):
+    """1, 2 or 3 for a population: town, city, major city."""
+    for floor, band in CITY_BANDS:
+        if pop >= floor:
+            return band
+    return 1
+
+
+def complete_cities(prefix, n=8, with_pop=False):
     """Up to n canonical city names whose normalized form starts with
     prefix's normalized form, most populous first -- the command bar's
     ghost-completion data source (GET /complete, SPEC-command-bar.md #4).
@@ -165,9 +184,11 @@ def complete_cities(prefix, n=8):
             out.append((-hits[0][6], hits[0][7]))
     out.sort()
     seen, res = set(), []
-    for _pop, name in out:
+    for negpop, name in out:
         if name not in seen:
-            seen.add(name); res.append(name)
+            seen.add(name)
+            res.append({"name": name, "size": city_size(-negpop)}
+                       if with_pop else name)
         if len(res) >= n:
             break
     return res
@@ -561,12 +582,12 @@ class Result:
 # ---------------------------------------------------------------- helpers
 def _footer(p, c):
     return (paint("  Follow ", C.MUTE, c) +
-            paint("@habibicode", "\033[38;5;117m", c) +
-            paint(" for skymap.sh updates", C.MUTE, c))
+            paint(brand.AT_HANDLE, "\033[38;5;117m", c) +
+            paint(f" for {brand.SITE} updates", C.MUTE, c))
 
 
 def strip_footer_line(text):
-    """Removes _footer's "Follow @habibicode..." line from an already-
+    """Removes _footer's "Follow @skymapsh..." line from an already-
     composed render -- used only by server.py's HTML branch. compose()'s
     output is cached once and reused for every output mode (plain-text,
     JSON, HTML, PNG -- see server.py's _cached docstring), so this can't
@@ -574,11 +595,18 @@ def strip_footer_line(text):
     it here, after the shared render, keeps curl/CLI output unchanged and
     only touches what the browser actually receives. The header's nav row
     carries the same invitation as icon links instead (see header_html)."""
-    marker = _footer(None, False)
+    # Compared with the indentation stripped off both sides, not exactly.
+    # _footer writes the line with the chart's two-space left margin, and
+    # this used to match on that whole string -- so once the object page
+    # started taking that margin off its prose (strip_prose_indent, which
+    # runs before this on that one route) the marker silently stopped
+    # matching and the footer reappeared at the bottom of every object page.
+    # The indent is layout; the sentence is the thing being matched.
+    marker = _footer(None, False).strip()
     lines = text.split("\n")
     out, skip_blank = [], False
     for line in lines:
-        if strip_ansi(line) == marker:
+        if strip_ansi(line).strip() == marker:
             skip_blank = True
             continue
         if skip_blank and line == "":
@@ -993,6 +1021,40 @@ def object_facts(tgt, r, canonical, shown_utc=None):
 
     if tgt.get("kind") == "planet":
         out["planet"] = objects.planet_facts(tgt["name"], jd, p.lat, lst)
+        # The four dots in a line that are somewhere else the next night.
+        if tgt["name"] == "Jupiter":
+            out["moons_tonight"] = objects.galilean_line(jd)
+
+    if tgt.get("kind") == "moon":
+        out["moon"] = objects.moon_facts(jd)
+        mo = sky.moon(jd)
+        out["illuminated"] = round(mo["illum"], 3)
+        # Which limb the Sun is on. Past full the Moon is lit from the other
+        # side, and a drawing that ignores that shows a waning Moon as a
+        # waxing one -- a mirror image of the thing in the sky.
+        out["waning"] = mo["age"] > 180
+
+    # Where the body's axis points, for the drawing. Both numbers come from
+    # the same IAU pole table: how far the pole leans towards us (which tips
+    # the belts and opens the rings) and where it points on the sky (which
+    # turns the whole planet on screen).
+    if tgt.get("kind") in ("planet", "sun", "moon"):
+        try:
+            ra, dec = objects._body_radec(tgt["name"], jd)
+            geo = objects.pole_geometry(tgt["name"], {"ra": ra, "dec": dec})
+            if geo:
+                out["pole_b"], out["pole_pa"] = geo
+        except Exception:                                   # noqa: BLE001
+            pass
+
+    # How dark it is where the reader is standing, which is the other half of
+    # whether a faint thing is findable at all. sky_brightness() already
+    # estimates it from the light-pollution model the chart uses.
+    if tgt.get("kind") not in ("sun", "moon", "planet"):
+        try:
+            out["bortle"] = sky_brightness(p.lat, p.lon)[1]
+        except Exception:                                   # noqa: BLE001
+            pass
 
     if tgt.get("kind") == "star":
         hr = next((s["hr"] for s in sky._load("stars.json")
@@ -1047,7 +1109,7 @@ def object_facts(tgt, r, canonical, shown_utc=None):
     if tgt.get("kind") not in ("planet", "moon", "sun", "radiant"):
         mag = (objects.dso_magnitude(tgt["name"])
                if tgt.get("kind") not in ("star", "asterism") else tgt.get("mag"))
-        need = objects.what_you_need(mag)
+        need = objects.what_you_need(mag, out.get("bortle"))
         if need:
             out["need"] = need
 
@@ -1194,12 +1256,38 @@ def object_prose(facts, tgt, r, width=76):
             L.append("It is retrograde at the moment, drifting westwards "
                      "against the stars.")
 
+    if facts.get("moons_tonight"):
+        L.append(f"Its four big moons tonight: {facts['moons_tonight']}. "
+                 f"Binoculars will show them, and they will have moved by "
+                 f"tomorrow night.")
+
+    mo_f = facts.get("moon") or {}
+    if mo_f.get("distance_km"):
+        s2 = (f"It is {mo_f['distance_km']:,} km away, "
+              f"{mo_f['light_seconds']} light-seconds, and "
+              f"{mo_f['apparent_arcmin']:.0f} arcminutes across")
+        if mo_f.get("extreme"):
+            s2 += f", {mo_f['extreme']}"
+        L.append(s2 + ".")
+
     if facts.get("size_arcmin"):
         s = facts["size_arcmin"]
         moons = s["maj"] / 31.0
         rel = (f", about {moons:.0f} times the width of the full Moon" if moons >= 2
                else f", roughly {moons:.1f} Moon-widths" if moons >= 0.5 else "")
         L.append(f"It spans {s['maj']:g} arcminutes{rel}.")
+
+    b_here = facts.get("bortle")
+    if b_here and facts.get("need"):
+        # "You need binoculars" is half an answer without "and your sky is
+        # Bortle 8", which is why people buy binoculars and still see
+        # nothing. The estimate comes from the same light-pollution model the
+        # chart dims the Milky Way with.
+        how = ("genuinely dark" if b_here <= 3 else
+               "suburban" if b_here <= 5 else
+               "bright" if b_here <= 7 else "inner-city")
+        L.append(f"Your sky here is about Bortle {b_here}, {how}, "
+                 f"so for this you want {facts['need']}.")
 
     # Only worth saying when the Moon is both bright and actually near it.
     # A full Moon 145 degrees away is not what stops you seeing something.
@@ -1222,7 +1310,7 @@ def object_prose(facts, tgt, r, width=76):
         elif moon < 0.15:
             L.append("Almost no Moon that night to spoil it.")
     elif b:
-        L.append(f"Best this year: {b['date']}, when it reaches "
+        L.append(f"Best in the next 12 months: {b['date']}, when it reaches "
                  f"{b['transit_alt']:.0f}° with {b['dark_hours']:.1f} hours of "
                  f"darkness and the Moon {b['moon_illum']:.0%} lit.")
 
@@ -1256,7 +1344,14 @@ def object_infobox(facts, tgt, width=76):
         if value:
             rows.append((label, str(value)))
 
-    add("Type", _KIND_WORD.get(facts.get("kind"), "").capitalize() or None)
+    # For a star, the words rather than the bare kind: "Red supergiant" says
+    # something, "Star" says only what the page already said in its heading.
+    # This is the same sentence the social card leads with, which is where it
+    # was already earning its place -- it just never made it onto the page
+    # the card links to.
+    star_kind = (facts.get("star") or {}).get("description")
+    add("Type", (star_kind.capitalize() if star_kind else
+                 _KIND_WORD.get(facts.get("kind"), "").capitalize() or None))
     add("Symbol", PLANET_SYMBOLS.get(facts.get("object")))
     # Same reasoning as the intro line: durable for a star, live for a planet.
     if not _MOVES_AGAINST_THE_SKY(facts):
@@ -1720,7 +1815,10 @@ def compose_object(r, canonical):
         sub_bits.append("Next best sighting opportunity")
     if b:
         when = dt.datetime.fromisoformat(b["date"])
-        label = "peaks" if is_shower else "best this year"
+        # "this year" was wrong: best_this_year searches 365 days from
+        # today, not to the end of December. In August it was routinely
+        # naming a date the following February and calling it this year.
+        label = "peaks" if is_shower else "best in the next 12 months"
         sub_bits.append(f"{label} on {when:%-d %B %Y}")
     # Each part is its own sentence, so each starts with a capital.
     sub_bits = [b[0].upper() + b[1:] for b in sub_bits]
@@ -1730,7 +1828,14 @@ def compose_object(r, canonical):
     body = "\n".join(paint("  " + l if l else "", C.LABEL, c)
                      for l in prose.split("\n"))
 
+    # The portrait, between the one-line description and the fact table.
+    # Emitted into the shared text rather than only into the markup, so the
+    # terminal gets it too -- it is characters, which is the whole reason it
+    # is drawn rather than photographed.
+    picture = art.art_for(facts) if c else []
     parts = ["", head, "", intro]
+    if picture:
+        parts += [""] + ["  " + l for l in picture]
     if box:
         parts += ["", box]
     # The find view opens with its own header line ("Zurich 06 Aug 2026,
@@ -1753,6 +1858,8 @@ def compose_object(r, canonical):
     text = "\n".join(parts)
     data = dict(res.data)
     data.update(facts)
+    if picture:
+        data["art"] = picture
     # Carried so the browser can lay the same rows out as real markup rather
     # than re-deriving them, and so ?format=json exposes them too.
     data["infobox"] = [[t, [list(x) for x in r]] for t, r in blocks]
@@ -1906,6 +2013,28 @@ OBJECT_CSS = """
   gap:0 30px;align-items:start;margin-top:2px}
 .obj-static{border-right:1px solid #1c2027;padding-right:24px}
 .obj-static pre,.obj-live pre{overflow-x:auto}
+/* The portrait. line-height is the load-bearing number here: the drawing is
+   built for a cell exactly twice as tall as it is wide (art.CELL), monospace
+   glyphs run about 0.6em, so 1.2 gives that ratio and anything else turns
+   every planet into an ellipse. overflow is hidden rather than scrolled --
+   the art is sized to fit this column, and a scrollbar under it would be a
+   sign something is wrong rather than something to use. */
+.obj-art{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  font-size:11px;line-height:1.2;margin:0;overflow:hidden;
+  font-variant-ligatures:none;-webkit-font-smoothing:none}
+/* A frame, so the portrait reads as a plate rather than as loose characters
+   that happened to land above the text. Flex-centred both ways: the drawing
+   is a fixed 39x15 box whatever the object, so centring it here means every
+   object page puts its picture in exactly the same place and the lede below
+   starts on the same line. */
+.obj-art-frame{display:flex;align-items:center;justify-content:center;
+  border:1px solid #1c2027;border-radius:8px;background:#070a0e;
+  padding:16px 10px;margin:.1rem 0 1.15rem;
+  /* ROWS lines at 11px on a 1.2 line-height, so the plate is the same size
+     for every object even before its drawing loads or if one ever comes
+     back short. Without it the frame takes its height from the art and a
+     shorter drawing would shift everything below it up the page. */
+  min-height:225px;box-sizing:content-box}
 
 /* The lede sentence and the fact rows. Proportional text, not monospace:
    these are sentences and numbers to read, not a drawing to preserve. */
@@ -1931,6 +2060,8 @@ OBJECT_CSS = """
   margin-top:.05rem}
 /* Where the numbers came from. Quiet on purpose: it is a credit, and a
    reader who wants it will look for it at the foot of the facts. */
+
+
 .obj-src{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
   font-style:italic;font-size:11px;line-height:1.45;color:#666e7d;
   margin:1.4rem 0 0;padding-top:.7rem;border-top:1px solid #1c2027}
@@ -2003,6 +2134,33 @@ def _strip_title(text):
     return text
 
 
+# Every fact on these pages comes from a catalogue, a hand-written table or
+# a calculation, and any of the three can be wrong about one object without
+# being wrong in general. A reader who knows Saturn has 274 moons and not 82
+# is the cheapest correction mechanism there is, and the only thing standing
+# between them and telling us is knowing where to say it.
+ISSUE_URL = brand.ISSUES
+
+# Two states in the markup, one shown at a time by CSS. Collapsed it is a
+# chip small enough to sit in the corner without landing on a paragraph;
+# hovered or tabbed to, it says what it is for. The flag is drawn rather
+# than typed: a glyph here would be at the mercy of whichever font the
+# reader's browser reaches for, and the ones that look right on a Mac are
+# the ones that come out as an empty box elsewhere.
+_FLAG_SVG = ('<svg class="obj-feedback-i" viewBox="0 0 16 16" '
+             'aria-hidden="true"><path d="M4 14.5V2M4 2.6h7.4l-1.7 2.6 1.7 '
+             '2.6H4" fill="none" stroke="currentColor" stroke-width="1.3" '
+             'stroke-linejoin="round" stroke-linecap="round"/></svg>')
+
+FEEDBACK_BOX = (
+    f'<a class="obj-feedback" href="{ISSUE_URL}" target="_blank" rel="noopener"'
+    ' title="Wrong or missing information? Open an issue on GitHub">'
+    f'<span class="obj-feedback-chip">{_FLAG_SVG}Bug?</span>'
+    '<span class="obj-feedback-full">'
+    '<span class="obj-feedback-q">Wrong or missing information? Bug?</span>'
+    '<span class="obj-feedback-a">Open an issue on GitHub</span></span></a>')
+
+
 def object_html(r, canonical, text, data, place=None, base_url="",
                 rungs=None, zenith="", prose="", static="", live_head="",
                 live_sub=""):
@@ -2051,8 +2209,19 @@ def object_html(r, canonical, text, data, place=None, base_url="",
         # of it.
         intro_txt = strip_ansi(_first_para(static)).strip()
         src = object_sources(data)
-        static_html = ((f'<p class="obj-lede">{html.escape(intro_txt)}</p>'
-                        if intro_txt else "")
+        # The portrait gets its own <pre> rather than riding along in the
+        # static text, because it is the one thing on this column that must
+        # not reflow: .obj-art pins the line-height the drawing is built for
+        # (see art.CELL), and text set at any other line-height would squash
+        # every circle back into an ellipse.
+        picture = data.get("art") or []
+        art_html = (f'<div class="obj-art-frame">'
+                    f'<pre class="obj-art" aria-hidden="true">'
+                    f'{ansi_to_html(chr(10).join(picture))}</pre></div>'
+                    if picture else "")
+        static_html = (art_html
+                       + (f'<p class="obj-lede">{html.escape(intro_txt)}</p>'
+                          if intro_txt else "")
                        + infobox_html(data.get("infobox"))
                        + (f'<p class="obj-src">{html.escape(src)}</p>'
                           if src else ""))
@@ -2085,7 +2254,11 @@ def object_html(r, canonical, text, data, place=None, base_url="",
     return _object_page_template().format(
         title=html.escape(object_title(data)),
         head_extra=head,
-        header=header_html(r.place.name),
+        # The path of this very page, which is the object on its own or the
+        # object seen from a named place. It used to show r.place.name, so
+        # /Venus read "Zurich" -- the bar named the reader's location on a
+        # page that was not about their location at all.
+        header=header_html(f"{place}/{canonical}" if place else canonical),
         controls=controls_html(EXPLORE),
         wide_class=" w-wide", coming_up_card="",
         kbd_urls="{}", shortcuts_hint="", body=body)
@@ -2287,6 +2460,27 @@ def chart_ladder(rungs):
     return f'<div id="chart-ladder">{blocks}</div>'
 
 
+# A line's leading spaces sit after its colour code, not before it:
+# "\x1b[38;5;250m  It is currently crossing Cancer." -- so the escapes have
+# to be matched and put back, or the whole paragraph loses its colour.
+_PROSE_INDENT = re.compile(r"(?m)^((?:\x1b\[[0-9;]*m)*)[ ]{1,2}")
+
+
+def strip_prose_indent(text):
+    """Take the chart's left margin out of the prose text.
+
+    Every prose line is written with the same two-space margin the chart
+    has, which is right in a terminal: the block is one drawing there and
+    nothing reflows. In a browser it wraps, and a wrapped line gets no
+    leading spaces of its own, so the second line of a paragraph sat two
+    characters left of the first. Removing the spaces here and setting the
+    same distance as padding on the box (see chart_ladder_css) gives every
+    line, wrapped or not, one left edge.
+
+    Terminal output does not come through here and is unchanged."""
+    return _PROSE_INDENT.sub(r"\1", text)
+
+
 def chart_layout(rungs, zenith, prose):
     """The ladder with the inset floated over it and the prose pinned below.
 
@@ -2376,9 +2570,16 @@ def chart_ladder_css():
         # under a lede and a fact list that are already set that way, and a
         # second typeface for one block read as a different document.
         f" #chart-prose{{font-size:{CHART_FONT_PX}px;margin:6px 0 0}}",
+        # The indent is padding, not two spaces of text (see
+        # strip_prose_indent). A wrapped line has no leading spaces of its
+        # own, so with the margin inside the text the first line of a
+        # paragraph started at column 2 and every line under it restarted at
+        # column 0. As padding it applies to the whole box, so all lines
+        # share one left edge. 2ch is the width of two characters in this
+        # element's own font, which is exactly what the spaces were.
         " .obj-live #chart-prose{font-family:ui-monospace,SFMono-Regular,"
         "Menlo,Consolas,monospace;font-size:13.5px;line-height:1.5;"
-        "color:#adb6c4;margin:10px 0 0;white-space:pre-wrap}",
+        "color:#adb6c4;margin:10px 0 0;white-space:pre-wrap;padding-left:2ch}",
     ]
     return "\n".join(lines)
 
@@ -3913,10 +4114,15 @@ def events_html(r, days=EVENTS_WINDOW_DAYS):
         else:
             out.append(span)
     out.append("")
+    # The linked twin of _footer, for the events page. Same handle, and the
+    # same Bluesky profile the header's icon row points at: the old one was
+    # a personal account, which reads oddly under a sentence that now names
+    # the project's.
     out.append(f'<span style="color:{_ansi_hex(C.MUTE)}">  Follow </span>'
-               f'<a href="https://bsky.app/profile/habibicode.bsky.social" '
-               f'target="_blank" rel="noopener">@habibicode</a>'
-               f'<span style="color:{_ansi_hex(C.MUTE)}"> for skymap.sh updates</span>')
+               f'<a href="{brand.BLUESKY}" '
+               f'target="_blank" rel="noopener">{brand.AT_HANDLE}</a>'
+               f'<span style="color:{_ansi_hex(C.MUTE)}">'
+               f' for {brand.SITE} updates</span>')
     return "\n".join(out)
 
 
@@ -5029,15 +5235,49 @@ def _social_icon(href, label, path):
 
 SOCIAL_ICONS = (
     '<span class="social-icons">'
-    + _social_icon("https://github.com/HabibiCodeCH/skymap-sh", "See the repo on GitHub", _GITHUB_PATH)
-    + _social_icon("https://www.reddit.com/r/skymap/", "Join r/skymap on Reddit", _REDDIT_PATH)
-    + _social_icon("https://bsky.app/profile/skymap.sh", "Follow on Bluesky", _BLUESKY_PATH)
-    + _social_icon("https://x.com/habibicode", "Follow on X", _X_PATH)
+    + _social_icon(brand.GITHUB, "See the repo on GitHub", _GITHUB_PATH)
+    + _social_icon(brand.REDDIT, "Join r/skymap on Reddit", _REDDIT_PATH)
+    + _social_icon(brand.BLUESKY, "Follow on Bluesky", _BLUESKY_PATH)
+    + _social_icon(brand.X, "Follow on X", _X_PATH)
     + '</span>'
 )
 
 
-def header_html(value="", find_value=None, find_close_url=None):
+# What the one bar accepts, spelled out. The bar has always taken all three
+# (a bare ?q= redirect means "catalog" and "Venus" have worked as long as
+# "Zurich" has), but nothing on the page ever said so, and the separate find
+# field implied the opposite: that places went in one box and objects in the
+# other. Two boxes were also two different reaches, and the find one only
+# existed on chart pages, so on /events there was no way to look up an
+# object at all.
+# stats is deliberately absent: typing it still works, it is just not
+# advertised until the page itself is worth pointing at.
+SEARCH_PAGES = ("catalog", "events", "help", "legend")
+
+SEARCH_HELP = (
+    '<div class="search-help" id="search-help" hidden role="dialog" '
+    'aria-label="What you can search for">'
+    '<dl>'
+    '<dt>Locations</dt>'
+    '<dd>cities or coordinates'
+    '<span class="eg">Zurich &middot; 47.37,8.55</span></dd>'
+    '<dt>Objects</dt>'
+    '<dd>planets, stars, deep sky, showers'
+    '<span class="eg">Venus &middot; Vega &middot; M31 &middot; Perseids</span></dd>'
+    '<dt>Pages</dt>'
+    '<dd>' + " &middot; ".join(SEARCH_PAGES) + '</dd>'
+    '</dl>'
+    # The one thing the three rows above cannot show, because it is about
+    # how they combine rather than what any of them is. Written as the path
+    # it produces, since that is literally what the bar will say.
+    '<p class="search-help-slash">A slash puts them together: type '
+    '<b>Tokyo/</b> and then an object to see it from there, like '
+    '<b>Tokyo/Venus</b>.</p>'
+    '<a class="search-help-more" href="/catalog">Browse everything in the '
+    'catalog</a></div>')
+
+
+def header_html(value=""):
     """The command bar + nav, identical on every page -- one function so the
     nav can never drift or reorder between routes the way six separate
     PAGE.format() call sites each re-deciding it independently did. "home"
@@ -5058,60 +5298,53 @@ def header_html(value="", find_value=None, find_close_url=None):
     click-to-focus/ghost-completion behaviour and _respond's ?q= handling
     for the plain-HTML-forms fallback this degrades to without JS.
 
-    find_value=None (the default) omits the find field entirely -- every
-    page except the chart view, which passes r.find or "" here instead of
-    leaving it in the drawer (EXPLORE_DATETIME there has no #find of its
-    own). /stats showed find as the second-most-viewed feature behind the
-    chart itself, right after place -- worth the same prominence as place,
-    not buried behind the drawer toggle.
+    One bar, not two. There used to be a second "find" field beside this one
+    for objects, which split a single question ("where do I type Venus?")
+    across two boxes and only ever appeared on chart pages, so on /events or
+    /catalog there was nowhere to type an object at all.
 
-    find_close_url, when given (server.py only sets it once r.find is
-    actually set -- an active search, not just an empty/placeholder field),
-    renders a small "return to the plain chart" X inside the field itself.
-    Before this there was no direct way back to the ordinary view short of
-    manually clearing the text and resubmitting, or "reset skymap" in the
-    drawer, which also drops the place. Built with _toggle_qs(r), same as
-    every other toggle link -- drops find= (and any span= that was find's
-    own crop window, not facing's), keeps everything else on screen.
+    The bar is the path, and the slash is the whole mechanism. value is
+    always exactly what follows skymap.sh/ for the page being rendered:
+    "Tokyo/" on a chart (the trailing slash is the invitation to name an
+    object), "Tokyo/Venus" on that object seen from there, "catalog" on the
+    catalog. Type after the slash and the suggestions are objects, because
+    that is what a second segment means; type over the whole thing and they
+    are places, objects and pages again.
+
+    That is why there is no separate "which place am I on" state to carry
+    around. An earlier attempt sent the place along beside the query so the
+    server could recombine them, which meant the bar could read
+    "skymap.sh/venus" while the click went to /Tokyo/Venus -- a command bar
+    that shows one command and runs another. Here the text and the
+    destination are the same string.
+
+    ?find= is untouched and still renders a crosshair chart, so links shared
+    before the merge keep working.
 
     The command bar and the nav row share one flex row (.header-row) so the
     nav sits inline with it instead of wrapping to a line of its own."""
-    findbar = ""
-    if find_value is not None:
-        find_close = ""
-        if find_value and find_close_url:
-            find_close = (f'<a class="find-close" href="{html.escape(find_close_url)}" '
-                         f'aria-label="Close find mode" title="Close find mode">✕</a>')
-        findbar = (
-            f'<div class="findbar" id="findbar">'
-            f'<button type="button" class="find-trigger" id="find-trigger" '
-            f'aria-label="Find an object" aria-expanded="false" aria-controls="find-field">⌕</button>'
-            f'<span class="find-field" id="find-field">'
-            f'<span class="find-icon" aria-hidden="true">⌕</span>'
-            f'<input id="find" type="text" value="{html.escape(find_value)}" '
-            f'placeholder="Find (Venus, Big Dipper…)" autocomplete="off" '
-            f'role="combobox" aria-expanded="false" aria-controls="find-dropdown" '
-            f'aria-label="Find an object by name">'
-            f'<ul class="find-dropdown" id="find-dropdown" role="listbox" hidden></ul>'
-            f'{find_close}'
-            f'</span></div>')
     return (f'<div class="header-row">'
+            f'<div class="bar-wrap">'
             f'<form class="cmdbar" id="bar" method="get" action="/">'
             f'<span class="prompt" aria-hidden="true">$</span>'
             f'<span class="fixed" aria-hidden="true">'
             f'<span class="curlword">curl </span>skymap.sh/</span>'
             f'<span class="field">'
             f'<input id="q" name="q" value="{html.escape(value)}" '
-            f'aria-label="City, or lat,lon" spellcheck="false" autocapitalize="off" '
+            f'aria-label="A place, an object, or a page" spellcheck="false" '
+            f'autocapitalize="off" role="combobox" aria-expanded="false" '
+            f'aria-controls="bar-dropdown" '
             f'autocorrect="off" autocomplete="off" enterkeyhint="go">'
-            f'<span class="ghosttext" id="ghost" aria-hidden="true"></span>'
             f'<span class="measure" id="measure" aria-hidden="true"></span>'
             f'</span>'
             f'<span class="cursor" id="cur" aria-hidden="true"></span>'
             f'<span class="grow"></span>'
-            f'<button type="button" class="copy" id="copy">⧉ copy</button>'
+            f'<button type="button" class="barpill" id="help-pill" '
+            f'aria-expanded="false" aria-controls="search-help">? help</button>'
             f'</form>'
-            f'{findbar}'
+            f'<ul class="bar-dropdown" id="bar-dropdown" role="listbox" hidden></ul>'
+            f'{SEARCH_HELP}'
+            f'</div>'
             f'<p class="t nav-row"><span>'
             f'<a href="/">home</a> · '
             # Bare /events, not /{place}/events: the nav is the same on every
@@ -5166,6 +5399,41 @@ document.documentElement.classList.add('js');
          vertical scroll anyway. */
       padding:24px 16px 40px;-webkit-font-smoothing:antialiased}}
  .w{{max-width:1200px;margin:0 auto}}
+/* Bottom right, out of the way until wanted. Fixed rather than in the flow
+   so it does not move with the chart, and quiet enough not to compete with
+   it. Hidden when printing, and it steps aside on a narrow screen where a
+   floating box would sit on top of the content. */
+.obj-feedback{{position:fixed;right:18px;bottom:18px;z-index:20;
+  display:block;max-width:none;padding:10px 13px;border-radius:8px;
+  white-space:nowrap;
+  background:rgba(18,21,26,.94);border:1px solid #262c35;
+  font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  font-size:11.5px;line-height:1.4;color:#8b93a3;text-decoration:none;
+  box-shadow:0 3px 14px rgba(0,0,0,.45)}}
+.obj-feedback:hover{{border-color:#3d4757;color:#c9d1d9}}
+.obj-feedback-q{{display:block}}
+.obj-feedback-a{{display:block;color:#8fb6e0;margin-top:2px}}
+.obj-feedback:hover .obj-feedback-a{{color:#b7d4f5}}
+/* Collapsed by default, opened on hover. Gated on a device that HAS a
+   pointer: on a touchscreen the first tap would spend itself opening the
+   box instead of following the link, and the second tap is the one nobody
+   makes. Those get the full box, which they have room for. */
+.obj-feedback-chip{{display:none}}
+@media (hover:hover) and (min-width:901px){{
+  .obj-feedback{{padding:7px 11px}}
+  .obj-feedback-chip{{display:flex;align-items:center;gap:.45em}}
+  .obj-feedback-full{{display:none}}
+  .obj-feedback:hover .obj-feedback-chip,
+  .obj-feedback:focus-visible .obj-feedback-chip{{display:none}}
+  .obj-feedback:hover .obj-feedback-full,
+  .obj-feedback:focus-visible .obj-feedback-full{{display:block}}
+}}
+.obj-feedback-i{{width:11px;height:11px;flex:none;opacity:.85}}
+@media (max-width:900px){{
+  .obj-feedback{{position:static;max-width:none;margin:1.6rem 0 0;
+    box-shadow:none;background:transparent}}
+}}
+@media print{{.obj-feedback{{display:none}}}}
  .w-wide{{max-width:none}}
  pre{{margin:0;font-size:11px;line-height:1.22;overflow-x:auto;font-variant-ligatures:none}}
  /* Bigger than the generic pre{{}} above -- meant to be scoped to the chart
@@ -5273,13 +5541,19 @@ document.documentElement.classList.add('js');
  .cmdbar .field{{display:inline-flex;min-width:0;max-width:100%}}
  .cmdbar input{{background:transparent;border:0;color:#e6edf3;font:inherit;
                padding:0;margin:0;min-width:0;max-width:100%;outline:none}}
- .cmdbar .ghosttext{{color:#3d4451;white-space:pre;pointer-events:none}}
  .cmdbar .measure{{position:absolute;visibility:hidden;white-space:pre;left:-9999px}}
  .cmdbar .grow{{flex:1}}
- .cmdbar .copy{{background:none;border:1px solid #30363d;color:#6e7681;
+ .cmdbar .barpill{{background:none;border:1px solid #30363d;color:#6e7681;
                border-radius:4px;padding:4px 8px;margin-left:10px;
                font:inherit;font-size:12px;cursor:pointer;white-space:nowrap}}
- .cmdbar .copy:hover{{border-color:#7ee787;color:#7ee787}}
+ .cmdbar .barpill:hover,.cmdbar .barpill[aria-expanded="true"]{{
+               border-color:#7ee787;color:#7ee787}}
+ /* The bar, its dropdown and its help panel are one stack: both panels hang
+    off the bottom edge of the bar, so they need a positioning parent that is
+    the bar's width and nothing else's. .header-row cannot be it -- it also
+    holds the nav row, and "100% of that" is the whole page. */
+ .bar-wrap{{position:relative;display:inline-flex;flex-direction:column;
+           min-width:0;max-width:100%}}
  .cursor{{display:inline-block;width:.55em;height:1.15em;margin-left:1px;
          background:#7ee787;vertical-align:-0.2em;
          animation:blink 1.06s step-end infinite}}
@@ -5288,54 +5562,55 @@ document.documentElement.classList.add('js');
  @media (prefers-reduced-motion: reduce){{
    .cursor{{animation:none;opacity:.55}}
  }}
- /* Find field -- promoted out of the drawer and next to the command bar on
-    the chart page only (header_html's find_value param), since /stats
-    showed find as the second-most-viewed feature after the chart itself.
-    Same visual language as .cmdbar (dark box, monospace) but its own
-    element, not fused into the "$ curl ..." line -- it isn't part of that
-    curlable command. Below findbar-collapse-width, .find-field hides and
-    .find-trigger (an icon button) takes its place; clicking it adds
-    .expanded, same show/hide pattern as the drawer trigger. */
- .findbar{{display:inline-flex;align-items:center}}
- .find-trigger{{display:none}}
- /* Explicit height+box-sizing:border-box, matching .cmdbar exactly -- see
-    its comment above. */
- .find-field{{display:inline-flex;align-items:center;position:relative;
-             background:#0d1117;border:1px solid #30363d;border-radius:6px;
-             padding:9px 12px;color:#8b949e;font-size:13px;
-             box-sizing:border-box;height:45px}}
- .find-icon{{color:#6e7681;margin-right:6px}}
- .find-field input{{background:transparent;border:0;color:#e6edf3;font:inherit;
-                    padding:0;margin:0;outline:none;width:210px;max-width:40vw}}
- .find-field input::placeholder{{color:#6e7681}}
- /* Only rendered once find_value is actually set (an active search, not
-    just the empty/placeholder field) -- the one direct way back to the
-    plain chart, same visual language as the coming-up card's own .cu-
-    dismiss. */
- .find-close{{background:none;border:0;color:#6e7681;cursor:pointer;
-             font-size:13px;line-height:1;padding:2px 4px;margin-left:4px;
-             flex-shrink:0;text-decoration:none}}
- .find-close:hover{{color:#c9d1d9}}
- .find-dropdown{{position:absolute;top:100%;left:0;margin:4px 0 0;padding:4px;
+ /* Suggestions under the bar, grouped by kind. The list is the merge of two
+    completion endpoints plus the page names, so a row can be a city, an
+    object or a page and the group heading is the only thing telling them
+    apart -- worth a real heading rather than an icon, since "Venus the
+    planet" and "Venus, Texas" are otherwise the same word twice. */
+ .bar-dropdown{{position:absolute;top:100%;left:0;margin:4px 0 0;padding:4px;
                  background:#0d1117;border:1px solid #30363d;border-radius:6px;
-                 min-width:220px;max-width:320px;max-height:280px;
+                 min-width:min(320px,100%);max-width:100%;max-height:300px;
                  overflow-y:auto;z-index:30;list-style:none}}
- .find-dropdown[hidden]{{display:none}}
- .find-option{{display:flex;align-items:center;gap:8px;padding:6px 8px;
+ .bar-dropdown[hidden]{{display:none}}
+ .bar-group{{padding:6px 8px 2px;font-size:10.5px;letter-spacing:.09em;
+            text-transform:uppercase;color:#6e7681}}
+ .bar-option{{display:flex;align-items:center;gap:8px;padding:6px 8px;
               border-radius:4px;cursor:pointer;font-size:13px;color:#c9d1d9}}
- .find-option .glyph{{width:1.2em;text-align:center;flex-shrink:0}}
- .find-option:hover,.find-option.active{{background:#1c2128}}
- @media (max-width:700px){{
-   .find-trigger{{display:inline-flex;align-items:center;justify-content:center;
-                 background:#0d1117;border:1px solid #30363d;color:#8b949e;
-                 border-radius:4px;width:28px;height:28px;margin-left:8px;
-                 font-size:14px;line-height:1;cursor:pointer}}
-   .find-trigger:hover{{border-color:#8b949e}}
-   .find-field{{display:none;flex-basis:100%;margin-top:8px}}
-   .findbar{{flex-wrap:wrap}}
-   .findbar.expanded .find-field{{display:inline-flex}}
-   .find-field input{{max-width:none;flex:1}}
- }}
+ .bar-option .glyph{{width:1.2em;text-align:center;flex-shrink:0;
+                    color:#6e7681}}
+ /* Town, city, major city. Line-height is pinned so the three sizes sit on
+    one baseline and the rows stay the same height -- without it a bigger
+    dot makes its own row taller and the list steps as you scroll it. */
+ .bar-option .glyph.sz1{{font-size:7px;line-height:1.2em}}
+ .bar-option .glyph.sz2{{font-size:10px;line-height:1.2em}}
+ .bar-option .glyph.sz3{{font-size:13px;line-height:1.2em;color:#8b949e}}
+ .bar-option:hover,.bar-option.active{{background:#1c2128}}
+ /* Opens under the bar, in the same stack as the dropdown and never at the
+    same time as it. Not a centred overlay: it answers a question about the
+    box directly above it, and covering the page to do that would be a
+    bigger interruption than the question deserves. */
+ .search-help{{position:absolute;top:100%;left:0;margin:4px 0 0;
+              padding:14px 16px;background:#0d1117;border:1px solid #30363d;
+              border-radius:6px;min-width:min(420px,100%);max-width:100%;
+              z-index:31;font-size:12.5px;line-height:1.5}}
+ .search-help[hidden]{{display:none}}
+ .search-help dl{{display:grid;grid-template-columns:auto 1fr;
+                 gap:.5rem .9rem;margin:0}}
+ .search-help dt{{color:#7ee787;white-space:nowrap}}
+ .search-help dd{{margin:0;color:#c9d1d9}}
+ /* The examples are the useful part for somebody who does not know what to
+    type, but they are not the answer -- quieter, and on their own line so
+    the four category names still read as a list. */
+ .search-help .eg{{display:block;color:#6e7681;font-size:11.5px;
+                  margin-top:.1rem}}
+ .search-help-slash{{margin:.9rem 0 0;padding-top:.75rem;
+                    border-top:1px solid #21262d;color:#8b949e;
+                    font-size:12px;line-height:1.55}}
+ .search-help-slash b{{color:#7ee787;font-weight:normal}}
+ .search-help-more{{display:inline-block;margin-top:.75rem;padding-top:.7rem;
+                   border-top:1px solid #21262d;width:100%;
+                   color:#58a6ff;text-decoration:none;font-size:12px}}
+ .search-help-more:hover{{text-decoration:underline}}
  .animate-controls{{display:block;margin:0 0 8px}}
  .animate-btn{{background:#0d1117;border:1px solid #30363d;color:#ffd700;
               padding:8px 12px;border-radius:4px;font:inherit;font-size:12px;
@@ -5404,6 +5679,7 @@ document.documentElement.classList.add('js');
 {coming_up_card}
 <div class="w{wide_class}">
 {controls}{shortcuts_hint}{body}
+""" + FEEDBACK_BOX + """
 <script>
 // Which <pre> is "the chart" right now.
 //
@@ -5749,9 +6025,10 @@ function skymapRenderGif(btn){{
   var bar=document.getElementById('bar');
   var q=document.getElementById('q');
   var measure=document.getElementById('measure');
-  var ghost=document.getElementById('ghost');
-  var copyBtn=document.getElementById('copy');
-  if(bar&&q&&measure&&ghost){{
+  var dropdown=document.getElementById('bar-dropdown');
+  var helpPill=document.getElementById('help-pill');
+  var helpPanel=document.getElementById('search-help');
+  if(bar&&q&&measure){{
     var size=function(){{
       measure.textContent=q.value||'';
       q.style.width=(measure.offsetWidth+2)+'px';
@@ -5763,124 +6040,257 @@ function skymapRenderGif(btn){{
     // (ü !== u as characters), so typing the ASCII "zur" would never show
     // the "ich" ghost for "Zürich" at all.
     var fold=function(s){{return s.normalize('NFD').replace(/[\\u0300-\\u036f]/g,'').toLowerCase();}};
-    // Prefix match only, first (most populous) hit wins -- /complete
-    // already returns candidates ranked and prefix-filtered, this re-check
-    // is a staleness guard: a slow response for an earlier, shorter prefix
-    // can still land after the user's kept typing, and showing it then
-    // would ghost-suggest text that no longer applies. The user's own
-    // casing (and accents) are always kept in what's displayed -- "zur" +
-    // ghost "ich", never a correction to "Zürich".
-    var complete=function(){{
-      var v=q.value;
-      if(!v){{ghost.textContent='';return;}}
-      // Typing "London" in full used to still ghost-suggest "derry" -- the
-      // exact match itself fails c.length>v.length (nothing left to add),
-      // so the next-longest candidate sharing that prefix (Londonderry) won
-      // instead, and Tab/-> turned a complete, correct search into the
-      // wrong city. An exact match means the search is already done.
-      if(matches.some(function(c){{return fold(c)===fold(v);}})){{
-        ghost.textContent='';return;
-      }}
-      var hit=matches.find(function(c){{
-        return fold(c).startsWith(fold(v))&&c.length>v.length;
-      }});
-      ghost.textContent=hit?hit.slice(v.length):'';
+    var PAGES=/*PAGES*/;
+    var active=-1;
+
+    // The bar holds a path, so "/" splits it: everything up to the last
+    // slash is settled, and only the tail is being typed. On "Tokyo/ven"
+    // the prefix is "Tokyo/" and the tail is "ven".
+    var prefixOf=function(v){{
+      var i=v.lastIndexOf('/');
+      return i<0?'':v.slice(0,i+1);
     }};
+    var tailOf=function(v){{
+      var i=v.lastIndexOf('/');
+      return i<0?v:v.slice(i+1);
+    }};
+    // Each segment encoded on its own, so the slashes that separate them
+    // survive. encodeURIComponent on the whole string would turn the one
+    // character doing the work into %2F.
+    var toPath=function(v){{
+      return '/'+v.split('/').map(encodeURIComponent).join('/');
+    }};
+
+    // Two endpoints rather than one merged one, deliberately: /complete is
+    // static city data cached for a week at the edge, /complete/objects has
+    // to expire hourly because the Moon's glyph tracks its real phase.
+    // Merging them server-side would drag the cities down to the Moon's
+    // cache lifetime for no gain -- the browser can hold two promises.
+    // "47.37,8.55" and "-24.63, -70.4" -- the same thing the place resolver
+    // accepts, checked here only so the dropdown can say "yes, that is a
+    // usable answer" instead of going silent because no city is spelled
+    // like a number. Range-checked, so 91,0 is not offered as a place.
+    var COORD=/^(-?\\d{{1,3}}(?:\\.\\d+)?)\\s*,\\s*(-?\\d{{1,3}}(?:\\.\\d+)?)$/;
+    var asCoords=function(v){{
+      var m=COORD.exec(v.trim());
+      if(!m)return null;
+      var la=parseFloat(m[1]), lo=parseFloat(m[2]);
+      if(!(Math.abs(la)<=90&&Math.abs(lo)<=180))return null;
+      return la+','+lo;
+    }};
+
+    // After a slash the answer can only be an object: the second segment of
+    // a path is what you are looking at, never where you are standing. So
+    // "Tokyo/ven" offers Venus and no cities at all, which is also why the
+    // place suggestions are not merely ranked lower there -- a city would
+    // build /Tokyo/Paris, and there is no such page.
+    var buildItems=function(cities,objects,v){{
+      var out=[],pre=prefixOf(v),tail=tailOf(v),f=fold(tail);
+      // Names, not paths. The prefix is already sitting in the bar a few
+      // pixels above the list, so repeating it on every row says nothing
+      // and makes the names harder to scan.
+      objects.forEach(function(o){{
+        var name=o.q||o.name;
+        out.push({{group:'Objects',label:name,glyph:o.glyph,color:o.color,
+                  href:toPath(pre+name)}});
+      }});
+      if(pre)return out;
+      var coords=asCoords(v);
+      if(coords){{
+        out.push({{group:'Places',label:coords+'  (coordinates)',
+                  glyph:'\\u25ce',color:'',size:0,href:toPath(coords)}});
+      }}
+      cities.forEach(function(c){{
+        // Either shape: {{name,size}} from the current server, or a bare
+        // string from a week-old cached response (see /complete's docstring).
+        var name=(typeof c==='string')?c:c.name;
+        var size=(typeof c==='string')?0:(c.size||0);
+        // The row reads "Tokyo"; the slash only appears once it is chosen,
+        // in the bar, where it is an invitation to name an object. Landing
+        // on /Tokyo/ rather than /Tokyo is free: they are one page.
+        out.push({{group:'Places',label:name,glyph:'\\u25cf',color:'',
+                  size:size,href:toPath(name)+'/'}});
+      }});
+      PAGES.forEach(function(p){{
+        if(fold(p).startsWith(f))
+          out.push({{group:'Pages',label:p,glyph:'\\u2192',color:'',href:'/'+p}});
+      }});
+      return out;
+    }};
+
+    var renderDropdown=function(){{
+      if(!dropdown)return;
+      dropdown.innerHTML='';
+      if(!matches.length){{
+        dropdown.hidden=true;
+        q.setAttribute('aria-expanded','false');
+        return;
+      }}
+      var seen='';
+      matches.forEach(function(it,i){{
+        if(it.group!==seen){{
+          seen=it.group;
+          var h=document.createElement('li');
+          h.className='bar-group';
+          h.setAttribute('role','presentation');
+          h.textContent=it.group;
+          dropdown.appendChild(h);
+        }}
+        var li=document.createElement('li');
+        li.className='bar-option'+(i===active?' active':'');
+        li.setAttribute('role','option');
+        var g=document.createElement('span');
+        // The dot is one character at three CSS sizes rather than three
+        // different characters. Picking bullet/circle/large-circle by
+        // population would put the size at the mercy of whichever font the
+        // browser reaches for, and they are not drawn to a consistent scale
+        // across families; scaling one glyph is exact everywhere.
+        g.className='glyph'+(it.size?' sz'+it.size:'');
+        if(it.color)g.style.color=it.color;
+        g.textContent=it.glyph||'';
+        var n=document.createElement('span');
+        n.textContent=it.label;
+        li.appendChild(g);
+        li.appendChild(n);
+        // mousedown, not click: it fires before the input's blur, so a
+        // mouse pick doesn't race the blur-closes-dropdown handler.
+        li.addEventListener('mousedown',function(e){{
+          e.preventDefault();
+          location.href=it.href;
+        }});
+        dropdown.appendChild(li);
+      }});
+      dropdown.hidden=false;
+      q.setAttribute('aria-expanded','true');
+    }};
+
+    var closeDropdown=function(){{
+      matches=[];active=-1;
+      if(dropdown){{dropdown.hidden=true;dropdown.innerHTML='';}}
+      q.setAttribute('aria-expanded','false');
+    }};
+
     var completeAbort=null, completeTimer=null;
     var fetchMatches=function(){{
       if(completeAbort)completeAbort.abort();
       var v=q.value.trim();
-      if(v.length<2){{matches=[];complete();return;}}
+      // Matched on the tail, not the whole path: "Tokyo/ven" is a two-letter
+      // search for "ven", not a nine-letter one for a city called
+      // "Tokyo/ven". Without this the dropdown went blank the moment a
+      // slash was typed, which looked exactly like the bar giving up.
+      var pre=prefixOf(v), tail=tailOf(v).trim();
+      if(tail.length<2){{closeDropdown();return;}}
       completeAbort=new AbortController();
-      fetch('/complete?q='+encodeURIComponent(v.toLowerCase().slice(0,24)),
-            {{signal:completeAbort.signal}})
-        .then(function(r){{return r.json();}})
-        .then(function(names){{matches=names;complete();}})
-        .catch(function(){{}});
+      var sig=completeAbort.signal;
+      var enc=encodeURIComponent(tail.slice(0,24));
+      // Either endpoint failing leaves the other's results usable rather
+      // than emptying the list -- an aborted fetch is the normal case here,
+      // one per keystroke. Past a slash the city half is not asked for at
+      // all: nothing would be done with the answer.
+      Promise.all([
+        pre?Promise.resolve([]):
+        fetch('/complete?q='+encodeURIComponent(tail.toLowerCase().slice(0,24)),
+              {{signal:sig}}).then(function(r){{return r.json();}})
+              .catch(function(){{return [];}}),
+        fetch('/complete/objects?q='+enc,{{signal:sig}})
+              .then(function(r){{return r.json();}})
+              .catch(function(){{return [];}})
+      ]).then(function(res){{
+        // Guard against a slow response for an earlier, shorter prefix
+        // landing after the reader has kept typing.
+        if(q.value.trim()!==v)return;
+        matches=buildItems(res[0]||[],res[1]||[],v);
+        active=-1;
+        renderDropdown();
+      }}).catch(function(){{}});
     }};
     size();
-    q.addEventListener('input',function(e){{
+    q.addEventListener('input',function(){{
       size();
-      // Clear on Backspace before recomputing, so deleting never appears
-      // to re-suggest what was just removed.
-      if(e.inputType==='deleteContentBackward'){{matches=[];ghost.textContent='';}}
       if(completeTimer)clearTimeout(completeTimer);
       completeTimer=setTimeout(fetchMatches,120);
     }});
     q.addEventListener('keydown',function(e){{
-      if(!ghost.textContent)return;
-      var atEnd=q.selectionStart===q.value.length;
-      if(e.key==='Tab'||(e.key==='ArrowRight'&&atEnd)){{
+      if(e.key==='ArrowDown'||e.key==='ArrowUp'){{
+        if(!matches.length)return;
         e.preventDefault();
-        q.value+=ghost.textContent;
-        ghost.textContent='';
-        size();
-        q.setSelectionRange(q.value.length,q.value.length);
+        active+=(e.key==='ArrowDown'?1:-1);
+        if(active<-1)active=matches.length-1;
+        if(active>=matches.length)active=-1;
+        renderDropdown();
+        return;
+      }}
+      if(e.key==='Escape'&&matches.length){{
+        e.preventDefault();
+        e.stopPropagation();
+        closeDropdown();
       }}
     }});
     q.addEventListener('focus',function(){{bar.classList.add('focused');}});
-    q.addEventListener('blur',function(){{bar.classList.remove('focused');}});
+    q.addEventListener('blur',function(){{
+      bar.classList.remove('focused');
+      setTimeout(closeDropdown,150);
+    }});
     bar.addEventListener('mousedown',function(e){{
-      if(copyBtn&&(e.target===copyBtn||copyBtn.contains(e.target)))return;
+      if(helpPill&&(e.target===helpPill||helpPill.contains(e.target)))return;
       if(e.target!==q){{
         e.preventDefault();
         q.focus();
         q.setSelectionRange(q.value.length,q.value.length);
       }}
     }});
-    // Enter in the command bar does exactly what "go" in the explore form
-    // does (SPEC-command-bar.md #7) -- rather than a second, separately
-    // maintained "just navigate to place" path that could drift from it
-    // (e.g. silently dropping find=/t= from the other fields), this
-    // delegates to that form's own onsubmit, which already reads #q. A
-    // visible ghost is accepted first: without this, pressing Enter on
-    // "zur" would submit the literal text "zur" (a 404 -- lookup_place
-    // does exact name matching, not prefix matching) even though the
-    // ghost "ich" made it look like "Zürich" was already typed.
+    // Enter. A highlighted row wins, because the reader arrowed to it on
+    // purpose and it is the only path that knows an object should keep the
+    // place (/Tokyo/Venus, not /Venus). With nothing highlighted this falls
+    // through to the explore form's own onsubmit, which already reads #q
+    // and carries the date/time fields with it -- rather than a second
+    // "just navigate" path that could drift from it.
     bar.addEventListener('submit',function(e){{
       e.preventDefault();
-      if(ghost.textContent){{
-        q.value+=ghost.textContent;
-        ghost.textContent='';
-        size();
-      }}
-      var exploreForm=document.getElementById('explore');
-      if(exploreForm){{
-        if(exploreForm.requestSubmit)exploreForm.requestSubmit();
-        else exploreForm.dispatchEvent(new Event('submit',{{cancelable:true}}));
+      if(active>=0&&matches[active]){{
+        location.href=matches[active].href;
         return;
       }}
-      // No find/date/time form on this page (e.g. /demo) to delegate to --
-      // still a real place to navigate to, so fall back to going there
-      // directly rather than Enter silently doing nothing.
-      if(q.value)location.href='/'+encodeURIComponent(q.value);
+      closeDropdown();
+      // The bar holds a path, so Enter goes to that path. It used to hand
+      // the text to the explore form, which rebuilt a URL out of #q and the
+      // old find field -- that form now only contributes the date and time,
+      // and rebuilding a path it never saw the slashes in is how "Tokyo/"
+      // plus "Venus" turned back into plain /Venus.
+      var v=q.value.trim();
+      if(!v){{location.href='/';return;}}
+      var wd=document.getElementById('whenDate');
+      var wt=document.getElementById('whenTime');
+      var t=(wd&&wt&&wd.value&&wt.value)?(wd.value+'T'+wt.value):'';
+      location.href=toPath(v)+(t?'?t='+encodeURIComponent(t):'');
     }});
-    // navigator.clipboard is HTTPS/localhost-only -- feature-detect and
-    // hide the button entirely where it's unavailable rather than wiring
-    // up a click that would just silently do nothing.
-    if(copyBtn){{
-      if(!navigator.clipboard){{
-        copyBtn.hidden=true;
-      }}else{{
-        var copyLabel=copyBtn.textContent;
-        var copyResetTimer=null;
-        copyBtn.addEventListener('click',function(){{
-          // Includes any accepted-but-not-yet-typed ghost completion --
-          // copying should grab the resolved command, not just what's
-          // literally been keyed in so far.
-          var place=q.value+ghost.textContent;
-          var path=place.includes(' ')?
-            "'skymap.sh/"+place+"'":'skymap.sh/'+place;
-          navigator.clipboard.writeText('curl '+path).then(function(){{
-            if(copyResetTimer)clearTimeout(copyResetTimer);
-            copyBtn.textContent='✓ copied';
-            copyResetTimer=setTimeout(function(){{
-              copyBtn.textContent=copyLabel;
-              copyResetTimer=null;
-            }},1400);
-          }}).catch(function(){{}});
-        }});
-      }}
+
+    // The help panel. One bar that takes places, objects and page names is
+    // only obvious once somebody tells you, and there is nowhere in a
+    // single-line prompt to write three examples.
+    if(helpPill&&helpPanel){{
+      var setHelp=function(open){{
+        helpPanel.hidden=!open;
+        helpPill.setAttribute('aria-expanded',open?'true':'false');
+        if(open)closeDropdown();
+      }};
+      helpPill.addEventListener('click',function(e){{
+        e.preventDefault();
+        e.stopPropagation();
+        setHelp(helpPanel.hidden);
+      }});
+      document.addEventListener('mousedown',function(e){{
+        if(helpPanel.hidden)return;
+        if(helpPanel.contains(e.target)||helpPill.contains(e.target))return;
+        setHelp(false);
+      }});
+      document.addEventListener('keydown',function(e){{
+        if(e.key==='Escape'&&!helpPanel.hidden){{setHelp(false);helpPill.focus();}}
+      }});
+      // Typing is the reader answering the question the panel asks, so it
+      // has served its purpose and should get out of the way of the
+      // suggestions about to appear underneath it.
+      q.addEventListener('input',function(){{if(!helpPanel.hidden)setHelp(false);}});
     }}
   }}
 }})();
@@ -6105,16 +6515,10 @@ function skymapRenderGif(btn){{
       if(place){{e.preventDefault();place.focus();place.select();}}
       return;
     }}
-    if(e.key==='f'){{
-      var find=document.getElementById('find');
-      // Below findbar-collapse-width the field starts display:none behind
-      // .find-trigger -- expand it first, or focus()/select() on a hidden
-      // input would silently no-op.
-      var findbar=document.getElementById('findbar');
-      if(findbar)findbar.classList.add('expanded');
-      if(find){{e.preventDefault();find.focus();find.select();}}
-      return;
-    }}
+    // No 'f'. It meant "jump to the find field", and there is no longer a
+    // find field for it to jump to -- tab reaches the one bar that replaced
+    // it. Keeping f as a second key for the same input would have spent a
+    // single letter on a duplicate, and single letters are scarce here.
     if(e.key==='m'){{
       e.preventDefault();
       if(!navigator.geolocation){{
@@ -6181,134 +6585,6 @@ function skymapRenderGif(btn){{
       document.documentElement.classList.add('no-inset');
   }}catch(e){{}}
 }})();
-(function(){{
-  // Find field -- live dropdown against GET /complete/objects, keyboard-
-  // navigable (SPEC-command-bar.md's ghost-completion pattern, but a real
-  // dropdown since object names aren't a simple continuation of what's
-  // typed the way a place ghost-completion is). Only present on the chart
-  // page (header_html's find_value param) -- null-safe so every other page
-  // just skips this whole IIFE. Deliberately after the keyboard-shortcuts
-  // IIFE above, not before it -- both handle 'Escape', and the global
-  // handler's drawer-priority behaviour is what should win a plain text
-  // search for "e.key==='Escape'" in the rendered page.
-  var findInput=document.getElementById('find');
-  var dropdown=document.getElementById('find-dropdown');
-  if(!findInput||!dropdown)return;
-  var trigger=document.getElementById('find-trigger');
-  var findbar=document.getElementById('findbar');
-  var items=[], active=-1, fetchAbort=null, fetchTimer=null;
-
-  function renderDropdown(){{
-    dropdown.innerHTML='';
-    if(!items.length){{dropdown.hidden=true;return;}}
-    items.forEach(function(it,i){{
-      var li=document.createElement('li');
-      li.className='find-option'+(i===active?' active':'');
-      li.setAttribute('role','option');
-      var glyph=document.createElement('span');
-      glyph.className='glyph';
-      glyph.style.color=it.color;
-      glyph.textContent=it.glyph;
-      var name=document.createElement('span');
-      name.textContent=it.name;
-      li.appendChild(glyph);
-      li.appendChild(name);
-      // mousedown (not click) fires before the input's blur, so selecting
-      // with the mouse doesn't race the blur-closes-dropdown handler below.
-      li.addEventListener('mousedown',function(e){{e.preventDefault();selectItem(it);}});
-      dropdown.appendChild(li);
-    }});
-    dropdown.hidden=false;
-  }}
-
-  function closeDropdown(){{
-    items=[];active=-1;
-    dropdown.hidden=true;
-    dropdown.innerHTML='';
-    findInput.setAttribute('aria-expanded','false');
-  }}
-
-  function selectItem(it){{
-    // it.q where the label and the searchable name differ (the Moon, whose
-    // label carries its phase); it.name everywhere else.
-    findInput.value=it.q||it.name;
-    closeDropdown();
-    var form=document.getElementById('explore');
-    if(form){{
-      if(form.requestSubmit)form.requestSubmit();
-      else form.dispatchEvent(new Event('submit',{{cancelable:true}}));
-    }}
-  }}
-
-  function fetchMatches(){{
-    if(fetchAbort)fetchAbort.abort();
-    var v=findInput.value.trim();
-    if(v.length<2){{closeDropdown();return;}}
-    fetchAbort=new AbortController();
-    fetch('/complete/objects?q='+encodeURIComponent(v),{{signal:fetchAbort.signal}})
-      .then(function(r){{return r.json();}})
-      .then(function(res){{
-        items=res;active=-1;
-        findInput.setAttribute('aria-expanded',items.length?'true':'false');
-        renderDropdown();
-      }})
-      .catch(function(){{}});
-  }}
-
-  findInput.addEventListener('input',function(){{
-    if(fetchTimer)clearTimeout(fetchTimer);
-    fetchTimer=setTimeout(fetchMatches,120);
-  }});
-  findInput.addEventListener('keydown',function(e){{
-    if(e.key==='ArrowDown'){{
-      if(!items.length)return;
-      e.preventDefault();
-      active=(active+1)%items.length;
-      renderDropdown();
-    }}else if(e.key==='ArrowUp'){{
-      if(!items.length)return;
-      e.preventDefault();
-      active=(active-1+items.length)%items.length;
-      renderDropdown();
-    }}else if(e.key==='Enter'){{
-      if(active>=0&&items[active]){{
-        e.preventDefault();
-        selectItem(items[active]);
-      }}
-      // No highlighted suggestion -- let the #explore form's own submit
-      // handle whatever's literally typed (resolve_target does its own
-      // case-insensitive matching server-side).
-    }}else if(e.key==='Escape'){{
-      // One press, fully out -- closes the dropdown, collapses the field
-      // back to icon-only below findbar-collapse-width (letting the global
-      // handler blur it instead used to leave .expanded on: the box stayed
-      // visibly open, focus gone, with no obvious way to close it short of
-      // clicking elsewhere), and blurs. stopPropagation so the global
-      // handler doesn't also try to act on this same press.
-      e.stopPropagation();
-      closeDropdown();
-      if(findbar)findbar.classList.remove('expanded');
-      findInput.blur();
-    }}
-  }});
-  // Delayed so a dropdown-option mousedown (which calls preventDefault, but
-  // that doesn't stop the input from blurring) still gets its click handled
-  // before the dropdown disappears out from under it.
-  findInput.addEventListener('blur',function(){{setTimeout(closeDropdown,150);}});
-
-  if(trigger&&findbar){{
-    trigger.addEventListener('click',function(){{
-      findbar.classList.add('expanded');
-      findInput.focus();
-    }});
-    document.addEventListener('mousedown',function(e){{
-      if(!findbar.classList.contains('expanded'))return;
-      if(findbar.contains(e.target))return;
-      findbar.classList.remove('expanded');
-      closeDropdown();
-    }});
-  }}
-}})();
 </script>
 </div></body></html>"""
 
@@ -6320,6 +6596,12 @@ function skymapRenderGif(btn){{
 PAGE = PAGE.replace("/*LADDER*/",
                     chart_ladder_css().replace("{", "{{").replace("}", "}}"))
 
+# Same splice, same reason: the page-name list the dropdown offers has to be
+# the one SEARCH_HELP advertises, and a second hand-typed copy inside a
+# string template is exactly how those two drift apart. json.dumps rather
+# than a join, so the quoting is something's job rather than mine.
+PAGE = PAGE.replace("/*PAGES*/", json.dumps(list(SEARCH_PAGES)))
+
 
 # Only shown on an actual chart page (server.py passes "" everywhere else) --
 # most of these keys are no-ops on /catalog, /legend etc. anyway, so a hint
@@ -6330,8 +6612,12 @@ PAGE = PAGE.replace("/*LADDER*/",
 # one people try), and no g, since "Share as a GIF" is a button sitting
 # right there in the drawer with its own label.
 SHORTCUTS_HINT = (
-    '<p class="kbd-hint">Keyboard: <kbd>tab</kbd> place &middot; '
-    '<kbd>f</kbd> find &middot; <kbd>m</kbd> my location &middot; '
+    # "tab place / f find" described two fields. There is one now, and both
+    # keys still reach it, so it is listed once under the name of the thing
+    # it actually is. That buys back a slot on a line with a hard one-row
+    # budget, which is where "esc cancel" earns its place.
+    '<p class="kbd-hint">Keyboard: <kbd>tab</kbd> search &middot; '
+    '<kbd>m</kbd> my location &middot; '
     '<kbd>space</kbd> animate &middot; <kbd>d</kbd> deep sky &middot; '
     '<kbd>i</kbd> inset &middot; '
     '<kbd>z</kbd> zoom &middot; '
@@ -6372,13 +6658,20 @@ return false;">
 </div>
 """
 
-# Chart-page twin of EXPLORE -- same onsubmit, but no #find input of its own
-# since the chart page's find field lives in the header instead (see
-# header_html's find_value param), right next to the place command bar.
+# Chart-page twin of EXPLORE -- same onsubmit, no #find input of its own.
+#
+# #find is read null-safely here, exactly like #q above it. It used to be
+# read straight, because the chart page was guaranteed a #find in the header
+# next to the command bar; merging that field into the one search bar took
+# the guarantee away, and an unguarded .value on a missing element throws
+# before location.href is ever reached -- which would have made "go" (and
+# Enter in the command bar, which delegates here) do nothing at all on the
+# one page type with a chart on it.
 EXPLORE_DATETIME = """<div class="ex">
 <form id="explore" onsubmit="var qEl=document.getElementById('q');
 var p=qEl?qEl.value.trim():'';
-var f=document.getElementById('find').value.trim();
+var fEl=document.getElementById('find');
+var f=fEl?fEl.value.trim():'';
 var wd=document.getElementById('whenDate').value;
 var wt=document.getElementById('whenTime').value;
 var t=(wd&&wt)?(wd+'T'+wt):'';

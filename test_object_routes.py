@@ -715,7 +715,12 @@ def test_the_static_facts_wrap_rather_than_scroll(client):
     h = client.get("/Saturn", headers=BROWSER).text
     aside = re.search(r'<aside class="obj-static">(.*?)</aside>', h, re.S).group(1)
     assert '<dl class="obj-facts">' in aside
-    assert "<pre" not in aside, "the static half must not be preformatted"
+    # The portrait is the one exception and has to be: it is a drawing made
+    # of characters, so reflowing it would destroy it. Everything that is
+    # text still has to wrap, which is the thing this guards.
+    facts_half = re.sub(r'<div class="obj-art-frame">.*?</div>', "", aside, flags=re.S)
+    assert "<pre" not in facts_half, "the static facts must not be preformatted"
+    assert aside.count("<pre") <= 1, "only the portrait may be preformatted"
     rows = re.findall(r"<dt>([^<]+)</dt><dd>(.*?)</dd>", aside)
     assert len(rows) > 10
     plain = [re.sub(r"<[^>]+>", "", v) for _k, v in rows]
@@ -752,7 +757,8 @@ def test_the_summary_is_in_the_heading_not_repeated_below(client):
     h = client.get("/Saturn", headers=BROWSER).text
     prose = re.search(r'id="chart-prose">(.*?)</pre>', h, re.S).group(1)
     txt = _h.unescape(re.sub(r"<[^>]+>", "", prose))
-    for keep in ("crossing", "AU away", "rings are tilted", "Best this year"):
+    for keep in ("crossing", "AU away", "rings are tilted",
+                 "Best in the next 12 months"):
         assert keep in txt, f"the prose lost {keep!r}"
     assert "mag 1.0" not in txt, "the summary line should not be repeated"
 
@@ -931,24 +937,40 @@ def test_stats_objects_page(client):
     assert r.status_code == 200
     t = r.text
     assert "object pages served" in t
-    assert "?find= on a chart" in t
     assert "Saturn" in t
+    # One column. The page used to print "page" and "find" side by side and
+    # sum them, but an object page incremented both counters, so the total
+    # was about double the truth.
+    assert "?find=" not in t
 
 
 def test_stats_objects_json(client):
     client.get("/Saturn", headers=CURL)
     d = client.get("/stats/objects?format=json").json()
-    for key in ("object_pages", "finds", "distinct", "top"):
+    for key in ("object_pages", "distinct", "top"):
         assert key in d
+    assert "finds" not in d
     assert any(row["name"] == "Saturn" for row in d["top"])
 
 
-def test_stats_objects_counts_pages_and_finds_together(client):
-    """An object page and ?find= are two routes to the same question. Two
-    separate leaderboards answered it twice with different numbers."""
-    d = client.get("/stats/objects?format=json").json()
-    for row in d["top"]:
-        assert row["total"] == row["pages"] + row["finds"], row
+def test_an_object_page_is_counted_exactly_once(client):
+    """Opening one object page used to land in five counters at once: a
+    find leaderboard, an object leaderboard, view:find, view:object and an
+    hourly find bucket. Finding an object means opening its page now, so
+    there is one number for it."""
+    before = client.get("/stats/objects?format=json").json()["object_pages"]
+    client.get("/Saturn", headers=CURL)
+    after = client.get("/stats/objects?format=json").json()["object_pages"]
+    assert after == before + 1
+
+
+def test_a_place_object_page_counts_the_same_as_a_bare_one(client):
+    d0 = client.get("/stats/objects?format=json").json()
+    n0 = dict((r["name"], r["views"]) for r in d0["top"]).get("Saturn", 0)
+    client.get("/Tokyo/Saturn", headers=CURL)
+    d1 = client.get("/stats/objects?format=json").json()
+    n1 = dict((r["name"], r["views"]) for r in d1["top"])["Saturn"]
+    assert n1 == n0 + 1
 
 
 def test_the_find_list_is_gone_from_stats(client):
@@ -997,3 +1019,30 @@ def test_each_object_gets_its_own_cache_entry(client):
     b = client.get("/Saturn?format=json").json()
     assert a["object"] == "Neptune" and b["object"] == "Saturn"
     assert a["mag"] != b["mag"]
+
+
+def test_object_pages_invite_corrections(client):
+    """Every fact here comes from a catalogue, a hand-written table or a
+    calculation, and any of the three can be wrong about one object without
+    being wrong in general. A reader who knows better is the cheapest
+    correction mechanism there is."""
+    for name in ("Saturn", "Sirius", "Perseids", "Andromeda Galaxy"):
+        h = client.get(f"/{name}", headers=BROWSER).text
+        assert 'class="obj-feedback"' in h, f"{name} has no feedback link"
+        assert "github.com/HabibiCodeCH/skymap-sh/issues" in h
+        assert 'rel="noopener"' in h, "an external target needs noopener"
+
+
+def test_the_feedback_box_is_on_every_page(client):
+    """A wrong rise time on a place page or a broken chart is as worth
+    reporting as a wrong moon count on an object page."""
+    for path in ("/", "/Zurich", "/Saturn", "/help", "/catalog", "/legend",
+                 "/stats", "/stats/objects"):
+        h = client.get(path, headers=BROWSER).text
+        assert 'class="obj-feedback"' in h, f"{path} is missing it"
+
+
+def test_the_feedback_box_is_not_in_the_terminal_view(client):
+    """A curl reader cannot click it, and a URL in the middle of a chart is
+    noise."""
+    assert "obj-feedback" not in body(client.get("/Saturn", headers=CURL))

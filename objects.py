@@ -254,7 +254,7 @@ def variable_info(hr):
     return sky._load("variables.json").get(str(hr), {})
 
 
-def what_you_need(mag):
+def what_you_need(mag, bortle=None):
     """What it takes to see something this bright, in words.
 
     None when the magnitude is unknown -- see deepsky.json's "nomag" flag.
@@ -273,12 +273,18 @@ def what_you_need(mag):
     """
     if mag is None:
         return None
+    # The reader's own sky, when we know it. Offering "naked eye if it is
+    # really dark" to somebody under Bortle 8 is not advice, it is the
+    # reason people buy binoculars and still see nothing: the equipment was
+    # never the limit.
+    dark = bortle is None or bortle <= 4
     if mag <= 4.0:
-        return "naked eye from a dark sky"
+        return "naked eye from a dark sky" if dark else "binoculars from here"
     if mag <= 6.5:
-        return "binoculars, or naked eye if it is really dark"
+        return ("binoculars, or naked eye if it is really dark" if dark
+                else "binoculars, and it will be faint")
     if mag <= 9.0:
-        return "binoculars"
+        return "binoculars" if dark else "binoculars at least, from here"
     if mag <= 11.0:
         return "a small telescope"
     return "a telescope"
@@ -681,17 +687,73 @@ def planet_facts(name, jd, lat, lst):
 
 def _saturn_ring_angle(b):
     """How far the rings are tilted open, in degrees. Zero is edge-on and
-    effectively invisible; about 27 is as wide as they ever get.
+    effectively invisible; about 27 is as wide as they ever get."""
+    return round(abs(ring_geometry("Saturn", b)[0]), 1)
 
-    This is the Saturnicentric latitude of the Earth -- the angle between our
-    line of sight and Saturn's ring plane -- which falls straight out of the
-    angle between Saturn's pole and the direction we see the planet from.
+
+# The IAU/WGCCRE north-pole direction of each body, J2000. One table, because
+# a planet's rings lie in its equatorial plane and its cloud belts run along
+# its parallels of latitude -- both are the same axis seen from here, so both
+# come out of the same two numbers.
+#
+# This is what makes the planets look unlike each other rather than like one
+# drawing recoloured: Saturn's pole sits near the ecliptic pole so its rings
+# and belts run roughly across the sky's horizontal, while Uranus is tipped 98
+# degrees onto its side and we are currently looking almost straight down its
+# pole, so its rings show as a near-circle and its banding as bullseyes.
+_POLES = {
+    "Sun": (286.13, 63.87),
+    "Mercury": (281.0103, 61.4155),
+    "Venus": (272.76, 67.16),
+    "Mars": (317.269, 54.432),
+    "Jupiter": (268.057, 64.495),
+    "Saturn": (40.589, 83.537),
+    "Uranus": (257.311, -15.175),
+    "Neptune": (299.36, 43.46),
+    # The Moon's axis leans only 1.5 degrees off the ecliptic normal, so the
+    # ecliptic pole is within a degree and a half of the truth -- far closer
+    # than a 45-column drawing can show. The real lunar pole wanders with
+    # the node and would need its own series for no visible gain.
+    "Moon": (270.0, 66.56),
+}
+
+
+def pole_geometry(name, b):
+    """(sub-Earth latitude, position angle) of a body's axis, in degrees.
+
+    The sub-Earth latitude is which parallel is facing us: 0 means we see the
+    equator edge-on and the belts cross as straight lines, 90 means we are
+    over the pole and they close into circles. The position angle is where
+    the north pole points on the sky, measured from north through east, so it
+    is what tips the whole planet over on screen.
+
+    A ring lies in the equatorial plane, so the same pair describes it: the
+    ring opening is this latitude, and the ring's long axis lies 90 degrees
+    from this position angle.
     """
+    pole = _POLES.get(name)
+    if pole is None:
+        return None
     ra, dec = b["ra"] * 15 * D, b["dec"] * D
-    pra, pdec = _SATURN_POLE_RA * D, _SATURN_POLE_DEC * D
+    pra, pdec = pole[0] * D, pole[1] * D
     sin_b = (math.sin(pdec) * math.sin(dec)
              + math.cos(pdec) * math.cos(dec) * math.cos(pra - ra))
-    return round(abs(math.degrees(math.asin(max(-1, min(1, sin_b))))), 1)
+    lat = math.degrees(math.asin(max(-1, min(1, sin_b))))
+    pa = math.degrees(math.atan2(
+        math.cos(pdec) * math.sin(pra - ra),
+        math.sin(pdec) * math.cos(dec)
+        - math.cos(pdec) * math.sin(dec) * math.cos(pra - ra)))
+    return round(lat, 1), round(pa % 360, 1)
+
+
+def ring_geometry(name, b):
+    """(opening, position angle) of a planet's rings. The rings sit in the
+    equatorial plane, so this is the axis by another name -- kept as its own
+    function because "how far open are the rings" is the question the page
+    actually asks."""
+    if name not in ("Saturn", "Uranus", "Neptune"):
+        return None
+    return pole_geometry(name, b)
 
 
 # --------------------------------------------------------------- the stars
@@ -787,3 +849,136 @@ def distance_ly(hr):
     if err <= 35:
         return ly, "rough"
     return ly, "poor"
+
+
+# ------------------------------------------------------------- the Moon
+# Meeus chapter 47, the principal terms. sky.moon() computes the Moon's
+# position and phase but not its distance, and distance is what makes the
+# rest of a Moon page possible: how big it looks, whether tonight is a
+# supermoon, how far the libration has turned.
+_MOON_DIST_TERMS = (
+    # (D, M, M', F, coefficient in km)
+    (0, 0, 1, 0, -20905355), (2, 0, -1, 0, -3699111), (2, 0, 0, 0, -2955968),
+    (0, 0, 2, 0, -569925), (0, 1, 0, 0, 48888), (0, 0, 0, 2, -3149),
+    (2, 0, -2, 0, 246158), (2, -1, -1, 0, -152138), (2, 0, 1, 0, -170733),
+    (2, -1, 0, 0, -204586), (0, 1, -1, 0, -129620), (1, 0, 0, 0, 108743),
+    (0, 1, 1, 0, 104755), (0, 0, 1, -2, 10321), (2, 0, 0, -2, 79661),
+    # The next dozen. Fifteen terms left the extremes about 1% short, which
+    # is invisible in "384,000 km" but sat right on the perigee threshold
+    # below -- the closest approach came out at 360,368 km and no full Moon
+    # would ever have been called large.
+    (4, 0, -1, 0, -34782), (4, 0, -2, 0, -21636), (2, 1, -1, 0, 24208),
+    (2, 1, 0, 0, 30824), (1, 0, -1, 0, -8379), (1, 1, 0, 0, -16675),
+    (2, -1, 1, 0, -12831), (2, 0, 2, 0, -10445), (4, 0, 0, 0, -11650),
+    (2, 0, -3, 0, 14403), (0, 1, -2, 0, -7003), (2, -1, -2, 0, 10056),
+)
+
+# Mean radius in km, and the mean distance the "average" apparent size is
+# quoted against.
+_MOON_RADIUS_KM = 1737.4
+
+
+def moon_distance_km(jd):
+    """Earth to Moon, centre to centre.
+
+    Accurate to a few hundred kilometres against the full Meeus series,
+    which is a hundredth of a percent -- far inside what any sentence on
+    these pages claims.
+    """
+    T = (jd - 2451545.0) / 36525.0
+    D = (297.8501921 + 445267.1114034 * T - 0.0018819 * T ** 2) % 360
+    M = (357.5291092 + 35999.0502909 * T - 0.0001536 * T ** 2) % 360
+    Mp = (134.9633964 + 477198.8675055 * T + 0.0087414 * T ** 2) % 360
+    F = (93.2720950 + 483202.0175233 * T - 0.0036539 * T ** 2) % 360
+    total = 385000560.0
+    for cd, cm, cmp_, cf, coef in _MOON_DIST_TERMS:
+        arg = (cd * D + cm * M + cmp_ * Mp + cf * F) * math.pi / 180
+        total += coef * math.cos(arg)
+    return total / 1000.0
+
+
+def moon_facts(jd):
+    """Distance, apparent size, and whether this is an unusually big or
+    small full Moon."""
+    km = moon_distance_km(jd)
+    # Apparent diameter from the true distance, in arcminutes.
+    arcmin = math.degrees(2 * math.atan(_MOON_RADIUS_KM / km)) * 60
+    out = {"distance_km": round(km),
+           "light_seconds": round(km / 299792.458, 2),
+           "apparent_arcmin": round(arcmin, 1)}
+    # Perigee is about 356,500 km and apogee about 406,700. The popular
+    # "supermoon" threshold is roughly 360,000, which is the top tenth of the
+    # range; "micromoon" is the bottom tenth.
+    if km < 360000:
+        out["extreme"] = "near perigee, so it looks unusually large"
+    elif km > 405000:
+        out["extreme"] = "near apogee, so it looks unusually small"
+    return out
+
+
+# --------------------------------------------------------- Jupiter's moons
+# Meeus chapter 44, the low-precision method: good to a few tenths of a
+# Jupiter radius, which is far better than "which side is Io on tonight"
+# needs and is the only question a pair of binoculars can ask.
+_GALILEAN = (("Io", 1), ("Europa", 2), ("Ganymede", 3), ("Callisto", 4))
+
+
+def galilean_moons(jd):
+    """Where Jupiter's four big moons sit, east or west of the planet.
+
+    This is the observation Galileo made in 1610 and the reason anyone
+    points binoculars at Jupiter: four dots in a line that are somewhere
+    else the following night.
+    """
+    d = jd - 2451545.0
+    V = (172.65 + 0.00111588 * d) * D
+    M = (357.529 + 0.9856003 * d) * D
+    N = (20.020 + 0.0830853 * d + 0.329 * math.sin(V)) * D
+    J = (66.115 + 0.9025179 * d - 0.329 * math.sin(V)) * D
+    A = (1.915 * math.sin(M) + 0.020 * math.sin(2 * M)) * D
+    B = (5.555 * math.sin(N) + 0.168 * math.sin(2 * N)) * D
+    K = J + A - B
+    R = 1.00014 - 0.01671 * math.cos(M) - 0.00014 * math.cos(2 * M)
+    r = 5.20872 - 0.25208 * math.cos(N) - 0.00611 * math.cos(2 * N)
+    delta = math.sqrt(r * r + R * R - 2 * r * R * math.cos(K))
+    psi = math.asin(max(-1, min(1, R / delta * math.sin(K))))
+
+    lam = (34.35 + 0.083091 * d + 0.329 * math.sin(V)) * D + B
+    periods = (1.769138, 3.551810, 7.154553, 16.689018)
+    us = []
+    for i, per in enumerate(periods):
+        base = (163.8067, 358.4108, 5.7129, 224.8151)[i]
+        rate = (203.4058643, 101.2916334, 50.2345179, 21.4879801)[i]
+        u = (base + rate * (d - delta / 173)) * D + psi - B
+        us.append(u)
+    # Distances from Jupiter's centre in planet radii.
+    radii = (5.9057, 9.3966, 14.9883, 26.3627)
+    out = []
+    for (name, _n), u, rad in zip(_GALILEAN, us, radii):
+        # Apparent offset along the line of the moons, which is what an
+        # eyepiece shows: positive is west of the planet, negative east.
+        x = rad * math.sin(u)
+        out.append({"name": name, "offset": round(x, 2),
+                    "side": "west" if x > 0 else "east",
+                    # In front of or behind the planet, near enough to be
+                    # invisible against it.
+                    "hidden": abs(x) < 1.0})
+    return out
+
+
+def galilean_line(jd):
+    """The four moons as one sentence, in the order an eyepiece shows them."""
+    ms = galilean_moons(jd)
+    visible = [m for m in ms if not m["hidden"]]
+    if not visible:
+        return "all four moons are in transit or eclipse tonight"
+    west = sorted((m for m in visible if m["side"] == "west"),
+                  key=lambda m: -m["offset"])
+    east = sorted((m for m in visible if m["side"] == "east"),
+                  key=lambda m: m["offset"])
+    bits = []
+    if west:
+        bits.append(", ".join(m["name"] for m in west) + " west")
+    if east:
+        bits.append(", ".join(m["name"] for m in east) + " east")
+    return " and ".join(bits)
