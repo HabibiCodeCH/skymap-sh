@@ -13,6 +13,7 @@ this actual place, dimmed rather than decorated, so the card is a picture of
 the page rather than an illustration of one.
 """
 import io
+import re
 import os
 
 from PIL import Image, ImageDraw, ImageEnhance, ImageFont
@@ -243,6 +244,43 @@ _ICON = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                      "apple-touch-icon.png")
 
 
+def _wrap_fit(d, text, size, max_w, max_h, floor=64, leading=1.06):
+    """(font, lines) at the largest size that fits the box, wrapped.
+
+    _fit() only ever shrinks, which is right for a name that is a little too
+    wide and wrong for one that is nowhere near fitting: cities.json has
+    "Dolores Hidalgo Cuna de la Independencia Nacional" in it, and shrinking
+    that to one line leaves a headline smaller than the caption under it.
+    Wrapping keeps the type big enough to read at timeline size.
+
+    Breaks after hyphens as well as at spaces, because the long names in the
+    data are as often "Sainte-Catherine-de-la-Jacques-Cartier" as they are
+    several words, and a hyphenated one is a single token to str.split().
+    """
+    parts = []
+    for word in text.split():
+        parts += [p for p in re.split(r"(?<=-)", word) if p]
+    while size >= floor:
+        f = _font(size)
+        lines, cur = [], ""
+        for part in parts:
+            # No space after a hyphen: the break is already there.
+            joiner = "" if cur.endswith("-") else " "
+            trial = f"{cur}{joiner}{part}" if cur else part
+            if cur and d.textlength(trial, font=f) > max_w:
+                lines.append(cur)
+                cur = part
+            else:
+                cur = trial
+        if cur:
+            lines.append(cur)
+        widest = max((d.textlength(l, font=f) for l in lines), default=0)
+        if widest <= max_w and len(lines) * size * leading <= max_h:
+            return f, lines
+        size -= 4
+    return _font(floor), lines
+
+
 def _hex_rgb(h):
     h = (h or "#ffffff").lstrip("#")
     return tuple(int(h[i:i + 2], 16) for i in (0, 2, 4))
@@ -307,6 +345,76 @@ def render(facts, chart_text=None):
         f_fact = _fit(d, line, 58, W - MARGIN * 2, floor=40)
         d.text((MARGIN, y), line, font=f_fact, fill=INK)
         y += f_fact.size + 18
+
+    _wordmark(img, d)
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    return buf.getvalue()
+
+
+# -------------------------------------------------------- the place card
+# The hour a place's card is drawn for. Not "now": this image is fetched once
+# by a crawler from its own datacentre and then shown to everybody, so "now"
+# means whatever the sky looked like when a bot happened to ask -- daylight
+# about half the time, and a daylight chart is nearly empty. Ten at night,
+# local to the place itself, is a sky worth looking at wherever it is.
+PLACE_HOUR = 22
+
+
+def place_chart(place):
+    """Tonight's sky over one place, at PLACE_HOUR local. Imported lazily
+    for the same reason generic_chart() is: api imports card's caller."""
+    import api
+    import datetime as dt
+    p = api.lookup_place(place)
+    if p is None:
+        return None
+    # Local 22:00 turned into UTC by the place's own offset, so a card for
+    # Tokyo and one for Lima are both drawn at their own late evening rather
+    # than at one shared instant that is night in only one of them.
+    today = dt.datetime.utcnow()
+    local = dt.datetime(today.year, today.month, today.day, PLACE_HOUR, 0)
+    when = local - dt.timedelta(hours=p.offset(local))
+    r = api.Request(place=place, when=when, width=140)
+    return api.compose_chart_only(r)
+
+
+def render_place(place, chart_text=None, sub=None):
+    """The card for a place page.
+
+    Same furniture as the object card -- scrimmed chart, headline, wordmark
+    -- because they unfurl side by side in a timeline and two different
+    layouts would read as two different sites. What it does not carry is any
+    number that depends on when you look: an altitude or a rise time here
+    would be computed for a crawler in Virginia and then shown to everyone
+    for a day. The name and the fact that this is that place's sky are true
+    whenever the card is seen.
+    """
+    if chart_text is None:
+        chart_text = place_chart(place)
+    img = _scrim(_background(chart_text))
+    d = ImageDraw.Draw(img)
+
+    label = (sub or "the night sky above").upper()
+    f_sub = _fit(d, " ".join(label), 44, W - MARGIN * 2, floor=30)
+    d.text((MARGIN, MARGIN), " ".join(label), font=f_sub, fill=ACCENT)
+
+    y = MARGIN + f_sub.size + 30
+    # The height left once the command line and the wordmark have their
+    # room: the headline may take as many lines as fit in it, and no more.
+    head_room = H - y - 150
+    f_name, name_lines = _wrap_fit(d, place, 150, W - MARGIN * 2, head_room)
+    for line in name_lines:
+        d.text((MARGIN, y), line, font=f_name, fill=INK)
+        y += int(f_name.size * 1.06)
+
+    # The command, because that is the thing this site is: a place page is
+    # one curl away and the card should say which one.
+    y += 24
+    cmd = f"curl skymap.sh/{place.lower()}" if " " not in place else \
+          f"curl 'skymap.sh/{place}'"
+    f_cmd = _fit(d, cmd, 58, W - MARGIN * 2, floor=34)
+    d.text((MARGIN, y), cmd, font=f_cmd, fill=MUTED)
 
     _wordmark(img, d)
     buf = io.BytesIO()

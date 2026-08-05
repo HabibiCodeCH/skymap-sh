@@ -1948,6 +1948,38 @@ def _object_page_template():
     return PAGE.replace(_GENERIC_HEAD_BLOCK, "{head_extra}", 1)
 
 
+def place_head(place, base_url):
+    """The same head as an object page, for a place page.
+
+    Place pages used to fall back to the generic card, so every city anyone
+    shared unfurled as the same picture with the same words -- which says
+    the site exists but not that the link is about Paris. This gives each
+    one its own, and nothing on it depends on when the crawler asked.
+
+    No canonical: unlike /{place}/{object}, a place page is the only URL for
+    that place, so there is nothing to point at.
+    """
+    name = html.escape(place.name)
+    title = f"skymap.sh: {name}"
+    desc = html.escape(f"The night sky above {place.name}, as plain text. "
+                       f"curl skymap.sh/{place.slug}")
+    og = f"{base_url}/{quote(place.name)}/og.png"
+    return "\n".join([
+        f'<meta name="description" content="{desc}">',
+        '<meta property="og:type" content="website">',
+        f'<meta property="og:title" content="{title}">',
+        f'<meta property="og:description" content="{desc}">',
+        f'<meta property="og:image" content="{og}">',
+        '<meta property="og:image:width" content="1200">',
+        '<meta property="og:image:height" content="630">',
+        '<meta property="og:site_name" content="skymap.sh">',
+        '<meta name="twitter:card" content="summary_large_image">',
+        f'<meta name="twitter:title" content="{title}">',
+        f'<meta name="twitter:description" content="{desc}">',
+        f'<meta name="twitter:image" content="{og}">',
+    ])
+
+
 def object_head(facts, canonical, place, base_url):
     """Title, description, canonical and the social card tags.
 

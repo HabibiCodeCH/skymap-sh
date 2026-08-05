@@ -1046,3 +1046,77 @@ def test_the_feedback_box_is_not_in_the_terminal_view(client):
     """A curl reader cannot click it, and a URL in the middle of a chart is
     noise."""
     assert "obj-feedback" not in body(client.get("/Saturn", headers=CURL))
+
+
+# --------------------------------------------------------- place cards
+# A shared place link used to unfurl as the generic card: the same picture
+# and the same words for every city, which says the site exists but not that
+# the link is about Paris.
+
+def test_a_place_has_its_own_card(client):
+    r = client.get("/Paris/og.png")
+    assert r.status_code == 200
+    assert r.headers["content-type"] == "image/png"
+    assert len(r.content) > 8000
+
+
+def test_an_object_still_wins_the_card_url(client):
+    """One route serves both, because they are one URL shape and a route
+    that answers 404 does not fall through to the next one. The object wins
+    the name, exactly as it does for the pages: /Venus/og.png is the planet,
+    not the town in Texas."""
+    assert client.get("/Venus/og.png").status_code == 200
+    assert client.get("/Saturn/og.png").status_code == 200
+    assert client.get("/Tokyo/og.png").status_code == 200
+    assert client.get("/notaplaceatall/og.png").status_code == 404
+
+
+def test_the_place_page_points_at_its_own_card(client):
+    h = client.get("/Paris", headers=BROWSER).text
+    assert 'content="http://testserver/Paris/og.png"' in h
+    assert 'og.png"' in h
+    # and not the shared one
+    assert "https://skymap.sh/og.png" not in h
+
+
+def test_the_card_carries_nothing_computed_for_the_crawler(client):
+    """It is fetched once from someone else's datacentre and then shown to
+    everybody for a day, so an altitude or a rise time on it would be true
+    for a machine in Virginia and wrong for every reader."""
+    import card
+    assert card.PLACE_HOUR == 22
+
+
+def test_the_longest_city_name_wraps_rather_than_shrinking(client):
+    """cities.json contains a 49-character name. Shrinking it to one line
+    left the headline smaller than the caption under it."""
+    import card
+    from PIL import Image, ImageDraw
+    d = ImageDraw.Draw(Image.new("RGB", (card.W, card.H)))
+    longest = "Dolores Hidalgo Cuna de la Independencia Nacional"
+    f, lines = card._wrap_fit(d, longest, 150, card.W - card.MARGIN * 2, 340)
+    assert len(lines) > 1, "expected it to wrap"
+    assert f.size > 64, "expected it to stay readable at unfurl size"
+    assert " ".join(" ".join(lines).split()) == longest
+
+
+def test_a_hyphenated_name_breaks_at_its_hyphens(client):
+    """Sainte-Catherine-de-la-Jacques-Cartier is one token to str.split(),
+    so a space-only wrapper leaves it on one unreadable line."""
+    import card
+    from PIL import Image, ImageDraw
+    d = ImageDraw.Draw(Image.new("RGB", (card.W, card.H)))
+    name = "Sainte-Catherine-de-la-Jacques-Cartier"
+    f, lines = card._wrap_fit(d, name, 150, card.W - card.MARGIN * 2, 340)
+    assert len(lines) > 1
+    assert "".join(lines) == name, "hyphen breaks must not add or drop text"
+
+
+def test_short_names_are_left_on_one_line(client):
+    import card
+    from PIL import Image, ImageDraw
+    d = ImageDraw.Draw(Image.new("RGB", (card.W, card.H)))
+    for name in ("Paris", "Tokyo", "New York"):
+        f, lines = card._wrap_fit(d, name, 150, card.W - card.MARGIN * 2, 340)
+        assert lines == [name], name
+        assert f.size == 150, name

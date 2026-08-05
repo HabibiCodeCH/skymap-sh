@@ -2149,7 +2149,12 @@ def _respond(request: Req, place: str | None):
             chart_html = api.chart_layout(rungs, zenith, prose)
         else:
             chart_html = api.chart_pre(_rendered(html_text))
-        body = api.PAGE.format(title=f"skymap.sh: {r.place.name}",
+        # The object-page template, for its head slot: a place page gets its
+        # own social card rather than the shared generic one, so a shared
+        # link to Paris unfurls as Paris.
+        body = api._object_page_template().format(
+                               title=f"skymap.sh: {r.place.name}",
+                               head_extra=api.place_head(r.place, base_url),
                                header=header, controls=controls,
                                wide_class=" w-wide" if fits_width else "",
                                coming_up_card=coming_up_card,
@@ -3210,17 +3215,29 @@ def object_best_ics(request: Req, obj: str):
 
 @app.get("/{obj}/og.png")
 def object_og(request: Req, obj: str):
-    """The social card for an object page. Registered ahead of
-    /{place}/{obj}, which would otherwise read "og.png" as an object name.
+    """The social card for /{obj} or /{place} -- one route, because they are
+    one URL shape and a route that answers 404 does not fall through to the
+    next one. Two handlers for this meant whichever was registered second
+    never ran, so either every object card or every place card was dead.
 
-    Currently the object's own chart. The purpose-built card is a separate
-    piece of design work; keeping the URL stable now means the og:image tag
-    already points somewhere real and does not have to change when the
-    picture behind it does.
+    An object wins the name, exactly as it does for the pages themselves:
+    /Venus/og.png is the planet, not the town in Texas.
+
+    Registered ahead of /{place}/{obj}, which would otherwise read "og.png"
+    as an object name.
     """
     canonical = objects.resolve_name(obj)
     if canonical is None:
-        return PlainTextResponse("", status_code=404)
+        # Not an object, so try it as a place. Its card is that place's own
+        # sky at ten at night rather than at the moment a crawler asked,
+        # which is daylight about half the time.
+        if api.lookup_place(obj) is None:
+            return PlainTextResponse("", status_code=404)
+        p = api.resolve_place(obj)
+        _stat["og"] += 1
+        return Response(card.render_place(p.name), media_type="image/png",
+                        headers={"Cache-Control": "public, max-age=86400, "
+                                                  "s-maxage=86400"})
     r = _build(request, None)
     r.find = canonical
     r.width = OG_WIDTH
