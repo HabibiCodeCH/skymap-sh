@@ -2547,7 +2547,7 @@ def eclipse_html(r, f, key, entry, map_rows, legend, disc=None,
             + '</div>'
             + '<div class="obj-cols">'
             f'<aside class="obj-static">'
-            f'{eclipse_page.sidebar_html(entry, r.when_utc, disc, disc_html, cap, also)}'
+            f'{eclipse_page.sidebar_html(entry, r.when_utc, disc, disc_html, cap, also, f)}'
             f'</aside>'
             f'<div class="obj-live">'
             f'<p class="obj-lede obj-live-head ecl-head">{heading}</p>'

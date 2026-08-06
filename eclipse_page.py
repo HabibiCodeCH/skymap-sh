@@ -300,8 +300,51 @@ def prose(f):
     return [s.strip() for s in out if s.strip()]
 
 
+def _blurb(entry, f=None):
+    """What this eclipse is and what it does here, in one paragraph.
+
+    The first version read "Total solar eclipse on 12 August 2026, 17:47 UTC
+    at greatest eclipse", which says almost nothing. "Greatest eclipse" is
+    the instant the shadow axis passes closest to the Earth's centre: a term
+    of art, not a fact anyone standing outside needs. And a UTC time with no
+    place attached is not a time you can turn up at.
+
+    This paragraph does carry the reader's own location, which the rest of
+    the left column deliberately does not. That is a considered exception:
+    the sentence is useless without it, and the canonical still points at
+    the bare /eclipse/{date}, so the indexed page is one page rather than
+    forty thousand.
+    """
+    when = dt.datetime.fromisoformat(entry["when_utc"])
+    date = when.strftime("%d %B %Y").lstrip("0")
+    verb = "crossing" if is_solar(entry) else "in view from"
+    out = [f"{entry['name']} on {date} {verb} {entry['regions']}."]
+
+    if not f or not f.get("computed"):
+        return " ".join(out)
+    place = f["place"]
+    if f["kind"] == "none":
+        out.append(f"Not visible from {place}: the Sun is already below the "
+                   f"horizon by then.")
+        return " ".join(out)
+    if f["kind"] == "total" and not f.get("on_the_edge"):
+        out.append(f"In {place}, the Sun is completely covered for "
+                   f"{f['duration_s']:.0f} seconds at around {f['maximum']}.")
+    elif f.get("on_the_edge"):
+        out.append(f"{place} sits right on the edge of the path, too close "
+                   f"to call.")
+    else:
+        out.append(f"In {place}, the eclipse reaches a maximum of "
+                   f"{f['obscuration'] * 100:.0f}% at around {f['maximum']}.")
+    if f.get("sun_alt") is not None:
+        out.append(f"Look to the {f['compass']}, {f['sun_alt']:.0f}° above "
+                   f"the horizon.")
+    return " ".join(out)
+
+
 def sidebar_html(entry, now_utc, disc=None, disc_html='',
-                 disc_caption='', also=(), escape=html.escape):
+                 disc_caption='', also=(), f=None,
+                 escape=html.escape):
     """The left column: what this eclipse is, then the ones after it.
 
     Order matters here. The drawing goes directly under the heading, before
@@ -330,10 +373,7 @@ def sidebar_html(entry, now_utc, disc=None, disc_html='',
             out.append(f'<p class="ecl-disc-cap">{escape(disc_caption)}</p>')
 
     out.append('<div class="ecl-intro">')
-    out.append(f'<p class="obj-lede">{escape(entry["name"])} on '
-               f'{escape(when.strftime("%d %B %Y").lstrip("0"))}, '
-               f'{escape(when.strftime("%H:%M"))} UTC at greatest eclipse. '
-               f'The track crosses {escape(entry["regions"])}.</p>')
+    out.append(f'<p class="obj-lede">{escape(_blurb(entry, f))}</p>')
     if key_of(entry) not in besselian.ELEMENTS:
         out.append('<p class="obj-src">No computed local circumstances for '
                    'this one yet, so this page gives the date and the '
@@ -405,67 +445,14 @@ ECLIPSE_CSS = """
 .ecl-sec{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
   font-size:16.5px;color:#e6ebf2;letter-spacing:0;text-transform:none;
   margin:0 0 .35rem}
-/* A floor, not a fixed height. The blurb runs from two lines ("Antarctica")
-   to six ("Nigeria, Cameroon, Chad, Sudan, Egypt, Saudi Arabia, Iran,
-   Afghanistan, Pakistan, India and China"), and without this the list of
-   dates underneath jumped up and down as you clicked between them -- the
-   links moving out from under the cursor between one click and the next.
-   Sized for the longest entry in the table plus the not-computed note.
-   min-height rather than height so a longer one can still grow instead of
-   being clipped. */
-.ecl-intro{min-height:13rem}
-@media (max-width:1000px){.ecl-intro{min-height:0}}
-.ecl-disc{margin:0 0 .4rem}
-/* The two drawings have to start on the same line, and the things above
-   them do not: a small label on the left, a sentence that may wrap to two
-   lines on the right. So both get the same slot and sit at the bottom of
-   it, which is what puts the frames level however the sentence breaks. */
-.ecl-sec,.obj-live-head.ecl-head{min-height:2.7rem;margin:0 0 .35rem;
-  display:flex;align-items:flex-end}
-.ecl-disc-cap{color:#6e7681;font-size:11.5px;margin:6px 0 1.4rem;
-  font-family:ui-sans-serif,-apple-system,"Segoe UI",Roboto,sans-serif}
-/* The running clock, in the frame rather than under it. .obj-art-frame is
-   the positioning context. */
-.ecl-anim{position:relative}
-.ecl-clock{position:absolute;top:10px;right:14px;color:#8b949e;font-size:12px;
-  font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
-  letter-spacing:.04em;pointer-events:none}
-.ecl-also .ecl-what{color:#6e7681}
-/* Heading and selector on one line. The picker's panel is absolutely
-   positioned off the row so opening it does not shove the columns down the
-   page -- a disclosure that reflows everything below it feels like the page
-   broke rather than like a menu opened. */
-.ecl-head-row{display:flex;align-items:center;gap:14px;flex-wrap:wrap;
-  margin:1.5rem 0 14px}
-.ecl-head-row .obj-title{margin:0}
-.ecl-picker{position:relative;margin:0;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
-.ecl-picker summary{cursor:pointer;color:#c9d1d9;font-size:13px;
-  list-style:none;display:inline-flex;align-items:center;gap:10px;
-  border:1px solid #30363d;border-radius:6px;padding:6px 12px}
-.ecl-picker summary::-webkit-details-marker{display:none}
-.ecl-picker summary:hover{border-color:#8fb6e0}
-.ecl-more{color:#6e7681;font-size:11px;letter-spacing:.06em;text-transform:uppercase}
-.ecl-picker[open] summary{border-color:#8fb6e0}
-/* One panel holding both the list and the key. They used to be two
-   separately positioned boxes at the same top offset, so the key rendered
-   on top of the dates -- the text showing through the dropdown. */
-.ecl-panel{position:absolute;top:calc(100% + 6px);left:0;z-index:30;
-  min-width:280px;background:#0d1117;border:1px solid #30363d;
-  border-radius:6px;box-shadow:0 8px 24px rgba(0,0,0,.7)}
-.ecl-picker ul{list-style:none;margin:0;padding:8px 12px}
-.ecl-picker li{padding:3px 0;font-size:13px;white-space:nowrap}
-.ecl-picker li a{color:#87d7ff}
-  .ecl-key{color:#6e7681;font-size:11px;margin:0;padding:2px 12px 9px;
-  border-top:1px solid #21262d}
-/* .obj-art-frame is display:flex and centres its children in a row, which
-   is right for a lone planet portrait and wrong the moment a caption is
-   added -- the text laid itself out beside the drawing, overlapping it.
-   Column, and stretch, so the caption sits under the picture. */
-.ecl-anim{margin:0 0 18px}
-.ecl-btn{background:none;border:1px solid #30363d;color:#8b949e;border-radius:4px;
-  font:inherit;font-size:11px;padding:2px 8px;margin-left:10px;cursor:pointer}
-.ecl-btn:hover{border-color:#d29922;color:#d29922}
+/* No floor here any more. It existed to stop the list of dates jumping as
+   the blurb changed length between eclipses, and that list is a dropdown by
+   the heading now -- nothing below this moves when it changes, so reserving
+   the height of the longest entry in the table just left a hole under the
+   short ones. */
+.ecl-intro{margin:0 0 .2rem}
 .ecl-list .ecl-when{white-space:nowrap}
+.ecl-also dt.obj-sec{margin-top:.45rem}
 .ecl-list .ecl-what{color:#8b949e}
 /* The map is the one thing on this page that must not reflow: it is a grid
    of characters and a changed line-height shears the track diagonally. Same
@@ -487,8 +474,39 @@ ECLIPSE_CSS = """
 .ecl-times .ecl-horizon .v{color:#d29922}
 /* A contact that happens after the Sun is down is a time, not a sight. */
 .ecl-times .ecl-unseen .k,.ecl-times .ecl-unseen .v{color:#545d68}
-</style>
-"""
+/* The eclipse selector beside the heading. This block was deleted by an
+   unrelated edit that removed the intro's fixed height and took everything
+   between two markers with it, which is what left the dropdown unstyled. */
+.ecl-picker{position:relative;margin:0;
+  font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+.ecl-picker summary{cursor:pointer;color:#c9d1d9;font-size:13px;
+  list-style:none;display:inline-flex;align-items:center;gap:10px;
+  border:1px solid #30363d;border-radius:6px;padding:6px 12px}
+.ecl-picker summary::-webkit-details-marker{display:none}
+.ecl-picker summary:hover,.ecl-picker[open] summary{border-color:#8fb6e0}
+.ecl-more{color:#6e7681;font-size:11px;letter-spacing:.06em;
+  text-transform:uppercase}
+/* One panel holding both the list and the key. They used to be two boxes
+   positioned at the same offset, so the key rendered on top of the dates. */
+.ecl-panel{position:absolute;top:calc(100% + 6px);left:0;z-index:30;
+  min-width:280px;background:#0d1117;border:1px solid #30363d;
+  border-radius:6px;box-shadow:0 8px 24px rgba(0,0,0,.7)}
+.ecl-picker ul{list-style:none;margin:0;padding:8px 12px}
+.ecl-picker li{padding:3px 0;font-size:13px;white-space:nowrap}
+.ecl-picker li a{color:#87d7ff}
+.ecl-key{color:#6e7681;font-size:11px;margin:0;padding:2px 12px 9px;
+  border-top:1px solid #21262d}
+.ecl-head-row{display:flex;align-items:center;gap:14px;flex-wrap:wrap;
+  margin:1.5rem 0 14px}
+.ecl-head-row .obj-title{margin:0}
+/* The two drawings have to start on the same line, and what sits above them
+   does not match: a short label on the left, a sentence that may wrap to two
+   lines on the right. Same slot for both, content sitting at the bottom of
+   it, so the frames stay level however the sentence breaks. Sized for two
+   lines at 16.5px. */
+.ecl-sec,.obj-live-head.ecl-head{min-height:3.3rem;margin:0 0 .35rem;
+  display:flex;align-items:flex-end}
+</style>"""
 
 
 def live_html(f, map_rows, legend, ansi_to_html, chart_pre,
