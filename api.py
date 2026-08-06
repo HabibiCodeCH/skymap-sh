@@ -434,6 +434,32 @@ def _city_radius_km(pop):
     return math.sqrt(max(pop, 1) / _CITY_DENSITY / math.pi)
 
 
+def place_words(p):
+    """The place as a phrase, for a title or a sentence.
+
+    A named place is simply its name. A bare pair of coordinates is not a
+    phrase -- "what's coming up over 46.00,8.90" reads as a spreadsheet cell
+    dropped into a sentence -- so it gets the degrees the terminal header
+    already prints for the same place, and the "near X" hint, which is the
+    only thing identifying a bare pair of numbers to a person.
+
+    This is the case a browser cannot be redirected out of: /46.00,8.90 sits
+    in a valley that is not inside any city, and _confident_nearby_city
+    rightly refuses to claim it is Lugano. So the page has to say something
+    sensible about coordinates rather than assume it never sees any.
+    """
+    if not LATLON.match(p.name):
+        return p.name
+    words = (f"{abs(p.lat):.2f}\u00b0{'N' if p.lat >= 0 else 'S'} "
+             f"{abs(p.lon):.2f}\u00b0{'E' if p.lon >= 0 else 'W'}")
+    near = getattr(p, "near", None)
+    # The city, not the whole administrative path. The terminal header has
+    # room for "near Monza, Lombardy, Italy"; a page title read in a browser
+    # tab does not, and the province adds nothing to somebody trying to work
+    # out roughly where this is.
+    return f"{words}, near {near.split(',')[0]}" if near else words
+
+
 def _confident_nearby_city(lat, lon):
     """The city these coordinates are actually *in*, or None.
 

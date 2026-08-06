@@ -2,6 +2,7 @@
 feeds, the routes and the CLI flags."""
 import datetime as dt
 import re
+import unittest
 import shutil
 import subprocess
 import xml.etree.ElementTree as ET
@@ -895,3 +896,46 @@ def test_cli_still_renders_a_plain_chart(capsys):
     assert cli.main(["Zurich", "2026-08-11T23:00", "--plain"]) == 0
     out = capsys.readouterr().out
     assert "stars above the horizon" in out
+
+
+class CoordinatesReadAsAPlaceInTheTitle(unittest.TestCase):
+    """A browser landing on raw coordinates is normally bounced to the city
+    it is in, and then the title says the city. It cannot always be:
+    46.00,8.90 is a valley that is not inside any city, and
+    _confident_nearby_city rightly refuses to claim it is Lugano. The title
+    still has to be a sentence."""
+
+    def test_a_named_place_is_left_alone(self):
+        self.assertEqual(api.place_words(api.resolve_place("Zurich")), "Zürich")
+
+    def test_bare_coordinates_become_degrees_and_a_landmark(self):
+        got = api.place_words(api.resolve_place("46.00,8.90"))
+        self.assertNotIn("46.00,8.90", got)
+        self.assertIn("46.00°N", got)
+        self.assertIn("8.90°E", got)
+        self.assertIn("near", got)
+
+    def test_the_hemispheres_are_right(self):
+        # Santiago. The coordinates are snapped to a tenth of a degree on
+        # the way in, so this checks the signs rather than the digits.
+        got = api.place_words(api.resolve_place("-33.87,-70.67"))
+        self.assertIn("°S", got)
+        self.assertIn("°W", got)
+        self.assertNotIn("-", got)
+
+    def test_the_landmark_is_a_city_not_an_address(self):
+        """The terminal header has room for "near Monza, Lombardy, Italy".
+        A browser tab does not."""
+        got = api.place_words(api.resolve_place("46.00,8.90"))
+        self.assertLessEqual(got.count(","), 1)
+
+    def test_the_page_title_uses_it(self):
+        from starlette.testclient import TestClient
+        import server
+        server.RATE = server.BURST = 1_000_000
+        with TestClient(server.app) as c:
+            got = c.get("/46.00,8.90/events",
+                        headers={"accept": "text/html", "user-agent": "Mozilla/5.0"})
+            self.assertEqual(got.status_code, 200)
+            self.assertIn("what's coming up over 46.00°N", got.text)
+            self.assertNotIn("coming up over 46.00,8.90", got.text)

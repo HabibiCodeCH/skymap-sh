@@ -3170,7 +3170,10 @@ def events_page(request: Req, place: str | None):
         # ANSI text has no way to carry.
         controls = api.controls_html(api.EXPLORE)
         body = api.PAGE.format(
-            title=f"skymap.sh: what's coming up over {r.place.name}",
+            # place_words, not place.name: a browser that could not be
+            # redirected to a city name still has coordinates here, and
+            # "over 46.00,8.90" is not a sentence.
+            title=f"skymap.sh: what's coming up over {api.place_words(r.place)}",
             header=api.header_html(f"{r.place.slug}/events"),
             # The place's own name, not whatever was typed to get here, and
             # without ?days= or ?next.
