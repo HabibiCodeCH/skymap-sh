@@ -66,8 +66,10 @@ def by_key(key):
 
 
 def upcoming(now_utc, count=LIST_COUNT):
-    return [e for e in _entries()
-            if dt.datetime.fromisoformat(e["when_utc"]) >= now_utc][:count]
+    """The eclipses still ahead, soonest first. count=None for all of them."""
+    ahead = [e for e in _entries()
+             if dt.datetime.fromisoformat(e["when_utc"]) >= now_utc]
+    return ahead if count is None else ahead[:count]
 
 
 def next_computable(now_utc):
@@ -429,8 +431,8 @@ def picker_html(entry, now_utc, place=None, escape=html.escape):
     """
     base = f"/{quote(place)}/eclipse" if place else "/eclipse"
     here = key_of(entry)
-    rows = []
-    for e in upcoming(now_utc):
+
+    def row(e):
         k = key_of(e)
         d = dt.datetime.fromisoformat(e["when_utc"])
         # The Sun and the Moon, the same glyphs the sky chart draws them
@@ -445,8 +447,25 @@ def picker_html(entry, now_utc, place=None, escape=html.escape):
         lbl = escape(d.strftime("%d %b %Y").lstrip("0"))
         body = (f'<b>{lbl}</b>' if k == here
                 else f'<a href="{base}/{k}">{lbl}</a>')
-        rows.append(f'<li>{precise} {body} '
-                    f'<span class="ecl-what">{escape(e["type"])}</span></li>')
+        return (f'<li>{precise} {body} '
+                f'<span class="ecl-what">{escape(e["type"])}</span></li>')
+
+    ahead = upcoming(now_utc, count=None)
+    rows = [row(e) for e in ahead[:LIST_COUNT]]
+    # Everything past the first handful, behind one more click. The table
+    # runs to 2040 and a list that long as the first thing under the heading
+    # buries the two or three anybody is actually planning around. Nested
+    # <details>, so this needs no more script than the panel it sits in, and
+    # every date in it is still a real link.
+    later = ahead[LIST_COUNT:]
+    if later:
+        rows.append(
+            '<li class="ecl-rest"><details class="ecl-more-list">'
+            f'<summary>More eclipses '
+            f'<span class="ecl-what">{len(later)} to 2040</span></summary>'
+            '<div class="ecl-panel ecl-panel-side">'
+            '<ul>' + "".join(row(e) for e in later) + '</ul>'
+            '</div></details></li>')
     shown = dt.datetime.fromisoformat(entry["when_utc"])
     return ('<details class="ecl-picker">'
             f'<summary>{escape(shown.strftime("%d %B %Y").lstrip("0"))} '
@@ -481,8 +500,14 @@ def picker_script():
             "  if(!d)return;\n"
             "  document.addEventListener('keydown',function(e){\n"
             "    if(e.key!=='Escape'||!d.open)return;\n"
-            "    e.preventDefault();d.open=false;\n"
-            "    var s=d.querySelector('summary');if(s)s.focus();\n"
+            "    e.preventDefault();\n"
+            # One level at a time, the way escape works anywhere else: the
+            # list of later eclipses closes first and leaves the panel it
+            # opened out of still open.
+            "    var more=d.querySelector('.ecl-more-list[open]');\n"
+            "    var box=more||d;\n"
+            "    box.open=false;\n"
+            "    var s=box.querySelector('summary');if(s)s.focus();\n"
             "  });\n"
             "})();\n</script>")
 
@@ -581,6 +606,27 @@ ECLIPSE_CSS = """
    everywhere else on the site should not be grey here. */
 .ecl-sun{color:#ffff5f}
 .ecl-moon{color:#dadada}
+/* The rest of the table, opening to the right of the list it belongs to.
+   A nested <details>, so it costs no script: the outer panel is already a
+   disclosure and this is the same trick one level down. */
+.ecl-rest{border-top:1px solid #21262d;margin-top:5px;padding-top:6px}
+.ecl-more-list{position:relative}
+.ecl-more-list summary{cursor:pointer;color:#c9d1d9;list-style:none;
+  display:flex;align-items:baseline;gap:8px}
+.ecl-more-list summary::-webkit-details-marker{display:none}
+.ecl-more-list summary::after{content:"\203a";color:#6e7681;margin-left:auto}
+.ecl-more-list[open] summary::after{content:"\2039"}
+.ecl-more-list summary:hover{color:#87d7ff}
+/* Beside the first panel, not under it, and pinned to the top of the box
+   rather than to this row: the list is long and hanging it off the last
+   entry would start it below the fold. */
+.ecl-panel-side{top:-7px;left:calc(100% + 7px);max-height:62vh;
+  overflow-y:auto}
+/* Off the right of the screen on a narrow window, so it comes back to the
+   near side there. */
+@media (max-width:900px){
+  .ecl-panel-side{left:auto;right:calc(100% + 7px)}
+}
 .ecl-picker ul{list-style:none;margin:0;padding:8px 12px}
 .ecl-picker li{padding:3px 0;font-size:13px;white-space:nowrap}
 .ecl-picker li a{color:#87d7ff}
