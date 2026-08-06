@@ -236,10 +236,25 @@ def local(key, lat, lon, height_m=0.0):
 
     to_ut = lambda t: None if t is None else el.t0 + t - el.dT / 3600.0
 
-    if s["m"] >= s["L1"]:
+    # zeta is the observer's height above the fundamental plane, measured
+    # along the shadow axis, so its sign says which side of the Earth they
+    # are on. Negative is the far side, where the Sun is not up and there is
+    # nothing to see.
+    #
+    # Without this the projection is perfectly happy to report totality for
+    # Greece and Tunisia, because the axis passes through the Earth and comes
+    # out the other side with a small (u, v) again. Every point test passed
+    # while that was true; it only showed up once the whole grid was drawn
+    # and there was a second red streak across the Mediterranean.
+    #
+    # zeta = 0 is the Sun geometrically on the horizon, which also means the
+    # earlier idea that this file says nothing about the horizon was wrong:
+    # this much of it is unavoidable, and it belongs here rather than in the
+    # caller. How high the Sun is once it IS up remains sky.sun_altaz's job.
+    if s["m"] >= s["L1"] or s["zeta"] <= 0:
         return dict(kind="none", name=el.name, magnitude=0.0, obscuration=0.0,
                     maximum=None, first=None, last=None,
-                    central_start=None, central_end=None)
+                    central_start=None, central_end=None, sun_set_during=False)
 
     magnitude = (s["L1"] - s["m"]) / (s["L1"] + s["L2"])
     obsc = _obscuration(s["m"], s["L1"], s["L2"])
@@ -258,10 +273,25 @@ def local(key, lat, lon, height_m=0.0):
         c2 = _solve_contact(el, rho_sin, rho_cos, lon, t_max, -1, "L2")
         c3 = _solve_contact(el, rho_sin, rho_cos, lon, t_max, +1, "L2")
 
+    # Whether the Sun is still up at each contact. A place near the eastern
+    # edge of the map watches the eclipse begin and then loses the Sun
+    # partway through, and a page that prints a last-contact time it cannot
+    # see is worse than one that stops at sunset. Northern Spain sees
+    # totality with the Sun about 10 degrees up, so this is not a corner
+    # case here, it is most of the audience.
+    def _up(t):
+        if t is None:
+            return None
+        return _state(el, t, rho_sin, rho_cos, lon)["zeta"] > 0
+
+    up_first, up_last = _up(c1), _up(c4)
     return dict(kind=kind, name=el.name,
                 magnitude=magnitude, obscuration=obsc,
                 maximum=to_ut(t_max), first=to_ut(c1), last=to_ut(c4),
-                central_start=to_ut(c2), central_end=to_ut(c3))
+                central_start=to_ut(c2), central_end=to_ut(c3),
+                sun_up_at_first=up_first, sun_up_at_last=up_last,
+                sun_set_during=(up_first is True and up_last is False),
+                sun_rose_during=(up_first is False and up_last is True))
 
 
 def duration_seconds(circ):

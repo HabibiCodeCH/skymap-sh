@@ -187,17 +187,51 @@ class TheEdgeIsNotPromised(unittest.TestCase):
         self.assertFalse(besselian.on_the_edge(c))
 
 
-class WhatItDeliberatelyDoesNotDo(unittest.TestCase):
+class TheFarSideOfTheEarthSeesNothing(unittest.TestCase):
+    """The shadow axis passes through the Earth and comes out the other
+    side, where (u, v) goes small again and the projection will cheerfully
+    report totality. Only the sign of zeta distinguishes the two.
 
-    def test_it_says_nothing_about_the_horizon(self):
-        """Geometry and visibility are kept apart on purpose. Tokyo has a
-        real partial eclipse on paper with the Sun well below the horizon,
-        and the caller is the one that has to notice. Merging the two would
-        hide which half a wrong answer came from."""
-        c = besselian.local(KEY, 35.6762, 139.6503)
+    This shipped broken and every point test in this file passed. It
+    surfaced when the whole grid was drawn for the map and a second red
+    streak appeared across the Mediterranean, which is the argument for
+    computing the map from the same numbers rather than tracing it."""
+
+    def test_places_where_the_sun_is_down_see_no_eclipse(self):
+        for name, lat, lon in (("Greece", 36.80, 22.45),
+                               ("Tunisia", 36.80, 10.05),
+                               ("Tokyo", 35.6762, 139.6503),
+                               ("Sydney", -33.87, 151.21)):
+            c = besselian.local(KEY, lat, lon)
+            self.assertEqual(c["kind"], "none", name)
+            self.assertEqual(c["obscuration"], 0.0, name)
+            self.assertIsNone(c["maximum"], name)
+
+    def test_the_mediterranean_carries_no_second_track(self):
+        # The shape of the bug, asserted directly: nowhere south of the
+        # Pyrenees and east of Italy is in this eclipse at all.
+        for lat in (34.0, 36.0, 38.0):
+            for lon in range(8, 30, 2):
+                c = besselian.local(KEY, lat, float(lon))
+                self.assertNotEqual(c["kind"], "total", (lat, lon))
+
+
+class SunsetDuringTheEclipse(unittest.TestCase):
+    """Most of the audience for this one watches it low in the west, and
+    some of them lose the Sun before it ends."""
+
+    def test_zurich_loses_the_sun_partway_through(self):
+        c = besselian.local(KEY, 47.3769, 8.5417)
         self.assertEqual(c["kind"], "partial")
-        self.assertGreater(c["obscuration"], 0.0)
-        self.assertNotIn("sun_alt", c)
+        self.assertTrue(c["sun_up_at_first"])
+        self.assertFalse(c["sun_up_at_last"])
+        self.assertTrue(c["sun_set_during"])
+
+    def test_iceland_keeps_it_throughout(self):
+        c = besselian.local(KEY, 64.15, -21.94)
+        self.assertTrue(c["sun_up_at_first"])
+        self.assertTrue(c["sun_up_at_last"])
+        self.assertFalse(c["sun_set_during"])
 
 
 if __name__ == "__main__":
