@@ -180,8 +180,26 @@ def _headline_facts(facts):
         moons = maj / 31.0
         out.append(f"{moons:.0f}\u00d7 the width of the full Moon" if moons >= 2
                    else f"{maj:g} arcminutes across")
-    if facts.get("need"):
-        out.append(facts["need"])
+    # What it takes to see it -- but only when that answer is the same
+    # wherever the reader is standing. facts["need"] is not: the page asks
+    # the reader's own Bortle, and this image is fetched once by a crawler
+    # from its own datacentre and then shown to everybody. "Binoculars from
+    # here" on Deneb's card meant here=Virginia, said to someone who could
+    # be under a dark sky in Chile, about a star bright enough to see from
+    # a lit street. Recomputing under the darkest and the brightest sky and
+    # keeping only what does not change is the check rather than a list of
+    # allowed phrases -- today that leaves the two telescope lines, and it
+    # stays right if the thresholds move.
+    # Gated on the page having produced a line at all, because that is where
+    # the placeholder magnitudes get filtered out -- half the diffuse nebulae
+    # in RNGC carry a made-up 11.0, and reading facts["mag"] on its own would
+    # put "a small telescope" on a card for an object nobody ever measured.
+    if facts.get("need") and facts.get("mag") is not None:
+        import objects
+        point = facts.get("kind") in objects.POINT_KINDS
+        anywhere = objects.what_you_need(facts["mag"], None, point=point)
+        if anywhere == objects.what_you_need(facts["mag"], 9, point=point):
+            out.append(anywhere)
 
     if facts.get("star_count"):
         # Whether the whole shape is traceable, which is decided by its

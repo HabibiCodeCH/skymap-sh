@@ -260,7 +260,28 @@ def variable_info(hr):
     return sky._load("variables.json").get(str(hr), {})
 
 
-def what_you_need(mag, bortle=None):
+# The kinds whose light arrives as a point rather than spread over a patch
+# of sky, and which therefore need the other set of thresholds below. An
+# asterism is a handful of stars and nothing else, so it belongs here too.
+POINT_KINDS = ("star", "asterism")
+
+# Naked-eye limiting magnitude by Bortle class: the faintest point of light
+# ordinary eyes pick out near the zenith under that sky. Bortle's own table,
+# taking the dim end of each class's range, so the answer is the one that
+# holds on a normal night rather than the best night of the year.
+NELM = {1: 7.6, 2: 7.1, 3: 6.6, 4: 6.1, 5: 5.6, 6: 5.1, 7: 4.6, 8: 4.1, 9: 4.0}
+
+# What binoculars and a small telescope add to that. Roughly five magnitudes
+# for a 50mm binocular -- most of it the objective against a 7mm pupil, the
+# rest magnification darkening the sky background behind the star -- and
+# about three more for a small telescope. Added to the reader's own limit
+# rather than fixed, because a city takes the same bite out of what a lens
+# shows as out of what the eye does.
+BINOCULAR_GAIN = 5.0
+SMALL_SCOPE_GAIN = 8.0
+
+
+def what_you_need(mag, bortle=None, point=False):
     """What it takes to see something this bright, in words.
 
     None when the magnitude is unknown -- see deepsky.json's "nomag" flag.
@@ -272,13 +293,36 @@ def what_you_need(mag, bortle=None):
     Rosette and the Veil both carry that placeholder and both are binocular
     targets from a dark sky.
 
-    Thresholds are for extended objects, which is what this is used on.
-    They are dimmer to the eye than a star of the same integrated
-    magnitude, because that light is spread out rather than concentrated
-    into a point.
+    Two sets of thresholds, and passing the wrong one is not a rounding
+    error. An extended object is dimmer to the eye than a star of the same
+    catalogue magnitude, because that light is spread over a patch of sky
+    instead of concentrated into a point -- so the extended numbers, which
+    are the default here, call anything under Bortle 5 a binocular target at
+    magnitude 4. Applied to a star that is simply wrong: it told a reader in
+    Zurich that Deneb, the nineteenth brightest star in the sky and visible
+    down a lit street, needed binoculars. Pass point=True for the kinds in
+    POINT_KINDS.
     """
     if mag is None:
         return None
+    if point:
+        # An unknown sky is not an average sky: it is a reader we cannot ask.
+        # So the answer names its own condition instead of assuming one, and
+        # anything brighter than the worst sky's limit is simply naked-eye,
+        # because there is nowhere it would not be.
+        seen = NELM[bortle] if bortle in NELM else NELM[4]
+        if mag <= NELM[9]:
+            return "naked eye"
+        if bortle is None:
+            if mag <= NELM[4]:
+                return "naked eye from a dark sky"
+        elif mag <= seen:
+            return "naked eye"
+        if mag <= seen + BINOCULAR_GAIN:
+            return "binoculars" if bortle is None else "binoculars from here"
+        if mag <= seen + SMALL_SCOPE_GAIN:
+            return "a small telescope"
+        return "a telescope"
     # The reader's own sky, when we know it. Offering "naked eye if it is
     # really dark" to somebody under Bortle 8 is not advice, it is the
     # reason people buy binoculars and still see nothing: the equipment was

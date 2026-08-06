@@ -269,6 +269,29 @@ def test_card_headline_facts_stay_short(client):
         assert len(card._headline_facts(facts)) <= 3
 
 
+@pytest.mark.parametrize("name", ["Deneb", "Vega", "Pleiades", "M31",
+                                  "Ring Nebula", "Hercules Cluster"])
+def test_the_card_reads_the_same_under_any_sky(client, name):
+    """A card is drawn once, by a crawler, from wherever that crawler lives,
+    and then shown to everybody who sees the link. So nothing on it may
+    depend on the sky it was drawn under.
+
+    The page's own visibility line does depend on it, correctly -- it asks
+    the reader's Bortle and answers "binoculars from here". On a card "here"
+    was a datacentre in Virginia, which is how Deneb, a star bright enough
+    to see from a lit street, came to be a binocular object."""
+    import card
+    import objects
+    facts = client.get(f"/{name}?format=json").json()
+    base = card._headline_facts(facts)
+    for bortle in (1, 4, 6, 9):
+        under = dict(facts, bortle=bortle)
+        if facts.get("need"):
+            under["need"] = objects.what_you_need(facts.get("mag"), bortle)
+        assert card._headline_facts(under) == base, f"{name} at Bortle {bortle}"
+    assert not [line for line in base if "from here" in line]
+
+
 # --------------------------------------------------------- card glyphs
 def test_every_card_glyph_has_a_font_that_contains_it():
     """Read from the fonts' cmap tables, not from rendered pixels.
@@ -366,6 +389,45 @@ def test_visibility_line_never_invented_from_a_placeholder(client):
 def test_visibility_line_appears_when_the_magnitude_is_real(client):
     d = client.get("/Hercules Cluster?format=json").json()
     assert d.get("need"), "a measured magnitude should produce a visibility line"
+
+
+# ------------------------------------- a star is not an extended object
+@pytest.mark.parametrize("name,mag", [("Deneb", 1.25), ("Vega", 0.03),
+                                      ("Algol", 2.12), ("Albireo", 3.08)])
+def test_a_bright_star_is_naked_eye_under_any_sky(name, mag):
+    """It said "binoculars from here" for Deneb in Zurich. The extended-object
+    thresholds call anything under Bortle 5 a binocular target at magnitude 4,
+    which is right for a galaxy spreading that light over half a degree and
+    plainly wrong for the nineteenth brightest star in the sky."""
+    import objects
+    for bortle in [None] + list(range(1, 10)):
+        got = objects.what_you_need(mag, bortle, point=True)
+        assert got == "naked eye", f"{name} at Bortle {bortle}: {got}"
+
+
+def test_the_faintest_naked_eye_star_still_depends_on_the_sky():
+    """The point of the table. A magnitude 5.8 star is an easy catch in the
+    countryside and gone from a city."""
+    import objects
+    assert objects.what_you_need(5.8, 3, point=True) == "naked eye"
+    assert objects.what_you_need(5.8, 8, point=True) == "binoculars from here"
+
+
+def test_extended_objects_keep_their_own_thresholds():
+    """Same magnitude, different answer, because the light is spread out.
+    This is the distinction the point flag exists to make, so it has to be
+    visible from both sides."""
+    import objects
+    assert objects.what_you_need(4.5, 8) == "binoculars, and it will be faint"
+    assert objects.what_you_need(4.5, 8, point=True) == "binoculars from here"
+    assert objects.what_you_need(3.0, 8) != objects.what_you_need(3.0, 8, point=True)
+
+
+def test_the_bortle_sentence_reads_when_nothing_is_needed(client):
+    """"So for this you want naked eye" is not a sentence."""
+    body = client.get("/Zurich/Deneb", headers={"user-agent": "curl/8"}).text
+    assert "you want naked eye" not in body
+    assert "bright enough to see with the naked eye" in body
 
 
 # ------------------------------------------------- cards must not go stale

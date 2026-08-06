@@ -1241,9 +1241,9 @@ def object_facts(tgt, r, canonical, shown_utc=None):
     # many diffuse nebulae RNGC never measured, so a magnitude alone cannot
     # be trusted to mean anything. See objects.what_you_need().
     if tgt.get("kind") not in ("planet", "moon", "sun", "radiant"):
-        mag = (objects.dso_magnitude(tgt["name"])
-               if tgt.get("kind") not in ("star", "asterism") else tgt.get("mag"))
-        need = objects.what_you_need(mag, out.get("bortle"))
+        point = tgt.get("kind") in objects.POINT_KINDS
+        mag = tgt.get("mag") if point else objects.dso_magnitude(tgt["name"])
+        need = objects.what_you_need(mag, out.get("bortle"), point=point)
         if need:
             out["need"] = need
 
@@ -1420,8 +1420,13 @@ def object_prose(facts, tgt, r, width=76):
         how = ("genuinely dark" if b_here <= 3 else
                "suburban" if b_here <= 5 else
                "bright" if b_here <= 7 else "inner-city")
+        # "So for this you want naked eye" is not a sentence. When the answer
+        # is that no equipment is needed, the Bortle number stops being a
+        # warning and becomes the reason the answer is worth hearing.
         L.append(f"Your sky here is about Bortle {b_here}, {how}, "
-                 f"so for this you want {facts['need']}.")
+                 + ("and this is still bright enough to see with the naked eye."
+                    if facts["need"].startswith("naked eye")
+                    else f"so for this you want {facts['need']}."))
 
     # Only worth saying when the Moon is both bright and actually near it.
     # A full Moon 145 degrees away is not what stops you seeing something.
