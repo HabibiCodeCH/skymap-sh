@@ -586,7 +586,9 @@ ECLIPSE_CSS = """
 .ecl-picker li a{color:#87d7ff}
 .ecl-key{color:#6e7681;font-size:11px;margin:0;padding:5px 12px 9px;
   border-top:1px solid #21262d;line-height:1.6}
-.ecl-key span{display:block;white-space:nowrap}
+/* Direct children only. Without the >, the glyph inside each line is a
+   block too and sits on a line of its own above the words it labels. */
+.ecl-key > span{display:block;white-space:nowrap}
 .ecl-head-row{display:flex;align-items:center;gap:14px;flex-wrap:wrap;
   margin:1.5rem 0 14px}
 .ecl-head-row .obj-title{margin:0}
