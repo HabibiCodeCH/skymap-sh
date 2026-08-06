@@ -126,22 +126,36 @@ def _xterm_rgb(n):
 _glyph_cache = {}
 
 
-def _glyph(ch, color):
-    tile = _glyph_cache.get((ch, color))
+def _glyph(ch, color, cell_h=_CELL_H):
+    tile = _glyph_cache.get((ch, color, cell_h))
     if tile is None:
-        tile = Image.new("RGBA", (int(_CELL_W) + 1, _CELL_H), (0, 0, 0, 0))
+        tile = Image.new("RGBA", (int(_CELL_W) + 1, cell_h), (0, 0, 0, 0))
         ch = PNG_SUBSTITUTE.get(ch, ch)
         ImageDraw.Draw(tile).text((0, 0), ch, font=font_for(ch), fill=color)
-        _glyph_cache[(ch, color)] = tile
+        _glyph_cache[(ch, color, cell_h)] = tile
     return tile
 
 
-def frame_to_image(text):
+def cell_h_for(aspect):
+    """The row height that makes a character cell `aspect` times as tall as
+    it is wide.
+
+    The default grid here is 2.3:1, chosen so the chart's line glyphs
+    (- / | \\) join up. A drawing built for a different cell has to be drawn
+    on that cell or it comes out as an egg: art.py works to exactly 2.0 (see
+    art.CELL, and .obj-art's line-height, which pins the same number in the
+    browser), and rendering it at 2.3 stretched every eclipse 15% taller than
+    the page shows it.
+    """
+    return max(1, int(round(_CELL_W * aspect)))
+
+
+def frame_to_image(text, cell_h=_CELL_H):
     """One ANSI frame -> one RGB image, cell-aligned to a monospace grid,
     with a one-line watermark footer below the chart content."""
     lines = text.split("\n")
     cols = max((len(ANSI.sub("", l)) for l in lines), default=1)
-    content_h = _CELL_H * len(lines)
+    content_h = cell_h * len(lines)
     img = Image.new("RGB", (int(_CELL_W * cols) + 2, content_h + _WM_STRIP_H), BG)
     for row, line in enumerate(lines):
         col, pos, fg = 0, 0, FG_DEFAULT
@@ -149,16 +163,16 @@ def frame_to_image(text):
             chunk = line[pos:m.start()]
             for ch in chunk:
                 if ch != " ":
-                    tile = _glyph(ch, fg)
-                    img.paste(tile, (int(col * _CELL_W), row * _CELL_H), tile)
+                    tile = _glyph(ch, fg, cell_h)
+                    img.paste(tile, (int(col * _CELL_W), row * cell_h), tile)
                 col += 1
             pos = m.end()
             fg = _xterm_rgb(m.group(1)) if m.group(1) else FG_DEFAULT
         chunk = line[pos:]
         for ch in chunk:
             if ch != " ":
-                tile = _glyph(ch, fg)
-                img.paste(tile, (int(col * _CELL_W), row * _CELL_H), tile)
+                tile = _glyph(ch, fg, cell_h)
+                img.paste(tile, (int(col * _CELL_W), row * cell_h), tile)
             col += 1
     wm_y = content_h + (_WM_STRIP_H - WATERMARK_SIZE) // 2
     ImageDraw.Draw(img).text((4, wm_y), WATERMARK_TEXT, font=_wm_font, fill=WATERMARK_COLOR)
@@ -199,7 +213,7 @@ def _base_palette(frame_texts):
     return pal_img
 
 
-def frames_to_gif(frame_texts, frame_ms):
+def frames_to_gif(frame_texts, frame_ms, cell_h=_CELL_H):
     """List of ANSI frame strings -> GIF bytes. One shared, explicit palette
     (see _base_palette) across every frame, so colours don't flicker or
     drift as the GIF plays -- per-frame adaptive palettes would each pick
@@ -233,12 +247,13 @@ def frames_to_gif(frame_texts, frame_ms):
 
     def rest():
         for t in frame_texts[1:]:
-            im = frame_to_image(t)
+            im = frame_to_image(t, cell_h)
             q = im.quantize(palette=base, dither=Image.NONE)
             del im
             yield q
 
-    first_q = frame_to_image(frame_texts[0]).quantize(palette=base, dither=Image.NONE)
+    first_q = frame_to_image(frame_texts[0], cell_h).quantize(
+        palette=base, dither=Image.NONE)
     buf = io.BytesIO()
     first_q.save(buf, format="GIF", save_all=True, append_images=rest(),
                 duration=frame_ms, loop=0, palette=base)

@@ -2536,7 +2536,6 @@ def eclipse_html(r, f, key, entry, map_rows, legend, disc=None,
     # an object page puts its live summary above the chart rather than in
     # the title. The <title> and the card still lead with the local result,
     # because those are read without the page around them.
-    heading = html.escape(eclipse_page.headline(f))
     disc_html = ansi_to_html("\n".join(disc)) if disc else ""
     cap = eclipse_page.disc_caption(f)
     frames_html = [ansi_to_html("\n".join(fr)) for fr in (frames or [])]
@@ -2546,16 +2545,21 @@ def eclipse_html(r, f, key, entry, map_rows, legend, disc=None,
     body = ('<div class="ecl-head-row">'
             '<h1 class="obj-title"><span>Upcoming eclipses</span></h1>'
             + eclipse_page.picker_html(entry, r.when_utc, place)
+            # Beside the heading, not at the foot of the column. It is the
+            # only thing on the page that can stop somebody damaging their
+            # eyes, and it was last.
+            + eclipse_page.safety_html(f)
             + '</div>'
             + '<div class="obj-cols">'
             f'<aside class="obj-static">'
             f'{eclipse_page.sidebar_html(entry, r.when_utc, disc, disc_html, cap, also, f)}'
             f'</aside>'
             f'<div class="obj-live">'
-            f'<p class="obj-lede obj-live-head ecl-head">{heading}</p>'
+            f'{eclipse_page.live_head_html(f)}'
             f'{eclipse_page.live_html(f, map_rows, legend, ansi_to_html, chart_pre, frames_html, labels, gif_href)}'
             f'</div></div>'
-            + eclipse_page.frames_script(frames_html, labels))
+            + eclipse_page.frames_script(frames_html, labels)
+            + eclipse_page.picker_script())
     head = (eclipse_head(f, key, place, base_url) + OBJECT_CSS
             + eclipse_page.ECLIPSE_CSS)
     return _object_page_template().format(
@@ -2579,8 +2583,11 @@ def compose_eclipse(r, key):
     # Empty when the Sun is down here, which is right: there is nothing to
     # draw a picture of, and the prose already says so.
     disc = eclipse_map.disc_art(key, r.place.lat, r.place.lon, color=r.color)
+    # Local labels: the clock over the animation is read next to a timeline
+    # that is already local, and two different time zones in the same column
+    # is a trap rather than a detail.
     frames, labels = eclipse_map.disc_frames(key, r.place.lat, r.place.lon,
-                                             color=r.color)
+                                             color=r.color, tz=r.tz)
     return (Result(eclipse_page.text(f, rows, legend, disc, r.color), f),
             entry, rows, legend, disc, frames, labels)
 

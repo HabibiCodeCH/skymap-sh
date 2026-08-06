@@ -163,5 +163,55 @@ class TheSunIsDrawnAsItLooks(unittest.TestCase):
         self.assertEqual(eclipse.disc_art("2026-08-28", 47.37, 8.54), [])
 
 
+class TheAnimationIsClockedInLocalTime(unittest.TestCase):
+    """Every other time on the page is local. A clock over the drawing that
+    quietly ran in UT would be read as local by everyone, and in Zurich it is
+    two hours out -- which is the difference between arriving in time and
+    arriving after it finished."""
+
+    ZURICH = (47.3769, 8.5417)
+
+    def test_the_labels_shift_with_the_offset(self):
+        _, ut = eclipse.disc_frames(KEY, *self.ZURICH)
+        _, local = eclipse.disc_frames(KEY, *self.ZURICH, tz=2.0)
+        self.assertTrue(ut and local)
+        for a, b in zip(ut, local):
+            ah, am = (int(x) for x in a.split(":"))
+            bh, bm = (int(x) for x in b.split(":"))
+            self.assertEqual(bh, (ah + 2) % 24)
+            self.assertEqual(am, bm)
+
+    def test_the_first_label_is_first_contact(self):
+        # The clock and the "starts" cell in the heading are the same moment
+        # read two ways, so they have to say the same thing.
+        _, labels = eclipse.disc_frames(KEY, *self.ZURICH, tz=2.0)
+        circ = besselian.local(KEY, *self.ZURICH)
+        secs = round(((circ["first"] + 2.0) % 24) * 3600)
+        self.assertEqual(labels[0], f"{secs // 3600:02d}:{secs // 60 % 60:02d}")
+
+
+class TheExportIsDrawnOnTheSameGridAsThePage(unittest.TestCase):
+    """The GIF renderer's default cell is 2.3 times as tall as it is wide,
+    tuned for the chart's line glyphs. These discs are built for exactly 2.0
+    (art.CELL), so exporting them on the default grid stretched every Sun 15%
+    taller than the page it came from."""
+
+    def test_the_cell_matches_the_art(self):
+        import art
+        import gif
+        h = gif.cell_h_for(art.CELL)
+        self.assertAlmostEqual(h / gif._CELL_W, art.CELL, delta=0.06)
+        self.assertLess(h, gif._CELL_H)
+
+    def test_an_exported_frame_is_as_tall_as_the_art_says(self):
+        import art
+        import gif
+        frames, _ = eclipse.disc_frames(KEY, 38.91, 1.43)      # Ibiza
+        img = gif.frame_to_image("\n".join(frames[0]), gif.cell_h_for(art.CELL))
+        rows = len(frames[0])
+        self.assertEqual(img.height - gif._WM_STRIP_H,
+                         rows * gif.cell_h_for(art.CELL))
+
+
 if __name__ == "__main__":
     unittest.main()

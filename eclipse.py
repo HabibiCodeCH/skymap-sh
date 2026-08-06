@@ -396,15 +396,17 @@ def track(key, step_minutes=2):
 FRAMES = 25
 
 
-def disc_frames(key, lat, lon, n=FRAMES, color=True):
+def disc_frames(key, lat, lon, n=FRAMES, color=True, tz=0.0):
     """The whole eclipse, first contact to last, as n drawings.
 
     Rendered here rather than in the browser because the geometry is
     Besselian and the browser has none of it. What ships is pictures.
 
-    Returns (frames, labels): the labels are UT clock strings, so whatever
-    plays them can say what moment is on screen. Empty when this place sees
-    nothing, which the caller treats as "no animation here".
+    Returns (frames, labels): the labels are clock strings, shifted by tz, so
+    whatever plays them can say what moment is on screen. Local by default
+    from the page, because every other time on it is local and a clock in UT
+    sitting next to a timeline in local time is a trap. Empty when this place
+    sees nothing, which the caller treats as "no animation here".
     """
     if key not in besselian.ELEMENTS:
         return [], []
@@ -422,6 +424,6 @@ def disc_frames(key, lat, lon, n=FRAMES, color=True):
         if not art:
             continue
         frames.append(art)
-        secs = round((t % 24) * 3600)
+        secs = round(((t + tz) % 24) * 3600)
         labels.append(f"{secs // 3600:02d}:{secs // 60 % 60:02d}")
     return frames, labels

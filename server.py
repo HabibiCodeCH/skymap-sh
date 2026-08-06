@@ -17,7 +17,7 @@ from fastapi.responses import (PlainTextResponse, HTMLResponse, JSONResponse,
                                StreamingResponse, FileResponse, Response,
                                RedirectResponse)
 
-import api, besselian, card, gif, objects, sky, tle
+import api, art, besselian, card, gif, objects, sky, tle
 
 app = FastAPI(title="skymap.sh", docs_url=None, redoc_url=None)
 
@@ -3010,7 +3010,12 @@ def _respond_eclipse_gif(request: Req, place: str | None, key: str):
         return PlainTextResponse("this eclipse is not visible from there\n",
                                  status_code=404)
     _stat["eclipse_gif"] += 1
-    data = gif.frames_to_gif(["\n".join(f) for f in frames], ECLIPSE_GIF_MS)
+    # On the drawing's own grid, not the chart's. art.py builds these discs
+    # for a cell exactly twice as tall as it is wide; the GIF renderer's
+    # default cell is 2.3, which came out as a Sun 15% taller than the one on
+    # the page it was exported from.
+    data = gif.frames_to_gif(["\n".join(f) for f in frames], ECLIPSE_GIF_MS,
+                             gif.cell_h_for(art.CELL))
     return Response(data, media_type="image/gif", headers={
         "Cache-Control": "public, max-age=86400",
         "Content-Disposition":

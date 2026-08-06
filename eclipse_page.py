@@ -448,9 +448,35 @@ def picker_html(entry, now_utc, place=None, escape=html.escape):
             '<span class="ecl-more">change</span></summary>'
             '<div class="ecl-panel">'
             '<ul>' + "".join(rows) + '</ul>'
-            '<p class="ecl-key">&#9679; local times computed here &nbsp; '
-            '&#9675; date and regions only</p>'
+            # One per line. Side by side they wrapped wherever the panel
+            # happened to end, which put "date" on one line and "and regions
+            # only" on the next and read as a third entry.
+            '<p class="ecl-key">'
+            '<span>&#9679; local times computed here</span>'
+            '<span>&#9675; date and regions only</span></p>'
             '</div></details>')
+
+
+def picker_script():
+    """Escape closes the eclipse list.
+
+    <details> has no native close-on-escape, so a dropdown opened by accident
+    stays open over the page until it is clicked again. Focus goes back to
+    the summary, so escape leaves the keyboard where it found it.
+
+    Separate from frames_script on purpose: that one only ships where there
+    is an animation, and the list is on every eclipse page including the ones
+    with nothing to draw.
+    """
+    return ("<script>\n(function(){\n"
+            "  var d=document.querySelector('.ecl-picker');\n"
+            "  if(!d)return;\n"
+            "  document.addEventListener('keydown',function(e){\n"
+            "    if(e.key!=='Escape'||!d.open)return;\n"
+            "    e.preventDefault();d.open=false;\n"
+            "    var s=d.querySelector('summary');if(s)s.focus();\n"
+            "  });\n"
+            "})();\n</script>")
 
 
 ECLIPSE_CSS = """
@@ -479,14 +505,48 @@ ECLIPSE_CSS = """
 .ecl-list .ecl-what{color:#8b949e}
 /* The map is the one thing on this page that must not reflow: it is a grid
    of characters and a changed line-height shears the track diagonally. Same
-   reasoning as .obj-art, and the same fix. */
-.ecl-map{line-height:1.0;font-variant-ligatures:none;overflow-x:auto;margin:0}
-.ecl-safety{border-left:2px solid #d29922;padding:2px 0 2px 12px;margin:18px 0 0;
-  color:#c9d1d9;font-size:12.5px;line-height:1.55;
-  font-family:ui-sans-serif,-apple-system,"Segoe UI",Roboto,sans-serif}
+   reasoning as .obj-art, and the same fix.
+
+   It is also a fixed 96 characters wide whatever the window, so at 11px it
+   needs 634px and anything narrower than that pushed it into scrolling
+   sideways inside its own box -- half of Europe off the right-hand edge,
+   with nothing to say so. Sized against the column instead: 96 characters at
+   0.6em each is 57.6em, so 1.6cqw keeps the whole track on screen with a
+   little room, and the min() means it never grows past the 11px everything
+   else on the page is drawn at. Browsers without container queries drop the
+   line and keep 11px and the scrollbar. */
+/* Same small section label as "THE SAME NIGHT" in the left column, so the
+   two columns mark their sections the same way. The space above it is what
+   separates the map from the drawing over it; below it, almost none, because
+   the label belongs to the map. */
+.ecl-maptitle{color:#8fb6e0;font-size:11px;letter-spacing:.09em;
+  text-transform:uppercase;margin:1.1rem 0 .45rem}
+/* A little more air than the map's own label: what it separates is two
+   blocks of text rather than a label from the thing it names. */
+.ecl-prose-title{margin-top:1.4rem}
+.ecl-mapwrap{container-type:inline-size;margin:0 0 2px}
+.ecl-map{line-height:1.0;font-variant-ligatures:none;overflow-x:auto;margin:0;
+  font-size:min(11px,1.6cqw)}
+.ecl-safety{border-left:2px solid #d29922;padding:2px 0 2px 12px;margin:0;
+  color:#c9d1d9;font-size:12px;line-height:1.5;
+  font-family:ui-sans-serif,-apple-system,"Segoe UI",Roboto,sans-serif;
+  /* Pushed to the far side of the heading row, and capped so it stays a
+     block of text rather than five words per line across the page. */
+  margin-left:auto;max-width:min(560px,52%)}
 .ecl-safety b{color:#d29922;font-weight:600}
-.ecl-times{display:flex;gap:22px;margin:0 0 14px;flex-wrap:wrap}
+/* Under the heading rather than beside it once there is no room for two
+   things on a line. */
+@media (max-width:900px){.ecl-safety{max-width:none;margin-left:0}}
+/* The times are the heading of this column, not a row underneath it. The
+   sentence that used to sit here said the same thing in words, one line
+   above the numbers it was describing. */
+.ecl-times{display:flex;gap:22px;flex-wrap:wrap}
 .ecl-times div{min-width:64px}
+/* Set like the label opposite it in the left column, and bottom-aligned with
+   the numbers so the whole row sits on one line. */
+.ecl-where{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  font-size:16.5px;color:#e6ebf2;white-space:nowrap}
+.ecl-times .ecl-where{align-self:flex-end;line-height:1.15}
 .ecl-times .k{display:block;color:#6e7681;font-size:11px;letter-spacing:.06em;
   text-transform:uppercase}
 .ecl-times .v{color:#e6edf3;font-size:15px}
@@ -517,8 +577,9 @@ ECLIPSE_CSS = """
 .ecl-picker ul{list-style:none;margin:0;padding:8px 12px}
 .ecl-picker li{padding:3px 0;font-size:13px;white-space:nowrap}
 .ecl-picker li a{color:#87d7ff}
-.ecl-key{color:#6e7681;font-size:11px;margin:0;padding:2px 12px 9px;
-  border-top:1px solid #21262d}
+.ecl-key{color:#6e7681;font-size:11px;margin:0;padding:5px 12px 9px;
+  border-top:1px solid #21262d;line-height:1.6}
+.ecl-key span{display:block;white-space:nowrap}
 .ecl-head-row{display:flex;align-items:center;gap:14px;flex-wrap:wrap;
   margin:1.5rem 0 14px}
 .ecl-head-row .obj-title{margin:0}
@@ -529,7 +590,79 @@ ECLIPSE_CSS = """
    lines at 16.5px. */
 .ecl-sec,.obj-live-head.ecl-head{min-height:3.3rem;margin:0 0 .35rem;
   display:flex;align-items:flex-end}
+/* The animation frame. The clock and the transport sit on top of the
+   drawing, so the frame is what they are positioned against. */
+.ecl-anim{position:relative}
+.ecl-clock,.ecl-controls{position:absolute;right:12px;
+  font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  font-size:12px;color:#8b949e}
+.ecl-clock{top:9px;letter-spacing:.04em}
+/* Bottom right, out of the drawing's way. Plain text: these are four small
+   words over a picture, and button chrome made them look like a video
+   player had landed on it. */
+.ecl-controls{bottom:9px;display:flex;align-items:baseline;gap:14px}
+.ecl-btn{background:none;border:0;padding:0;margin:0;font:inherit;
+  color:#8b949e;cursor:pointer;line-height:1}
+.ecl-btn:hover{color:#e6edf3}
+/* The word changes as it plays, and a row that shifts sideways every time
+   you press it is a row you cannot press twice. */
+#ecl-toggle{min-width:3.4em;text-align:center}
+a.ecl-gif{color:#87d7ff;text-decoration:none}
+a.ecl-gif:hover{text-decoration:underline}
 </style>"""
+
+
+def map_title(f):
+    """What the map is of, which depends on what kind of eclipse this is.
+
+    Only a total eclipse has a path of totality. An annular one has a path of
+    annularity, and calling it totality on the page that draws it would be
+    wrong in the one place a reader could check.
+    """
+    kind = (f.get("type") or "").lower()
+    if "annular" in kind:
+        return "Path of annularity"
+    if "total" in kind:
+        return "Path of totality"
+    return "Where the eclipse is visible"
+
+
+def live_head_html(f, escape=html.escape):
+    """The right column's heading: where you are, then when it happens.
+
+    The times used to sit in a row of their own below the drawing, under a
+    sentence that said the same thing again in words. They are the answer
+    this column exists to give, so they are the heading, and the sentence is
+    gone rather than repeated. The headline still leads the <title> and the
+    card, which are read without the page around them.
+
+    Falls back to the sentence where there are no times to show: not visible
+    from here, or an eclipse with no computed circumstances at all.
+    """
+    if not f.get("timeline"):
+        return (f'<p class="obj-lede obj-live-head ecl-head">'
+                f'{escape(headline(f))}</p>')
+    cells = [f'<span class="ecl-where">In {escape(f["place"])}</span>']
+    for m in f["timeline"]:
+        cls = (" ecl-horizon" if m["kind"] == "horizon"
+               else " ecl-unseen" if m.get("below_horizon") else "")
+        cells.append(f'<div class="{cls.strip()}">'
+                     f'<span class="k">{escape(m["label"])}</span>'
+                     f'<span class="v">{escape(m["clock"])}</span></div>')
+    # How much of the Sun goes, in the same row as when. On the edge of the
+    # path this deliberately does not say 100%: the prediction cannot resolve
+    # which side of the limit the place is on, and the prose below says so.
+    if f.get("on_the_edge"):
+        cells.append('<div><span class="k">totality</span>'
+                     '<span class="v">on the edge</span></div>')
+    elif f.get("kind") == "total" and f.get("duration_s"):
+        cells.append('<div><span class="k">totality</span>'
+                     f'<span class="v">{f["duration_s"]:.0f}s</span></div>')
+    elif f.get("obscuration"):
+        cells.append('<div><span class="k">covered</span>'
+                     f'<span class="v">{f["obscuration"] * 100:.0f}%</span></div>')
+    return ('<div class="obj-live-head ecl-head ecl-times">'
+            + "".join(cells) + '</div>')
 
 
 def live_html(f, map_rows, legend, ansi_to_html, chart_pre,
@@ -552,54 +685,66 @@ def live_html(f, map_rows, legend, ansi_to_html, chart_pre,
             + frames_html[0] + '</pre>'
             # In the frame, top right, so the time reads as part of the
             # picture rather than as a caption about it -- it is the one
-            # number that changes while you watch.
+            # number that changes while you watch. Local time, like every
+            # other clock on the page.
             f'<span class="ecl-clock" id="ecl-clock">'
-            f'{escape(frame_labels[0])} UT</span>'
-            # Controls in the frame's bottom right, next to nothing else,
-            # so they read as belonging to the picture. Hidden until the
-            # script runs: without JS the frame is a still of first contact
-            # and there is nothing for them to do.
+            f'{escape(frame_labels[0])}</span>'
+            # Controls in the frame's bottom right, next to nothing else, so
+            # they read as belonging to the picture. Plain text, no button
+            # chrome: white rounded rectangles sitting on the drawing looked
+            # like a video player had been dropped on top of it. Hidden until
+            # the script runs -- without JS the frame is a still of first
+            # contact and there is nothing for them to do.
             '<span class="ecl-controls" id="ecl-controls" hidden>'
             '<button type="button" id="ecl-prev" class="ecl-btn"'
-            ' aria-label="previous frame">&#9664;</button>'
+            ' aria-label="previous frame">&lt;</button>'
             '<button type="button" id="ecl-toggle" class="ecl-btn"'
-            ' aria-label="pause">&#9208;</button>'
+            ' aria-label="pause">pause</button>'
             '<button type="button" id="ecl-next" class="ecl-btn"'
-            ' aria-label="next frame">&#9654;</button>'
-            f'<a class="ecl-btn ecl-gif" href="{gif_href}">gif</a>'
+            ' aria-label="next frame">&gt;</button>'
+            f'<a class="ecl-btn ecl-gif" id="ecl-gif" href="{gif_href}">gif</a>'
             '</span>'
             '</div>')
-    if f.get("timeline"):
-        cells = []
-        for m in f["timeline"]:
-            cls = (" ecl-horizon" if m["kind"] == "horizon"
-                   else " ecl-unseen" if m.get("below_horizon") else "")
-            cells.append(f'<div class="{cls.strip()}">'
-                         f'<span class="k">{escape(m["label"])}</span>'
-                         f'<span class="v">{escape(m["clock"])}</span></div>')
-        if f.get("duration_s"):
-            cells.append('<div><span class="k">totality</span>'
-                         f'<span class="v">{f["duration_s"]:.0f}s</span></div>')
-        out.append('<div class="ecl-times">' + "".join(cells) + '</div>')
-
+    # No times row here: it is the column's heading now (see live_head_html).
     if map_rows:
-        out.append(f'<pre class="ecl-map">'
-                   f'{ansi_to_html(chr(10).join(map_rows))}</pre>')
+        # Named, because a band of red dots across northern Spain is not
+        # self-explanatory, and the map answers a different question from
+        # everything above it: not what happens here, but where to stand.
+        out.append(f'<p class="ecl-maptitle">{escape(map_title(f))}</p>')
+        # Wrapped, so the map can be sized against the width of the column
+        # rather than against the page. It is a fixed 96 characters wide and
+        # was scrolling sideways inside its own box; see .ecl-mapwrap.
+        out.append(f'<div class="ecl-mapwrap"><pre class="ecl-map">'
+                   f'{ansi_to_html(chr(10).join(map_rows))}</pre></div>')
         out.append(f'<p class="obj-src">{ansi_to_html(legend)}</p>')
 
+    if prose(f):
+        out.append('<p class="ecl-maptitle ecl-prose-title">'
+                   'Additional information</p>')
     for p in prose(f):
         out.append(f'<p class="obj-prose">{escape(p)}</p>')
 
 
-    # Solar only. A lunar eclipse is the Moon in the Earth's shadow and is
-    # completely safe to look at with anything you like, so a filter warning
-    # there is not merely redundant -- it teaches the reader that this box
-    # is boilerplate, on the pages where it is the most important sentence
-    # we print.
-    if "solar" in f["type"]:
-        safety = SAFETY + (" " + SAFETY_TOTALITY if f.get("kind") == "total" else "")
-        out.append(f'<p class="ecl-safety"><b>Your eyes.</b> {escape(safety)}</p>')
+    # The warning is not down here any more. It sits beside the heading, at
+    # the top of the page, because it is the one thing on it that can stop
+    # somebody hurting themselves and the bottom of a column is where you get
+    # to after you have already been outside. See safety_html.
     return "".join(out)
+
+
+def safety_html(f, escape=html.escape):
+    """The filter warning, for the top of the page.
+
+    Solar only. A lunar eclipse is the Moon in the Earth's shadow and is
+    completely safe to look at with anything you like, so a filter warning
+    there is not merely redundant -- it teaches the reader that this box is
+    boilerplate, on the pages where it is the most important sentence we
+    print.
+    """
+    if "solar" not in f["type"]:
+        return ""
+    safety = SAFETY + (" " + SAFETY_TOTALITY if f.get("kind") == "total" else "")
+    return f'<p class="ecl-safety"><b>Your eyes.</b> {escape(safety)}</p>'
 
 
 def disc_caption(f):
@@ -634,7 +779,9 @@ def text(f, rows, legend, disc=None, color=True):
     if disc:
         out += disc + ["", "  " + disc_caption(f), ""]
     if rows:
-        out += rows + ["", "  " + legend, ""]
+        out += ["  " + map_title(f), ""] + rows + ["", "  " + legend, ""]
+    if prose(f):
+        out += ["  Additional information", ""]
     for p in prose(f):
         out.append("  " + p)
     if "solar" in f["type"]:
@@ -654,6 +801,11 @@ def frames_script(frames_html, labels):
     Honours prefers-reduced-motion by starting paused. An eclipse looping
     every four seconds is exactly the kind of thing that setting exists for,
     and the frames are still all there to step through.
+
+    The keys are the ones the sky chart already uses for its animation:
+    space plays and pauses, the arrows step, v takes the export. Somebody who
+    has driven one of these on the front page should not have to learn a
+    second set of them here.
     """
     if not frames_html:
         return ""
@@ -668,12 +820,12 @@ def frames_script(frames_html, labels):
         "  var still=window.matchMedia&&"
         "window.matchMedia('(prefers-reduced-motion: reduce)').matches;\n"
         "  var show=function(){pre.innerHTML=F[i];"
-        "if(clock)clock.textContent=L[i]+' UT';};\n"
+        "if(clock)clock.textContent=L[i];};\n"
         "  var step=function(){i=(i+1)%F.length;show();};\n"
         "  var play=function(){if(timer)return;timer=setInterval(step,180);"
-        "if(btn){btn.innerHTML='\\u23f8';btn.setAttribute('aria-label','pause');}};\n"
+        "if(btn){btn.textContent='pause';btn.setAttribute('aria-label','pause');}};\n"
         "  var stop=function(){clearInterval(timer);timer=null;"
-        "if(btn){btn.innerHTML='\\u25b6';btn.setAttribute('aria-label','play');}};\n"
+        "if(btn){btn.textContent='play';btn.setAttribute('aria-label','play');}};\n"
         "  var bar=document.getElementById('ecl-controls');\n"
         "  var prev=document.getElementById('ecl-prev'),"
         "next=document.getElementById('ecl-next');\n"
@@ -682,5 +834,20 @@ def frames_script(frames_html, labels):
         "  if(prev)prev.addEventListener('click',function(){jump(-1);});\n"
         "  if(next)next.addEventListener('click',function(){jump(1);});\n"
         "  if(btn)btn.addEventListener('click',function(){timer?stop():play();});\n"
+        # Never while something else owns the key: typing a place with a
+        # space in it must still type a space, and space on a focused
+        # <summary> has to keep opening the eclipse list.
+        "  var busy=function(e){var t=e.target,n=t&&t.tagName;\n"
+        "    return n==='INPUT'||n==='TEXTAREA'||n==='SELECT'||n==='SUMMARY'||"
+        "n==='BUTTON'||n==='A'||(t&&t.isContentEditable);};\n"
+        "  document.addEventListener('keydown',function(e){\n"
+        "    if(busy(e)||e.metaKey||e.ctrlKey||e.altKey)return;\n"
+        "    if(e.key===' '||e.key==='Spacebar'){e.preventDefault();"
+        "timer?stop():play();return;}\n"
+        "    if(e.key==='ArrowLeft'){e.preventDefault();jump(-1);return;}\n"
+        "    if(e.key==='ArrowRight'){e.preventDefault();jump(1);return;}\n"
+        "    if(e.key==='v'){var g=document.getElementById('ecl-gif');"
+        "if(g){e.preventDefault();location.href=g.href;}}\n"
+        "  });\n"
         "  if(still){stop();}else{play();}\n"
         "})();\n</script>")
