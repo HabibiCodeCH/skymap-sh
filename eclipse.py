@@ -825,9 +825,14 @@ def arc_frames(key, lat, lon, n=FRAMES, color=True, tz=0.0):
 # already ships, sampled down to this width. No new build step and no second
 # copy of the coastlines to keep in step with the first.
 NIGHT_COLS, NIGHT_ROWS = 128, 26
-NIGHT_ALL = 111             # the whole eclipse, from here
-NIGHT_SOME = 67             # part of it: the Moon rises or sets partway
-NIGHT_NONE = LAND_DIM       # the Moon is down for all of it
+# The copper of the eclipse itself, so the two pictures on the page are
+# about the same thing: the same colour the Moon turns in the drawing above.
+# The land that misses it goes light rather than dark -- on a black page two
+# dim colours read as one, and what this map is for is the boundary between
+# them.
+NIGHT_ALL = 208             # the whole eclipse, from here
+NIGHT_SOME = 172            # part of it: the Moon rises or sets partway
+NIGHT_NONE = 249            # the Moon is down for all of it
 _night_grids = {}
 
 
