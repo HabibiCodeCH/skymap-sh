@@ -313,6 +313,18 @@ def _object_href(e):
     return f"/{name.replace(' ', '%20')}" if name else None
 
 
+def headline_of(entry):
+    """The eclipse described without reference to anybody looking at it.
+
+    What a link says when it is going to be read by people in forty
+    countries: what it is, when, and where the shadow goes.
+    """
+    when = dt.datetime.fromisoformat(entry["when_utc"])
+    date = when.strftime("%d %B %Y").lstrip("0")
+    verb = "crossing" if is_solar(entry) else "visible from"
+    return f"{entry['name']} on {date}, {verb} {entry['regions']}"
+
+
 def headline(f):
     """The one sentence the page leads with, and the OG card repeats."""
     place = f["place"]
@@ -623,6 +635,47 @@ def table_span():
     return f"{len(rows)} eclipses tracked, {first} to {last}"
 
 
+def share_html(share_url, escape=html.escape):
+    """A button that copies the eclipse's own link, without your city in it.
+
+    The address bar cannot offer this. Opening /eclipse/2026-08-12 bounces
+    you to /Geneva/eclipse/2026-08-12 so the page can say Geneva rather than
+    46.20,6.10 -- and from that moment the only URL you can copy has your
+    location baked into it. Sharing it tells everyone who opens it what the
+    eclipse does from Geneva, which is the wrong answer for all of them, and
+    the card that unfurls says Geneva too.
+
+    The bare URL is the one worth sharing: a person opening it is bounced to
+    their own city, and an unfurling crawler is not bounced at all and gets
+    the card that names nobody. It just needed a way out of the page.
+
+    Hidden until the script runs, like the animation controls: without a
+    clipboard there is nothing for it to do, and a button that does nothing
+    is worse than no button.
+    """
+    return (f'<button type="button" class="ecl-share" id="ecl-share" hidden'
+            f' data-url="{escape(share_url)}"'
+            f' title="Copy a link that shows each person their own view">'
+            f'share</button>')
+
+
+def share_script():
+    """Copy on click, and say so. No library: this is four lines of
+    clipboard and a label that changes back."""
+    return ("<script>\n(function(){\n"
+            "  var b=document.getElementById('ecl-share');\n"
+            "  if(!b||!navigator.clipboard)return;\n"
+            "  b.hidden=false;\n"
+            "  b.addEventListener('click',function(){\n"
+            "    navigator.clipboard.writeText(b.dataset.url).then(function(){\n"
+            "      b.textContent='copied';b.classList.add('ecl-shared');\n"
+            "      setTimeout(function(){b.textContent='share';"
+            "b.classList.remove('ecl-shared');},2000);\n"
+            "    });\n"
+            "  });\n"
+            "})();\n</script>")
+
+
 def picker_html(entry, now_utc, place=None, escape=html.escape):
     """The eclipse list, as a disclosure under the heading.
 
@@ -884,6 +937,13 @@ ECLIPSE_CSS = """
 .ecl-key > span{display:block;white-space:nowrap}
 .ecl-head-row{display:flex;align-items:center;gap:14px;flex-wrap:wrap;
   margin:1.5rem 0 14px}
+/* Same shape as the eclipse picker beside it: these are the two things you
+   can do to this heading. */
+.ecl-share{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  font-size:13px;color:#c9d1d9;background:none;cursor:pointer;
+  border:1px solid #30363d;border-radius:6px;padding:6px 12px}
+.ecl-share:hover{border-color:#8fb6e0}
+.ecl-shared{color:#7ee787;border-color:#7ee787}
 .ecl-head-row .obj-title{margin:0}
 /* The two drawings have to start on the same line, and what sits above them
    does not match: a short label on the left, a sentence that may wrap to two

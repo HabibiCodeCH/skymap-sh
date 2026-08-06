@@ -2516,7 +2516,7 @@ def eclipse_head(f, key, place, base_url):
     same event described from somewhere else, not a different page.
     """
     title = html.escape(eclipse_title(f))
-    desc = html.escape(eclipse_description(f))
+    desc = html.escape(eclipse_description(f, place))
     url = canonical_url(f"/eclipse/{key}")
     # The canonical drops the place; the card does not. They answer different
     # questions: the canonical says which page this is, and there is one page
@@ -2548,13 +2548,26 @@ def eclipse_title(f):
     return f"{f['name']}, {when.strftime('%d %B %Y').lstrip('0')}"
 
 
-def eclipse_description(f):
+def eclipse_description(f, place=None):
     """One sentence, and it must survive being read on its own.
 
-    A card is seen without the page around it, so "90% covered" with no
-    place attached is worse than useless. The place is always named.
+    Named place: that place's answer, because "90% covered" with nobody
+    attached to it is worse than useless and a link about an eclipse is
+    worth clicking for the local number.
+
+    No place: nobody is named. The same rule the card follows, and for the
+    same reason -- this text is fetched once by an unfurling crawler in a
+    datacentre and then shown to everyone who sees the link, so a place on
+    it is that machine's location presented as the reader's. The image was
+    already careful about this and the sentence beside it was not, which is
+    the worse half: a wrong picture is a wrong picture, a wrong sentence
+    reads as a fact.
     """
-    return eclipse_page.headline(f) + f". curl skymap.sh/eclipse"
+    if place is None:
+        entry = eclipse_page.by_key(f["eclipse"])
+        return (f"{eclipse_page.headline_of(entry)}. "
+                f"curl skymap.sh/eclipse")
+    return eclipse_page.headline(f) + ". curl skymap.sh/eclipse"
 
 
 def eclipse_html(r, f, key, entry, map_rows, legend, disc=None,
@@ -2577,6 +2590,10 @@ def eclipse_html(r, f, key, entry, map_rows, legend, disc=None,
     body = ('<div class="ecl-head-row">'
             '<h1 class="obj-title"><span>Upcoming eclipses</span></h1>'
             + eclipse_page.picker_html(entry, r.when_utc, place)
+            # The link worth sharing is the one with no place in it: it
+            # sends each reader to their own city and unfurls as the card
+            # that names nobody. The canonical, in other words.
+            + eclipse_page.share_html(canonical_url(f"/eclipse/{key}"))
             + '</div>'
             + '<div class="obj-cols">'
             f'<aside class="obj-static">'
@@ -2587,7 +2604,8 @@ def eclipse_html(r, f, key, entry, map_rows, legend, disc=None,
             f'{eclipse_page.live_html(f, map_rows, legend, ansi_to_html, chart_pre, frames_html, labels, gif_href)}'
             f'</div></div>'
             + eclipse_page.frames_script(frames_html, labels)
-            + eclipse_page.picker_script())
+            + eclipse_page.picker_script()
+            + eclipse_page.share_script())
     head = (eclipse_head(f, key, place, base_url) + OBJECT_CSS
             + eclipse_page.ECLIPSE_CSS)
     return _object_page_template().format(

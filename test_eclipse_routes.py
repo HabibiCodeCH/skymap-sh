@@ -163,6 +163,48 @@ class ThePlaceIsCarriedAndNeverInvented(RouteTest):
         for href in hrefs:
             self.assertTrue(href.startswith("/Marbella/eclipse/"), href)
 
+    def test_there_is_a_way_to_share_without_your_city_in_it(self):
+        """Opening /eclipse/2026-08-12 bounces you to /Geneva/eclipse/... so
+        the page can say Geneva rather than 46.20,6.10, and from then on the
+        only URL you can copy has your location in it. Sharing that tells
+        everyone who opens it what the eclipse does from Geneva, and the
+        card that unfurls says Geneva too."""
+        for url in (f"/eclipse/{SOLAR}", f"/Geneva/eclipse/{SOLAR}",
+                    f"/Ibiza/eclipse/{LUNAR}"):
+            got = self.client.get(url, headers=BROWSER)
+            button = got.text.split('id="ecl-share"')[1].split(">")[0]
+            key = SOLAR if SOLAR in url else LUNAR
+            self.assertIn(f'data-url="https://skymap.sh/eclipse/{key}"',
+                          button, url)
+            for city in ("Geneva", "Ibiza", "Zurich", "Z%C3%BCrich"):
+                self.assertNotIn(city, button, url)
+
+    def test_the_shared_link_is_the_canonical_one(self):
+        """Not a second URL to keep in step with it: the link worth sharing
+        and the link worth indexing are the same link."""
+        got = self.client.get(f"/Ibiza/eclipse/{SOLAR}", headers=BROWSER)
+        button = got.text.split('id="ecl-share"')[1].split(">")[0]
+        shared = button.split('data-url="')[1].split('"')[0]
+        self.assertIn(f'<link rel="canonical" href="{shared}">', got.text)
+
+    def test_a_crawler_following_it_gets_the_card_that_names_nobody(self):
+        """Which is what makes the bare link the right one to share: the
+        person who opens it is bounced to their own city, and the unfurler
+        that fetches it is not bounced at all."""
+        got = self.client.get(f"/eclipse/{SOLAR}",
+                              headers={"user-agent": "Twitterbot/1.0",
+                                       "accept": "*/*"})
+        self.assertEqual(got.status_code, 200)
+        self.assertIn(f'/eclipse/{SOLAR}/og.png"', got.text)
+        # And the sentence beside it names nobody either. The image was
+        # careful about this and the text was not, which is the worse half:
+        # a wrong picture is a wrong picture, a wrong sentence reads as a
+        # fact about the reader's own sky.
+        desc = got.text.split('name="description" content="')[1].split('"')[0]
+        for city in ("Zurich", "Zürich", "Geneva", "Ashburn"):
+            self.assertNotIn(city, desc)
+        self.assertIn("Greenland", desc)
+
     def test_the_canonical_names_one_page_per_eclipse(self):
         """Not one per city. There are 40,000 places and one eclipse, and a
         canonical per place would be a doorway farm."""
