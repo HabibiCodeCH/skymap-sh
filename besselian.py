@@ -31,8 +31,11 @@ reliable (no parallax problem worth the name), it is already tested, and
 "where do I look" and "how much is covered" are better answered by the code
 that is right for each.
 """
+import json
 import math
 from collections import namedtuple
+
+import sky
 
 # Meeus 54: the Earth's flattening, as the ratio of polar to equatorial
 # radius. Used to put the observer on the spheroid rather than a sphere --
@@ -48,29 +51,37 @@ Elements = namedtuple("Elements", (
     "dT",        # TDT - UT, seconds, at this eclipse
 ))
 
-# Transcribed from NASA/GSFC's published Besselian elements
-# (eclipse.gsfc.nasa.gov, SEsearch/SEdata.php?Ecl=20260812), which are US
-# government work and public domain, the same provenance as the decade
-# tables eclipses.json already draws on.
+# NASA/GSFC's published Besselian elements, fetched and parsed by
+# build_besselian.py into besselian.json. US government work and public
+# domain, the same provenance as the decade tables eclipses.json draws on.
 #
-# Deliberately one eclipse rather than all 44. Each set is hand-transcribed
-# and the transcription is the part that can go silently wrong, so they get
-# added when there is a reason to trust each one, not in bulk.
-ELEMENTS = {
-    "2026-08-12": Elements(
-        name="Total solar eclipse",
-        t0=18.0,
-        x=(0.4755140, 0.5189249, -0.0000773, -0.0000080),
-        y=(0.7711830, -0.2301680, -0.0001246, 0.0000038),
-        d=(14.7966700, -0.0120650, -0.0000030),
-        l1=(0.5379550, 0.0000939, -0.0000121),
-        l2=(-0.0081420, 0.0000935, -0.0000121),
-        mu=(88.747787, 15.003090, 0.000000),
-        tanf1=0.0046141,
-        tanf2=0.0045911,
-        dT=75.4,
-    ),
-}
+# This was two dozen numbers typed in by hand for one eclipse, with a note
+# saying more would be added "when there is a reason to trust each one".
+# That was the wrong way round. Hand-transcription is precisely the step
+# that fails silently -- a dropped digit in x2 moves the track kilometres
+# and nothing raises -- so doing it another twenty-one times would have
+# multiplied the risk, not the confidence. The parser reproduces the
+# hand-checked 2026-08-12 set exactly, and test_besselian.py still checks
+# the result against NASA's separately published path.
+def _load_elements():
+    try:
+        with open(f"{sky.BASE}/besselian.json") as fh:
+            raw = json.load(fh)
+    except (OSError, json.JSONDecodeError):
+        # Survivable: without elements every page falls back to saying the
+        # date and the regions, which is what it did before any of this.
+        return {}
+    out = {}
+    for key, d in raw.items():
+        out[key] = Elements(
+            name=d["name"], t0=d["t0"],
+            x=tuple(d["x"]), y=tuple(d["y"]), d=tuple(d["d"]),
+            l1=tuple(d["l1"]), l2=tuple(d["l2"]), mu=tuple(d["mu"]),
+            tanf1=d["tanf1"], tanf2=d["tanf2"], dT=d["dT"])
+    return out
+
+
+ELEMENTS = _load_elements()
 
 
 def _poly(c, t):

@@ -2526,7 +2526,7 @@ def eclipse_description(f):
 
 
 def eclipse_html(r, f, key, entry, map_rows, legend, disc=None,
-                 place=None, base_url=""):
+                 frames=None, labels=(), place=None, base_url=""):
     """The browser page. Same two columns and the same shell as an object
     page, because it is the same shape of thing: a durable half that every
     reader shares, and a half computed from where they are standing."""
@@ -2537,14 +2537,23 @@ def eclipse_html(r, f, key, entry, map_rows, legend, disc=None,
     # the title. The <title> and the card still lead with the local result,
     # because those are read without the page around them.
     heading = html.escape(eclipse_page.headline(f))
-    body = ('<h1 class="obj-title"><span>Upcoming eclipses</span></h1>'
-            '<div class="obj-cols">'
+    disc_html = ansi_to_html("\n".join(disc)) if disc else ""
+    cap = eclipse_page.disc_caption(f)
+    frames_html = [ansi_to_html("\n".join(fr)) for fr in (frames or [])]
+    also = eclipse_page.alongside(entry)
+    body = ('<div class="ecl-head-row">'
+            '<h1 class="obj-title"><span>Upcoming eclipses</span></h1>'
+            + eclipse_page.picker_html(entry, r.when_utc)
+            + '</div>'
+            + '<div class="obj-cols">'
             f'<aside class="obj-static">'
-            f'{eclipse_page.sidebar_html(entry, r.when_utc)}</aside>'
+            f'{eclipse_page.sidebar_html(entry, r.when_utc, disc, disc_html, cap, also)}'
+            f'</aside>'
             f'<div class="obj-live">'
             f'<p class="obj-lede obj-live-head ecl-head">{heading}</p>'
-            f'{eclipse_page.live_html(f, map_rows, legend, ansi_to_html, chart_pre, disc)}'
-            f'</div></div>')
+            f'{eclipse_page.live_html(f, map_rows, legend, ansi_to_html, chart_pre, frames_html, labels)}'
+            f'</div></div>'
+            + eclipse_page.frames_script(frames_html, labels))
     head = (eclipse_head(f, key, place, base_url) + OBJECT_CSS
             + eclipse_page.ECLIPSE_CSS)
     return _object_page_template().format(
@@ -2568,8 +2577,10 @@ def compose_eclipse(r, key):
     # Empty when the Sun is down here, which is right: there is nothing to
     # draw a picture of, and the prose already says so.
     disc = eclipse_map.disc_art(key, r.place.lat, r.place.lon, color=r.color)
+    frames, labels = eclipse_map.disc_frames(key, r.place.lat, r.place.lon,
+                                             color=r.color)
     return (Result(eclipse_page.text(f, rows, legend, disc, r.color), f),
-            entry, rows, legend, disc)
+            entry, rows, legend, disc, frames, labels)
 
 
 # ---------------------------------------------------------------- sky views

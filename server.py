@@ -2967,7 +2967,7 @@ def _respond_eclipse(request: Req, place: str | None, key: str | None):
         return PlainTextResponse(f"no eclipse on {key}\n\n"
                                  f"try skymap.sh/eclipse for the next one\n",
                                  status_code=404)
-    res, entry, rows, legend, disc = composed
+    res, entry, rows, legend, disc, frames, labels = composed
     _stat["eclipse"] += 1
     _eclipse_keys[key] += 1
 
@@ -2981,7 +2981,7 @@ def _respond_eclipse(request: Req, place: str | None, key: str | None):
         base_url = str(request.base_url).rstrip("/")
         return HTMLResponse(
             api.eclipse_html(r, res.data, key, entry, rows, legend, disc,
-                             place=place, base_url=base_url),
+                             frames, labels, place=place, base_url=base_url),
             headers=headers)
     return PlainTextResponse(res.text if colour else api.strip_ansi(res.text),
                              headers=headers)

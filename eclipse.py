@@ -223,7 +223,12 @@ SUN_R_TOTAL = 6.2
 # it is what stops a flat disc of one character reading as a hole rather
 # than a light.
 SUN_TONES = ((0.55, 231), (0.85, 227), (1.01, 220))
-CORONA = 250
+# Warm, not white. The real corona is pearl-white, but on this page it sits
+# next to a Sun drawn in 220/227 and a track drawn in 196, and a grey ring
+# read as a rendering artefact rather than as light. Two tones so it falls
+# off outward instead of stopping at a hard edge.
+CORONA_INNER = 221
+CORONA_OUTER = 214
 
 # Each cell sampled on a 3x3 grid instead of at its centre. At 90% covered
 # the surviving crescent is about a tenth of the Sun's diameter, which is
@@ -249,7 +254,7 @@ def _disc_tone(rr):
     return SUN_TONES[-1][1]
 
 
-def disc_art(key, lat, lon, at=None, color=True):
+def disc_art(key, lat, lon, at=None, color=True, sun_r=None):
     """The Sun as it looks from here, at maximum or at a given hour (UT).
 
     The Moon is not drawn, because you cannot see it: during a partial
@@ -284,7 +289,12 @@ def disc_art(key, lat, lon, at=None, color=True):
     # Everything in units of the Sun's radius, so the Sun is the same size
     # on screen whatever the geometry is doing.
     total = s["m"] < abs(big_l2) and big_l2 < 0
-    sun_r = SUN_R_TOTAL if total else SUN_R_PARTIAL
+    # An explicit scale is what keeps an animation still. Chosen per frame,
+    # the Sun jumps between the two sizes at the instant totality starts and
+    # again when it ends, in the middle of the sequence, which reads as the
+    # picture breaking rather than as the eclipse happening.
+    if sun_r is None:
+        sun_r = SUN_R_TOTAL if total else SUN_R_PARTIAL
     moon_r = sun_r * (r_moon / r_sun)
     sep = sun_r * (s["m"] / r_sun)
     n = math.hypot(s["u"], s["v"]) or 1.0
@@ -314,7 +324,16 @@ def disc_art(key, lat, lon, at=None, color=True):
                 # Corona, and only during totality, because that is the only
                 # time it is visible at all. A thin halo just off the limb.
                 d = math.hypot(x0 - mx, y0 - my) / moon_r
-                col, ch = (CORONA, "\u00b7") if 1.0 <= d <= 1.28 else (None, " ")
+                if 1.0 <= d <= 1.13:
+                    col, ch = CORONA_INNER, "\u00b7"
+                elif 1.13 < d <= 1.28:
+                    col, ch = CORONA_OUTER, "\u00b7"
+                else:
+                    # Inside the Moon as well as outside the halo. Without
+                    # the lower bound this branch swallowed the hole and
+                    # drew a solid disc of dots -- the eclipse with the
+                    # eclipse painted in.
+                    col, ch = None, " "
             else:
                 col, ch = None, " "
             if col is None:
@@ -329,7 +348,12 @@ def disc_art(key, lat, lon, at=None, color=True):
             line.append(ch)
         if pen is not None and color:
             line.append("\033[0m")
-        out.append("".join(line).rstrip())
+        # NOT rstripped, unlike the map above. Every frame has to be exactly
+        # ART_COLS wide, because the frame around it centres its content: a
+        # trimmed line makes a narrower block, which gets re-centred, and the
+        # Sun visibly shuffles sideways from frame to frame while the Moon
+        # crosses it. The Sun is the one thing here that must not move.
+        out.append("".join(line))
     return out
 
 
@@ -364,3 +388,40 @@ def track(key, step_minutes=2):
                         el.t0 + t - el.dT / 3600.0))
         t += step_minutes / 60.0
     return out
+
+
+# How many frames an eclipse animation gets between first and last contact.
+# Enough that the Moon moves less than its own width between frames, few
+# enough that the page does not ship a megabyte of pre-rendered grids.
+FRAMES = 25
+
+
+def disc_frames(key, lat, lon, n=FRAMES, color=True):
+    """The whole eclipse, first contact to last, as n drawings.
+
+    Rendered here rather than in the browser because the geometry is
+    Besselian and the browser has none of it. What ships is pictures.
+
+    Returns (frames, labels): the labels are UT clock strings, so whatever
+    plays them can say what moment is on screen. Empty when this place sees
+    nothing, which the caller treats as "no animation here".
+    """
+    if key not in besselian.ELEMENTS:
+        return [], []
+    circ = besselian.local(key, lat, lon)
+    first, last = circ.get("first"), circ.get("last")
+    if first is None or last is None or circ["kind"] == "none":
+        return [], []
+    # One scale for the whole sequence, decided by whether totality happens
+    # here at all: if it does, every frame has to leave room for the corona.
+    scale = SUN_R_TOTAL if circ["kind"] in ("total", "annular") else SUN_R_PARTIAL
+    frames, labels = [], []
+    for i in range(n):
+        t = first + (last - first) * i / (n - 1)
+        art = disc_art(key, lat, lon, at=t, color=color, sun_r=scale)
+        if not art:
+            continue
+        frames.append(art)
+        secs = round((t % 24) * 3600)
+        labels.append(f"{secs // 3600:02d}:{secs // 60 % 60:02d}")
+    return frames, labels

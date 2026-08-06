@@ -155,8 +155,22 @@ class ItRefusesToGuess(unittest.TestCase):
         # The entire reason for this file is to stop producing confident
         # numbers from an ephemeris that cannot support them. Silently
         # falling back to anything would undo that.
+        #
+        # A lunar date, deliberately: these elements are a solar
+        # construction and no lunar eclipse will ever be in this table.
+        # The date this used to name, 2027-08-02, has elements now.
         with self.assertRaises(KeyError):
-            besselian.local("2027-08-02", 47.0, 8.0)
+            besselian.local("2026-08-28", 47.0, 8.0)
+
+    def test_every_solar_eclipse_in_the_table_has_elements(self):
+        """The page 500ed for every eclipse but one, because the table had
+        a single hand-typed entry. Fetching them is build_besselian.py's
+        job; this is what notices when it has not been re-run."""
+        import json
+        rows = [e for e in json.load(open("eclipses.json")) if "when_utc" in e]
+        for e in rows:
+            if "solar" in e["type"]:
+                self.assertIn(e["when_utc"][:10], besselian.ELEMENTS, e["name"])
 
     def test_a_place_nowhere_near_it_sees_nothing(self):
         # Mid-Pacific, the far side of the planet from the shadow.
