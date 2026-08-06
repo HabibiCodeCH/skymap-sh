@@ -5349,7 +5349,8 @@ def catalog_text(color=True):
         glyph, colour, kind, when, regions = _eclipse_row(e)
         L.append(f"  {P(glyph, colour)} {P(f'{when:12}', C.HEAD)} "
                  f"{kind:14} {regions}")
-    L.append(f"  {'':2} {'':12} curl skymap.sh/eclipse for the next one")
+    L.append(f"  {'':2} {eclipse_page.table_span()}")
+    L.append(f"  {'':2} curl skymap.sh/eclipse for the next one")
     L.append("")
     L.append(head(f"CONSTELLATIONS ({len(d['asterisms'])})"))
     L += _columns(d["asterisms"], 18, 5)
@@ -5456,6 +5457,7 @@ def catalog_html():
         L.append(f"  {col(glyph, colour)} {link_html} "
                  f"{html.escape(kind)}{_pad_html(len(kind), 14)} "
                  f"{html.escape(regions)}")
+    L.append(f"    {col(eclipse_page.table_span(), C.LABEL)}")
     L.append("")
     L.append(head(f"CONSTELLATIONS ({len(d['asterisms'])})"))
     for i in range(0, len(d["asterisms"]), 5):

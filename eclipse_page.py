@@ -612,6 +612,17 @@ def sidebar_html(entry, now_utc, disc=None, disc_html='',
     return "".join(out)
 
 
+def table_span():
+    """"44 eclipses tracked, 2026 to 2040" -- read off the table rather than
+    typed, so it cannot describe a table we no longer have."""
+    rows = _entries()
+    if not rows:
+        return ""
+    first = dt.datetime.fromisoformat(rows[0]["when_utc"]).year
+    last = dt.datetime.fromisoformat(rows[-1]["when_utc"]).year
+    return f"{len(rows)} eclipses tracked, {first} to {last}"
+
+
 def picker_html(entry, now_utc, place=None, escape=html.escape):
     """The eclipse list, as a disclosure under the heading.
 
@@ -742,12 +753,19 @@ ECLIPSE_CSS = """
    sideways inside its own box on a narrow column, with half the map off the
    right-hand edge and nothing to say so.
 
-   So the width is measured in characters, not pixels. --cols comes from the
-   markup (see live_html), a monospace glyph is about 0.62em, and the clamp
-   keeps it legible at the bottom and stops the 96-column map growing to
-   fill a very wide screen at the top. Browsers without container queries
-   fall back to the 11px everything else here is drawn at, and keep the
-   scrollbar. */
+   So the width is measured in characters, not pixels. The markup carries
+   --colf, which is 1 / (columns x 0.62em), and the font size is that many
+   times the container's own width: a multiplication by a plain number,
+   which every engine accepts. The first version divided by a parenthesised
+   product -- calc(100cqw / (var(--cols) * 0.62)) -- and division by
+   anything but a literal number is where calc() support actually stops, so
+   the whole declaration was thrown away and the map went back to a fixed
+   11px and a scrollbar.
+
+   The clamp keeps it legible at the bottom and stops the 96-column map
+   growing to fill a very wide screen at the top. Browsers with no container
+   queries at all fall back to the 11px everything else here is drawn at,
+   and keep the scrollbar as the safety net. */
 /* Same small section label as "THE SAME NIGHT" in the left column, so the
    two columns mark their sections the same way. The space above it is what
    separates the map from the drawing over it; below it, almost none, because
@@ -757,9 +775,31 @@ ECLIPSE_CSS = """
 /* A little more air than the map's own label: what it separates is two
    blocks of text rather than a label from the thing it names. */
 .ecl-prose-title{margin-top:1.4rem}
-.ecl-mapwrap{container-type:inline-size;margin:0 0 2px}
-.ecl-map{line-height:1.0;font-variant-ligatures:none;overflow-x:auto;margin:0;
-  font-size:clamp(5.5px,calc(100cqw / (var(--cols,96) * 0.62)),13px)}
+/* The column itself is the container. There was a wrapper div here doing
+   nothing else, and a box inside a box is a box whose width you have to
+   reason about twice -- the map was being sized against a width that was
+   not quite the width it had to fit into. A container query cannot measure
+   the element it sizes, so one ancestor has to volunteer, and the column is
+   the honest choice: it is what the map has to fit inside. Safe to contain:
+   it is a 1fr grid item, so its width comes from the grid rather than from
+   what is in it. */
+.obj-live{container-type:inline-size}
+/* Written as ".obj-live pre.ecl-map", not ".ecl-map", and that is the whole
+   fix. The div this map sits in carries
+
+       .obj-static pre,.obj-live pre { overflow-x:auto }
+
+   which is a class and an element, (0,1,1). A bare .ecl-map is (0,1,0) and
+   loses, so every attempt to turn that overflow off from here was discarded
+   before it reached the browser -- and the scrollbar it produces appears
+   whenever a box is a hair narrower than what is inside it, which is what
+   was under a map that looked perfectly complete.
+   
+   There is nothing to scroll: the map is sized to fit its column. So it
+   takes the width of its own content and does not offer. */
+.obj-live pre.ecl-map{line-height:1.0;font-variant-ligatures:none;
+  overflow:visible;width:max-content;margin:0 0 2px;
+  font-size:clamp(5.5px,calc(100cqw * var(--colf,0.0158)),12px)}
 .ecl-safety{border-left:2px solid #d29922;padding:2px 0 2px 12px;
   margin:4px 0 2px;color:#c9d1d9;font-size:12px;line-height:1.5;
   font-family:ui-sans-serif,-apple-system,"Segoe UI",Roboto,sans-serif}
@@ -1012,9 +1052,14 @@ def live_html(f, map_rows, legend, ansi_to_html, chart_pre,
         # world. Hard-coding a font size for one of them made the other
         # either scroll sideways or sit in a third of its column.
         cols = max(len(_ANSI.sub("", r)) for r in map_rows)
-        out.append(f'<div class="ecl-mapwrap" style="--cols:{cols}">'
-                   f'<pre class="ecl-map">'
-                   f'{ansi_to_html(chr(10).join(map_rows))}</pre></div>')
+        # 0.66em per glyph. The advance in the fonts on offer is 0.60 (SF
+        # Mono), 0.602 (Menlo) or 0.55 (Consolas), so this is deliberately
+        # generous: sized to exactly the column, the map came out a pixel or
+        # two over and the box grew a scrollbar under a map that looked
+        # perfectly complete.
+        colf = 1.0 / (cols * 0.66)
+        out.append(f'<pre class="ecl-map" style="--colf:{colf:.5f}">'
+                   f'{ansi_to_html(chr(10).join(map_rows))}</pre>')
         out.append(f'<p class="obj-src">{ansi_to_html(legend)}</p>')
 
     if prose(f):

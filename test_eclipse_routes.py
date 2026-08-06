@@ -207,12 +207,90 @@ class TheCountersAreKept(RouteTest):
         self.assertIn("card", data["eclipse"])
 
 
+class TheMapFitsItsColumn(RouteTest):
+    """It is a fixed number of characters wide -- 96 for a solar eclipse's
+    region, 128 for a lunar one's whole world -- so the font size has to come
+    off the column, not off a constant. The first attempt divided by a
+    parenthesised product inside calc(), which is where calc() support
+    actually stops: the whole declaration was thrown away and the map went
+    back to 11px and a sideways scrollbar with half the track off the edge."""
+
+    def test_the_markup_carries_a_scale_the_stylesheet_can_use(self):
+        for url, cols in ((f"/Zurich/eclipse/{SOLAR}", 96),
+                          (f"/Zurich/eclipse/{LUNAR}", 128)):
+            got = self.client.get(url, headers=BROWSER)
+            pre = got.text.split('class="ecl-map"')[1][:60]
+            self.assertIn("--colf:", pre, url)
+            colf = float(pre.split("--colf:")[1].split('"')[0])
+            self.assertAlmostEqual(colf, 1.0 / (cols * 0.66), places=4)
+
+    def test_the_map_never_offers_to_scroll(self):
+        """A <pre> here picks up overflow-x:auto from three separate rules,
+        and a box a hair narrower than its contents then grows a scrollbar
+        under a map that looks perfectly complete. There is nothing to
+        scroll -- the map is sized to fit -- so it takes its own content's
+        width and does not offer."""
+        got = self.client.get(f"/Zurich/eclipse/{SOLAR}", headers=BROWSER)
+        rule = got.text.split(".obj-live pre.ecl-map{")[1].split("}")[0]
+        self.assertIn("overflow:visible", rule)
+        self.assertIn("width:max-content", rule)
+
+    def test_the_rule_outweighs_the_one_it_has_to_beat(self):
+        """The div the map sits in sets overflow-x:auto on every <pre> in it,
+        as ".obj-live pre" -- a class and an element, (0,1,1). A bare
+        ".ecl-map" is (0,1,0) and loses, so turning that overflow off from
+        here was discarded before it ever reached the browser. Five attempts
+        at the font size went past this without touching it."""
+        import re
+        got = self.client.get(f"/Zurich/eclipse/{SOLAR}", headers=BROWSER)
+
+        def weight(sel):
+            return (sel.count("."), len(re.findall(r"(?:^|\s)(?!\.)[a-z]+", sel)))
+
+        loser = weight(".obj-live pre")
+        winner = weight(".obj-live pre.ecl-map")
+        self.assertGreater(winner, loser)
+        self.assertIn(".obj-live pre.ecl-map{", got.text)
+
+    def test_the_column_is_the_container_and_there_is_only_one_box(self):
+        """A container query cannot measure the element it sizes, so one
+        ancestor has to volunteer. It used to be a wrapper div that did
+        nothing else, which meant reasoning about two widths where there is
+        only one that matters: the column the map has to fit inside."""
+        got = self.client.get(f"/Zurich/eclipse/{SOLAR}", headers=BROWSER)
+        self.assertIn(".obj-live{container-type:inline-size}", got.text)
+        self.assertNotIn("ecl-mapwrap", got.text)
+
+    def test_the_map_fits_at_every_size_the_clamp_allows(self):
+        """The arithmetic the stylesheet does, done here. A glyph is at most
+        0.602em wide in any of the fonts offered, and the estimate is 0.66,
+        so there is real room rather than a pixel or two -- sized to exactly
+        the column, the box grew a scrollbar under a map that looked
+        perfectly complete."""
+        for cols in (96, 128):
+            colf = 1.0 / (cols * 0.66)
+            for column_px in (430, 600, 740, 760, 1000):
+                size = min(12.0, max(5.5, column_px * colf))
+                width = cols * size * 0.602
+                self.assertLess(width, column_px, f"{cols} cols in {column_px}px")
+
+
 class TheWayIn(RouteTest):
     """A page nothing links to is a page nobody finds."""
 
     def test_the_search_bar_offers_it(self):
         got = self.client.get("/Zurich", headers=BROWSER)
         self.assertIn('"eclipse"', got.text)
+
+    def test_the_catalogue_says_how_far_the_table_goes(self):
+        """Six dates say nothing about whether this is a handful or a decade
+        of them, and the answer is the reason to come back."""
+        import eclipse_page
+        span = eclipse_page.table_span()
+        self.assertIn("eclipses tracked", span)
+        for headers in (TERMINAL, BROWSER):
+            got = self.client.get("/catalog", headers=headers)
+            self.assertIn(span, got.text)
 
     def test_the_catalogue_lists_the_next_few(self):
         got = self.client.get("/catalog", headers=TERMINAL)
