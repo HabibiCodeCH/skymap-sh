@@ -132,6 +132,7 @@ IMG_TERM = """<div class="term"><div class="bar"><span class="dot" style="backgr
 PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>skymap.sh -- demo</title>
+<link rel="canonical" href="https://skymap.sh/demo">
 <script>
 document.documentElement.classList.add('js');
 </script>

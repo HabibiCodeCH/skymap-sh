@@ -2077,6 +2077,7 @@ def object_description(facts):
 # replace this wholesale with their own head rather than adding to it, so a
 # page never ends up advertising two different cards.
 _GENERIC_HEAD_BLOCK = """\
+<link rel="canonical" href="{canonical}">
 <meta name="description" content="The night sky above you, as plain text. curl skymap.sh">
 <meta property="og:type" content="website">
 <meta property="og:title" content="{title}">
@@ -2105,10 +2106,26 @@ def _object_page_template():
 CANONICAL_HOST = "https://skymap.sh"
 
 
+def canonical_url(path):
+    """The apex form of a path, for the page's rel="canonical".
+
+    Two jobs, and both matter on this site. It names the host, since
+    www.skymap.sh serves every page a second time. And it names the page
+    without its query string, so /stats/daily?days=30 and a link someone
+    shared with ?utm_source= on the end count as the page they are, not as
+    a new one each.
+
+    Pass the path the page wants to be known by, which is not always the
+    path it was reached at -- /usage answers as /help, and every
+    /{place}/{object} answers as the bare /{object}.
+    """
+    return CANONICAL_HOST + path
+
+
 def home_head():
     """The generic card tags, plus a canonical at the apex."""
-    return (_GENERIC_HEAD_BLOCK.format(title="skymap.sh")
-            + f'\n<link rel="canonical" href="{CANONICAL_HOST}/">')
+    return _GENERIC_HEAD_BLOCK.format(title="skymap.sh",
+                                      canonical=canonical_url("/"))
 
 
 def place_head(place, base_url):
@@ -2129,9 +2146,10 @@ def place_head(place, base_url):
     desc = html.escape(f"The night sky above {place.name}, as plain text. "
                        f"curl skymap.sh/{place.slug}")
     og = f"{base_url}/{quote(place.name)}/og.png"
+    url = canonical_url("/" + quote(place.name))
     return "\n".join([
         f'<meta name="description" content="{desc}">',
-        f'<link rel="canonical" href="{CANONICAL_HOST}/{quote(place.name)}">',
+        f'<link rel="canonical" href="{url}">',
         '<meta property="og:type" content="website">',
         f'<meta property="og:title" content="{title}">',
         f'<meta property="og:description" content="{desc}">',
@@ -2158,7 +2176,7 @@ def object_head(facts, canonical, place, base_url):
     """
     title = html.escape(object_title(facts))
     desc = html.escape(object_description(facts))
-    url = f"https://skymap.sh/{quote(canonical)}"
+    url = canonical_url("/" + quote(canonical))
     og = f"{base_url}/{quote(canonical)}/og.png"
     return "\n".join([
         f'<meta name="description" content="{desc}">',
@@ -5641,6 +5659,7 @@ def header_html(value=""):
 PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>{title}</title>
+<link rel="canonical" href="{canonical}">
 <meta name="description" content="The night sky above you, as plain text. curl skymap.sh">
 <meta property="og:type" content="website">
 <meta property="og:title" content="{title}">
@@ -7026,6 +7045,7 @@ RESET_HTML = '<a class="animate-btn" href="/">↺ reset skymap</a>'
 SPHERE_PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
 <title>{title}</title>
+<link rel="canonical" href="{canonical}">
 <meta name="description" content="The night sky above you, in 3D -- look around by tilting your phone.">
 <link rel="icon" href="/favicon.ico" sizes="any">
 <link rel="apple-touch-icon" href="/apple-touch-icon.png">

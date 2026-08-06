@@ -3907,6 +3907,62 @@ class CanonicalNamesTheApex(unittest.TestCase):
             self.assertTrue(c.startswith("https://skymap.sh/"), (path, c))
             self.assertNotIn("www.", c, path)
 
+    # Every HTML page on the site, one canonical each. The list is the point:
+    # a page added without one is a page a crawler can index at two hostnames
+    # and under any query string anyone ever shared it with.
+    EVERY_PAGE = {
+        "/help": "https://skymap.sh/help",
+        "/legend": "https://skymap.sh/legend",
+        "/catalog": "https://skymap.sh/catalog",
+        "/stats": "https://skymap.sh/stats",
+        "/stats/objects": "https://skymap.sh/stats/objects",
+        "/stats/sphere": "https://skymap.sh/stats/sphere",
+        "/stats/daily": "https://skymap.sh/stats/daily",
+        "/stats/hourly": "https://skymap.sh/stats/hourly",
+        "/Paris": "https://skymap.sh/Paris",
+        "/Paris/events": "https://skymap.sh/Paris/events",
+        "/Paris/sphere": "https://skymap.sh/Paris/sphere",
+        "/Venus": "https://skymap.sh/Venus",
+    }
+
+    def test_every_html_page_names_itself(self):
+        for path, want in self.EVERY_PAGE.items():
+            self.assertEqual(self._canonical(path), want, path)
+
+    def test_no_page_carries_two(self):
+        """The object pages swap the whole generic head block for their own.
+        If that swap ever stopped matching, both blocks would render and the
+        page would name itself twice -- which a crawler treats as naming
+        itself not at all."""
+        h = {"user-agent": "Mozilla/5.0", "accept": "text/html"}
+        for path in list(self.EVERY_PAGE) + ["/Zurich/Venus"]:
+            body = self.client.get(path, headers=h).text
+            self.assertEqual(body.count('rel="canonical"'), 1, path)
+
+    def test_the_alias_answers_as_the_page_it_aliases(self):
+        # /usage and /help are one page under two names.
+        self.assertEqual(self._canonical("/usage"), "https://skymap.sh/help")
+
+    def test_a_query_string_does_not_make_a_new_page(self):
+        """The case that actually happens: someone shares a link with a
+        tracking parameter on it, and without this every such share is a
+        separate page competing with the real one."""
+        for path, want in (("/catalog?utm_source=bsky", "https://skymap.sh/catalog"),
+                           ("/stats/daily?days=30", "https://skymap.sh/stats/daily"),
+                           ("/stats/hourly?days=3", "https://skymap.sh/stats/hourly"),
+                           ("/Paris/events?days=14", "https://skymap.sh/Paris/events")):
+            self.assertEqual(self._canonical(path), want, path)
+
+    def test_the_demo_page_has_one(self):
+        # Pre-rendered by build_sky_html.py rather than served through
+        # api.PAGE, so it is the one page that can be missed silently.
+        self.assertEqual(self._canonical("/demo"), "https://skymap.sh/demo")
+
+    def test_a_place_reached_by_a_typed_name_answers_as_its_real_name(self):
+        # The canonical comes from the resolved place, not from what was
+        # typed, so the lowercase and the accented form are one page.
+        self.assertEqual(self._canonical("/paris"), self._canonical("/Paris"))
+
 
 class TheSearchScriptDeclaresWhatItUses(unittest.TestCase):
     """A ReferenceError in that script kills the whole dropdown silently:

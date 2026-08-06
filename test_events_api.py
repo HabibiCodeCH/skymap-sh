@@ -773,6 +773,7 @@ def test_sphere_page_javascript_parses():
     which has happened before. Nothing else in the suite would notice, because
     the server serves broken JS with a cheerful 200. Parse-only -- no DOM."""
     page = api.SPHERE_PAGE.format(title="t", place_slug="Zurich",
+                                  canonical="https://skymap.sh/Z%C3%BCrich/sphere",
                                   place_name="Zürich", home_suffix="")
     js = re.search(r'<script type="module">(.*?)</script>', page, re.S).group(1)
     js = re.sub(r"^\s*import .*$", "", js, flags=re.M)

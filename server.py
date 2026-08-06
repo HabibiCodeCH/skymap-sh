@@ -2321,7 +2321,11 @@ def help_(request: Req):
     headers = {"Cache-Control": "public, max-age=3600"}
     if mode == "html":
         controls = api.controls_html(api.EXPLORE)
+        # /help, even when reached at /usage: the two are one page under two
+        # names, and without this a crawler indexes both and splits the page
+        # against itself.
         body = api.PAGE.format(title="skymap.sh: usage", header=api.header_html("help"),
+                               canonical=api.canonical_url("/help"),
                                controls=controls, wide_class="",
                                coming_up_card="",
                                body=api.chart_pre(html.escape(api.HELP)),
@@ -2476,6 +2480,7 @@ def legend(request: Req):
     if mode == "html":
         controls = api.controls_html(api.EXPLORE)
         body = api.PAGE.format(title="skymap.sh: legend", header=api.header_html("legend"),
+                               canonical=api.canonical_url("/legend"),
                                controls=controls, wide_class="",
                                coming_up_card="",
                                body=api.chart_pre(api.ansi_to_html(api.legend_text(True))),
@@ -2492,6 +2497,7 @@ def catalog(request: Req):
     if mode == "html":
         controls = api.controls_html(api.EXPLORE)
         body = api.PAGE.format(title="skymap.sh: catalog", header=api.header_html("catalog"),
+                               canonical=api.canonical_url("/catalog"),
                                controls=controls, wide_class="",
                                coming_up_card="",
                                body=api.chart_pre(api.catalog_html()),
@@ -2551,6 +2557,7 @@ def stats(request: Req):
         # nothing else moves -- prose pages keep the 1200px measure that makes
         # them readable.
         page = api.PAGE.format(title="skymap.sh: stats", header=api.header_html("stats"),
+                               canonical=api.canonical_url("/stats"),
                                controls=controls, wide_class=" w-wide",
                                coming_up_card="",
                                body=api.chart_pre(body), kbd_urls="{}", shortcuts_hint="")
@@ -2612,6 +2619,7 @@ def stats_objects(request: Req):
     if mode == "html":
         body = api.PAGE.format(title="skymap.sh: object stats",
                                header=api.header_html("stats/objects"),
+                               canonical=api.canonical_url("/stats/objects"),
                                controls=api.controls_html(api.EXPLORE),
                                wide_class="", coming_up_card="",
                                body=api.chart_pre(html.escape(stats_objects_text())),
@@ -2630,6 +2638,7 @@ def stats_sphere(request: Req):
         controls = api.controls_html(api.EXPLORE)
         body = api.PAGE.format(title="skymap.sh: sphere stats",
                                header=api.header_html("stats/sphere"),
+                               canonical=api.canonical_url("/stats/sphere"),
                                controls=controls, wide_class="",
                                coming_up_card="",
                                body=api.chart_pre(html.escape(stats_sphere_text())),
@@ -2652,8 +2661,11 @@ def stats_daily(request: Req):
     mode, _colour = _wants(request)
     if mode == "html":
         controls = api.controls_html(api.EXPLORE)
+        # No ?days=: every window is the same page over a different span,
+        # and each one indexed separately would be the same numbers N times.
         body = api.PAGE.format(title="skymap.sh: daily stats",
                                header=api.header_html("stats/daily"),
+                               canonical=api.canonical_url("/stats/daily"),
                                controls=controls, wide_class="",
                                coming_up_card="",
                                body=api.chart_pre(html.escape(stats_daily_text(days))),
@@ -2676,6 +2688,7 @@ def stats_hourly(request: Req):
     if mode == "html":
         controls = api.controls_html(api.EXPLORE)
         body = api.PAGE.format(title="skymap.sh: stats", header=api.header_html("stats/hourly"),
+                               canonical=api.canonical_url("/stats/hourly"),
                                controls=controls, wide_class="",
                                coming_up_card="",
                                body=api.chart_pre(html.escape(stats_hourly_text(days))),
@@ -2837,7 +2850,12 @@ def sphere_page(request: Req, place: str):
     # no explicit place) -- if it lands on this same place, this genuinely
     # is the visitor's own sky, not somewhere they navigated to.
     home = _build(request, None).place.slug == p.slug
+    # robots.txt disallows this path, so nothing should ever read the
+    # canonical -- it is here because a page that names itself costs one
+    # line, and the disallow is a policy that could be revisited while this
+    # would be quietly forgotten.
     body = api.SPHERE_PAGE.format(title=f"skymap.sh: {p.name} in 3D",
+                                  canonical=api.canonical_url(f"/{quote(p.name)}/sphere"),
                                   place_slug=p.slug, place_name=html.escape(p.name),
                                   home_suffix=" (my sky)" if home else "")
     return HTMLResponse(body, headers={"Cache-Control": "public, max-age=300"})
@@ -2979,6 +2997,9 @@ def events_page(request: Req, place: str | None):
         body = api.PAGE.format(
             title=f"skymap.sh: what's coming up over {r.place.name}",
             header=api.header_html(f"{r.place.slug}/events"),
+            # The place's own name, not whatever was typed to get here, and
+            # without ?days= or ?next.
+            canonical=api.canonical_url(f"/{quote(r.place.name)}/events"),
             controls=controls, wide_class="",
             coming_up_card="",
             body=api.chart_pre(api.events_html(r, days=_events_window(request))),
