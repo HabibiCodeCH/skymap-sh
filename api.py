@@ -2492,7 +2492,13 @@ def eclipse_head(f, key, place, base_url):
     title = html.escape(eclipse_title(f))
     desc = html.escape(eclipse_description(f))
     url = canonical_url(f"/eclipse/{key}")
-    og = f"{base_url}/eclipse/{key}/og.png"
+    # The canonical drops the place; the card does not. They answer different
+    # questions: the canonical says which page this is, and there is one page
+    # per eclipse, while the card is what somebody sees before they click,
+    # and "Ibiza is in the path" is a reason to click where "Total solar
+    # eclipse" is a link to an encyclopaedia.
+    og = (f"{base_url}/{quote(place)}/eclipse/{key}/og.png" if place
+          else f"{base_url}/eclipse/{key}/og.png")
     return "\n".join([
         f'<meta name="description" content="{desc}">',
         f'<link rel="canonical" href="{url}">',
@@ -2565,6 +2571,37 @@ def eclipse_html(r, f, key, entry, map_rows, legend, disc=None,
         controls=controls_html(EXPLORE),
         wide_class=" w-wide", coming_up_card="",
         kbd_urls="{}", shortcuts_hint="", body=body)
+
+
+def compose_eclipse_card(r, key, place=None):
+    """What the social card for an eclipse needs: (kicker, headline, detail,
+    art rows). None when there is no eclipse on that date.
+
+    Composed here and drawn in card.py, the same split every other card
+    uses. `place` of None means the card is the eclipse's own: what it is,
+    when, and where it goes, naming nobody. That is not a shortcut -- a card
+    is fetched once by a crawler in a datacentre and then shown to everyone,
+    so a card that said "not visible from Ashburn, Virginia" would be
+    telling the truth about a machine and a lie about the reader.
+    """
+    entry = eclipse_page.by_key(key)
+    if entry is None:
+        return None
+    solar = eclipse_page.is_solar(entry)
+    if place is None:
+        rows = (eclipse_map.render(key) if solar and eclipse_map.has_map(key)
+                else [] if solar else eclipse_map.night_map(key))
+        return eclipse_page.card_lines(entry) + (rows,)
+    f = eclipse_page.facts(entry, r.place, r.when_utc)
+    here = (r.place.lat, r.place.lon)
+    if solar:
+        disc = eclipse_map.disc_art(key, *here)
+        rows = (eclipse_map.render(key, mark=here)
+                if eclipse_map.has_map(key) else [])
+    else:
+        disc = eclipse_map.moon_art(key)
+        rows = eclipse_map.night_map(key, mark=here)
+    return eclipse_page.card_lines(entry, f) + (eclipse_page.card_art(f, disc, rows),)
 
 
 def compose_eclipse(r, key):

@@ -504,3 +504,84 @@ def render_generic(chart_text=None):
     buf = io.BytesIO()
     img.save(buf, format="PNG")
     return buf.getvalue()
+
+
+# ------------------------------------------------------- the eclipse card
+# The one card where the drawing IS the message. Everywhere else the chart
+# is texture behind the type, because a star field at thumbnail size is grey
+# noise -- but a Sun with a corona around it, or a Moon half in shadow, is a
+# shape somebody recognises at 350px across. So it gets the left half of the
+# card at full brightness, and the type takes the right.
+ART_BOX = (520, 430)        # what the drawing is scaled to fit
+ART_LEFT = 56
+
+
+def _art_image(rows):
+    """ANSI art to an RGB image, no watermark strip.
+
+    Drawn on the grid the art was built for (art.CELL) rather than the
+    chart's, for the same reason the eclipse GIF is: these discs are circles
+    and the chart's cell would stretch them.
+    """
+    import art
+    if not rows:
+        return None
+    img = gif.frame_to_image("\n".join(rows), gif.cell_h_for(art.CELL))
+    if img.height > gif._WM_STRIP_H:
+        img = img.crop((0, 0, img.width, img.height - gif._WM_STRIP_H))
+    return img
+
+
+def _fit_into(img, box):
+    """Scale to fit inside the box, keeping the shape, never enlarging past
+    what the source can carry: nearest-neighbour above 2x, because these are
+    glyphs on a grid and LANCZOS turns them to mush."""
+    if img is None:
+        return None
+    scale = min(box[0] / img.width, box[1] / img.height)
+    method = Image.NEAREST if scale > 2.0 else Image.LANCZOS
+    return img.resize((max(1, int(img.width * scale)),
+                       max(1, int(img.height * scale))), method)
+
+
+def render_eclipse(kicker, headline, detail, rows):
+    """The card as PNG bytes: the drawing on the left, the answer on the
+    right.
+
+    Whether the drawing is a disc or a map is the caller's call (see
+    eclipse_page.card_art), and it changes the shape of the picture but not
+    of this layout: both are ANSI art on a grid, and both are scaled to fit
+    the same box.
+    """
+    img = Image.new("RGB", (W, H), BG)
+    d = ImageDraw.Draw(img)
+
+    picture = _fit_into(_art_image(rows), ART_BOX)
+    text_left = MARGIN
+    if picture is not None:
+        img.paste(picture, (ART_LEFT + (ART_BOX[0] - picture.width) // 2,
+                            (H - picture.height) // 2 - 24))
+        text_left = ART_LEFT + ART_BOX[0] + 56
+
+    max_w = W - text_left - MARGIN
+    y = MARGIN + 40
+    f_kick = _fit(d, kicker, 30, max_w, floor=20)
+    d.text((text_left, y), kicker, font=f_kick, fill=ACCENT)
+    y += f_kick.size + 26
+
+    f_head, lines = _wrap_fit(d, headline, 62, max_w, 300, floor=32)
+    for line in lines:
+        d.text((text_left, y), line, font=f_head, fill=INK)
+        y += int(f_head.size * 1.18)
+
+    if detail:
+        y += 18
+        f_det, det_lines = _wrap_fit(d, detail, 30, max_w, 140, floor=20)
+        for line in det_lines:
+            d.text((text_left, y), line, font=f_det, fill=MUTED)
+            y += int(f_det.size * 1.3)
+
+    _wordmark(img, d)
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    return buf.getvalue()

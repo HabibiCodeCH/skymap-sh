@@ -1201,8 +1201,20 @@ def stats_text(n=50, map_slot=False):
         L.append(f"  {'page':12} {_stat['eclipse']:>8,}")
         if _stat["eclipse_gif"]:
             L.append(f"  {'gif':12} {_stat['eclipse_gif']:>8,}")
-        for k, n in _eclipse_keys.most_common(5):
-            L.append(f"  {k:12} {n:>8,}")
+        # Kept apart from the site-wide og count, the same way the event
+        # cards are: a card fetch is a link somebody shared, not a page
+        # somebody read, and the two answer different questions.
+        if _stat["og_eclipse"]:
+            L.append(f"  {'card':12} {_stat['og_eclipse']:>8,}")
+        # NOT `n`. This function's own parameter is n=50, the row limit for
+        # every table below here, and a loop variable called n left it set
+        # to whatever the last eclipse's hit count happened to be: one visit
+        # to an eclipse page cut "top places" from fifty rows to one, and
+        # the same for referrers, objects and the rest. Caught by a test
+        # about the places table, in a file that knows nothing about
+        # eclipses.
+        for key, hits in _eclipse_keys.most_common(5):
+            L.append(f"  {key:12} {hits:>8,}")
         L.append("")
     if _stat["events"] or _stat["events.ics"] or _stat["events.rss"]:
         L.append("what's coming up")
@@ -1298,6 +1310,7 @@ def stats_json(n=50):
         gif=_stat["gif"], gif_rejected=_stat["gif_rejected"], png=_stat["png"],
         sphere=_stat["sphere"], geo_redirect=_stat["geo_redirect"],
         eclipse=dict(page=_stat["eclipse"], gif=_stat["eclipse_gif"],
+                     card=_stat["og_eclipse"],
                      distinct=len(_eclipse_keys),
                      top=dict(_eclipse_keys.most_common(n))),
         events=dict(page=_stat["events"], ics=_stat["events.ics"],
@@ -2995,6 +3008,34 @@ def _respond_eclipse(request: Req, place: str | None, key: str | None):
 # differ by a segment, so ordering is not load-bearing here the way it is
 # against /{place:path}.
 ECLIPSE_GIF_MS = 160
+
+
+def _respond_eclipse_og(request: Req, place: str | None, key: str):
+    """The social card. Registered ahead of the page routes for the same
+    reason every other og.png route is: a 404 here does not fall through."""
+    if place is not None and api.lookup_place(place) is None:
+        return PlainTextResponse("", status_code=404)
+    r = _build(request, place) if place is not None else None
+    composed = api.compose_eclipse_card(r, key, place)
+    if composed is None:
+        return PlainTextResponse("", status_code=404)
+    kicker, headline, detail, rows = composed
+    _stat["og"] += 1
+    _stat["og_eclipse"] += 1
+    return Response(card.render_eclipse(kicker, headline, detail, rows),
+                    media_type="image/png",
+                    headers={"Cache-Control": "public, max-age=86400, "
+                                              "s-maxage=604800"})
+
+
+@app.get("/eclipse/{key}/og.png")
+def eclipse_og(request: Req, key: str):
+    return _respond_eclipse_og(request, None, key)
+
+
+@app.get("/{place}/eclipse/{key}/og.png")
+def eclipse_og_at_place(request: Req, place: str, key: str):
+    return _respond_eclipse_og(request, place, key)
 
 
 def _respond_eclipse_gif(request: Req, place: str | None, key: str):

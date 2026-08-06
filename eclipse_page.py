@@ -1151,3 +1151,39 @@ def frames_script(frames_html, labels):
         "  });\n"
         "  if(still){stop();}else{play();}\n"
         "})();\n</script>")
+
+
+def card_lines(entry, f=None):
+    """(kicker, headline, detail) for the social card.
+
+    Two versions, because a card is fetched once by a crawler in a
+    datacentre and then shown to everybody. With a place it is that place's
+    answer, which is the whole reason to click a link about an eclipse. With
+    no place it says what the eclipse is and where it goes, and names nobody
+    -- rather than quietly reporting what an unfurling bot in Virginia would
+    have seen.
+    """
+    when = dt.datetime.fromisoformat(entry["when_utc"])
+    date = when.strftime("%d %B %Y").lstrip("0")
+    kicker = f"{entry['type']} eclipse".upper()
+    if f is None or not f.get("computed"):
+        # Not .capitalize(), which lowercases everything after the first
+        # letter and turned "the Arctic, Greenland, Iceland and northern
+        # Spain" into a sentence with no proper nouns left in it.
+        regions = entry["regions"]
+        return kicker, date, regions[:1].upper() + regions[1:]
+    detail = "   ".join(f"{m['label']} {m['clock']}"
+                        for m in f.get("timeline", []))
+    return f"{kicker}  {date}".upper(), headline(f), detail
+
+
+def card_art(f, disc, map_rows):
+    """Which drawing the card leads with.
+
+    The disc where there is one: a corona or a copper Moon is a picture, and
+    it is the picture of the thing itself. Where the eclipse is not visible
+    from here there is no disc to draw -- that is exactly what an empty disc
+    means -- so the map takes over, because "not from here, but from there"
+    is the useful thing to say instead.
+    """
+    return disc if disc else (map_rows or [])
