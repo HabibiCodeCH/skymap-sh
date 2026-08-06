@@ -39,10 +39,14 @@ class NoGlyphRendersAsTofu(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        try:
-            from fontTools.ttLib import TTFont
-        except ImportError:
-            raise unittest.SkipTest("fonttools not installed (test-only dep)")
+        # Deliberately unguarded. This used to skip when fonttools was
+        # missing, which sounds polite and is the wrong call: the thing
+        # being checked is invisible in the output, so a check that quietly
+        # does not run leaves exactly the same hole the empty boxes came
+        # through. It sat unrun on a dev machine for a whole session that
+        # way, reported as two familiar failures nobody looked at.
+        # fonttools is in requirements.txt. If this raises, install it.
+        from fontTools.ttLib import TTFont
 
         def cmap_of(path):
             f = TTFont(path, fontNumber=0)

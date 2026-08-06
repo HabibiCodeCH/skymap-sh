@@ -281,6 +281,10 @@ def test_every_card_glyph_has_a_font_that_contains_it():
     This covers what api.object_glyph() can return, which is a wider set than
     the chart draws -- meteor showers and asterisms are marked on a card but
     never on a chart, so gif._PRIMARY_GAPS does not mention them.
+
+    The import below is deliberately unguarded, same as the one in
+    test_gif.py: a check for something invisible must not be allowed to
+    quietly not run. fonttools is in requirements.txt.
     """
     from fontTools.ttLib import TTFont
     import card, gif
