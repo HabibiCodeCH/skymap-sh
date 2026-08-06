@@ -99,11 +99,33 @@ _PRIMARY_GAPS = frozenset("★◐◑☀✺✳⁂")
 PNG_SUBSTITUTE = {"⁂": "∴"}
 
 
-def font_for(ch):
+# One font object per size, built on demand. Only two sizes are ever asked
+# for (1x for the sky animations, 2x for anything shown next to page text),
+# so this is a two-entry dictionary rather than a cache with a policy.
+_fonts_by_scale = {1: (_font, _fallback_font, _wm_font)}
+
+
+def _fonts_at(scale):
+    if scale not in _fonts_by_scale:
+        try:
+            fb = ImageFont.truetype(_FALLBACK_PATH, FONT_SIZE * scale)
+        except OSError:
+            fb = None
+        _fonts_by_scale[scale] = (_load_font(FONT_SIZE * scale), fb,
+                                  _load_font(WATERMARK_SIZE * scale))
+    return _fonts_by_scale[scale]
+
+
+def _wm_font_at(scale):
+    return _fonts_at(scale)[2]
+
+
+def font_for(ch, scale=1):
     """The bundled font, unless it has no glyph for this and DejaVu does."""
-    if _fallback_font is not None and ch in _PRIMARY_GAPS:
-        return _fallback_font
-    return _font
+    primary, fallback, _wm = _fonts_at(scale)
+    if fallback is not None and ch in _PRIMARY_GAPS:
+        return fallback
+    return primary
 
 
 def _xterm_rgb(n):
@@ -144,10 +166,10 @@ _BRAILLE_SS = 4          # supersampling factor
 _BRAILLE_DOT = 0.34      # dot diameter as a fraction of its sub-cell
 
 
-def _braille_tile(ch, color, cell_h):
+def _braille_tile(ch, color, cell_h, scale=1):
     """One braille character as its dots, on the same cell as every other
     glyph so the grid is undisturbed."""
-    w = int(_CELL_W) + 1
+    w = int(_CELL_W * scale) + 1
     big = Image.new("RGBA", (w * _BRAILLE_SS, cell_h * _BRAILLE_SS), (0, 0, 0, 0))
     d = ImageDraw.Draw(big)
     bits = ord(ch) - BRAILLE_LO
@@ -163,16 +185,18 @@ def _braille_tile(ch, color, cell_h):
     return big.resize((w, cell_h), Image.LANCZOS)
 
 
-def _glyph(ch, color, cell_h=_CELL_H):
-    tile = _glyph_cache.get((ch, color, cell_h))
+def _glyph(ch, color, cell_h=_CELL_H, scale=1):
+    tile = _glyph_cache.get((ch, color, cell_h, scale))
     if tile is None:
         if BRAILLE_LO <= ord(ch) <= BRAILLE_HI:
-            tile = _braille_tile(ch, color, cell_h)
+            tile = _braille_tile(ch, color, cell_h, scale)
         else:
-            tile = Image.new("RGBA", (int(_CELL_W) + 1, cell_h), (0, 0, 0, 0))
+            tile = Image.new("RGBA", (int(_CELL_W * scale) + 1, cell_h),
+                             (0, 0, 0, 0))
             ch = PNG_SUBSTITUTE.get(ch, ch)
-            ImageDraw.Draw(tile).text((0, 0), ch, font=font_for(ch), fill=color)
-        _glyph_cache[(ch, color, cell_h)] = tile
+            ImageDraw.Draw(tile).text((0, 0), ch, font=font_for(ch, scale),
+                                      fill=color)
+        _glyph_cache[(ch, color, cell_h, scale)] = tile
     return tile
 
 
@@ -190,32 +214,45 @@ def cell_h_for(aspect):
     return max(1, int(round(_CELL_W * aspect)))
 
 
-def frame_to_image(text, cell_h=_CELL_H):
+def frame_to_image(text, cell_h=_CELL_H, scale=1):
     """One ANSI frame -> one RGB image, cell-aligned to a monospace grid,
-    with a one-line watermark footer below the chart content."""
+    with a one-line watermark footer below the chart content.
+
+    scale draws the whole thing at that multiple: same characters, same
+    grid, more pixels. It exists for the screen this is shown on. A
+    1x image on a 2x display is stretched by the display itself, and text
+    is where that shows -- the page's own words stay sharp because the
+    browser re-renders them at device resolution, while a bitmap beside
+    them cannot. Drawn at 2 and shown at half its width, the two match.
+    """
+    cell_w = _CELL_W * scale
+    cell_h = cell_h * scale
     lines = text.split("\n")
     cols = max((len(ANSI.sub("", l)) for l in lines), default=1)
     content_h = cell_h * len(lines)
-    img = Image.new("RGB", (int(_CELL_W * cols) + 2, content_h + _WM_STRIP_H), BG)
+    strip_h = _WM_STRIP_H * scale
+    img = Image.new("RGB", (int(cell_w * cols) + 2 * scale,
+                            content_h + strip_h), BG)
     for row, line in enumerate(lines):
         col, pos, fg = 0, 0, FG_DEFAULT
         for m in ANSI.finditer(line):
             chunk = line[pos:m.start()]
             for ch in chunk:
                 if ch != " ":
-                    tile = _glyph(ch, fg, cell_h)
-                    img.paste(tile, (int(col * _CELL_W), row * cell_h), tile)
+                    tile = _glyph(ch, fg, cell_h, scale)
+                    img.paste(tile, (int(col * cell_w), row * cell_h), tile)
                 col += 1
             pos = m.end()
             fg = _xterm_rgb(m.group(1)) if m.group(1) else FG_DEFAULT
         chunk = line[pos:]
         for ch in chunk:
             if ch != " ":
-                tile = _glyph(ch, fg, cell_h)
-                img.paste(tile, (int(col * _CELL_W), row * cell_h), tile)
+                tile = _glyph(ch, fg, cell_h, scale)
+                img.paste(tile, (int(col * cell_w), row * cell_h), tile)
             col += 1
-    wm_y = content_h + (_WM_STRIP_H - WATERMARK_SIZE) // 2
-    ImageDraw.Draw(img).text((4, wm_y), WATERMARK_TEXT, font=_wm_font, fill=WATERMARK_COLOR)
+    wm_y = content_h + (strip_h - WATERMARK_SIZE * scale) // 2
+    ImageDraw.Draw(img).text((4 * scale, wm_y), WATERMARK_TEXT,
+                             font=_wm_font_at(scale), fill=WATERMARK_COLOR)
     return img
 
 
@@ -253,7 +290,7 @@ def _base_palette(frame_texts):
     return pal_img
 
 
-def frames_to_gif(frame_texts, frame_ms, cell_h=_CELL_H):
+def frames_to_gif(frame_texts, frame_ms, cell_h=_CELL_H, scale=1):
     """List of ANSI frame strings -> GIF bytes. One shared, explicit palette
     (see _base_palette) across every frame, so colours don't flicker or
     drift as the GIF plays -- per-frame adaptive palettes would each pick
@@ -287,12 +324,12 @@ def frames_to_gif(frame_texts, frame_ms, cell_h=_CELL_H):
 
     def rest():
         for t in frame_texts[1:]:
-            im = frame_to_image(t, cell_h)
+            im = frame_to_image(t, cell_h, scale)
             q = im.quantize(palette=base, dither=Image.NONE)
             del im
             yield q
 
-    first_q = frame_to_image(frame_texts[0], cell_h).quantize(
+    first_q = frame_to_image(frame_texts[0], cell_h, scale).quantize(
         palette=base, dither=Image.NONE)
     buf = io.BytesIO()
     first_q.save(buf, format="GIF", save_all=True, append_images=rest(),

@@ -3537,11 +3537,8 @@ def object_best_ics(request: Req, obj: str):
                                  f'attachment; filename="{quote(canonical)}.ics"'})
 
 
-# Fifty thousand years each way, in 41 frames. Slower than the sky
-# animations: each frame is a thousand years and there is nothing to track
-# with your eye, so the reading of it is how the shape drifts rather than
-# where anything is at one moment.
-EVOLUTION_GIF_MS = 130
+# Fifty thousand years each way, in 41 frames. The pace, and the pauses on
+# the two ends, live in motion.py with the drawing they belong to.
 
 
 @app.get("/{obj}/evolution.gif")
@@ -3568,8 +3565,14 @@ def object_evolution_gif(request: Req, obj: str):
     if not frames:
         return PlainTextResponse("", status_code=404)
     _stat["evolution_gif"] += 1
+    # Drawn at twice the size it is shown at. This one sits inline next to
+    # the page's own text, which the browser renders at device resolution --
+    # a 1x bitmap beside it is stretched by the display and only the picture
+    # looks soft. The sky animations are shown on their own and keep 1x.
     data = gif.frames_to_gif(["\n".join(f) for f in frames],
-                             EVOLUTION_GIF_MS, gif.cell_h_for(art.CELL))
+                             api.motion.frame_durations(len(frames)),
+                             gif.cell_h_for(art.CELL),
+                             scale=api.motion.GIF_SCALE)
     return Response(data, media_type="image/gif",
                     headers={"Cache-Control": "public, max-age=604800, "
                                               "s-maxage=2592000",

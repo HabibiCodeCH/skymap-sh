@@ -550,7 +550,55 @@ def _angle_gap(a, b):
 
 
 # ------------------------------------------------------------ animation
-def frames(name, steps=41, colour=True):
+# The animation is drawn narrower than the panels above it, and that is
+# arithmetic rather than taste. A character cell in the exported GIF is 10px
+# wide; on the page the same drawing is set at 12px monospace, so 96 columns
+# of panel occupy about 691px. A 96-column GIF is 962px, and the browser
+# would squeeze it into the column -- resampling every letter of every star
+# name, which is what made the text look blurry when the frames themselves
+# were sharp. 68 columns is 680px, which lands under the panels at its own
+# size with nothing resampled.
+GIF_COLS = 68
+
+# ...and rendered at twice that and shown at half, because it sits beside
+# page text. The browser draws its own words at the screen's real
+# resolution; a bitmap at half that is stretched by the display, and text
+# inside a picture is exactly where anyone would notice.
+GIF_SCALE = 2
+GIF_CSS_WIDTH = GIF_COLS * 10          # gif._CELL_W is 10px at 1x
+
+# How long each frame is held, in milliseconds. A thousand years a frame is
+# not something to race through, and there is nothing here to track with the
+# eye the way there is in a sky animation -- the reading of it is a slow
+# drift, so it is paced for that.
+STEP_MS = 210
+# The two ends and the middle get held. Without this the first frame is
+# 210ms like every other one and then the loop snaps back to it, so the
+# -50,000 shape -- one of the three things the animation exists to show --
+# goes past too fast to read. Twice a step, not the second and a half it
+# was first set to: long enough to register as a pause, short enough that
+# the loop does not feel like it has stopped.
+END_MS = 420
+NOW_MS = 420
+
+# Bumped whenever the drawing itself changes. It rides on the image URL, so
+# a reader whose browser cached last week's picture gets this week's instead
+# of a week-old one -- the GIF is cached hard on purpose and there is
+# otherwise nothing in the URL to say the picture is not the same picture.
+RENDER_VERSION = 5
+
+
+def frame_durations(count):
+    """One duration per frame: a beat on each end and on the middle, and an
+    even pace between them."""
+    out = [STEP_MS] * count
+    if count:
+        out[0] = out[-1] = END_MS
+        out[count // 2] = NOW_MS
+    return out
+
+
+def frames(name, steps=41, colour=True, cols=GIF_COLS):
     """The whole span as frames, for gif.py.
 
     Every frame is the same size and drawn at the same scale, both of which
@@ -563,11 +611,11 @@ def frames(name, steps=41, colour=True):
         return []
     stars, mots = _stars(), _motions()
     years = [round(-SPAN + 2 * SPAN * i / (steps - 1)) for i in range(steps)]
-    box = field(a, years, stars, mots)
+    box = field(a, years, stars, mots, cols=cols)
     out = []
     for y in years:
-        body = panel(a, y, box, colour=colour, stars=stars, mots=mots,
-                     trim=False)
+        body = panel(a, y, box, cols=cols, colour=colour, stars=stars,
+                     mots=mots, trim=False)
         label = _epoch_label(y)
-        out.append([sky.paint(label.ljust(COLS), sky.C.MUTE, colour)] + body)
+        out.append([sky.paint(label.ljust(cols), sky.C.MUTE, colour)] + body)
     return out

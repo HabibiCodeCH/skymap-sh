@@ -1793,21 +1793,41 @@ def evolution_caption(canonical):
     return " ".join(out)
 
 
-def evolution_html(canonical, escape=html.escape):
-    """The same section as markup: the panels, the sentence, the animation."""
-    body = motion.panels(canonical, colour=True)
-    if not body:
+def evolution_gif_html(canonical, escape=html.escape):
+    """The animation, under the panels it belongs to.
+
+    Drawn at twice the width given here and shown at this one, which is the
+    only way a bitmap sits beside page text without looking soft: the
+    browser renders its own words at whatever the screen really is, and a
+    1x image next to them gets stretched by the display. 680px is also
+    about what 96 columns of 12px monospace occupy, so it lines up with the
+    panels above it.
+
+    ?v= is the render version, because the image is cached for a week and
+    nothing else in the URL changes when the drawing does.
+    """
+    if not motion.asterism(canonical):
         return ""
-    gif = f"/{quote(canonical)}/evolution.gif"
-    art_html = link_star_labels(ansi_to_html(chr(10).join(body)), canonical)
-    return (f'<section class="obj-evo">'
-            f'<p class="obj-evo-title">{escape(evolution_title(canonical))}</p>'
-            f'<pre class="obj-evo-art">{art_html}</pre>'
-            f'<p class="obj-evo-note">{escape(evolution_caption(canonical))}</p>'
-            f'<img class="obj-evo-gif" src="{gif}" alt="'
+    src = f"/{quote(canonical)}/evolution.gif?v={motion.RENDER_VERSION}"
+    return (f'<img class="obj-evo-gif" src="{src}" alt="'
             f'{escape(canonical)} over {motion.SPAN * 2:,} years" '
-            f'loading="lazy" width="760">'
-            f'</section>')
+            f'loading="lazy" width="{motion.GIF_CSS_WIDTH}">')
+
+
+def style_evolution_title(markup, canonical, _re=re):
+    """Give the section's title its own class inside the rendered <pre>.
+
+    The panels reach the browser as part of the live column's text, so the
+    title arrives as one more coloured span in a block of preformatted
+    output and there is nothing for a stylesheet to aim at. This puts a
+    class on that span and nothing else, which is what lets it be set like
+    the eclipse page's section labels rather than like chart text.
+    """
+    title = evolution_title(canonical)
+    pattern = (r'<span[^>]*>(\s*)' + _re.escape(title) + r'</span>')
+    return _re.sub(pattern,
+                   lambda m: f'<span class="obj-evo-title">{m.group(1)}'
+                             f'{title}</span>', markup, count=1)
 
 
 def link_star_labels(markup, canonical):
@@ -2412,33 +2432,29 @@ OBJECT_CSS = """
      shorter drawing would shift everything below it up the page. */
   min-height:225px;box-sizing:content-box}
 
-/* The evolution section, full width under both columns.
-   The drawing is 96 columns of braille and it must not reflow or re-space:
-   font-variant-ligatures and a pinned line-height for the same reason
-   .obj-art has them. It scales with the viewport instead of scrolling --
-   the panels are one picture and a horizontal scrollbar would cut a
-   constellation in half. clamp's lower end keeps it legible on a phone,
-   where it lands around 5px and is a shape rather than a diagram. */
-.obj-evo{margin:2.2rem 0 0;border-top:1px solid #21262d;padding:1.6rem 0 0}
-/* The same small blue section label the eclipse page marks its sections
-   with (.ecl-maptitle), because it is doing the same job: naming the
-   drawing under it. Repeated rather than shared -- that rule lives in
-   ECLIPSE_CSS, which an object page does not load. */
-.obj-evo-title{color:#8fb6e0;font-size:11px;letter-spacing:.09em;
-  text-transform:uppercase;margin:0 0 .7rem}
-/* Dimmer than a star, so a label reads as a caption rather than as another
-   thing in the sky, and underlined only on hover so 130 star names do not
-   turn the panel into a page of links. */
-.obj-evo-art a{color:#9aa7b4;text-decoration:none}
-.obj-evo-art a:hover{color:#87d7ff;text-decoration:underline}
-.obj-evo pre.obj-evo-art{font-family:ui-monospace,SFMono-Regular,Menlo,
-  Consolas,monospace;line-height:1.08;margin:0 0 1rem;overflow:visible;
-  width:max-content;max-width:100%;font-variant-ligatures:none;
-  font-size:clamp(4.5px,1.02vw,12px)}
-.obj-evo-note{color:#8b949e;font-size:13.5px;line-height:1.55;
-  max-width:74ch;margin:0 0 1.1rem}
-.obj-evo-gif{display:block;max-width:100%;height:auto;border-radius:8px;
-  background:#070a0e}
+/* The star names drawn beside the stars in the evolution panels, which are
+   in the live column with everything else. Dimmer than a star, so a name
+   reads as a label rather than as another thing in the sky, and underlined
+   only on hover so seven of them do not turn a drawing into a list of
+   links. */
+.obj-live a[href^="/"]{color:#9aa7b4;text-decoration:none}
+.obj-live a[href^="/"]:hover{color:#87d7ff;text-decoration:underline}
+/* The section's own title, lifted out of the preformatted text by
+   style_evolution_title so it can be set like the eclipse page's section
+   labels (.ecl-maptitle) rather than like chart output. inline-block is
+   what lets it take the space above it: a plain inline span inside a <pre>
+   ignores vertical margin. */
+.obj-live .obj-evo-title{display:inline-block;color:#8fb6e0;font-size:11px;
+  letter-spacing:.09em;text-transform:uppercase;margin:1.5rem 0 .35rem;
+  line-height:1.2}
+/* The animation, hung off the bottom of the panels it belongs to. The width
+   attribute on the <img> is half what the file really is -- see
+   evolution_gif_html. margin-left is the two spaces every line of the
+   preformatted block above it is indented by, which is 2 characters of
+   12px monospace: without it the picture starts two characters to the left
+   of the drawing it belongs to. */
+.obj-evo-gif{display:block;max-width:100%;height:auto;
+  margin:.9rem 0 1.2rem 14.4px;border-radius:8px;background:#070a0e}
 
 /* The lede sentence and the fact rows. Proportional text, not monospace:
    these are sentences and numbers to read, not a drawing to preserve. */
@@ -2640,6 +2656,16 @@ def object_html(r, canonical, text, data, place=None, base_url="",
                      # the picture, and passing "" here silently dropped all
                      # of it.
                      + chart_layout(rungs, zenith, prose))
+        if data.get("evolution"):
+            # The panels are already here, in the column, under the chart --
+            # they arrive as part of the prose text. Two jobs left: make the
+            # names beside the stars clickable, and hang the animation off
+            # the bottom of them. It was a full-width section under both
+            # columns for a while and that was worse: narrower drawing, and
+            # it read as a separate page rather than the end of this one.
+            live_html = style_evolution_title(
+                link_star_labels(live_html, canonical), canonical)
+            live_html += evolution_gif_html(canonical)
     elif live.strip():
         static_html = chart_pre(ansi_to_html(fallback_static))
         live_html = chart_pre(ansi_to_html(live))
@@ -2650,11 +2676,6 @@ def object_html(r, canonical, text, data, place=None, base_url="",
                          f'<aside class="obj-static">{static_html}</aside>'
                          f'<div class="obj-live">{live_html}</div>'
                          '</div>')
-    # Full width, under both columns. It belongs to neither: the sidebar is
-    # too narrow for a 96-column drawing, and the right-hand column is what
-    # the sky is doing tonight, which this is the opposite of.
-    if data.get("evolution"):
-        body += evolution_html(canonical)
     head = object_head(data, canonical, place, base_url) + OBJECT_CSS
     # controls_html carries the drawer trigger as well as the explore row, so
     # passing "" here gave the object pages a page with no way to open the

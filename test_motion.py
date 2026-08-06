@@ -274,9 +274,15 @@ class TheStarsAreNamedAndClickable(unittest.TestCase):
                         f"{name} at {years}: {glyph} lost to a label")
 
     def test_the_browser_links_them_to_their_own_pages(self):
-        markup = api.evolution_html("Big Dipper")
+        """Through the page itself, since the panels reach the browser as
+        part of the live column's text rather than as a section of their
+        own."""
+        cm = TestClient(server.app)
+        client = cm.__enter__()
+        self.addCleanup(cm.__exit__, None, None, None)
+        got = client.get("/Big Dipper", headers=BROWSER)
         for star in ("Dubhe", "Alkaid", "Mizar"):
-            self.assertIn(f'<a href="/{star}">{star}</a>', markup)
+            self.assertIn(f'<a href="/{star}">{star}</a>', got.text)
 
     def test_the_names_survive_as_whole_words(self):
         """Colouring each cell separately made "Dubhe" five separate spans,

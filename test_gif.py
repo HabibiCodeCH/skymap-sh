@@ -178,6 +178,72 @@ def _ink(tile):
     return sum(1 for px in tile.getdata() if px[3] > 8)
 
 
+class DrawnBiggerThanItIsShown(unittest.TestCase):
+    """An image shown beside page text has to be drawn at the screen's real
+    resolution, not the layout's. The browser re-renders its own words at
+    whatever the display is; a 1x bitmap next to them gets stretched by the
+    display itself, and text inside the picture is where anyone notices."""
+
+    def frame(self, name, scale):
+        import motion
+        text = "\n".join(motion.frames(name, steps=2)[0])
+        return gif.frame_to_image(text, gif.cell_h_for(2.0), scale=scale)
+
+    def test_scale_doubles_the_pixels_and_not_the_grid(self):
+        one, two = self.frame("Orion", 1), self.frame("Orion", 2)
+        self.assertAlmostEqual(two.size[0] / one.size[0], 2.0, delta=0.02)
+        self.assertAlmostEqual(two.size[1] / one.size[1], 2.0, delta=0.02)
+
+    def test_the_page_shows_it_at_half_what_it_draws(self):
+        """The two numbers live in different files. Drifting apart is what
+        makes the picture soft again, and nothing else would say so."""
+        import api
+        import motion
+        self.assertIn(f'width="{motion.GIF_CSS_WIDTH}"',
+                      api.evolution_gif_html("Big Dipper"))
+        img = self.frame("Big Dipper", motion.GIF_SCALE)
+        self.assertAlmostEqual(img.size[0] / motion.GIF_CSS_WIDTH, 2.0,
+                               delta=0.05)
+
+    def test_the_two_ends_are_held_long_enough_to_read(self):
+        """Every frame the same length meant the -50,000 shape went past in
+        210ms and then the loop snapped straight back to it, so one of the
+        three things the animation exists to show was never really seen.
+        Checked in the written file, not in the list we passed in: a GIF
+        writer that ignored per-frame durations would look identical from
+        this side."""
+        import io
+        import motion
+        from PIL import Image
+        frames = motion.frames("Big Dipper", steps=9)
+        data = gif.frames_to_gif(["\n".join(f) for f in frames],
+                                 motion.frame_durations(len(frames)),
+                                 gif.cell_h_for(2.0))
+        im = Image.open(io.BytesIO(data))
+        held = []
+        for i in range(im.n_frames):
+            im.seek(i)
+            held.append(im.info["duration"])
+        self.assertEqual(held[0], motion.END_MS)
+        self.assertEqual(held[-1], motion.END_MS)
+        self.assertGreater(held[0], held[1])
+
+    def test_the_url_carries_a_version_so_a_cached_picture_is_replaced(self):
+        """It is cached for a week. Without this, a reader who saw the
+        drawing before it was fixed keeps seeing the broken one."""
+        import api
+        import motion
+        self.assertIn(f"?v={motion.RENDER_VERSION}",
+                      api.evolution_gif_html("Big Dipper"))
+
+    def test_everything_else_still_exports_at_one_to_one(self):
+        """scale defaults to 1, so the sky animations and every PNG are
+        untouched by this."""
+        text = "\n".join(_frames(dt.datetime(2026, 8, 5, 23, 0), count=1)[:1])
+        self.assertEqual(gif.frame_to_image(text).size,
+                         gif.frame_to_image(text, scale=1).size)
+
+
 class BasePalette(unittest.TestCase):
     """_base_palette scans every frame's ANSI codes, not just the first --
     the fix for the actual bug (an adaptive palette derived from frame 0
