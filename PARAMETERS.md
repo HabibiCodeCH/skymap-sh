@@ -143,6 +143,28 @@ no familiar shapes in it is a worse answer to "where do I look" than the whole
 sky with a mark on it. `?span=` (`--span=`) crops to a window if you want one,
 which is genuinely better for something low in a crowded field.
 
+## How a constellation changes shape
+
+Every asterism page ends with the same figure drawn at −50,000 years, now and
++50,000, and the animation between them.
+
+| you type | you get |
+|---|---|
+| `curl 'skymap.sh/Big Dipper'` | the three panels at the foot of the page, and what changed |
+| `curl 'skymap.sh/Big Dipper/evolution.gif'` | the same span as an animation, 41 frames |
+| `curl 'skymap.sh/Orion/evolution.gif'` | the contrast: distant stars, almost no change |
+| `curl 'skymap.sh/Vega/evolution.gif'` | `no shape to show here` — one star has nothing to deform |
+
+No place in that URL, and none accepted. Where you stand changes nothing about
+how a constellation deforms, so it is one picture for everybody.
+
+This is **proper motion**: the stars really moving through space, which changes
+the shape. It is not precession, which changes where a constellation appears
+and which star is the pole star, and the two get conflated constantly. ±50,000
+years is the ceiling on purpose — past about 100,000 the straight-line
+assumption fails as stars follow curved orbits around the Galaxy, and the stars
+themselves start changing anyway.
+
 ## What's coming up
 
 | you type | you get |

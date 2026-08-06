@@ -1216,6 +1216,13 @@ def stats_text(n=50, map_slot=False):
         for key, hits in _eclipse_keys.most_common(5):
             L.append(f"  {key:12} {hits:>8,}")
         L.append("")
+    if _stat["evolution_gif"]:
+        # Its own line rather than lumped in with the sky animations. This
+        # one is a constellation over 100,000 years, which is a different
+        # thing being asked for than tonight sped up.
+        L.append("constellation evolution")
+        L.append(f"  {'gif':12} {_stat['evolution_gif']:>8,}")
+        L.append("")
     if _stat["events"] or _stat["events.ics"] or _stat["events.rss"]:
         L.append("what's coming up")
         L.append(f"  {'page':12} {_stat['events']:>8,}")
@@ -1313,6 +1320,7 @@ def stats_json(n=50):
                      card=_stat["og_eclipse"],
                      distinct=len(_eclipse_keys),
                      top=dict(_eclipse_keys.most_common(n))),
+        evolution=dict(gif=_stat["evolution_gif"]),
         events=dict(page=_stat["events"], ics=_stat["events.ics"],
                     rss=_stat["events.rss"], via_nav=_stat["events_ip"],
                     places_distinct=len(_events_places),
@@ -3527,6 +3535,47 @@ def object_best_ics(request: Req, obj: str):
                     headers={"Cache-Control": "public, max-age=86400",
                              "Content-Disposition":
                                  f'attachment; filename="{quote(canonical)}.ics"'})
+
+
+# Fifty thousand years each way, in 41 frames. Slower than the sky
+# animations: each frame is a thousand years and there is nothing to track
+# with your eye, so the reading of it is how the shape drifts rather than
+# where anything is at one moment.
+EVOLUTION_GIF_MS = 130
+
+
+@app.get("/{obj}/evolution.gif")
+def object_evolution_gif(request: Req, obj: str):
+    """An asterism's shape over 100,000 years.
+
+    Registered ahead of /{place}/{obj} for the same reason /{obj}/og.png is:
+    otherwise "Big Dipper" is read as a place and "evolution.gif" as an
+    object. A 404 here does not fall through to the next route either -- the
+    handler's status code is the answer -- which is why this must only ever
+    404 for something that genuinely has no shape to show.
+
+    No place in the path, deliberately. Where you stand changes nothing
+    about how a constellation deforms, so this is one image for everyone and
+    it can be cached hard.
+    """
+    canonical = objects.resolve_name(obj)
+    if canonical is None or not api.motion.asterism(canonical):
+        return PlainTextResponse(
+            "no shape to show here\n\n"
+            "constellation evolution is drawn for asterisms:\n"
+            "  curl 'skymap.sh/Big Dipper/evolution.gif'\n", status_code=404)
+    frames = api.motion.frames(canonical)
+    if not frames:
+        return PlainTextResponse("", status_code=404)
+    _stat["evolution_gif"] += 1
+    data = gif.frames_to_gif(["\n".join(f) for f in frames],
+                             EVOLUTION_GIF_MS, gif.cell_h_for(art.CELL))
+    return Response(data, media_type="image/gif",
+                    headers={"Cache-Control": "public, max-age=604800, "
+                                              "s-maxage=2592000",
+                             "Content-Disposition":
+                                 f'inline; filename="{quote(canonical)}'
+                                 f'-evolution.gif"'})
 
 
 @app.get("/{obj}/og.png")

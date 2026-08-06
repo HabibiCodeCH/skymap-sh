@@ -117,6 +117,67 @@ class NoGlyphRendersAsTofu(unittest.TestCase):
         self.assertNotIn("◑", gif.PNG_SUBSTITUTE)
 
 
+class BrailleIsDrawnBecauseNoFontHasIt(unittest.TestCase):
+    """The constellation panels are braille, and this export drew them as a
+    field of empty boxes: neither bundled font has a single glyph in the
+    braille block. The terminal was fine the whole time, which is exactly
+    how it went unnoticed.
+
+    So the dots are drawn rather than typeset. These say that the reason
+    still holds -- if a future font update fills the block, drawing them is
+    still fine but the comment explaining why would have gone stale."""
+
+    @classmethod
+    def setUpClass(cls):
+        from fontTools.ttLib import TTFont
+
+        def cmap_of(path):
+            f = TTFont(path, fontNumber=0)
+            out = set()
+            for t in f["cmap"].tables:
+                out |= set(t.cmap.keys())
+            return out
+
+        cls.primary = cmap_of(gif._FONT_CANDIDATES[0])
+        cls.fallback = cmap_of(gif._FALLBACK_PATH)
+
+    def test_neither_font_has_any_braille_at_all(self):
+        block = range(gif.BRAILLE_LO, gif.BRAILLE_HI + 1)
+        self.assertEqual([c for c in block if c in self.primary], [])
+        self.assertEqual([c for c in block if c in self.fallback], [])
+
+    def test_a_braille_character_comes_out_with_ink_in_it(self):
+        """The failure this replaces was a tile full of .notdef box, so
+        "something was drawn" is not enough -- the dots have to land where
+        the character says they do."""
+        blank = gif._glyph(chr(gif.BRAILLE_LO), (255, 255, 255), 20)
+        self.assertEqual(blank.getbbox(), None, "U+2800 has no dots set")
+        full = gif._glyph(chr(gif.BRAILLE_LO + 0xFF), (255, 255, 255), 20)
+        self.assertIsNotNone(full.getbbox())
+        # Eight dots fill the cell; one dot does not.
+        one = gif._glyph(chr(gif.BRAILLE_LO + 0x01), (255, 255, 255), 20)
+        self.assertLess(_ink(one), _ink(full) / 4)
+
+    def test_the_top_left_dot_is_in_the_top_left(self):
+        top_left = gif._glyph(chr(gif.BRAILLE_LO + 0x01), (255, 255, 255), 20)
+        bottom_right = gif._glyph(chr(gif.BRAILLE_LO + 0x80), (255, 255, 255), 20)
+        a, b = top_left.getbbox(), bottom_right.getbbox()
+        self.assertLess(a[0], b[0], "left dot is not left of the right one")
+        self.assertLess(a[1], b[1], "top dot is not above the bottom one")
+
+    def test_a_real_panel_exports_with_no_empty_boxes(self):
+        import motion
+        frames = motion.frames("Big Dipper", steps=3)
+        data = gif.frames_to_gif(["\n".join(f) for f in frames], 130,
+                                 gif.cell_h_for(2.0))
+        self.assertEqual(data[:6], b"GIF89a")
+        self.assertGreater(len(data), 2000)
+
+
+def _ink(tile):
+    return sum(1 for px in tile.getdata() if px[3] > 8)
+
+
 class BasePalette(unittest.TestCase):
     """_base_palette scans every frame's ANSI codes, not just the first --
     the fix for the actual bug (an adaptive palette derived from frame 0

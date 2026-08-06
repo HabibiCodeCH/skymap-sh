@@ -16,6 +16,7 @@ import eclipse_page
 import sky
 import brand
 import facts as facts_table
+import motion
 import objects
 from sky import (C, paint, julian, gmst_hours, altaz, angsep, compass, moon_glyph,
                  phase_name, resolve_target, visibility, next_visible,
@@ -1721,6 +1722,122 @@ def object_descriptor(facts):
     return f"{article} {word}"
 
 
+def evolution_lines(tgt, canonical, c=True):
+    """The shape of an asterism at -50,000 years, now and +50,000, with what
+    changed underneath it. [] for anything that is not an asterism.
+
+    Only asterisms, because a shape is the only thing here that can deform:
+    one star moving is a fact for its own page, not a picture. It sits at the
+    bottom of the page because it is the least perishable thing on it -- the
+    chart above changes every few minutes and this changes never.
+    """
+    if tgt.get("kind") != "asterism":
+        return []
+    s = motion.summary(canonical)
+    if not s:
+        return []
+    body = motion.panels(canonical, colour=c)
+    if not body:
+        return []
+
+    stars = {x["hr"]: x for x in sky._load("stars.json")}
+    def name_of(hr):
+        return (stars.get(hr) or {}).get("n") or f"HR {hr}"
+
+    L = [paint("  " + evolution_title(canonical), C.HEAD, c), ""]
+    L += ["  " + l for l in body]
+    L.append("")
+    import textwrap
+    for line in textwrap.wrap(evolution_caption(canonical), 94):
+        L.append(paint("  " + line, C.LABEL, c))
+    L.append("")
+    L.append(paint(f"  curl '{brand.SITE}/{quote(canonical)}/evolution.gif'",
+                   C.MUTE, c))
+    return L
+
+
+def evolution_title(canonical):
+    return f"The evolution of {canonical} over time"
+
+
+def evolution_caption(canonical):
+    """The sentence under the panels. One function, because the terminal and
+    the browser must not be able to say different things about the same
+    picture."""
+    s = motion.summary(canonical)
+    if not s:
+        return ""
+    stars = {x["hr"]: x for x in sky._load("stars.json")}
+
+    def name_of(hr):
+        return (stars.get(hr) or {}).get("n") or f"HR {hr}"
+
+    out = [f"Over {s['span']:,} years either way the longest side of this "
+           f"figure changes by {s['deform']:.0f}%, and the furthest any of "
+           f"its stars travels is {s['moved']:.1f} degrees."]
+    # Which way they are heading, not how fast. The Big Dipper's five middle
+    # stars share a direction because they really are one physical group and
+    # its two ends are not members of it -- but that is a fact about those
+    # seven stars, and what gets said here is only what the proper motions
+    # themselves show.
+    if s["apart"] and len(s["with_group"]) >= 2:
+        out.append(f"{_and_list([name_of(h) for h in s['apart']])} "
+                   f"{'drifts' if len(s['apart']) == 1 else 'drift'} the "
+                   f"opposite way to the other {len(s['with_group'])}, which "
+                   f"travel together.")
+    if s["flagged"]:
+        out.append(f"{_and_list([name_of(h) for h in s['flagged']])} has no "
+                   f"measured distance, so its path is extrapolated flat.")
+    out.append("Proper motion only: this is the shape changing, not the sky "
+               "turning or the pole moving.")
+    return " ".join(out)
+
+
+def evolution_html(canonical, escape=html.escape):
+    """The same section as markup: the panels, the sentence, the animation."""
+    body = motion.panels(canonical, colour=True)
+    if not body:
+        return ""
+    gif = f"/{quote(canonical)}/evolution.gif"
+    art_html = link_star_labels(ansi_to_html(chr(10).join(body)), canonical)
+    return (f'<section class="obj-evo">'
+            f'<p class="obj-evo-title">{escape(evolution_title(canonical))}</p>'
+            f'<pre class="obj-evo-art">{art_html}</pre>'
+            f'<p class="obj-evo-note">{escape(evolution_caption(canonical))}</p>'
+            f'<img class="obj-evo-gif" src="{gif}" alt="'
+            f'{escape(canonical)} over {motion.SPAN * 2:,} years" '
+            f'loading="lazy" width="760">'
+            f'</section>')
+
+
+def link_star_labels(markup, canonical):
+    """Turn the names drawn beside the stars into links to their own pages.
+
+    Done on the rendered markup rather than while drawing, because the panel
+    has to stay plain text for the terminal, where a link is not a thing that
+    exists. Only the names this asterism actually drew are looked for, and
+    the longest first so "Alkaid" inside a longer name cannot be matched
+    first and leave a fragment behind.
+    """
+    a = motion.asterism(canonical)
+    if not a:
+        return markup
+    stars = {s["hr"]: s for s in sky._load("stars.json")}
+    names = sorted({(stars.get(hr) or {}).get("n") for hr in motion.members(a)}
+                   - {None}, key=len, reverse=True)
+    for name in names:
+        if name in markup:
+            markup = markup.replace(
+                name, f'<a href="/{quote(name)}">{name}</a>')
+    return markup
+
+
+def _and_list(names):
+    if len(names) == 1:
+        return names[0]
+    return ", ".join(names[:-1]) + " and " + names[-1]
+
+
 def object_sources(facts):
     """Where the numbers on this page came from.
 
@@ -2026,13 +2143,23 @@ def compose_object(r, canonical):
     # is crossing, how far, the rings, the best night this year -- reads
     # after the picture, because it is context rather than a reason to go
     # outside in the next hour.
+    # Last on the page, under everything the reader came for. It is the one
+    # block here that is the same for every visitor on every night, which is
+    # also why the browser lifts it out into its own full-width section
+    # rather than squeezing it into either column.
+    evo = evolution_lines(tgt, canonical, c)
     parts += [OBJECT_SLOT, live_head, live_sub, OBJPROSE_SLOT, live, "",
-              body, "", _footer(r.place, c), ""]
+              body, ""]
+    if evo:
+        parts += evo + [""]
+    parts += [_footer(r.place, c), ""]
     text = "\n".join(parts)
     data = dict(res.data)
     data.update(facts)
     if picture:
         data["art"] = picture
+    if evo:
+        data["evolution"] = evo
     # Carried so the browser can lay the same rows out as real markup rather
     # than re-deriving them, and so ?format=json exposes them too.
     data["infobox"] = [[t, [list(x) for x in r]] for t, r in blocks]
@@ -2285,6 +2412,34 @@ OBJECT_CSS = """
      shorter drawing would shift everything below it up the page. */
   min-height:225px;box-sizing:content-box}
 
+/* The evolution section, full width under both columns.
+   The drawing is 96 columns of braille and it must not reflow or re-space:
+   font-variant-ligatures and a pinned line-height for the same reason
+   .obj-art has them. It scales with the viewport instead of scrolling --
+   the panels are one picture and a horizontal scrollbar would cut a
+   constellation in half. clamp's lower end keeps it legible on a phone,
+   where it lands around 5px and is a shape rather than a diagram. */
+.obj-evo{margin:2.2rem 0 0;border-top:1px solid #21262d;padding:1.6rem 0 0}
+/* The same small blue section label the eclipse page marks its sections
+   with (.ecl-maptitle), because it is doing the same job: naming the
+   drawing under it. Repeated rather than shared -- that rule lives in
+   ECLIPSE_CSS, which an object page does not load. */
+.obj-evo-title{color:#8fb6e0;font-size:11px;letter-spacing:.09em;
+  text-transform:uppercase;margin:0 0 .7rem}
+/* Dimmer than a star, so a label reads as a caption rather than as another
+   thing in the sky, and underlined only on hover so 130 star names do not
+   turn the panel into a page of links. */
+.obj-evo-art a{color:#9aa7b4;text-decoration:none}
+.obj-evo-art a:hover{color:#87d7ff;text-decoration:underline}
+.obj-evo pre.obj-evo-art{font-family:ui-monospace,SFMono-Regular,Menlo,
+  Consolas,monospace;line-height:1.08;margin:0 0 1rem;overflow:visible;
+  width:max-content;max-width:100%;font-variant-ligatures:none;
+  font-size:clamp(4.5px,1.02vw,12px)}
+.obj-evo-note{color:#8b949e;font-size:13.5px;line-height:1.55;
+  max-width:74ch;margin:0 0 1.1rem}
+.obj-evo-gif{display:block;max-width:100%;height:auto;border-radius:8px;
+  background:#070a0e}
+
 /* The lede sentence and the fact rows. Proportional text, not monospace:
    these are sentences and numbers to read, not a drawing to preserve. */
 .obj-lede{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
@@ -2495,6 +2650,11 @@ def object_html(r, canonical, text, data, place=None, base_url="",
                          f'<aside class="obj-static">{static_html}</aside>'
                          f'<div class="obj-live">{live_html}</div>'
                          '</div>')
+    # Full width, under both columns. It belongs to neither: the sidebar is
+    # too narrow for a 96-column drawing, and the right-hand column is what
+    # the sky is doing tonight, which this is the opposite of.
+    if data.get("evolution"):
+        body += evolution_html(canonical)
     head = object_head(data, canonical, place, base_url) + OBJECT_CSS
     # controls_html carries the drawer trigger as well as the explore row, so
     # passing "" here gave the object pages a page with no way to open the

@@ -126,12 +126,52 @@ def _xterm_rgb(n):
 _glyph_cache = {}
 
 
+# Braille, drawn rather than typeset. Neither bundled font has a single
+# glyph in U+2800..U+28FF -- not JetBrains Mono and not DejaVu Sans Mono,
+# read from their cmaps -- so the constellation panels came out as a field
+# of .notdef boxes in every exported GIF while the terminal showed them
+# perfectly. There is no font to switch to that would not also have to be
+# licensed, bundled and kept in step with the monospace advance width.
+#
+# It does not need one. A braille character is eight dots on a fixed 2x4
+# grid and that is a drawing instruction, not a typographic one. Rendered at
+# 4x and resized down, so the dots come out round and smoothed rather than
+# as hard little squares.
+BRAILLE_LO, BRAILLE_HI = 0x2800, 0x28FF
+_BRAILLE_BITS = ((0, 0, 0x01), (0, 1, 0x02), (0, 2, 0x04), (0, 3, 0x40),
+                 (1, 0, 0x08), (1, 1, 0x10), (1, 2, 0x20), (1, 3, 0x80))
+_BRAILLE_SS = 4          # supersampling factor
+_BRAILLE_DOT = 0.34      # dot diameter as a fraction of its sub-cell
+
+
+def _braille_tile(ch, color, cell_h):
+    """One braille character as its dots, on the same cell as every other
+    glyph so the grid is undisturbed."""
+    w = int(_CELL_W) + 1
+    big = Image.new("RGBA", (w * _BRAILLE_SS, cell_h * _BRAILLE_SS), (0, 0, 0, 0))
+    d = ImageDraw.Draw(big)
+    bits = ord(ch) - BRAILLE_LO
+    step_x = w * _BRAILLE_SS / 2.0
+    step_y = cell_h * _BRAILLE_SS / 4.0
+    r = min(step_x, step_y) * _BRAILLE_DOT
+    for dx, dy, bit in _BRAILLE_BITS:
+        if not bits & bit:
+            continue
+        cx = (dx + 0.5) * step_x
+        cy = (dy + 0.5) * step_y
+        d.ellipse((cx - r, cy - r, cx + r, cy + r), fill=color)
+    return big.resize((w, cell_h), Image.LANCZOS)
+
+
 def _glyph(ch, color, cell_h=_CELL_H):
     tile = _glyph_cache.get((ch, color, cell_h))
     if tile is None:
-        tile = Image.new("RGBA", (int(_CELL_W) + 1, cell_h), (0, 0, 0, 0))
-        ch = PNG_SUBSTITUTE.get(ch, ch)
-        ImageDraw.Draw(tile).text((0, 0), ch, font=font_for(ch), fill=color)
+        if BRAILLE_LO <= ord(ch) <= BRAILLE_HI:
+            tile = _braille_tile(ch, color, cell_h)
+        else:
+            tile = Image.new("RGBA", (int(_CELL_W) + 1, cell_h), (0, 0, 0, 0))
+            ch = PNG_SUBSTITUTE.get(ch, ch)
+            ImageDraw.Draw(tile).text((0, 0), ch, font=font_for(ch), fill=color)
         _glyph_cache[(ch, color, cell_h)] = tile
     return tile
 
