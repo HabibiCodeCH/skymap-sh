@@ -186,10 +186,23 @@ class ThePlaceIsCarriedAndNeverInvented(RouteTest):
         self.assertIn("from where they are", box)
         self.assertIn("Everyone who opens it sees Ibiza", box)
 
-    def test_a_page_with_no_place_offers_only_the_one_link(self):
+    def test_both_links_are_offered_even_with_no_place_in_the_url(self):
+        """Through a tunnel, or anywhere the CDN sends no coordinates, there
+        is no bounce to a city URL -- and keying the second link off the
+        route parameter meant the modal offered one link and no way to pin
+        the place. Safe to name somebody here: this is behind a click, by a
+        person. It is the meta tags and the card that must never report a
+        crawler's location as the reader's, and they still do not."""
         got = self.client.get(f"/eclipse/{SOLAR}", headers=BROWSER)
         box = got.text.split('id="ecl-share-box"')[1].split("</dialog>")[0]
-        self.assertEqual(box.count("<code"), 1)
+        self.assertEqual(box.count("<code"), 2)
+        self.assertIn(f"https://skymap.sh/eclipse/{SOLAR}</code>", box)
+        self.assertIn("Stays in", box)
+        # ...while the tags above it still name nobody.
+        desc = got.text.split('name="description" content="')[1].split('"')[0]
+        self.assertIn("Greenland", desc)
+        for city in ("Zurich", "Zürich", "Geneva"):
+            self.assertNotIn(city, desc)
 
     def test_the_shared_link_is_the_canonical_one(self):
         """Not a second URL to keep in step with it: the link that follows
@@ -327,6 +340,50 @@ class TheMapFitsItsColumn(RouteTest):
                 size = min(12.0, max(5.5, column_px * colf))
                 width = cols * size * 0.602
                 self.assertLess(width, column_px, f"{cols} cols in {column_px}px")
+
+
+def phone_block(markup, needle):
+    """The phone rules for `needle`, out of the page's stylesheet.
+
+    The page carries more than one 700px block -- the header has its own --
+    so this picks the one that mentions the thing being asked about rather
+    than the last one written."""
+    for block in markup.split("@media (max-width:700px){")[1:]:
+        body = block.split("\n}")[0]
+        if needle in body:
+            return body
+    raise AssertionError(f"no phone block mentions {needle}")
+
+
+class ThePhoneReadsTheTimesInOneBlock(RouteTest):
+    """Five labelled numbers at desktop spacing wrap into a ragged block two
+    or three lines deep on a phone, and they are the answer the page exists
+    to give."""
+
+    def test_the_place_takes_its_own_line_and_the_times_close_up(self):
+        got = self.client.get(f"/Zurich/eclipse/{SOLAR}", headers=BROWSER)
+        rule = phone_block(got.text, ".ecl-times")
+        self.assertIn(".ecl-where{flex:0 0 100%", rule)
+        self.assertIn(".ecl-times div{min-width:0}", rule)
+
+    def test_the_numbers_stay_a_row(self):
+        """The element carries .obj-live-head and .ecl-head as well, and the
+        rule that unstacks the header sets display on those two. A one-class
+        rule here loses to it, and the row becomes five blocks -- one number
+        per line, the opposite of the point."""
+        got = self.client.get(f"/Zurich/eclipse/{SOLAR}", headers=BROWSER)
+        rule = phone_block(got.text, ".ecl-times")
+        self.assertIn(".obj-live-head.ecl-times{display:flex", rule)
+        self.assertNotIn(".ecl-head{min-height:0;display:block}", rule)
+
+    def test_the_reserved_height_goes_when_there_is_nothing_to_align(self):
+        """It exists to keep the two drawings level side by side. Stacked,
+        it is a hole above the times."""
+        got = self.client.get(f"/Zurich/eclipse/{SOLAR}", headers=BROWSER)
+        rule = phone_block(got.text, ".ecl-sec")
+        self.assertIn("min-height:0", rule)
+        # ...and it is still there for the side-by-side case.
+        self.assertIn("min-height:3.3rem", got.text)
 
 
 class TheWayIn(RouteTest):

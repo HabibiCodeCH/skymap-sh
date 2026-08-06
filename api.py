@@ -2595,10 +2595,18 @@ def eclipse_html(r, f, key, entry, map_rows, legend, disc=None,
             # as the card that names nobody. The other one pins the place,
             # which is what you want when the point is "come and stand
             # here". Neither is the right default for everybody.
+            # The second link uses the place this page resolved to, whether
+            # it was asked for by name or worked out from the reader's IP.
+            # Through a tunnel or anywhere the CDN sends no coordinates
+            # there is no bounce to a city URL, so keying this off the route
+            # parameter meant the modal offered one link and no way to pin
+            # the place. Safe to name somebody here: this is behind a click,
+            # by a person, and it is the meta tags and the card that must
+            # never report a crawler's location as the reader's.
             + eclipse_page.share_html(
                 canonical_url(f"/eclipse/{key}"),
-                canonical_url(f"/{quote(place)}/eclipse/{key}") if place else None,
-                r.place.name if place else None)
+                canonical_url(f"/{quote(r.place.name)}/eclipse/{key}"),
+                r.place.name)
             + '</div>'
             + '<div class="obj-cols">'
             f'<aside class="obj-static">'
@@ -6017,11 +6025,35 @@ document.documentElement.classList.add('js');
     the help pill to make room, so the trigger sits beside it rather than
     under it. */
  @media (max-width:700px){{
-   .header-row{{flex-wrap:nowrap;gap:8px}}
-   .bar-wrap{{flex:1 1 auto;min-width:0}}
-   .cmdbar{{max-width:100%}}
-   .cmdbar .curlword,.cmdbar .barpill{{display:none}}
-   .header-row .nav-row{{flex:0 0 auto}}
+   /* The trigger is pinned to the corner rather than laid out beside the
+      bar. Asking flex to keep them on one line means asking the bar to
+      shrink below its content, and the bar is a form with a prompt, a
+      fixed "skymap.sh/" and an input the script sizes to its own text --
+      it does not shrink, so the button wrapped underneath it and left the
+      only way into the drawer somewhere nobody looks. Out of the flow it
+      cannot wrap, and the bar simply reserves the corner it sits in. */
+   .header-row{{position:relative;display:block;gap:0}}
+   /* .header-row in front of every one of these on purpose. CMDBAR_CSS is
+      spliced in further down this same sheet, and a media query adds no
+      specificity -- a bare .cmdbar rule here ties with the one down there
+      and loses on order, which is why the bar kept its min-width of 90vw
+      and ran under the drawer button however much padding the wrapper
+      reserved. */
+   .header-row .bar-wrap{{display:flex;max-width:100%;padding-right:44px}}
+   /* No floor: on a phone the bar is as wide as what it says, and the
+      dropdown under it is the same width as the bar. 90vw was a desktop
+      number that left no room for anything beside it. */
+   .header-row .cmdbar{{min-width:0;max-width:100%}}
+   .header-row .cmdbar .curlword,
+   .header-row .cmdbar .barpill{{display:none}}
+   .header-row .cmdbar .field,.header-row .cmdbar #q{{min-width:0}}
+   .header-row .nav-row{{position:absolute;top:50%;right:0;margin:0;
+                        transform:translateY(-50%);z-index:5}}
+   /* The " · " between the nav links are bare text nodes, so hiding the
+      links left two floating dots beside the bar. The trigger sets its own
+      font-size, so zeroing the span's takes the separators and nothing
+      else. */
+   .nav-row>span{{font-size:0}}
    .nav-row>span>a,.nav-row .social-icons{{display:none}}
  }}
  .social-icons a{{color:#6e7681;display:inline-flex}}

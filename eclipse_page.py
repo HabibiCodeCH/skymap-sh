@@ -1009,6 +1009,28 @@ ECLIPSE_CSS = """
    lines at 16.5px. */
 .ecl-sec,.obj-live-head.ecl-head{min-height:3.3rem;margin:0 0 .35rem;
   display:flex;align-items:flex-end}
+/* On a phone the columns are stacked, so the two drawings are not side by
+   side and there is nothing left for the reserved height to line up -- it
+   is just a hole above the times. The place takes a line of its own and the
+   times close up underneath it: five labelled numbers at desktop spacing
+   wrap into a ragged block two or three deep, and they are the answer the
+   page exists to give. */
+@media (max-width:700px){
+  .ecl-sec,.obj-live-head.ecl-head{min-height:0}
+  .ecl-sec{display:block}
+  /* Two classes, not one: the rule above sets display on .obj-live-head
+     .ecl-head and this element carries both, so a plain .ecl-times here
+     loses to it and the row went back to being a stack of blocks -- one
+     number per line, which is the opposite of the point. */
+  .obj-live-head.ecl-times{display:flex;flex-wrap:wrap;gap:4px 12px}
+  /* The place gets a line to itself; the five numbers get one line under
+     it, which they fit at this size on a 390px screen with room to spare.
+     Wrap is the fallback for narrower, not the plan. */
+  .ecl-times .ecl-where{flex:0 0 100%;margin:0 0 6px;white-space:normal}
+  .ecl-times div{min-width:0}
+  .ecl-times .k{font-size:10px;letter-spacing:.02em;margin:0}
+  .ecl-times .v{font-size:14px}
+}
 /* The animation frame. The clock and the transport sit on top of the
    drawing, so the frame is what they are positioned against. */
 .ecl-anim{position:relative}

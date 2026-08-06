@@ -3290,7 +3290,41 @@ class ThePhoneHeaderIsOneLine(unittest.TestCase):
         self.assertIn(".nav-row>span>a", rule)
         self.assertIn(".nav-row .social-icons{display:none", rule)
         self.assertIn(".curlword", rule)
-        self.assertIn("flex-wrap:nowrap", rule)
+
+    def test_the_trigger_cannot_wrap_under_the_bar(self):
+        """It did. Asking flex to keep them on one line is asking the bar to
+        shrink below its content, and the bar is a form with a prompt, a
+        fixed "skymap.sh/" and an input the script sizes to its own text --
+        it does not shrink. So the button went underneath, which is the one
+        place the only way into the drawer must not be. Out of the flow it
+        cannot wrap, and the bar reserves the corner."""
+        got = self.client.get("/Zurich", headers=BROWSER)
+        rule = got.text.split("@media (max-width:700px){")[1].split("}\n }")[0]
+        self.assertIn("position:absolute", rule)
+        self.assertIn("padding-right", rule)
+        # Room reserved has to be at least the space taken.
+        reserved = int(rule.split("padding-right:")[1].split("px")[0])
+        self.assertGreaterEqual(reserved, 44)
+
+    def test_the_bar_has_no_width_floor_on_a_phone(self):
+        """min-width:min(560px,90vw) is a desktop number. It kept the bar
+        wider than the room left beside the trigger however much the wrapper
+        reserved, so the two overlapped. The override has to beat it on
+        selector: CMDBAR_CSS is spliced into the same sheet below this block,
+        and a media query counts for nothing against it."""
+        got = self.client.get("/Zurich", headers=BROWSER)
+        rule = got.text.split("@media (max-width:700px){")[1].split("}\n }")[0]
+        self.assertIn(".header-row .cmdbar{min-width:0", rule)
+        self.assertLess(got.text.index(".header-row .cmdbar{min-width:0"),
+                        got.text.index("min-width:min(560px"))
+
+    def test_the_separators_go_with_the_links(self):
+        """The dots between home, events and help are bare text nodes, so
+        hiding the links on their own left two of them floating beside the
+        bar."""
+        got = self.client.get("/Zurich", headers=BROWSER)
+        rule = got.text.split("@media (max-width:700px){")[1].split("}\n }")[0]
+        self.assertIn(".nav-row>span{font-size:0}", rule)
 
     def test_the_trigger_is_never_hidden(self):
         """It is the only thing left, so hiding it would be the end of the
