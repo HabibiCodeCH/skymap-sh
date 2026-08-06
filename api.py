@@ -818,9 +818,13 @@ _nv = {}
 _nv_hits = _nv_misses = 0
 
 
-def next_visible_cached(tgt, lat, lon, start_utc):
+def next_visible_cached(tgt, lat, lon, start_utc, days=40):
     global _nv_hits, _nv_misses
-    key = (tgt["name"], round(lat), round(lon), int(start_utc.timestamp() // 3600))
+    # days is in the key: "is it up tonight" and "is it up within forty
+    # nights" are different questions with different answers, and a cache
+    # that confused them would answer one with the other.
+    key = (tgt["name"], round(lat), round(lon),
+           int(start_utc.timestamp() // 3600), days)
     hit = _nv.get(key)
     if hit is not None:
         w, a, z = hit
@@ -828,7 +832,7 @@ def next_visible_cached(tgt, lat, lon, start_utc):
             _nv_hits += 1
             return hit
     _nv_misses += 1
-    out = next_visible(tgt, lat, lon, start_utc)
+    out = next_visible(tgt, lat, lon, start_utc, days=days)
     if len(_nv) >= _NV_MAX:
         _nv.clear()
     _nv[key] = out
@@ -839,6 +843,146 @@ def nv_stats():
     t = _nv_hits + _nv_misses
     return dict(entries=len(_nv), hits=_nv_hits, misses=_nv_misses,
                 hitrate=round(100 * _nv_hits / t, 1) if t else None)
+
+
+_NAMED_PLACES = None
+
+
+def named_places():
+    """The two hand-authored place files, as (name, lat, lon).
+
+    Eighty-odd between them, which is why every one of them can be asked
+    rather than a few picked by latitude and hoped about.
+    """
+    global _NAMED_PLACES
+    if _NAMED_PLACES is None:
+        _NAMED_PLACES = [(name, row[0], row[1])
+                         for f in ("darksky.json", "unesco.json")
+                         for name, row in _place_rows(f)]
+    return _NAMED_PLACES
+
+
+def _km_apart(lat1, lon1, lat2, lon2):
+    """Flat-earth kilometres. Good to a percent or so at these distances,
+    and this is deciding which of two deserts to name."""
+    dy = (lat2 - lat1) * 111.32
+    dx = (lon2 - lon1) * 111.32 * math.cos(math.radians(lat1))
+    return math.hypot(dx, dy)
+
+
+# How the sentence opens. Shared with link_clears_places, which finds it
+# again in the rendered chart to know where the place names start.
+CLEARS_LEAD = "It clears the horizon"
+
+WHERE_SWEEP = 10                # degrees of latitude in the coarse pass
+WHERE_REFINE = 3                # and in the pass that backs up over the edge
+WHERE_LIMIT = 80                # no answer worth giving past here
+WHERE_SHOWN = 2                 # places named
+WHERE_NIGHT = 1                 # days: this night, not the next forty
+
+
+def _lat_label(lat):
+    return f"{abs(lat):.0f}°{'N' if lat >= 0 else 'S'}"
+
+
+def where_it_clears(tgt, p, start_utc):
+    """Where this is up on the night the page is about, when it is not up
+    here.
+
+    The night is the whole point, and getting it wrong is how this first
+    shipped: it asked whether each candidate had a window within forty
+    nights, which is the question the line above it answers about the
+    reader's own latitude. Cevennes passed on a window thirty-nine nights
+    later, so a page about a conjunction in May recommended somewhere the
+    conjunction had long finished. Somewhere you cannot see it tonight is
+    not somewhere to go tonight.
+
+    Nor is the answer a half of the meridian. Saturn on that May night was
+    up between 10 and 40 degrees south and nowhere else: too far north and
+    it never rises into darkness, too far south and it never rises at all.
+    So the sweep reads the whole meridian and returns the band the reader is
+    nearest, open only where it really does run to the pole.
+
+    Then a place or two to put a name to it, inside the band, nearest first,
+    and each one asked the same question rather than assumed from its
+    latitude -- a site's longitude decides whether the window lands in its
+    night or its afternoon.
+
+    Returns {"near", "far", "open", "south", "places"}, or None on a night
+    when there is nowhere on Earth to send anybody.
+    """
+    def works(lat):
+        return next_visible_cached(tgt, lat, p.lon, start_utc,
+                                   days=WHERE_NIGHT)[0] is not None
+
+    lats = list(range(WHERE_LIMIT, -WHERE_LIMIT - 1, -WHERE_SWEEP))
+    runs, cur = [], []
+    for l in lats:
+        if works(l):
+            cur.append(l)
+        elif cur:
+            runs.append(cur)
+            cur = []
+    if cur:
+        runs.append(cur)
+    if not runs:
+        return None
+
+    run = min(runs, key=lambda r: min(abs(l - p.lat) for l in r))
+    near = min(run, key=lambda l: abs(l - p.lat))
+    far = max(run, key=lambda l: abs(l - p.lat))
+    south = near < p.lat
+    # The sweep overshoots the near edge by up to ten degrees, which is
+    # Zurich to Sicily. Walk back over the ground it skipped, keeping the
+    # last latitude that still works, so the number quoted is one the search
+    # actually returned rather than one it stepped over.
+    step = WHERE_REFINE if south else -WHERE_REFINE
+    probe = near + step
+    while abs(probe - near) < WHERE_SWEEP and abs(probe) <= WHERE_LIMIT:
+        if not works(probe):
+            break
+        near = probe
+        probe += step
+    # Open only where the run really does reach the end of the sweep. near is
+    # the edge facing the reader, far the one behind it, so going south the
+    # band runs down from near and going north it runs up from it.
+    open_far = abs(far) >= WHERE_LIMIT
+    if south:
+        lo, hi = (-90.0 if open_far else far), near
+    else:
+        lo, hi = near, (90.0 if open_far else far)
+
+    places = []
+    for name, slat, slon in sorted(
+            named_places(), key=lambda s: _km_apart(p.lat, p.lon, s[1], s[2])):
+        if not lo <= slat <= hi:
+            continue
+        if next_visible_cached(tgt, slat, slon, start_utc,
+                               days=WHERE_NIGHT)[0] is None:
+            continue
+        places.append(name)
+        if len(places) == WHERE_SHOWN:
+            break
+    return dict(near=near, far=far, open=open_far, south=south, places=places)
+
+
+def where_it_clears_line(got):
+    """That, as the sentence the page prints. "" when there is nowhere to
+    point at, so the caller can simply not print a line."""
+    if not got:
+        return ""
+    # "About", and meant: the sweep lands within three degrees of the near
+    # edge, and the far one is the last latitude tried rather than the last
+    # that works. Both are inside the band, so the claim errs small.
+    if got["open"]:
+        where = (f"{'south' if got['south'] else 'north'} of about "
+                 f"{_lat_label(got['near'])}")
+    else:
+        where = (f"between about {_lat_label(got['near'])} and "
+                 f"{_lat_label(got['far'])}")
+    line = f"{CLEARS_LEAD} {where}"
+    return line + (f": {' or '.join(got['places'])}." if got["places"]
+                   else " that night.")
 
 
 # ---------------------------------------------------------------- find view
@@ -867,10 +1011,28 @@ def _compose_find(r):
         if w is None:
             el = solar_elongation(tgt, jd, p.lat, lst)
             lines = [f"\n  {tgt['name']} is not visible from {p.name}: {why}."]
-            lines.append(f"  It is only {el:.0f}° from the Sun: too deep in the glare, "
-                         f"and it stays that way for weeks.\n" if el < 20 else
-                         f"  No window in the next 40 days from this latitude.\n")
             data.update(next_visible=None, solar_elongation=round(el, 1))
+            if el < 20:
+                lines.append(f"  It is only {el:.0f}° from the Sun: too deep "
+                             f"in the glare, and it stays that way for "
+                             f"weeks.\n")
+            else:
+                # Deep in the glare there is nowhere to send anybody, so the
+                # sentence above is the whole answer. Merely below this
+                # horizon is a different matter: somewhere else it is up.
+                import textwrap
+                lines.append("  No window in the next 40 days from this "
+                             "latitude.")
+                got = where_it_clears(tgt, p, r.when_utc)
+                far = where_it_clears_line(got)
+                if far:
+                    cols = max(40, _effective_width(r) - 4)
+                    lines += [f"  {l}" for l in textwrap.wrap(far, cols - 2)]
+                    data.update(clears_at=dict(
+                        near=got["near"], far=got["far"], open=got["open"],
+                        toward="south" if got["south"] else "north",
+                        places=got["places"]))
+                lines.append("")
             return Result("\n".join(paint(l, C.LABEL, c) for l in lines), data, 200)
         shown_utc = w
         wl = w + dt.timedelta(hours=p.offset(w))
@@ -1066,6 +1228,18 @@ def object_glyph(tgt, jd):
     return "", C.LABEL
 
 
+def _night_of(x):
+    """Which night a local moment belongs to.
+
+    A night starts at noon, which is why a 02:11 conjunction and a 22:00 one
+    on the same date can be the same night as each other and a 13:00 one is
+    not. Both the night list and the year list go through here, or they
+    disagree: the events list files a window that starts at 02:11 under that
+    morning's date, while the page it opens is drawn for 04:11.
+    """
+    return (x - dt.timedelta(hours=12)).date()
+
+
 def object_night_events(canonical, p, when_utc, tz):
     """What is happening to this object on the night the page is drawn for.
 
@@ -1084,20 +1258,12 @@ def object_night_events(canonical, p, when_utc, tz):
     Mars" and so does /Moon. That is not what _find_target_for answers --
     it picks the one body worth crosshairing, deliberately not the Moon.
     """
-    def night_of(x):
-        # A night starts at noon, which is why a 02:11 conjunction and a
-        # 22:00 one on the same date can be the same night as each other and
-        # a 13:00 one is not. Applied to both sides or they disagree: the
-        # events list files a window that starts at 02:11 under that
-        # morning's date, while the page it opens is drawn for 04:11.
-        return (x - dt.timedelta(hours=12)).date()
-
-    night = night_of(when_utc + dt.timedelta(hours=tz))
+    night = _night_of(when_utc + dt.timedelta(hours=tz))
     out = []
     for e in ev_mod.upcoming(p.lat, p.lon, tz, days=4,
                              now_utc=when_utc - dt.timedelta(days=1.5),
                              visible_only=False):
-        if night_of(_event_date(e)) != night:
+        if _night_of(_event_date(e)) != night:
             continue
         bodies = e.get("bodies") or ([e["body"]] if e.get("body") else [])
         if _find_target_for(e) != canonical and canonical not in bodies:
@@ -1119,24 +1285,41 @@ def object_night_events(canonical, p, when_utc, tz):
 
 
 OBJECT_EVENTS_DAYS = 365
-OBJECT_EVENTS_SHOWN = 8
+OBJECT_EVENTS_SHOWN = 12
 
 
-def object_events_list(canonical, p, from_utc, tz, days=OBJECT_EVENTS_DAYS):
-    """Everything ahead that this object is part of.
+def object_events_list(canonical, p, now_utc, tz, days=OBJECT_EVENTS_DAYS):
+    """This object's next twelve events, counted from today.
 
     The same list /events builds, filtered to one object: its oppositions
     and elongations, the nights the Moon passes it, its shower's peak. So
     an object page can offer the year the way an eclipse page offers the
     other eclipses, instead of only ever knowing about the one moment it
     happens to be drawn for.
+
+    Counted from now, and not from the moment the page is drawn for, which
+    is the whole of it. Every row here is a link to this same page at
+    another moment, so a list measured from the page's own moment got
+    shorter every time somebody used it: opening the October opposition
+    dropped the conjunction in August, which had not happened yet. The
+    twelve are the same wherever the reader has navigated to, and they move
+    only as time does -- one falls off the top as the next arrives at the
+    bottom.
     """
     out = []
+    tonight = _night_of(now_utc + dt.timedelta(hours=tz))
+    # A day and a half back, because an event belonging to tonight can fall
+    # in the small hours and so already be behind us. Which night it belongs
+    # to is what actually decides, just below.
     for e in ev_mod.upcoming(p.lat, p.lon, tz, days=days,
-                             now_utc=from_utc - dt.timedelta(days=1.5),
+                             now_utc=now_utc - dt.timedelta(days=1.5),
                              visible_only=False):
         bodies = e.get("bodies") or ([e["body"]] if e.get("body") else [])
         if _find_target_for(e) != canonical and canonical not in bodies:
+            continue
+        # Tonight's event has not been missed: the night it belongs to is
+        # still running. Only the nights before this one drop off.
+        if _night_of(_event_date(e)) < tonight:
             continue
         when = e.get("best_local") or e["when_local"]
         # An eclipse has a page of its own that answers far more about it
@@ -1218,8 +1401,13 @@ def object_facts(tgt, r, canonical, shown_utc=None):
     # the reader clicked to get here.
     out["tonight_events"] = object_night_events(
         canonical, p, r.when_utc, p.offset(r.when_utc))
+    # Counted from now, unlike the line above it: tonight_events is about the
+    # night being drawn, while this is the standing list of what is coming,
+    # and every row in it opens this page at another moment. Measured from
+    # the page's own moment it lost an event every time one was followed.
+    _now = dt.datetime.utcnow()
     out["object_events"] = object_events_list(
-        canonical, p, r.when_utc, p.offset(r.when_utc))
+        canonical, p, _now, p.offset(_now))
     out["transit"] = local(rts.get("transit"))
     out["transit_alt"] = rts.get("transit_alt")
     if rts.get("circumpolar"):
@@ -1742,6 +1930,11 @@ def object_infobox(facts, tgt, width=76):
 
 TONIGHT_BLOCK = "The same night"
 
+# The picker's first row, and what the summary reads when the page is not
+# pinned to a night. Not "now": the page is drawn for a moment but it is
+# about a night, and the chart moves to when the thing is actually up.
+PICK_NOW = "Tonight · where it is now"
+
 
 def object_picker_html(data, canonical, place, escape=html.escape):
     """This object's events, as the same disclosure the eclipse page uses
@@ -1765,8 +1958,19 @@ def object_picker_html(data, canonical, place, escape=html.escape):
         day = dt.datetime.fromisoformat(e["date_local"])
         return f"{day:%-d %b %Y} · {e['short']}"
 
-    now = label(here) if here else f"Next: {label(evs[0])}"
-    rows = []
+    # The list starts at the next event that has not happened yet, so the
+    # summary is simply its head -- unless the night being drawn has one of
+    # its own, which is the one the reader came for, or the page is not
+    # about a night at all, which is what it says instead.
+    plain = not here and not data.get("when_explicit")
+    now = (label(here) if here else PICK_NOW if plain
+           else f"Next: {label(evs[0])}")
+    # The way back, and the only row in here that carries no moment. Every
+    # other one pins a night, so following any of them left the reader with
+    # no link on the page that dropped it again: the bare URL existed only
+    # inside the share box, and only if they thought to open it.
+    now_cls = ' class="obj-pick-here"' if plain else ""
+    rows = [f'<li{now_cls}><a href="{base}">{escape(PICK_NOW)}</a></li>']
     for e in evs:
         current = bool(here) and e["date_local"] == here["date_local"]
         cls = ' class="obj-pick-here"' if current else ""
@@ -1778,6 +1982,38 @@ def object_picker_html(data, canonical, place, escape=html.escape):
             f'<span class="obj-more">change</span></summary>'
             f'<div class="obj-panel"><ul>{"".join(rows)}</ul></div>'
             f'</details>')
+
+
+def object_share_html(r, canonical):
+    """The two links to this page, behind a button.
+
+    The same control the eclipse page carries, for the same reason. Opening
+    /Saturn bounces you to /Zurich/Saturn so the page can say Zurich rather
+    than 47.38,8.54, and from that moment the only URL there is to copy has
+    your own location baked into it. The bare one follows whoever opens it;
+    the one with the place in it stays put. Both are legitimate.
+
+    The place is named here because this is behind a click, by a person. It
+    is the meta tags and the social card that must never report a crawler's
+    datacentre as the reader's home town.
+
+    The moment travels along when one was actually asked for. A link to the
+    night of the opposition that quietly resolves to tonight is not the page
+    that was shared.
+    """
+    q = f"?t={r.when_local:%Y-%m-%dT%H:%M}" if r.when_explicit else ""
+    obj = quote(canonical)
+    return eclipse_page.share_html(
+        canonical_url("/" + obj) + q,
+        canonical_url(f"/{quote(r.place.name)}/{obj}") + q,
+        r.place.name,
+        title=f"Share {canonical}",
+        noun=canonical,
+        # The third one only where there is a moment to drop. An object is
+        # up most nights, so a link with no date on it is the useful thing
+        # to send somebody -- and while the page is pinned to a night, every
+        # other URL in this box has that night baked into it.
+        plain_url=canonical_url("/" + obj) if q else None)
 
 
 def _event_subhead(facts, canonical):
@@ -1803,6 +2039,51 @@ def _event_subhead(facts, canonical):
             break
     when = dt.datetime.fromisoformat(ev["date_local"])
     return f"{name[0].upper()}{name[1:]} {when:%a %b %-d}"
+
+
+# What each kind of event actually is, in one line. The picker beside the
+# heading names a thing -- "at opposition", "greatest elongation east" --
+# and until now the page nowhere said what that meant. Written per kind
+# rather than per event, because the answer is the same every time.
+EVENT_KIND_NOTE = {
+    "opposition":
+        "Opposition is when a planet sits opposite the Sun: it rises at "
+        "sunset, is up all night, and is the closest and brightest it gets "
+        "all year.",
+    "elongation":
+        "Greatest elongation is the furthest from the Sun this planet ever "
+        "appears, and the short window when it clears the twilight.",
+    "conjunction":
+        "A conjunction is two bodies passing close together as we see them, "
+        "near enough to hold both in one binocular view. In space they are "
+        "nowhere near each other.",
+    "moon_phase":
+        "The phase is how much of the Moon's lit half faces us. The craters "
+        "show best along the line between light and dark, where the shadows "
+        "are longest.",
+    "meteor_shower":
+        "A shower peaks on the night Earth crosses the thickest part of the "
+        "dust a comet left behind. The meteors appear all over the sky, but "
+        "their trails all point back to one spot.",
+    "eclipse":
+        "An eclipse is the Sun, Earth and Moon lined up closely enough for "
+        "one of them to throw a shadow on another.",
+}
+
+
+def event_note(facts):
+    """The sentence explaining the event this page is drawn for.
+
+    Only that one. It used to fall through to the next event coming, which
+    meant a page opened on an ordinary night to find out where the thing is
+    led with a paragraph about an opposition ten weeks away: every object
+    page read as an event page, including the ones nobody had asked an event
+    of. Nothing here for an ordinary night, and nothing ever for an object
+    with no events at all -- every star, as it happens, since conjunctions
+    are only computed between solar-system bodies.
+    """
+    ev = (facts.get("tonight_events") or [None])[0]
+    return EVENT_KIND_NOTE.get((ev or {}).get("kind"), "")
 
 
 def _event_stamp(e):
@@ -2361,7 +2642,11 @@ def compose_object(r, canonical):
     timing = object_timing(facts)
     if timing:
         bits.append(timing)
-    live_head = paint(" " + "  \u00b7  ".join(bits), C.HEAD, c)
+    # Two spaces, like every other line the page draws. These three lines are
+    # lifted out of the <pre> into real HTML for the browser, and being the
+    # only ones written by hand they were the only ones a character short of
+    # the margin everything else keeps.
+    live_head = paint("  " + "  \u00b7  ".join(bits), C.HEAD, c)
 
     # And under it, quietly, what the line above actually is and when the
     # year's best night falls. The condensed line answers "tonight"; this
@@ -2404,7 +2689,22 @@ def compose_object(r, canonical):
         sub_bits.append(line)
     # Each part is its own sentence, so each starts with a capital.
     sub_bits = [b[0].upper() + b[1:] for b in sub_bits]
-    live_sub = paint(" " + ". ".join(sub_bits) + ".", C.MUTE, c) if sub_bits else ""
+    live_sub = paint("  " + ". ".join(sub_bits) + ".", C.MUTE, c) if sub_bits else ""
+
+    # And under that, what the event beside the heading actually is. One
+    # line, the same for everybody, and only where there is an event to
+    # explain.
+    note = event_note(facts)
+    # Wrapped to the render width like every other paragraph on the page,
+    # less the margin it is indented by. The browser gets it as one <p>
+    # either way, since a newline inside one is just a space; the terminal is
+    # the half that cannot reflow.
+    # In the planet tan rather than the muted grey the two lines above it
+    # use. Those are readings off the sky and this is a note about it, and
+    # in the same grey it read as a third one.
+    import textwrap
+    live_what = "\n".join(paint("  " + l, C.PLANET, c)
+                          for l in textwrap.wrap(note, width - 2)) if note else ""
 
     prose = object_prose(facts, tgt, r, width=width)
     body = "\n".join(paint("  " + l if l else "", C.LABEL, c)
@@ -2440,8 +2740,12 @@ def compose_object(r, canonical):
     # also why the browser lifts it out into its own full-width section
     # rather than squeezing it into either column.
     evo = evolution_lines(tgt, canonical, c)
-    parts += [OBJECT_SLOT, live_head, live_sub, OBJPROSE_SLOT, live, "",
-              body, ""]
+    parts += [OBJECT_SLOT, live_head, live_sub]
+    # Only when there is one. An empty seam would leave a blank line in the
+    # terminal on every page that has no event, which is most of them.
+    if live_what:
+        parts += [OBJWHAT_SLOT, live_what]
+    parts += [OBJPROSE_SLOT, live, "", body, ""]
     if evo:
         parts += evo + [""]
     parts += [_footer(r.place, c), ""]
@@ -2760,6 +3064,28 @@ OBJECT_CSS = """
   border-bottom:1px dotted #4b5568}
 .obj-subhead a.ics:hover{color:#b7d4f5;border-bottom-color:#7f93ad}
 .ics-i{width:1em;height:1em;vertical-align:-.14em;margin-right:.35em}
+/* What the event named beside the heading actually is. The same monospace
+   the title and the two readings above it are set in: one page, one
+   typeface, and a sans-serif paragraph dropped into the middle of a
+   terminal was the one thing up here that did not belong to the chart.
+   Full width, with no measure of its own -- holding it to 62 characters
+   while everything around it ran the whole width made it look like a stray
+   column. Told apart by colour instead: the tan is xterm 180, the same the
+   terminal paints it, because it is a note about the sky rather than a
+   reading off it. */
+.obj-what{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  font-size:12.5px;line-height:1.5;color:#d7af87;margin:-.4rem 0 .9rem}
+/* The live column's text margin, in the browser. Every line under these
+   three sits two characters in, because the chart's <pre> keeps them and a
+   <pre> prints what it is given. These three are lifted out into real HTML,
+   where a leading space is thrown away, so they alone started hard against
+   the edge. 14.4px is those two characters -- CHART_FONT_PX at the 0.6
+   advance every monospace in the stack uses.
+   The heading is not in here: it lines up with the frame at the top of the
+   static column, not with the chart's text. Nor is the eclipse page's head,
+   which shares .obj-live-head and lays its times out its own way. */
+.obj-live .obj-lede:not(.ecl-head),
+.obj-live .obj-subhead,.obj-live .obj-what{padding-left:14.4px}
 .obj-cols>*{margin-top:0}
 .obj-facts{display:grid;grid-template-columns:auto 1fr;gap:.42rem .95rem;
   margin:0;font-size:13.5px;line-height:1.45}
@@ -2789,8 +3115,12 @@ OBJECT_CSS = """
    with no picker -- wrapping the heading in a row zeroed its own margin and
    took the space with it, so the name sat tight under the command bar on
    exactly the pages that had gained something to put beside it. */
+/* No left padding here either, for the reason .obj-title gives above: the
+   heading starts at the column edge because the frame under it does.
+   Room underneath, because the row is a heading and a control side by side
+   and 14px let the frame crowd both. */
 .obj-head-row{display:flex;align-items:center;gap:14px;flex-wrap:wrap;
-  margin:1.5rem 0 14px}
+  margin:1.5rem 0 26px}
 .obj-head-row .obj-title{margin:0}
 .obj-picker{position:relative;margin:0;
   font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
@@ -2861,6 +3191,41 @@ def _link_best_date(sub_html, canonical, data):
     return sub_html.replace(shown, link, 1)
 
 
+def link_clears_places(chart_html, canonical, data, q=""):
+    """The places in "it clears the horizon south of about 44°N: Cevennes or
+    Carcassonne", as links to this same object seen from there.
+
+    Naming them and leaving them as words is a tease: the page has just told
+    somebody where to go and then made them type it. It knows exactly which
+    names it printed -- they came back from where_it_clears, and each was put
+    through the forty-day search before being printed at all -- so nothing
+    here has to guess at which words in the chart are places.
+
+    The night travels with the link. The sentence is about the night this
+    page is drawn for, so dropping the moment would land the reader on
+    tonight somewhere else -- a different question from the one they were
+    reading. Read as a wall clock at the place being opened rather than
+    converted, which is the same evening either way and is what ?t means
+    everywhere else on the site.
+
+    A plain replace, the way the calendar link on the line above is done.
+    Only in the tail after the sentence starts, so a name that is also a word
+    in the prose higher up is not the one that gets linked. A name broken
+    over a line end simply keeps its link: the check below misses it, which
+    leaves the text exactly as it was.
+    """
+    head, sep, tail = chart_html.partition(CLEARS_LEAD)
+    if not sep:
+        return chart_html
+    for name in ((data or {}).get("clears_at") or {}).get("places") or []:
+        esc = html.escape(name)
+        if esc not in tail:
+            continue
+        href = html.escape(f"/{quote(name)}/{quote(canonical)}{q}")
+        tail = tail.replace(esc, f'<a href="{href}">{esc}</a>', 1)
+    return head + sep + tail
+
+
 def _first_para(text):
     """The descriptor sentence, which is the SECOND non-empty line: the first
     is the title, and that is emitted separately as the h1."""
@@ -2912,7 +3277,7 @@ FEEDBACK_BOX = (
 
 def object_html(r, canonical, text, data, place=None, base_url="",
                 rungs=None, zenith="", prose="", static="", live_head="",
-                live_sub=""):
+                live_sub="", live_what=""):
     """The browser page: the same chart and prose everything else gets, in
     the shared shell, with the object's own head."""
     # Lift the title out of the <pre> and set it as a real heading.
@@ -2952,8 +3317,17 @@ def object_html(r, canonical, text, data, place=None, base_url="",
     # orientation should arrive before the numbers.
     title_html = f'<h1 class="obj-title">{heading}</h1>' if heading else ""
     picker = object_picker_html(data, canonical, place)
-    if title_html and picker:
-        title_html = f'<div class="obj-head-row">{title_html}{picker}</div>'
+    # The same two links the eclipse page offers, for the same reason. /Saturn
+    # sends every reader to their own sky; /Zurich/Saturn pins Zurich. Both
+    # are right and they do opposite things, so the reader picks rather than
+    # being handed whichever one the address bar happens to be showing.
+    # The moment travels with them when one was actually asked for: a link to
+    # the night of the opposition that quietly resolves to tonight is not the
+    # page that was shared.
+    share = object_share_html(r, canonical)
+    if title_html and (picker or share):
+        title_html = (f'<div class="obj-head-row">'
+                      f'{title_html}{picker}{share}</div>')
     fallback_static, _, live = rest.partition(OBJECT_SLOT)
     if rungs:
         # The live half through the same ladder the place page uses: every
@@ -2986,6 +3360,12 @@ def object_html(r, canonical, text, data, place=None, base_url="",
                       if live_head else "")
                      + (f'<p class="obj-subhead">{_link_best_date(live_sub, canonical, data)}</p>'
                         if live_sub.strip() else "")
+                     # What kind of event the picker is pointing at, in one
+                     # sentence. Under the timing line rather than beside
+                     # the picker: it is an explanation, not a control, and
+                     # it is the same for everybody who ever reads it.
+                     + (f'<p class="obj-what">{live_what}</p>'
+                        if live_what.strip() else "")
                      # prose still renders BELOW the chart. Only the summary
                      # line moved up into the heading; everything else --
                      # which constellation it is crossing, how far away, the
@@ -3013,7 +3393,8 @@ def object_html(r, canonical, text, data, place=None, base_url="",
                          f'<aside class="obj-static">{static_html}</aside>'
                          f'<div class="obj-live">{live_html}</div>'
                          '</div>')
-    head = object_head(data, canonical, place, base_url) + OBJECT_CSS
+    head = (object_head(data, canonical, place, base_url) + OBJECT_CSS
+            + eclipse_page.SHARE_CSS)
     # controls_html carries the drawer trigger as well as the explore row, so
     # passing "" here gave the object pages a page with no way to open the
     # drawer at all -- every other route builds it, and this one silently
@@ -3032,7 +3413,8 @@ def object_html(r, canonical, text, data, place=None, base_url="",
         # page's script: escape closes it, and so does a click anywhere
         # else. Only shipped where there is one to close.
         kbd_urls="{}", shortcuts_hint="",
-        body=body + (eclipse_page.picker_script() if picker else ""))
+        body=body + (eclipse_page.picker_script() if picker else "")
+        + (eclipse_page.share_script() if share else ""))
 
 
 def eclipse_head(f, key, place, base_url):
@@ -3147,7 +3529,7 @@ def eclipse_html(r, f, key, entry, map_rows, legend, disc=None,
             + eclipse_page.picker_script()
             + eclipse_page.share_script())
     head = (eclipse_head(f, key, place, base_url) + OBJECT_CSS
-            + eclipse_page.ECLIPSE_CSS)
+            + eclipse_page.ECLIPSE_CSS + eclipse_page.SHARE_CSS)
     return _object_page_template().format(
         title=html.escape(eclipse_title(f)),
         head_extra=head,
@@ -3359,6 +3741,11 @@ OBJECT_SLOT = "\x00\x03\x00"
 # whether to bother looking, so it belongs before the picture rather than
 # after it.
 OBJPROSE_SLOT = "\x00\x04\x00"
+# And between the timing line and what that line is: one sentence saying what
+# kind of event the picker is pointing at. Its own seam rather than another
+# line inside the timing block, because the browser sets it as a separate
+# paragraph and a newline inside a <p> is just a space.
+OBJWHAT_SLOT = "\x00\x05\x00"
 
 
 def strip_slots(text):

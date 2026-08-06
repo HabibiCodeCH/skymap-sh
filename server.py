@@ -3399,7 +3399,12 @@ def _respond_object(request: Req, place: str | None, canonical: str):
     if mode != "html":
         # The split marker is only meaningful to the browser layout; a
         # terminal reads straight down through both halves.
-        text = text.replace(api.OBJECT_SLOT, "").replace(api.OBJPROSE_SLOT, "")
+        text = (text.replace(api.OBJECT_SLOT, "")
+                    .replace(api.OBJPROSE_SLOT, "")
+                    # Marker and its newline both, so the sentence sits
+                    # directly under the timing line it explains rather than
+                    # a blank line below it.
+                    .replace(api.OBJWHAT_SLOT + "\n", ""))
     if mode == "html":
         # One render per rung of the width ladder, exactly as the place page
         # does it: the browser is handed every width at once and CSS picks
@@ -3413,7 +3418,7 @@ def _respond_object(request: Req, place: str | None, canonical: str):
         # pages never asked for it before, which is why they had no inset --
         # the support was already there.
         rungs, zenith, prose, static = [], "", "", ""
-        live_head, live_sub = "", ""
+        live_head, live_sub, live_what = "", "", ""
         for _min_ch, cols, panel in api.CHART_LADDER:
             rr = r.sized(cols, panel)
             rr.find = canonical
@@ -3439,8 +3444,15 @@ def _respond_object(request: Req, place: str | None, canonical: str):
             # it: whether it is worth going outside is the sentence you want
             # before the picture, not after.
             obj_prose_txt, _sep2, chart = chart.partition(api.OBJPROSE_SLOT)
+            # And out of that, the one sentence saying what kind of event the
+            # picker beside the heading names. Absent on every page with no
+            # event, which partition reports as an empty tail.
+            obj_prose_txt, _sep3, what_txt = obj_prose_txt.partition(
+                api.OBJWHAT_SLOT)
             if obj_prose_txt.strip() and not live_sub:
                 live_sub = _rendered_obj(obj_prose_txt).strip()
+            if what_txt.strip() and not live_what:
+                live_what = _rendered_obj(what_txt).strip()
             chart = chart.lstrip("\n")
             # All three pieces need converting, not just the chart. Passing
             # the inset and the prose through raw put their escape sequences
@@ -3462,13 +3474,21 @@ def _respond_object(request: Req, place: str | None, canonical: str):
                 # wrapped line starts where the line above it did.
                 prose = _rendered_obj(
                     api.strip_prose_indent("\n".join(_pl).strip("\n")))
-            rungs.append((cols, panel, _rendered_obj(chart)))
+            # The places the chart offers to travel to become links to this
+            # same object seen from there, which is the page anybody reading
+            # that sentence wants next.
+            rungs.append((cols, panel,
+                          api.link_clears_places(
+                              _rendered_obj(chart), canonical, rung_res.data,
+                              q=(f"?t={r.when_local:%Y-%m-%dT%H:%M}"
+                                 if r.when_explicit else ""))))
         return HTMLResponse(api.object_html(r, canonical, text, res.data,
                                             place=place, base_url=base_url,
                                             rungs=rungs, zenith=zenith,
                                             prose=prose, static=static,
                                             live_head=live_head,
-                                            live_sub=live_sub),
+                                            live_sub=live_sub,
+                                            live_what=live_what),
                             status_code=res.status, headers=headers)
     return PlainTextResponse(api.strip_ansi(text) if not colour else text,
                              status_code=res.status, headers=headers)

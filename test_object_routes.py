@@ -806,6 +806,301 @@ def test_a_page_with_no_picker_ships_no_script_for_one(client):
     assert "pointerdown" not in got.text
 
 
+def _picker(markup):
+    """The picker's <details>, or "" where there is none."""
+    if '<details class="obj-picker"' not in markup:
+        return ""
+    return markup.split('<details class="obj-picker"')[1].split("</details>")[0]
+
+
+def test_the_page_says_what_kind_of_event_it_is_pointing_at(client):
+    """The picker names a thing -- "at opposition" -- and until now nothing
+    on the page said what that meant. One sentence per kind, under the
+    timing line it explains."""
+    import re
+    got = client.get("/Zurich/Saturn?t=2026-10-05T01:13", headers=BROWSER)
+    what = got.text.split('<p class="obj-what">')[1].split("</p>")[0]
+    # Flattened: the sentence is wrapped to the render width, and the
+    # phrases worth asserting on fall across the break.
+    flat = " ".join(re.sub(r"<[^>]+>", "", what).split())
+    assert "opposite the Sun" in flat
+    assert "up all night" in flat
+
+
+def test_an_ordinary_night_gets_no_sentence(client):
+    """Most pages are opened to find out where the thing is. Explaining an
+    opposition ten weeks off made every object page read as an event page,
+    including the ones nobody had asked an event of."""
+    got = client.get("/Zurich/Venus", headers=BROWSER)
+    assert '<p class="obj-what">' not in got.text
+
+
+def test_an_object_with_no_events_gets_no_sentence(client):
+    """No star ever carries one: conjunctions are only computed between
+    solar-system bodies. Nothing to point at, nothing to explain."""
+    got = client.get("/Zurich/Vega", headers=BROWSER)
+    assert '<p class="obj-what">' not in got.text
+
+
+def test_the_sentence_reaches_the_terminal_too(client):
+    """Same page, same words. And wrapped, because a terminal cannot
+    reflow a 130-character line."""
+    import api
+    flat = api.strip_ansi(
+        client.get("/Zurich/Saturn?t=2026-10-05T01:13", headers=CURL).text)
+    assert "Opposition is when a planet sits opposite the Sun" in flat
+    assert max(len(l) for l in flat.split("\n")) < 120
+
+
+def _picker_rows(markup):
+    """The label of every event row in the picker, in order. Not the
+    "Tonight" one at the top, which is a way back rather than an event."""
+    import re, api
+    return [r for r in re.findall(r"<li[^>]*><a [^>]*>([^<]*)</a>",
+                                  _picker(markup))
+            if api.PICK_NOW not in r]
+
+
+def test_the_list_does_not_shrink_when_you_follow_it(client):
+    """Every row is a link to this same page at another moment, so a list
+    counted from the page's own moment lost an event every time one was
+    followed: opening the event in March dropped everything before it,
+    which had not happened yet either."""
+    here = client.get("/Zurich/Moon", headers=BROWSER)
+    later = client.get("/Zurich/Moon?t=2027-03-01T21:00", headers=BROWSER)
+    assert _picker_rows(here.text) == _picker_rows(later.text)
+    assert len(_picker_rows(here.text)) > 1
+
+
+def test_the_list_never_shows_what_has_already_happened(client):
+    """Twelve ahead, not a history. Tonight still counts as ahead -- the
+    night it belongs to is still running -- so yesterday is the first date
+    that may not appear."""
+    import datetime as dt
+    rows = _picker_rows(client.get("/Zurich/Moon", headers=BROWSER).text)
+    days = [dt.datetime.strptime(r.split(" · ")[0], "%d %b %Y").date()
+            for r in rows]
+    assert days and min(days) >= dt.date.today() - dt.timedelta(days=1)
+
+
+def _two_events():
+    return [{"date_local": "2030-01-01", "when_local": "2030-01-01T20:00",
+             "short": "coming", "kind": "opposition", "t": "y"},
+            {"date_local": "2030-06-01", "when_local": "2030-06-01T20:00",
+             "short": "later", "kind": "opposition", "t": "z"}]
+
+
+def test_the_summary_points_at_the_head_of_the_list(client):
+    """Nothing behind it any more, so "Next:" is simply the first row. On a
+    page pinned to a night, which is when the reader is being told what is
+    coming after the one they are looking at."""
+    import api
+    got = api.object_picker_html(
+        {"object_events": _two_events(), "when_explicit": True},
+        "Saturn", "Zurich")
+    assert "Next: 1 Jan 2030 · coming" in got
+
+
+def test_a_page_about_no_particular_night_says_so(client):
+    """Naming the next event as the summary of a page that is not about it
+    was the whole reason every object page read as an event page."""
+    import api
+    got = api.object_picker_html({"object_events": _two_events()},
+                                 "Saturn", "Zurich")
+    assert f"<span>{api.PICK_NOW}</span>" in got
+    assert "Next:" not in got
+
+
+def test_the_picker_always_offers_the_way_back(client):
+    """Every other row pins a night, so following one left no link on the
+    page that dropped it again."""
+    import api
+    got = client.get("/Zurich/Saturn?t=2026-10-05T01:13", headers=BROWSER)
+    pick = _picker(got.text)
+    assert f'<a href="/Zurich/Saturn">{api.PICK_NOW}</a>' in pick
+    # And it is the row marked as where you are when the page is plain.
+    plain = _picker(client.get("/Zurich/Saturn", headers=BROWSER).text)
+    assert f'<li class="obj-pick-here"><a href="/Zurich/Saturn">' in plain
+
+
+def test_the_share_box_offers_a_link_with_no_date_on_it(client):
+    """Both the others carry the night the page is pinned to, so there was
+    no way to send somebody Saturn rather than Saturn on 5 October."""
+    got = client.get("/Zurich/Saturn?t=2026-10-05T01:13", headers=BROWSER)
+    assert "<code id=\"ecl-url-now\">https://skymap.sh/Saturn</code>" in got.text
+    # And it says Saturn, not "the eclipse", which is what borrowing the
+    # eclipse page's control got us.
+    assert "sees Saturn from where they are" in got.text
+    assert "eclipse" not in got.text.split('ecl-share-box')[1].split(
+        "</dialog>")[0]
+
+
+def test_a_plain_page_does_not_offer_a_third_link(client):
+    """Its first link already carries no date. Two rows saying the same
+    thing is not a choice."""
+    got = client.get("/Zurich/Saturn", headers=BROWSER)
+    assert 'ecl-url-now' not in got.text
+
+
+def test_the_head_lines_keep_the_same_margin_as_the_rest(client):
+    """The three lines above the chart are written by hand rather than drawn
+    into it, and being the only ones written by hand they were a character
+    short of the two everything else on the page sits at."""
+    import api
+    flat = api.strip_ansi(
+        client.get("/Zurich/Saturn?t=2026-10-05T01:13", headers=CURL).text)
+    lines = [l for l in flat.split("\n") if l.strip()]
+    head = next(l for l in lines if "·" in l and "mag" in l)
+    what = next(l for l in lines if "Opposition is when" in l)
+    for l in (head, what):
+        assert l.startswith("  ") and l[2] != " ", repr(l[:40])
+
+
+def _saturn_from_zurich():
+    """Saturn on a night it is below the horizon from Zurich and stays
+    there: the case the travelling sentence exists for."""
+    import api, datetime as dt
+    when = dt.datetime(2027, 5, 7, 20, 0)
+    jd = api.julian(when)
+    lst = (api.gmst_hours(jd) + 8.54 / 15.0) % 24
+
+    class P:
+        lat, lon, name = 47.38, 8.54, "Zurich"
+    return api.resolve_target("Saturn", jd, 47.38, lst), P, when
+
+
+def test_it_says_where_the_object_does_clear_the_horizon(client):
+    """"No window in the next 40 days from this latitude" invites the
+    obvious question and used to leave it there."""
+    import api
+    flat = api.strip_ansi(
+        client.get("/Zurich/Saturn?t=2027-05-07T22:00", headers=CURL).text)
+    assert "No window in the next 40 days" in flat
+    assert api.CLEARS_LEAD in flat
+
+
+def test_every_place_it_names_is_up_on_the_night_it_is_named_for(client):
+    """The bug this replaces: each candidate was asked whether it had a
+    window within forty nights, which is the question the line above answers
+    about the reader's own latitude. Cevennes passed on a window thirty-nine
+    nights later, so a page about a conjunction in May sent people somewhere
+    the conjunction had long finished."""
+    import api, sky
+    tgt, p, when = _saturn_from_zurich()
+    got = api.where_it_clears(tgt, p, when)
+    assert got["places"]
+    where = {n: (la, lo) for n, la, lo in api.named_places()}
+    for n in got["places"]:
+        la, lo = where[n]
+        assert sky.next_visible(tgt, la, lo, when, days=1)[0] is not None, n
+        assert got["near"] >= la >= got["far"] if got["south"] \
+            else got["near"] <= la <= got["far"], n
+
+
+def test_the_band_is_a_band_and_not_half_the_planet(client):
+    """Too far north it never rises into darkness and too far south it never
+    rises at all, so "south of about 7°S" would promise the whole of the
+    southern hemisphere for a strip of it."""
+    import api, sky
+    tgt, p, when = _saturn_from_zurich()
+    got = api.where_it_clears(tgt, p, when)
+    assert not got["open"]
+    assert api.where_it_clears_line(got).startswith(
+        f"{api.CLEARS_LEAD} between about ")
+    # The far side really is shut: past it, nothing that night.
+    beyond = got["far"] - 20 if got["south"] else got["far"] + 20
+    if abs(beyond) <= 85:
+        assert sky.next_visible(tgt, beyond, p.lon, when, days=1)[0] is None
+
+
+def test_the_places_it_names_are_links(client):
+    """Telling somebody where to go and then making them type it is a
+    tease. Each name opens this same object seen from there."""
+    import api
+    tgt, p, when = _saturn_from_zurich()
+    names = api.where_it_clears(tgt, p, when)["places"]
+    got = client.get("/Zurich/Saturn?t=2027-05-07T22:00", headers=BROWSER)
+    assert names
+    from urllib.parse import quote
+    for n in names:
+        # With the night still on it: the sentence is about that night, and
+        # a link that quietly means tonight answers a different question.
+        # quote() because half these sites are two words long.
+        assert (f'<a href="/{quote(n)}/Saturn?t=2027-05-07T22:00">{n}</a>'
+                in got.text), n
+
+
+def test_a_plain_page_links_the_places_plainly(client):
+    """Nothing to carry, so nothing is carried."""
+    import api
+    got = client.get("/Zurich/Mars", headers=BROWSER)
+    if api.CLEARS_LEAD not in api.strip_ansi(got.text):
+        return                          # visible from here today; nothing to link
+    assert "?t=" not in got.text.split(api.CLEARS_LEAD)[1][:400]
+
+
+def test_the_terminal_gets_the_names_without_the_markup(client):
+    """The link is a browser thing. A terminal reads the sentence."""
+    import api
+    tgt, p, when = _saturn_from_zurich()
+    names = api.where_it_clears(tgt, p, when)["places"]
+    flat = api.strip_ansi(
+        client.get("/Zurich/Saturn?t=2027-05-07T22:00", headers=CURL).text)
+    assert "<a href" not in flat
+    assert names[0] in flat
+
+
+def test_the_latitude_it_quotes_is_one_it_has_tried(client):
+    """"About" covers the three degrees the sweep backs up in, not a guess:
+    the near edge is a latitude the search itself returned a window for, on
+    the night in question."""
+    import api, sky
+    tgt, p, when = _saturn_from_zurich()
+    got = api.where_it_clears(tgt, p, when)
+    assert sky.next_visible(tgt, got["near"], p.lon, when, days=1)[0] is not None
+
+
+def test_the_event_list_is_capped(client):
+    """The Moon has an event every few days. The dropdown is a dropdown,
+    not the year."""
+    import api
+    got = client.get("/Zurich/Moon", headers=BROWSER)
+    assert len(_picker_rows(got.text)) <= api.OBJECT_EVENTS_SHOWN
+
+
+def test_every_object_page_can_be_shared_both_ways(client):
+    """The same control the eclipse page carries. /Saturn follows whoever
+    opens it; /Zurich/Saturn stays in Zurich. Both are right and they do
+    opposite things, so the reader picks."""
+    got = client.get("/Zurich/Saturn", headers=BROWSER)
+    assert "https://skymap.sh/Saturn<" in got.text
+    assert "/Saturn</code>" in got.text
+    assert "Z%C3%BCrich/Saturn" in got.text
+    assert "Share Saturn" in got.text
+
+
+def test_a_star_with_no_events_can_still_be_shared(client):
+    """The share button does not depend on the picker. Vega has no events
+    and is still a page somebody might send to somebody."""
+    got = client.get("/Zurich/Vega", headers=BROWSER)
+    assert "Share Vega" in got.text
+    assert "ecl-share-box" in got.text
+
+
+def test_a_shared_link_keeps_the_night_it_was_shared_for(client):
+    """A link to the night of the opposition that quietly resolves to
+    tonight is not the page that was shared."""
+    got = client.get("/Zurich/Saturn?t=2026-10-05T01:13", headers=BROWSER)
+    assert "/Saturn?t=2026-10-05T01:1" in got.text
+
+
+def test_a_page_with_no_moment_shares_no_moment(client):
+    """The other half of the rule: /Saturn shares as /Saturn."""
+    got = client.get("/Zurich/Saturn", headers=BROWSER)
+    share = got.text.split('id="ecl-share-box"')[1].split("</dialog>")[0]
+    assert "?t=" not in share
+
+
 def test_an_eclipse_in_the_picker_opens_the_eclipse_page(client):
     """It has a page that answers far more about it than the Moon's page
     can, and the events list already sends people there."""

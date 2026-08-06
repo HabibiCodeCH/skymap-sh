@@ -635,8 +635,19 @@ def table_span():
     return f"{len(rows)} eclipses tracked, {first} to {last}"
 
 
-def share_html(bare_url, place_url=None, place=None, escape=html.escape):
-    """A button, and behind it the two links and what each one does.
+def share_html(bare_url, place_url=None, place=None, escape=html.escape,
+               title="Share this eclipse", noun="the eclipse",
+               plain_url=None):
+    """A button, and behind it the links and what each one does.
+
+    title and noun name whatever the page is about, because the object pages
+    carry this same control and both "Share this eclipse" and "sees the
+    eclipse from where they are" over a link to Saturn are simply wrong.
+
+    plain_url is the third row, and only the object pages have one: an
+    eclipse is a moment and dropping it leaves nothing, while an object is
+    there every night. Given only when the page is pinned to a moment --
+    otherwise it is the link already at the top of the box.
 
     Opening /eclipse/2026-08-12 bounces you to /Geneva/eclipse/2026-08-12 so
     the page can say Geneva rather than 46.20,6.10, and from that moment the
@@ -650,7 +661,7 @@ def share_html(bare_url, place_url=None, place=None, escape=html.escape):
     rows = [(
         "Follows the reader",
         bare_url,
-        "Each person who opens it sees the eclipse from where they are.",
+        f"Each person who opens it sees {noun} from where they are.",
         "bare",
     )]
     if place_url and place:
@@ -659,6 +670,13 @@ def share_html(bare_url, place_url=None, place=None, escape=html.escape):
             place_url,
             f"Everyone who opens it sees {place}, wherever they are.",
             "here",
+        ))
+    if plain_url:
+        rows.append((
+            "Carries no date",
+            plain_url,
+            f"Opens on {noun} as it is that night, not as it is on this one.",
+            "now",
         ))
     body = "".join(
         f'<div class="ecl-share-row">'
@@ -672,11 +690,52 @@ def share_html(bare_url, place_url=None, place=None, escape=html.escape):
     return (f'<button type="button" class="ecl-share" id="ecl-share" hidden'
             f' aria-haspopup="dialog">share</button>'
             f'<dialog class="ecl-share-box" id="ecl-share-box">'
-            f'<p class="ecl-share-title">Share this eclipse</p>'
+            f'<p class="ecl-share-title">{escape(title)}</p>'
             f'{body}'
             f'<button type="button" class="ecl-share-close" id="ecl-share-close">'
             f'close</button>'
             f'</dialog>')
+
+
+# The share button and the panel behind it. Its own sheet rather than part of
+# ECLIPSE_CSS, because the object pages carry the same control and pulling the
+# whole eclipse stylesheet onto /Saturn to get one button would bring the map
+# legend, the disc frame and the phase list along with it.
+SHARE_CSS = """
+<style>
+/* Same shape as the picker beside it: these are the two things you can do to
+   this heading. */
+.ecl-share{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  font-size:13px;color:#c9d1d9;background:none;cursor:pointer;
+  border:1px solid #30363d;border-radius:6px;padding:6px 12px}
+.ecl-share:hover{border-color:#8fb6e0}
+/* The panel behind it. Two links that do opposite things, each with the
+   sentence that says which is which -- picking one on the reader's behalf
+   would be picking wrong for half of them. */
+.ecl-share-box{border:1px solid #30363d;border-radius:10px;background:#0d1117;
+  color:#c9d1d9;padding:20px 22px;max-width:min(560px,92vw);
+  font-family:ui-sans-serif,-apple-system,"Segoe UI",Roboto,sans-serif}
+.ecl-share-box::backdrop{background:rgba(0,0,0,.6)}
+.ecl-share-title{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  font-size:15px;color:#e6ebf2;margin:0 0 16px}
+.ecl-share-row+.ecl-share-row{margin-top:18px;padding-top:16px;
+  border-top:1px solid #21262d}
+.ecl-share-what{margin:0;font-size:13px;color:#8fb6e0;letter-spacing:.04em;
+  text-transform:uppercase}
+.ecl-share-why{margin:3px 0 9px;font-size:13px;line-height:1.45;color:#8b949e}
+.ecl-share-line{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.ecl-share-line code{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,
+  monospace;font-size:12.5px;color:#87d7ff;background:#010409;
+  border:1px solid #21262d;border-radius:6px;padding:6px 10px;
+  overflow-wrap:anywhere;flex:1;min-width:0}
+.ecl-copy,.ecl-share-close{font:inherit;font-size:12.5px;color:#c9d1d9;
+  background:none;border:1px solid #30363d;border-radius:6px;
+  padding:6px 12px;cursor:pointer}
+.ecl-copy:hover,.ecl-share-close:hover{border-color:#8fb6e0}
+.ecl-copied{color:#7ee787;border-color:#7ee787}
+.ecl-share-close{margin-top:18px}
+</style>
+"""
 
 
 def share_script():
@@ -992,37 +1051,6 @@ ECLIPSE_CSS = """
 .ecl-key > span{display:block;white-space:nowrap}
 .ecl-head-row{display:flex;align-items:center;gap:14px;flex-wrap:wrap;
   margin:1.5rem 0 14px}
-/* Same shape as the eclipse picker beside it: these are the two things you
-   can do to this heading. */
-.ecl-share{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
-  font-size:13px;color:#c9d1d9;background:none;cursor:pointer;
-  border:1px solid #30363d;border-radius:6px;padding:6px 12px}
-.ecl-share:hover{border-color:#8fb6e0}
-/* The panel behind it. Two links that do opposite things, each with the
-   sentence that says which is which -- picking one on the reader's behalf
-   would be picking wrong for half of them. */
-.ecl-share-box{border:1px solid #30363d;border-radius:10px;background:#0d1117;
-  color:#c9d1d9;padding:20px 22px;max-width:min(560px,92vw);
-  font-family:ui-sans-serif,-apple-system,"Segoe UI",Roboto,sans-serif}
-.ecl-share-box::backdrop{background:rgba(0,0,0,.6)}
-.ecl-share-title{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
-  font-size:15px;color:#e6ebf2;margin:0 0 16px}
-.ecl-share-row+.ecl-share-row{margin-top:18px;padding-top:16px;
-  border-top:1px solid #21262d}
-.ecl-share-what{margin:0;font-size:13px;color:#8fb6e0;letter-spacing:.04em;
-  text-transform:uppercase}
-.ecl-share-why{margin:3px 0 9px;font-size:13px;line-height:1.45;color:#8b949e}
-.ecl-share-line{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
-.ecl-share-line code{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,
-  monospace;font-size:12.5px;color:#87d7ff;background:#010409;
-  border:1px solid #21262d;border-radius:6px;padding:6px 10px;
-  overflow-wrap:anywhere;flex:1;min-width:0}
-.ecl-copy,.ecl-share-close{font:inherit;font-size:12.5px;color:#c9d1d9;
-  background:none;border:1px solid #30363d;border-radius:6px;
-  padding:6px 12px;cursor:pointer}
-.ecl-copy:hover,.ecl-share-close:hover{border-color:#8fb6e0}
-.ecl-copied{color:#7ee787;border-color:#7ee787}
-.ecl-share-close{margin-top:18px}
 .ecl-head-row .obj-title{margin:0}
 /* The two drawings have to start on the same line, and what sits above them
    does not match: a short label on the left, a sentence that may wrap to two
