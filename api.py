@@ -11,6 +11,8 @@ from urllib.parse import quote
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import art
+import eclipse as eclipse_map
+import eclipse_page
 import sky
 import brand
 import facts as facts_table
@@ -2478,6 +2480,96 @@ def object_html(r, canonical, text, data, place=None, base_url="",
         controls=controls_html(EXPLORE),
         wide_class=" w-wide", coming_up_card="",
         kbd_urls="{}", shortcuts_hint="", body=body)
+
+
+def eclipse_head(f, key, place, base_url):
+    """Title, description, canonical and the card tags for an eclipse page.
+
+    The canonical drops the place, exactly as an object page's does: there
+    are 40,803 cities and this is one eclipse, and /{city}/eclipse is the
+    same event described from somewhere else, not a different page.
+    """
+    title = html.escape(eclipse_title(f))
+    desc = html.escape(eclipse_description(f))
+    url = canonical_url(f"/eclipse/{key}")
+    og = f"{base_url}/eclipse/{key}/og.png"
+    return "\n".join([
+        f'<meta name="description" content="{desc}">',
+        f'<link rel="canonical" href="{url}">',
+        '<meta property="og:type" content="article">',
+        f'<meta property="og:title" content="{title}">',
+        f'<meta property="og:description" content="{desc}">',
+        f'<meta property="og:url" content="{url}">',
+        f'<meta property="og:image" content="{og}">',
+        '<meta property="og:image:width" content="1200">',
+        '<meta property="og:image:height" content="630">',
+        '<meta property="og:site_name" content="skymap.sh">',
+        '<meta name="twitter:card" content="summary_large_image">',
+        f'<meta name="twitter:title" content="{title}">',
+        f'<meta name="twitter:description" content="{desc}">',
+        f'<meta name="twitter:image" content="{og}">',
+    ])
+
+
+def eclipse_title(f):
+    when = dt.datetime.fromisoformat(f["when_utc"].rstrip("Z"))
+    return f"{f['name']}, {when.strftime('%d %B %Y').lstrip('0')}"
+
+
+def eclipse_description(f):
+    """One sentence, and it must survive being read on its own.
+
+    A card is seen without the page around it, so "90% covered" with no
+    place attached is worse than useless. The place is always named.
+    """
+    return eclipse_page.headline(f) + f". curl skymap.sh/eclipse"
+
+
+def eclipse_html(r, f, key, entry, map_rows, legend, disc=None,
+                 place=None, base_url=""):
+    """The browser page. Same two columns and the same shell as an object
+    page, because it is the same shape of thing: a durable half that every
+    reader shares, and a half computed from where they are standing."""
+    # The h1 names the page, not the reader's circumstances. What happens
+    # from Zurich is a property of the right-hand column -- the half that is
+    # computed per visitor -- so it heads that column instead, the same way
+    # an object page puts its live summary above the chart rather than in
+    # the title. The <title> and the card still lead with the local result,
+    # because those are read without the page around them.
+    heading = html.escape(eclipse_page.headline(f))
+    body = ('<h1 class="obj-title"><span>Upcoming eclipses</span></h1>'
+            '<div class="obj-cols">'
+            f'<aside class="obj-static">'
+            f'{eclipse_page.sidebar_html(entry, r.when_utc)}</aside>'
+            f'<div class="obj-live">'
+            f'<p class="obj-lede obj-live-head ecl-head">{heading}</p>'
+            f'{eclipse_page.live_html(f, map_rows, legend, ansi_to_html, chart_pre, disc)}'
+            f'</div></div>')
+    head = (eclipse_head(f, key, place, base_url) + OBJECT_CSS
+            + eclipse_page.ECLIPSE_CSS)
+    return _object_page_template().format(
+        title=html.escape(eclipse_title(f)),
+        head_extra=head,
+        header=header_html(f"{place}/eclipse" if place else "eclipse"),
+        controls=controls_html(EXPLORE),
+        wide_class=" w-wide", coming_up_card="",
+        kbd_urls="{}", shortcuts_hint="", body=body)
+
+
+def compose_eclipse(r, key):
+    """The eclipse page as text and data, for every output this serves."""
+    entry = eclipse_page.by_key(key)
+    if entry is None:
+        return None
+    f = eclipse_page.facts(entry, r.place, r.when_utc)
+    rows = (eclipse_map.render(key, mark=(r.place.lat, r.place.lon), color=r.color)
+            if eclipse_map.has_map(key) else [])
+    legend = eclipse_map.legend(color=r.color) if rows else ""
+    # Empty when the Sun is down here, which is right: there is nothing to
+    # draw a picture of, and the prose already says so.
+    disc = eclipse_map.disc_art(key, r.place.lat, r.place.lon, color=r.color)
+    return (Result(eclipse_page.text(f, rows, legend, disc, r.color), f),
+            entry, rows, legend, disc)
 
 
 # ---------------------------------------------------------------- sky views
@@ -5548,7 +5640,7 @@ SOCIAL_ICONS = (
 # object at all.
 # stats is deliberately absent: typing it still works, it is just not
 # advertised until the page itself is worth pointing at.
-SEARCH_PAGES = ("catalog", "events", "help", "legend")
+SEARCH_PAGES = ("catalog", "eclipse", "events", "help", "legend")
 
 SEARCH_HELP = (
     '<div class="search-help" id="search-help" hidden role="dialog" '

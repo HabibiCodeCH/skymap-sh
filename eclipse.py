@@ -199,6 +199,143 @@ def legend(color=True):
     return "   ".join(f"\033[38;5;{c}m{t}\033[0m" for c, t in parts)
 
 
+# The Sun's disc, drawn at the same cell aspect art.py uses so the CSS that
+# already pins .obj-art's line-height keeps this circular too. Smaller than a
+# planet portrait because the Moon has to have somewhere to be: at first
+# contact the two discs together span twice the Sun's diameter.
+ART_COLS, ART_ROWS = 45, 17      # art.py's frame, so .obj-art's CSS fits
+CELL_X = 2.0                     # matches art.CELL; see its comment there
+# Two sizes, because the two pictures have to fit different things.
+#
+# A partial eclipse is one disc and can fill the frame, which matters: at
+# 90% covered the surviving crescent is a tenth of the diameter, so every
+# cell of radius is a tenth of a cell of crescent. Drawn at the totality
+# size it came out as a dotted line with gaps in it.
+#
+# Totality has to leave room for the corona, which reaches 1.28 Moon-radii
+# and the Moon is up to 1.04 Sun-radii, so the Sun has to come down to
+# about 6.2 or the halo runs off the top and bottom and stops reading as a
+# ring at all.
+SUN_R_PARTIAL = 8.0
+SUN_R_TOTAL = 6.2
+
+# Bright core to dimmer limb. Not physics -- real limb darkening is slight --
+# it is what stops a flat disc of one character reading as a hole rather
+# than a light.
+SUN_TONES = ((0.55, 231), (0.85, 227), (1.01, 220))
+CORONA = 250
+
+# Each cell sampled on a 3x3 grid instead of at its centre. At 90% covered
+# the surviving crescent is about a tenth of the Sun's diameter, which is
+# thinner than one character: sampling the centre alone drew it as four
+# disconnected marks with gaps where the crescent passed between samples.
+# Coverage also picks the glyph, so a barely-lit cell reads lighter than a
+# full one and the crescent keeps a soft edge instead of a staircase.
+_SUB = (-1 / 3.0, 0.0, 1 / 3.0)
+_COVER_GLYPH = ((0.34, "."), (0.67, "+"), (1.01, "#"))
+
+
+def _glyph_for(frac):
+    for edge, ch in _COVER_GLYPH:
+        if frac <= edge:
+            return ch
+    return "#"
+
+
+def _disc_tone(rr):
+    for edge, col in SUN_TONES:
+        if rr <= edge:
+            return col
+    return SUN_TONES[-1][1]
+
+
+def disc_art(key, lat, lon, at=None, color=True):
+    """The Sun as it looks from here, at maximum or at a given hour (UT).
+
+    The Moon is not drawn, because you cannot see it: during a partial
+    eclipse there is nothing up there but a Sun with a bite out of it, and
+    a grey disc laid over it would be a diagram of the geometry rather than
+    a picture of the sky. What the Moon does is take light away.
+
+    Totality is the exception and gets the corona, which is the one time the
+    Moon's edge is genuinely visible, as the hole in the middle of it.
+
+    Orientation is celestial: north up, east left. Turning that into
+    zenith-up needs the parallactic angle, and a drawing that silently got
+    that wrong would be worse than one that says which way up it is.
+    """
+    el = besselian.ELEMENTS.get(key)
+    if el is None:
+        return []
+    rho_sin, rho_cos = besselian._observer(lat, lon)
+    if at is None:
+        _t, s = besselian._solve_max(el, rho_sin, rho_cos, lon)
+    else:
+        s = besselian._state(el, at + el.dT / 3600.0 - el.t0,
+                             rho_sin, rho_cos, lon)
+    if s["zeta"] <= 0:
+        return []
+
+    big_l1, big_l2 = s["L1"], s["L2"]
+    r_sun = (big_l1 + big_l2) / 2.0
+    r_moon = (big_l1 - big_l2) / 2.0
+    if r_sun <= 0:
+        return []
+    # Everything in units of the Sun's radius, so the Sun is the same size
+    # on screen whatever the geometry is doing.
+    total = s["m"] < abs(big_l2) and big_l2 < 0
+    sun_r = SUN_R_TOTAL if total else SUN_R_PARTIAL
+    moon_r = sun_r * (r_moon / r_sun)
+    sep = sun_r * (s["m"] / r_sun)
+    n = math.hypot(s["u"], s["v"]) or 1.0
+    # Fundamental-plane x is celestial east, y is north. On screen north is
+    # up and east is left, so both signs flip.
+    mx, my = -s["u"] / n * sep, -s["v"] / n * sep
+
+    out = []
+    for r in range(ART_ROWS):
+        line, pen = [], None
+        for c in range(ART_COLS):
+            lit = 0
+            for dy in _SUB:
+                y = r - (ART_ROWS - 1) / 2.0 + dy
+                for dx in _SUB:
+                    x = (c - (ART_COLS - 1) / 2.0 + dx) / CELL_X
+                    if (math.hypot(x, y) <= sun_r
+                            and math.hypot(x - mx, y - my) > moon_r):
+                        lit += 1
+            y0 = r - (ART_ROWS - 1) / 2.0
+            x0 = (c - (ART_COLS - 1) / 2.0) / CELL_X
+            if lit:
+                frac = lit / 9.0
+                col = _disc_tone(math.hypot(x0, y0) / sun_r)
+                ch = _glyph_for(frac)
+            elif total:
+                # Corona, and only during totality, because that is the only
+                # time it is visible at all. A thin halo just off the limb.
+                d = math.hypot(x0 - mx, y0 - my) / moon_r
+                col, ch = (CORONA, "\u00b7") if 1.0 <= d <= 1.28 else (None, " ")
+            else:
+                col, ch = None, " "
+            if col is None:
+                if pen is not None and color:
+                    line.append("\033[0m")
+                pen = None
+                line.append(ch)
+                continue
+            if color and col != pen:
+                line.append(f"\033[38;5;{col}m")
+                pen = col
+            line.append(ch)
+        if pen is not None and color:
+            line.append("\033[0m")
+        out.append("".join(line).rstrip())
+    return out
+
+
+
+
+
 def track(key, step_minutes=2):
     """The central line as (lat, lon) points, for anything that wants the
     path itself rather than a picture of it.

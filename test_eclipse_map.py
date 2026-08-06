@@ -118,5 +118,50 @@ class TheLegendDescribesTheMapItIsUnder(unittest.TestCase):
         self.assertIn("total", text)
 
 
+class TheSunIsDrawnAsItLooks(unittest.TestCase):
+    """The disc above the map. The Moon is deliberately not drawn: during a
+    partial eclipse there is nothing up there but a Sun with a bite out of
+    it, and a grey disc laid over it would be a diagram rather than a
+    picture."""
+
+    def test_a_partial_leaves_a_crescent_and_no_corona(self):
+        rows = eclipse.disc_art(KEY, 47.3769, 8.5417, color=False)   # Zurich
+        body = "".join(rows)
+        self.assertIn("#", body)
+        self.assertNotIn("·", body)
+
+    def test_totality_is_a_hole_with_a_ring_round_it(self):
+        rows = eclipse.disc_art(KEY, 43.3619, -5.8494, color=False)  # Oviedo
+        body = "".join(rows)
+        self.assertIn("·", body)          # corona
+        self.assertNotIn("#", body)       # no Sun left to see
+        # The middle has to be empty, or it is not a total eclipse.
+        mid = rows[len(rows) // 2]
+        self.assertEqual(mid[len(mid) // 2], " ")
+
+    def test_the_corona_stays_inside_the_frame(self):
+        """It is what sets the scale: drawn at the partial size the halo ran
+        off the top and bottom and stopped reading as a ring."""
+        rows = eclipse.disc_art(KEY, 43.3619, -5.8494, color=False)
+        self.assertEqual(len(rows), eclipse.ART_ROWS)
+        self.assertTrue(rows[0].strip(), "top row empty, corona is too small")
+        self.assertTrue(rows[-1].strip(), "corona clipped at the bottom")
+
+    def test_the_crescent_is_thicker_than_a_single_cell(self):
+        """At 90% covered the surviving crescent is a tenth of the diameter.
+        Drawn at the totality scale it came out as a dotted line with gaps,
+        which is why the two sizes exist."""
+        rows = eclipse.disc_art(KEY, 47.3769, 8.5417, color=False)
+        widest = max(len(r) - len(r.lstrip()) and 0 or
+                     sum(1 for ch in r if ch != " ") for r in rows)
+        self.assertGreater(widest, 6)
+
+    def test_nothing_is_drawn_where_the_sun_is_down(self):
+        self.assertEqual(eclipse.disc_art(KEY, 35.6762, 139.6503), [])  # Tokyo
+
+    def test_an_eclipse_with_no_elements_draws_nothing(self):
+        self.assertEqual(eclipse.disc_art("2026-08-28", 47.37, 8.54), [])
+
+
 if __name__ == "__main__":
     unittest.main()

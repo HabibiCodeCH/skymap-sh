@@ -136,6 +136,10 @@ _sphere_places = Counter()
 # without their own tally. A subscription is a much stronger signal than a
 # page view -- someone put it in their calendar.
 _events_places = Counter()
+# Which eclipses people look at. Keyed by date rather than name, because
+# "Total solar eclipse" happens twenty-odd times in the table and the
+# interesting question is which one they came for.
+_eclipse_keys = Counter()
 # What the "Coming up" line actually promoted, and how often it was absent.
 # Page views tell you people opened the list; this tells you whether the
 # feature does anything on the pages nobody opened it from -- which is most
@@ -1192,6 +1196,12 @@ def stats_text(n=50, map_slot=False):
     if _stat["geo_redirect"]:
         L.append(f"  {'geo_redirect':12} {_stat['geo_redirect']:>8,}")
     L.append("")
+    if _stat["eclipse"]:
+        L.append("eclipses")
+        L.append(f"  {'page':12} {_stat['eclipse']:>8,}")
+        for k, n in _eclipse_keys.most_common(5):
+            L.append(f"  {k:12} {n:>8,}")
+        L.append("")
     if _stat["events"] or _stat["events.ics"] or _stat["events.rss"]:
         L.append("what's coming up")
         L.append(f"  {'page':12} {_stat['events']:>8,}")
@@ -1285,6 +1295,9 @@ def stats_json(n=50):
         animate=_stat["animate"], animate_rejected=_stat["animate_rejected"],
         gif=_stat["gif"], gif_rejected=_stat["gif_rejected"], png=_stat["png"],
         sphere=_stat["sphere"], geo_redirect=_stat["geo_redirect"],
+        eclipse=dict(page=_stat["eclipse"],
+                     distinct=len(_eclipse_keys),
+                     top=dict(_eclipse_keys.most_common(n))),
         events=dict(page=_stat["events"], ics=_stat["events.ics"],
                     rss=_stat["events.rss"], via_nav=_stat["events_ip"],
                     places_distinct=len(_events_places),
@@ -2924,6 +2937,75 @@ def events_here(request: Req):
     """
     _stat["events_ip"] += 1
     return events_page(request, None)
+
+
+def _respond_eclipse(request: Req, place: str | None, key: str | None):
+    """The eclipse page, for any of the three paths that reach it.
+
+    Registered ahead of /{place:path} on purpose. A 404 here does NOT fall
+    through to the next route -- FastAPI matches the first path that fits
+    and the handler's status code is the answer -- which is how a separate
+    og.png route once killed the object cards and then the place cards.
+    """
+    kind, colour = _wants(request)
+    # The same bounce every other place-aware route does, so an eclipse page
+    # reached by IP says "Geneva" rather than "46.20,6.10".
+    city = _nearby_city_for_redirect(request, place, kind)
+    if city:
+        _stat["geo_redirect"] += 1
+        tail = f"/eclipse/{key}" if key else "/eclipse"
+        return RedirectResponse(f"/{quote(city)}{tail}", status_code=302,
+                                headers={"Cache-Control": "no-store"})
+    if place is not None and api.lookup_place(place) is None:
+        return PlainTextResponse(UNKNOWN.format(q=place, did=api.suggest(place)),
+                                 status_code=404)
+    r = _build(request, place)
+    if key is None:
+        key = api.eclipse_page.key_of(api.eclipse_page.next_computable(r.when_utc))
+    composed = api.compose_eclipse(r, key)
+    if composed is None:
+        return PlainTextResponse(f"no eclipse on {key}\n\n"
+                                 f"try skymap.sh/eclipse for the next one\n",
+                                 status_code=404)
+    res, entry, rows, legend, disc = composed
+    _stat["eclipse"] += 1
+    _eclipse_keys[key] += 1
+
+    # A day either side of the event the page changes meaning, and the rest
+    # of the time it is the same for hours. Short enough to follow the
+    # eclipse, long enough that a spike does not reach the origin.
+    headers = {"Cache-Control": "public, max-age=600"}
+    if kind == "json":
+        return JSONResponse(res.data, headers=headers)
+    if kind == "html":
+        base_url = str(request.base_url).rstrip("/")
+        return HTMLResponse(
+            api.eclipse_html(r, res.data, key, entry, rows, legend, disc,
+                             place=place, base_url=base_url),
+            headers=headers)
+    return PlainTextResponse(res.text if colour else api.strip_ansi(res.text),
+                             headers=headers)
+
+
+@app.get("/eclipse", response_class=PlainTextResponse)
+def eclipse_next(request: Req):
+    """The next eclipse this can actually compute, from wherever you are."""
+    return _respond_eclipse(request, None, None)
+
+
+@app.get("/eclipse/{key}", response_class=PlainTextResponse)
+def eclipse_dated(request: Req, key: str):
+    return _respond_eclipse(request, None, key)
+
+
+@app.get("/{place}/eclipse", response_class=PlainTextResponse)
+def eclipse_at_place(request: Req, place: str):
+    return _respond_eclipse(request, place, None)
+
+
+@app.get("/{place}/eclipse/{key}", response_class=PlainTextResponse)
+def eclipse_at_place_dated(request: Req, place: str, key: str):
+    return _respond_eclipse(request, place, key)
 
 
 @app.get("/{place}/events.ics")
