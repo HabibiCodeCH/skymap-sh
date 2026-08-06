@@ -2540,10 +2540,12 @@ def eclipse_html(r, f, key, entry, map_rows, legend, disc=None,
     disc_html = ansi_to_html("\n".join(disc)) if disc else ""
     cap = eclipse_page.disc_caption(f)
     frames_html = [ansi_to_html("\n".join(fr)) for fr in (frames or [])]
-    also = eclipse_page.alongside(entry)
+    also = eclipse_page.alongside(entry, r.tz)
+    gif_href = (f"/{quote(place)}/eclipse/{key}/animate.gif" if place
+                else f"/eclipse/{key}/animate.gif")
     body = ('<div class="ecl-head-row">'
             '<h1 class="obj-title"><span>Upcoming eclipses</span></h1>'
-            + eclipse_page.picker_html(entry, r.when_utc)
+            + eclipse_page.picker_html(entry, r.when_utc, place)
             + '</div>'
             + '<div class="obj-cols">'
             f'<aside class="obj-static">'
@@ -2551,7 +2553,7 @@ def eclipse_html(r, f, key, entry, map_rows, legend, disc=None,
             f'</aside>'
             f'<div class="obj-live">'
             f'<p class="obj-lede obj-live-head ecl-head">{heading}</p>'
-            f'{eclipse_page.live_html(f, map_rows, legend, ansi_to_html, chart_pre, frames_html, labels)}'
+            f'{eclipse_page.live_html(f, map_rows, legend, ansi_to_html, chart_pre, frames_html, labels, gif_href)}'
             f'</div></div>'
             + eclipse_page.frames_script(frames_html, labels))
     head = (eclipse_head(f, key, place, base_url) + OBJECT_CSS

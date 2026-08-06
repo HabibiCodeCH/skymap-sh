@@ -17,7 +17,7 @@ from fastapi.responses import (PlainTextResponse, HTMLResponse, JSONResponse,
                                StreamingResponse, FileResponse, Response,
                                RedirectResponse)
 
-import api, card, gif, objects, sky, tle
+import api, besselian, card, gif, objects, sky, tle
 
 app = FastAPI(title="skymap.sh", docs_url=None, redoc_url=None)
 
@@ -1199,6 +1199,8 @@ def stats_text(n=50, map_slot=False):
     if _stat["eclipse"]:
         L.append("eclipses")
         L.append(f"  {'page':12} {_stat['eclipse']:>8,}")
+        if _stat["eclipse_gif"]:
+            L.append(f"  {'gif':12} {_stat['eclipse_gif']:>8,}")
         for k, n in _eclipse_keys.most_common(5):
             L.append(f"  {k:12} {n:>8,}")
         L.append("")
@@ -1295,7 +1297,7 @@ def stats_json(n=50):
         animate=_stat["animate"], animate_rejected=_stat["animate_rejected"],
         gif=_stat["gif"], gif_rejected=_stat["gif_rejected"], png=_stat["png"],
         sphere=_stat["sphere"], geo_redirect=_stat["geo_redirect"],
-        eclipse=dict(page=_stat["eclipse"],
+        eclipse=dict(page=_stat["eclipse"], gif=_stat["eclipse_gif"],
                      distinct=len(_eclipse_keys),
                      top=dict(_eclipse_keys.most_common(n))),
         events=dict(page=_stat["events"], ics=_stat["events.ics"],
@@ -2985,6 +2987,44 @@ def _respond_eclipse(request: Req, place: str | None, key: str | None):
             headers=headers)
     return PlainTextResponse(res.text if colour else api.strip_ansi(res.text),
                              headers=headers)
+
+
+# Rendered through the same pipeline the sky animations use: gif.py takes
+# ANSI frame text and hands back bytes, and these frames are already ANSI.
+# Registered before the page routes below only for tidiness -- the paths
+# differ by a segment, so ordering is not load-bearing here the way it is
+# against /{place:path}.
+ECLIPSE_GIF_MS = 160
+
+
+def _respond_eclipse_gif(request: Req, place: str | None, key: str):
+    if place is not None and api.lookup_place(place) is None:
+        return PlainTextResponse("unknown place\n", status_code=404)
+    if key not in besselian.ELEMENTS:
+        return PlainTextResponse("no elements for that eclipse\n",
+                                 status_code=404)
+    r = _build(request, place)
+    frames, _labels = api.eclipse_map.disc_frames(key, r.place.lat, r.place.lon)
+    if not frames:
+        # Nothing to animate where the Sun is down for the whole event.
+        return PlainTextResponse("this eclipse is not visible from there\n",
+                                 status_code=404)
+    _stat["eclipse_gif"] += 1
+    data = gif.frames_to_gif(["\n".join(f) for f in frames], ECLIPSE_GIF_MS)
+    return Response(data, media_type="image/gif", headers={
+        "Cache-Control": "public, max-age=86400",
+        "Content-Disposition":
+            f'inline; filename="eclipse-{key}-{quote(r.place.slug)}.gif"'})
+
+
+@app.get("/eclipse/{key}/animate.gif")
+def eclipse_gif(request: Req, key: str):
+    return _respond_eclipse_gif(request, None, key)
+
+
+@app.get("/{place}/eclipse/{key}/animate.gif")
+def eclipse_gif_at_place(request: Req, place: str, key: str):
+    return _respond_eclipse_gif(request, place, key)
 
 
 @app.get("/eclipse", response_class=PlainTextResponse)

@@ -21,6 +21,7 @@ precise ones are worth nothing.
 import datetime as dt
 import html
 import json
+from urllib.parse import quote
 
 import besselian
 import eclipse as eclipse_map
@@ -184,29 +185,41 @@ def facts(entry, place, now_utc):
     return out
 
 
-def alongside(entry, hours=36):
-    """What else is in the sky the same night, with links to its own page.
+def alongside(entry, tz=0.0):
+    """What else is in the sky the same night, in local time.
 
-    The Perseids peak eight hours after this eclipse ends, which is the kind
-    of thing somebody planning a night out deserves to be told on the page
-    they are already reading.
+    The night, not a window of hours either side. An eclipse on the evening
+    of the 12th shares its night with the Perseids peaking at four the next
+    morning, and shares nothing with a conjunction at lunchtime the day
+    before -- which is what a plain plus-or-minus-36-hours turned up, and it
+    read as a mistake because it was one.
+
+    Local noon to local noon. An eclipse in the local morning belongs to the
+    night that began the previous evening, so the window starts a day back.
 
     The eclipse itself is dropped, and so is the new moon that a solar
     eclipse always is: the Moon has to be new for the geometry to work, so
     listing it beside the eclipse is the same fact told twice.
     """
     when = dt.datetime.fromisoformat(entry["when_utc"])
-    near = events.scan_global(when - dt.timedelta(hours=hours),
-                              days=2 * hours / 24.0)
+    local = when + dt.timedelta(hours=tz)
+    noon = local.replace(hour=12, minute=0, second=0, microsecond=0)
+    if local < noon:
+        noon -= dt.timedelta(days=1)
+    lo = noon - dt.timedelta(hours=tz)
+    near = events.scan_global(lo, days=1.0)
     out = []
     for e in near:
         at = e["when_utc"]
-        if abs((at - when).total_seconds()) < 3600 and e["kind"] in (
-                "eclipse", "moon_phase"):
+        if not (lo <= at <= lo + dt.timedelta(days=1)):
             continue
         if e["kind"] == "eclipse":
             continue
-        out.append({"name": e["name"], "kind": e["kind"], "when": at,
+        if (e["kind"] == "moon_phase"
+                and abs((at - when).total_seconds()) < 3600):
+            continue
+        out.append({"name": e["name"], "kind": e["kind"],
+                    "when": at + dt.timedelta(hours=tz),
                     "href": _object_href(e)})
     return out
 
@@ -369,8 +382,12 @@ def sidebar_html(entry, now_utc, disc=None, disc_html='',
         out.append('<div class="obj-art-frame ecl-disc">'
                    '<pre class="obj-art" aria-hidden="true">'
                    + disc_html + '</pre></div>')
-        if disc_caption:
-            out.append(f'<p class="ecl-disc-cap">{escape(disc_caption)}</p>')
+        # No caption. It read "At maximum, 90% covered around 20:17. North
+        # up, east left" -- the percentage and the time are already in the
+        # paragraph directly below and in the timeline opposite, and the
+        # orientation note was defensive rather than useful. disc_caption()
+        # stays for the terminal version, which has no paragraph beside the
+        # drawing to carry any of it.
 
     out.append('<div class="ecl-intro">')
     out.append(f'<p class="obj-lede">{escape(_blurb(entry, f))}</p>')
@@ -388,7 +405,7 @@ def sidebar_html(entry, now_utc, disc=None, disc_html='',
             body = (f'<a href="{a["href"]}">{label}</a>' if a["href"]
                     else label)
             rows.append(f'<dt class="ecl-when">{body}</dt>'
-                        f'<dd class="ecl-what">{escape(when)} UTC</dd>')
+                        f'<dd class="ecl-what">{escape(when)}</dd>')
         out.append('<dl class="obj-facts ecl-list ecl-also">'
                    '<dt class="obj-sec" role="presentation">'
                    'The same night</dt><dd class="obj-sec"></dd>'
@@ -397,14 +414,20 @@ def sidebar_html(entry, now_utc, disc=None, disc_html='',
     return "".join(out)
 
 
-def picker_html(entry, now_utc, escape=html.escape):
+def picker_html(entry, now_utc, place=None, escape=html.escape):
     """The eclipse list, as a disclosure under the heading.
 
     <details> rather than a <select>: it needs no script, it keeps every
     entry a real link that can be opened in a new tab or copied, and it
     shows the type and the computed/not marker beside each date, which a
     native dropdown cannot.
+
+    Every link carries the place forward. Without that, picking a later
+    eclipse from /Marbella/eclipse dropped you on /eclipse/2027-08-02 and
+    silently relocated you to wherever your IP says you are -- on a page
+    whose whole job is to answer "what happens where I am standing".
     """
+    base = f"/{quote(place)}/eclipse" if place else "/eclipse"
     here = key_of(entry)
     rows = []
     for e in upcoming(now_utc):
@@ -415,7 +438,7 @@ def picker_html(entry, now_utc, escape=html.escape):
         precise = "&#9679;" if k in besselian.ELEMENTS else "&#9675;"
         lbl = escape(d.strftime("%d %b %Y").lstrip("0"))
         body = (f'<b>{lbl}</b>' if k == here
-                else f'<a href="/eclipse/{k}">{lbl}</a>')
+                else f'<a href="{base}/{k}">{lbl}</a>')
         rows.append(f'<li>{precise} {body} '
                     f'<span class="ecl-what">{escape(e["type"])}</span></li>')
     shown = dt.datetime.fromisoformat(entry["when_utc"])
@@ -510,7 +533,8 @@ ECLIPSE_CSS = """
 
 
 def live_html(f, map_rows, legend, ansi_to_html, chart_pre,
-              frames_html=(), frame_labels=(), escape=html.escape):
+              frames_html=(), frame_labels=(), gif_href='',
+              escape=html.escape):
     """The right column: the eclipse running, the numbers, the map, the
     prose, the warning."""
     out = []
@@ -531,10 +555,20 @@ def live_html(f, map_rows, legend, ansi_to_html, chart_pre,
             # number that changes while you watch.
             f'<span class="ecl-clock" id="ecl-clock">'
             f'{escape(frame_labels[0])} UT</span>'
-            '</div>'
-            '<p class="ecl-disc-cap">'
-            '<button type="button" id="ecl-toggle" class="ecl-btn" hidden>'
-            '&#9208; pause</button></p>')
+            # Controls in the frame's bottom right, next to nothing else,
+            # so they read as belonging to the picture. Hidden until the
+            # script runs: without JS the frame is a still of first contact
+            # and there is nothing for them to do.
+            '<span class="ecl-controls" id="ecl-controls" hidden>'
+            '<button type="button" id="ecl-prev" class="ecl-btn"'
+            ' aria-label="previous frame">&#9664;</button>'
+            '<button type="button" id="ecl-toggle" class="ecl-btn"'
+            ' aria-label="pause">&#9208;</button>'
+            '<button type="button" id="ecl-next" class="ecl-btn"'
+            ' aria-label="next frame">&#9654;</button>'
+            f'<a class="ecl-btn ecl-gif" href="{gif_href}">gif</a>'
+            '</span>'
+            '</div>')
     if f.get("timeline"):
         cells = []
         for m in f["timeline"]:
@@ -637,10 +671,16 @@ def frames_script(frames_html, labels):
         "if(clock)clock.textContent=L[i]+' UT';};\n"
         "  var step=function(){i=(i+1)%F.length;show();};\n"
         "  var play=function(){if(timer)return;timer=setInterval(step,180);"
-        "if(btn)btn.innerHTML='\\u23f8 pause';};\n"
+        "if(btn){btn.innerHTML='\\u23f8';btn.setAttribute('aria-label','pause');}};\n"
         "  var stop=function(){clearInterval(timer);timer=null;"
-        "if(btn)btn.innerHTML='\\u25b6 play';};\n"
-        "  if(btn){btn.hidden=false;"
-        "btn.addEventListener('click',function(){timer?stop():play();});}\n"
+        "if(btn){btn.innerHTML='\\u25b6';btn.setAttribute('aria-label','play');}};\n"
+        "  var bar=document.getElementById('ecl-controls');\n"
+        "  var prev=document.getElementById('ecl-prev'),"
+        "next=document.getElementById('ecl-next');\n"
+        "  var jump=function(d){stop();i=(i+d+F.length)%F.length;show();};\n"
+        "  if(bar)bar.hidden=false;\n"
+        "  if(prev)prev.addEventListener('click',function(){jump(-1);});\n"
+        "  if(next)next.addEventListener('click',function(){jump(1);});\n"
+        "  if(btn)btn.addEventListener('click',function(){timer?stop():play();});\n"
         "  if(still){stop();}else{play();}\n"
         "})();\n</script>")
