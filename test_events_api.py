@@ -188,21 +188,51 @@ def test_json_datetimes_are_strings():
 
 
 # ---------------------------------------------------------------- clickable HTML
-def test_events_html_links_every_event_to_its_own_chart():
+def test_events_html_links_every_event_to_its_own_page():
     h = api.events_html(_req(), days=20)
-    links = re.findall(r'<a href="(/Zurich\?t=[^"]+)"', h)
+    links = re.findall(r'<a href="(/Zurich[^"]*)"', h)
     assert len(links) >= 6
     for href in links:
-        assert re.search(r"t=\d{4}-\d{2}-\d{2}T\d{2}:\d{2}", href), href
+        # An eclipse goes to its own dated page and carries no clock; every
+        # other link opens the thing at the moment it is worth seeing.
+        assert "/eclipse/" in href or re.search(
+            r"t=\d{4}-\d{2}-\d{2}T\d{2}:\d{2}", href), href
 
 
-def test_event_link_crosshairs_the_thing():
-    """?find=, not ?facing=. Facing only points the chart the right way;
-    clicking "Perseids" and getting an unmarked night chart was the
-    complaint."""
+def test_event_link_opens_the_thing_itself():
+    """The object's own page, not a chart with a crosshair on it. An event
+    names a body, that body has a page with the same chart plus its rise and
+    set times and what it is, and sending a reader to a bare chart gave them
+    the crosshair and none of the rest."""
     h = api.events_html(_req(), days=20)
     row = [l for l in h.split("\n") if "Perseids" in l][0]
-    assert "find=Perseids" in row, row
+    assert 'href="/Zurich/Perseids?t=' in row, row
+
+
+def test_an_eclipse_links_to_the_eclipse_page():
+    """It has a better page than the Sun's or the Moon's, and that page
+    knows what the eclipse does from here."""
+    h = api.events_html(_req(place="Zurich"), days=30)
+    row = [l for l in h.split("\n") if "eclipse" in l.lower()]
+    assert row, "expected an eclipse in the next 30 days"
+    assert 'href="/Zurich/eclipse/2026-08-12"' in "\n".join(row)
+
+
+def test_every_event_target_is_a_page_that_exists():
+    """A name the object route cannot resolve is a 404 from a list that
+    looks fine, and a 404 here does not fall through to anything."""
+    import eclipse_page
+    import objects
+    from urllib.parse import unquote
+    for place in ("Zurich", "Sydney", "Reykjavik", "Nairobi"):
+        r = _req(place=place)
+        for e in api._events_for(r, days=200, visible_only=False):
+            url = api._event_url(e, r)
+            seg = unquote(url.split("?")[0]).split("/")
+            if "/eclipse/" in url:
+                assert eclipse_page.by_key(seg[-1]), url
+            elif len(seg) > 2 and seg[2]:
+                assert objects.resolve_name(seg[2]), url
 
 
 def test_find_looks_like_the_ordinary_chart():
@@ -289,15 +319,24 @@ def test_conjunction_link_aims_at_the_fainter_body():
     h = api.events_html(_req(), days=20)
     row = [l for l in h.split("\n") if "Moon and Mercury" in l]
     if row:
-        assert "find=Mercury" in row[0], row[0]
+        assert "/Zurich/Mercury?t=" in row[0], row[0]
 
 
-def test_every_linked_row_marks_something():
+def test_every_linked_row_opens_something_specific():
+    """A link to the bare place page is the one thing this list must not
+    produce for an event that names a body -- that was the old behaviour and
+    it dropped the reader on a chart with no answer on it."""
     h = api.events_html(_req(), days=40)
-    rows = [l for l in h.split("\n") if 'href="/Zurich?t=' in l]
+    rows = [l for l in h.split("\n") if 'href="/Zurich' in l]
     assert rows
     for row in rows:
-        assert "find=" in row or "facing=" in row, row
+        href = re.search(r'href="([^"]+)"', row).group(1)
+        if href.startswith("/Zurich?t="):
+            # Allowed only for an event with nothing to open: an equinox or
+            # a solstice.
+            assert "quinox" in row or "olstice" in row, row
+        else:
+            assert re.match(r"/Zurich/[^?]+", href), row
 
 
 def test_event_link_uses_the_best_moment_not_the_instant():
@@ -317,7 +356,7 @@ def test_row_date_and_its_own_link_land_on_the_same_night():
     h = api.events_html(_req(), days=40)
     checked = 0
     for row in h.split("\n"):
-        m = re.search(r'href="/Zurich\?t=(\d{4}-\d{2}-\d{2}T\d{2}:\d{2})', row)
+        m = re.search(r'href="/Zurich[^"?]*\?t=(\d{4}-\d{2}-\d{2}T\d{2}:\d{2})', row)
         d = re.search(r">\s*\w{3} (\d{2}) (\w{3})", row)
         if not m or not d:
             continue
@@ -356,7 +395,7 @@ def test_events_html_columns_line_up_with_the_text_version():
 
 def test_events_route_serves_links_to_a_browser(client):
     body = client.get("/Zurich/events?days=20", headers=BROWSER).text
-    assert 'href="/Zurich?t=' in body
+    assert 'href="/Zurich/' in body
 
 
 def test_curl_gets_no_html(client):
@@ -383,7 +422,8 @@ def test_card_shape():
     assert "Perseids" in c["body"] and not c["body"].startswith("Coming up:")
     assert c["urgency"] in ("tonight", "soon", "later")
     assert {d["label"] for d in c["detail"]} >= {"best", "where", "rate"}
-    assert c["cta"]["url"].startswith("/Zurich?t=")
+    # The thing itself, not a chart of the sky it happens in.
+    assert c["cta"]["url"].startswith("/Zurich/Perseids?t=")
     assert c["more"]["url"] == "/Zurich/events"
 
 
@@ -430,7 +470,7 @@ def test_coming_up_card_html_renders_the_real_thing():
     assert 'data-urgency="soon"' in html_out
     assert 'data-id="shower-perseids-20260813"' in html_out
     assert "Perseids" in html_out
-    assert '<a class="cu-cta" id="cu-cta" href="/Zurich?t=' in html_out
+    assert '<a class="cu-cta" id="cu-cta" href="/Zurich/Perseids?t=' in html_out
     assert 'id="coming-up-dismiss"' in html_out
 
 

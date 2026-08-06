@@ -1854,7 +1854,10 @@ class FindingTheSun(unittest.TestCase):
 
     def test_the_eclipse_card_still_points_here(self):
         # The bug arrived through the card's CTA, so this pins the two ends
-        # together: whatever the card links to has to be a chart.
+        # together: whatever the card links to has to be about this place.
+        # It used to be a chart with the Sun crosshaired; the eclipse's own
+        # page is the better answer to the same question, and it is where
+        # this now goes.
         import events
         p = api.lookup_place(self.PLACE)
         r = api.Request(place=self.PLACE)
@@ -1862,7 +1865,9 @@ class FindingTheSun(unittest.TestCase):
                                  now_utc=dt.datetime(2026, 8, 3, 12, 0))
         ecl = next((e for e in evs if e["kind"] == "eclipse"), None)
         self.assertIsNotNone(ecl, "no eclipse in the window to check")
-        self.assertIn("find=Sun", api._event_url(ecl, r))
+        url = api._event_url(ecl, r)
+        self.assertTrue(url.startswith(f"/{r.place.slug}/"), url)
+        self.assertIn("/eclipse/", url)
 
 
 class LegendMatchesTheRealGlyphs(unittest.TestCase):

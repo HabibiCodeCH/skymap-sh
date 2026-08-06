@@ -181,6 +181,13 @@ moon phases, equinoxes and solstices. Everything except showers and eclipses is
 computed from the same ephemeris the charts use; those two come from
 `showers.json` and `eclipses.json`.
 
+In a browser every row is a link, and it opens the thing itself at the moment
+it is worth seeing: `Perseids peak` goes to `/{place}/Perseids?t=…`, `Moon and
+Mercury 2° apart` to `/{place}/Mercury?t=…` (the fainter of the pair, since the
+Moon needs no help being found), and an eclipse to its own page,
+`/{place}/eclipse/2026-08-12`. An equinox or a solstice has no object to open,
+so those go to the chart for that moment.
+
 ```
 $ python3 cli.py Zurich 2026-08-11T23:00 --events --days=20
 

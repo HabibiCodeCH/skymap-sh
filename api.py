@@ -1066,6 +1066,116 @@ def object_glyph(tgt, jd):
     return "", C.LABEL
 
 
+def object_night_events(canonical, p, when_utc, tz):
+    """What is happening to this object on the night the page is drawn for.
+
+    Through the same localiser and the same _event_date the events list
+    uses, so the two cannot disagree about which night something belongs
+    to. Working straight off the global scan instead put Saturn's
+    opposition on the wrong night: it peaks at 07:53 local, which a plain
+    noon-to-noon bracket files under the night before, while the list files
+    it -- correctly -- under the evening you would actually go out.
+
+    The scan starts a day and a half back because the page is often opened
+    at the event, and an event a few hours old is not in a list of what is
+    coming.
+
+    A conjunction counts for both of its bodies: /Mars gets "Moon meets
+    Mars" and so does /Moon. That is not what _find_target_for answers --
+    it picks the one body worth crosshairing, deliberately not the Moon.
+    """
+    def night_of(x):
+        # A night starts at noon, which is why a 02:11 conjunction and a
+        # 22:00 one on the same date can be the same night as each other and
+        # a 13:00 one is not. Applied to both sides or they disagree: the
+        # events list files a window that starts at 02:11 under that
+        # morning's date, while the page it opens is drawn for 04:11.
+        return (x - dt.timedelta(hours=12)).date()
+
+    night = night_of(when_utc + dt.timedelta(hours=tz))
+    out = []
+    for e in ev_mod.upcoming(p.lat, p.lon, tz, days=4,
+                             now_utc=when_utc - dt.timedelta(days=1.5),
+                             visible_only=False):
+        if night_of(_event_date(e)) != night:
+            continue
+        bodies = e.get("bodies") or ([e["body"]] if e.get("body") else [])
+        if _find_target_for(e) != canonical and canonical not in bodies:
+            continue
+        out.append({"name": e.get("headline") or e["name"], "kind": e["kind"],
+                    "short": _event_short(e.get("headline") or e["name"],
+                                          canonical),
+                    # The date the events list files it under, so a title
+                    # built from this says the same day the row did.
+                    "date_local": _event_date(e).isoformat(),
+                    # And the same viewing window the row quotes, rather
+                    # than the bare best moment: an opposition filed under
+                    # the 4th whose best minute is 01:13 on the 5th put two
+                    # different dates on one page all over again.
+                    "window_local": e.get("window_local"),
+                    "when_local": (e.get("best_local")
+                                   or e["when_local"]).isoformat()})
+    return out
+
+
+OBJECT_EVENTS_DAYS = 365
+OBJECT_EVENTS_SHOWN = 8
+
+
+def object_events_list(canonical, p, from_utc, tz, days=OBJECT_EVENTS_DAYS):
+    """Everything ahead that this object is part of.
+
+    The same list /events builds, filtered to one object: its oppositions
+    and elongations, the nights the Moon passes it, its shower's peak. So
+    an object page can offer the year the way an eclipse page offers the
+    other eclipses, instead of only ever knowing about the one moment it
+    happens to be drawn for.
+    """
+    out = []
+    for e in ev_mod.upcoming(p.lat, p.lon, tz, days=days,
+                             now_utc=from_utc - dt.timedelta(days=1.5),
+                             visible_only=False):
+        bodies = e.get("bodies") or ([e["body"]] if e.get("body") else [])
+        if _find_target_for(e) != canonical and canonical not in bodies:
+            continue
+        when = e.get("best_local") or e["when_local"]
+        # An eclipse has a page of its own that answers far more about it
+        # than the Moon's page can, and the events list already sends people
+        # there. The picker was the one place still opening the Moon at a
+        # timestamp instead.
+        href = None
+        if e["kind"] == "eclipse":
+            key = _event_date(e).strftime("%Y-%m-%d")
+            if eclipse_page.by_key(key):
+                href = f"/{quote(p.slug)}/eclipse/{key}"
+        out.append({"name": e.get("headline") or e["name"],
+                    "short": _event_short(e.get("headline") or e["name"],
+                                          canonical),
+                    "kind": e["kind"],
+                    "date_local": _event_date(e).isoformat(),
+                    "window_local": e.get("window_local"),
+                    "when_local": when.isoformat(),
+                    "href": href,
+                    "t": when.strftime("%Y-%m-%dT%H:%M")})
+    return out[:OBJECT_EVENTS_SHOWN]
+
+
+def _event_short(name, canonical):
+    """The event without the object's own name on the front, since the name
+    is already the word beside it: "Saturn at opposition" next to "Saturn"
+    says it twice. A conjunction keeps both bodies, which are the fact."""
+    for prefix in (f"{canonical} at ", f"{canonical} "):
+        if name.startswith(prefix):
+            rest = name[len(prefix):]
+            # Not when what is left starts with a connective: "Moon and
+            # Mercury 2.0 degrees apart" became "and Mercury 2.0 degrees
+            # apart", which is a sentence fragment, not a shorter name.
+            if rest.split()[0] in ("and", "meets", "near"):
+                return name
+            return rest
+    return name
+
+
 def object_facts(tgt, r, canonical, shown_utc=None):
     """Everything the object page knows, as data. The prose and the JSON are
     both rendered from this, so they cannot drift apart.
@@ -1085,7 +1195,12 @@ def object_facts(tgt, r, canonical, shown_utc=None):
            "place": p.name, "lat": p.lat, "lon": p.lon,
            "glyph": glyph, "glyph_color": _ansi_hex(glyph_ansi),
            "glyph_ansi": glyph_ansi,
-           "shown_utc": when.isoformat() + "Z", "is_now": shown_utc is None}
+           "shown_utc": when.isoformat() + "Z", "is_now": shown_utc is None,
+           # Whether a moment was asked for, which is a different question
+           # from whether the chart was shifted off it. Everything that
+           # words the page -- the heading, the <title> -- needs the first
+           # one, and only had the second.
+           "when_explicit": r.when_explicit}
 
     rts = objects.rise_transit_set(tgt, p.lat, p.lon, when)
     tz = p.offset(when)
@@ -1093,6 +1208,18 @@ def object_facts(tgt, r, canonical, shown_utc=None):
     def local(x):
         return (x + dt.timedelta(hours=tz)).isoformat() if x else None
 
+    # The same moment as shown_utc, on the clock of the place it is about.
+    # The title read it straight out of shown_utc and called 23:10 UTC the
+    # 4th, on a page whose own heading said 5 October 01:10.
+    out["shown_local"] = local(when)
+    # Against the moment asked for, not the moment the chart settled on. A
+    # new Moon is not up in the evening, so the find view moves the chart to
+    # when it is -- and looking for events around *that* lost the very event
+    # the reader clicked to get here.
+    out["tonight_events"] = object_night_events(
+        canonical, p, r.when_utc, p.offset(r.when_utc))
+    out["object_events"] = object_events_list(
+        canonical, p, r.when_utc, p.offset(r.when_utc))
     out["transit"] = local(rts.get("transit"))
     out["transit_alt"] = rts.get("transit_alt")
     if rts.get("circumpolar"):
@@ -1453,6 +1580,21 @@ def object_prose(facts, tgt, r, width=76):
         L.append(f"Best in the next 12 months: {b['date']}, when it reaches "
                  f"{b['transit_alt']:.0f}° with {b['dark_hours']:.1f} hours of "
                  f"darkness and the Moon {b['moon_illum']:.0%} lit.")
+        # Why that date and not this one, when the reader is standing on an
+        # event night and being pointed a year away. It reads as a
+        # contradiction otherwise: you clicked "Saturn at opposition,
+        # closest and brightest of the year" and the page answered with next
+        # autumn. Both are right and they are answers to different
+        # questions, so the page had better say which.
+        here_moon = facts.get("moon_illum")
+        ev = (facts.get("tonight_events") or [None])[0]
+        if ev and here_moon is not None and here_moon - b["moon_illum"] > 0.2:
+            night = dt.datetime.fromisoformat(ev["date_local"])
+            L.append(f"That ranking counts dark hours, altitude and "
+                     f"moonlight, not how close a planet is: the Moon is "
+                     f"{here_moon:.0%} lit on {night:%-d %B} and "
+                     f"{b['moon_illum']:.0%} on {b['date']}, and the sky is "
+                     f"otherwise the same on both nights.")
 
     also = facts.get("also_a_place")
     if also:
@@ -1581,8 +1723,97 @@ def object_infobox(facts, tgt, width=76):
     # the ones an encyclopedia uses, for the same reason: what it looks like
     # from here, what it physically is, and what we know about it are three
     # different questions.
-    blocks = [(None, rows), ("Physical", measured), ("History", written)]
+    # What is happening to this object on the night the page is drawn for.
+    # Same heading, same placement and the same dl the eclipse page marks its
+    # concurrent events with, because it is the same idea: the reason you
+    # opened this page, said once, where a reader looks for facts about the
+    # thing rather than buried in a sentence under the chart.
+    # Everything except the one already named in the heading and the picker
+    # above it. The eclipse page drops the eclipse from its own "same night"
+    # list for the same reason: a block headed "the same night" that leads
+    # with the thing the page is about is telling you what you just read.
+    tonight = [(e["name"], _event_stamp(e))
+               for e in (facts.get("tonight_events") or [])[1:]]
+
+    blocks = [(None, rows), (TONIGHT_BLOCK, tonight),
+              ("Physical", measured), ("History", written)]
     return [(t, r) for t, r in blocks if r]
+
+
+TONIGHT_BLOCK = "The same night"
+
+
+def object_picker_html(data, canonical, place, escape=html.escape):
+    """This object's events, as the same disclosure the eclipse page uses
+    for the other eclipses.
+
+    <details> and not a <select>, for the reasons picker_html gives: no
+    script, every entry a real link that can be opened in a tab or copied,
+    and room to show the date and what kind of event it is.
+
+    The place travels with every link. Without it, picking a date from
+    /Zurich/Saturn would drop the reader on /Saturn and quietly relocate
+    them to wherever their IP says they are.
+    """
+    evs = data.get("object_events") or []
+    if not evs:
+        return ""
+    here = (data.get("tonight_events") or [None])[0]
+    base = f"/{quote(place)}/{quote(canonical)}" if place else f"/{quote(canonical)}"
+
+    def label(e):
+        day = dt.datetime.fromisoformat(e["date_local"])
+        return f"{day:%-d %b %Y} · {e['short']}"
+
+    now = label(here) if here else f"Next: {label(evs[0])}"
+    rows = []
+    for e in evs:
+        current = bool(here) and e["date_local"] == here["date_local"]
+        cls = ' class="obj-pick-here"' if current else ""
+        href = e.get("href") or f'{base}?t={e["t"]}'
+        rows.append(f'<li{cls}><a href="{href}">'
+                    f'{escape(label(e))}</a></li>')
+    return (f'<details class="obj-picker"><summary>'
+            f'<span>{escape(now)}</span>'
+            f'<span class="obj-more">change</span></summary>'
+            f'<div class="obj-panel"><ul>{"".join(rows)}</ul></div>'
+            f'</details>')
+
+
+def _event_subhead(facts, canonical):
+    """"Opposition Sun Oct 4" -- the event beside the object's name.
+
+    The object's own name comes off the front, because it is already the
+    word to the left of it: "Saturn / Saturn at opposition" says it twice.
+    Nothing comes off a conjunction, where both bodies are the fact.
+
+    The date is the one the events list files it under, which is the one the
+    <title> and the block in the sidebar carry too. The chart above may well
+    be drawn for the small hours of the following morning -- the same night,
+    the next date -- and putting that date here would start the page
+    disagreeing with itself again.
+    """
+    ev = (facts.get("tonight_events") or [None])[0]
+    if not ev:
+        return ""
+    name = ev["name"]
+    for prefix in (f"{canonical} at ", f"{canonical} "):
+        if name.startswith(prefix):
+            name = name[len(prefix):]
+            break
+    when = dt.datetime.fromisoformat(ev["date_local"])
+    return f"{name[0].upper()}{name[1:]} {when:%a %b %-d}"
+
+
+def _event_stamp(e):
+    """The date the events list files it under, and the same window that
+    list quotes. One page had better not carry two dates for one event."""
+    day = dt.datetime.fromisoformat(e["date_local"])
+    win = e.get("window_local")
+    if win:
+        return f"{day:%-d %b}, best {win[0]}-{win[1]}"
+    when = dt.datetime.fromisoformat(e["when_local"])
+    return f"{day:%-d %b}, {when:%H:%M}"
 
 
 def infobox_text(blocks, indent="  "):
@@ -1613,7 +1844,21 @@ def infobox_html(blocks):
     if not blocks:
         return ""
     out = ['<dl class="obj-facts">']
+    boxed = False
     for title, rows in blocks:
+        if title == TONIGHT_BLOCK:
+            # Its own list, so it can be boxed. The rest of the infobox is
+            # one grid and a section inside it is only a heading row -- there
+            # is nothing to draw a border around without closing the list
+            # and opening another.
+            out.append('</dl><dl class="obj-facts obj-tonight">')
+            boxed = True
+        elif boxed:
+            # And closed again at the next section, or the border runs on
+            # around Physical and History as well -- everything after it,
+            # in fact, since nothing else ever ended the list.
+            out.append('</dl><dl class="obj-facts">')
+            boxed = False
         if title:
             out.append(f'<dt class="obj-sec" role="presentation">'
                        f'{html.escape(title)}</dt><dd class="obj-sec"></dd>')
@@ -2060,6 +2305,13 @@ def compose_object(r, canonical):
     g = facts.get("glyph") or ""
     gc = facts.get("glyph_ansi") or C.HEAD
     head = ("  " + (paint(g, gc, c) + " " if g else "") + paint(canonical, gc, c))
+    # The event, when the page was opened for one, after the object's own
+    # name and set quieter than it. This line is the <h1>: a page reached by
+    # clicking "Saturn at opposition" said only "Saturn" in the one place a
+    # reader and a search engine both look for what a page is about.
+    tail = _event_subhead(facts, canonical)
+    if tail:
+        head += paint(f"  /  {tail}", C.MUTE, c)
     intro = "\n".join(paint("  " + l if l else "", C.LABEL, c)
                       for l in object_intro(facts, canonical, width).split("\n"))
     blocks = object_infobox(facts, tgt, width)
@@ -2083,7 +2335,12 @@ def compose_object(r, canonical):
     # sighting window from" wrapped around a timestamp. What is left is the
     # when, the where to look, the brightness, and the shape of the night.
     shown_local = facts.get("shown_utc")
-    if facts.get("is_now"):
+    # is_now means the chart was drawn for the moment asked for rather than
+    # shifted to the next time the thing is up. That is not the same as the
+    # moment being the present one, and reading it as such is how a page
+    # opened from an event -- /Zurich/Saturn?t=2026-10-05T01:13, a date
+    # eight weeks out -- announced itself as "Zurich now".
+    if facts.get("is_now") and not r.when_explicit:
         stamp = "now"
     elif shown_local:
         when = dt.datetime.fromisoformat(shown_local.rstrip("Z"))
@@ -2129,7 +2386,22 @@ def compose_object(r, canonical):
         # today, not to the end of December. In August it was routinely
         # naming a date the following February and calling it this year.
         label = "peaks" if is_shower else "best in the next 12 months"
-        sub_bits.append(f"{label} on {when:%-d %B %Y}")
+        line = f"{label} on {when:%-d %B %Y}"
+        # And why that date, right here rather than in a paragraph under the
+        # chart where nobody found it. A reader on an event night is being
+        # pointed a year away and the reason is one clause long.
+        here_moon = facts.get("moon_illum")
+        ev = (facts.get("tonight_events") or [None])[0]
+        if (ev and here_moon is not None and b.get("moon_illum") is not None
+                and here_moon - b["moon_illum"] > 0.2):
+            # Both dates named. "Tonight" is a word for a page about
+            # tonight; this one can be opened in August for a night in
+            # October, and it was saying "34% lit tonight" about neither.
+            night = dt.datetime.fromisoformat(ev["date_local"])
+            line += (f", when the Moon is out of the way "
+                     f"({here_moon:.0%} lit on {night:%-d %b}, "
+                     f"{b['moon_illum']:.0%} on {when:%-d %b %Y})")
+        sub_bits.append(line)
     # Each part is its own sentence, so each starts with a capital.
     sub_bits = [b[0].upper() + b[1:] for b in sub_bits]
     live_sub = paint(" " + ". ".join(sub_bits) + ".", C.MUTE, c) if sub_bits else ""
@@ -2218,6 +2490,24 @@ def object_title(facts):
     # coming out as "where to see the venus tonight", article, lowercase and
     # all.
     article = "the " if kind in ("moon", "sun") else ""
+    # "tonight" is only true for a page about tonight. Opened from an event
+    # -- ?t=2026-10-05T01:13, eight weeks out -- the title said tonight
+    # while the page underneath it described October, and the title is the
+    # line a search result and a shared link both show.
+    if facts.get("when_explicit") and facts.get("shown_local"):
+        when = dt.datetime.fromisoformat(facts["shown_local"])
+        # The reason the page was opened, when there is one. Somebody who
+        # clicked "Saturn at opposition" in a list of events should land on
+        # a page whose title says that, rather than one offering to show
+        # them Saturn on a date with no indication of why that date.
+        tonight = facts.get("tonight_events") or []
+        if tonight:
+            # The event's own date, not the moment the chart is drawn for.
+            # The two differ by a night boundary and the list said the 4th
+            # while this said the 5th.
+            day = dt.datetime.fromisoformat(tonight[0]["date_local"])
+            return f"{tonight[0]['name']}, {day:%-d %B %Y}"
+        return f"{name}: where to see {article}{name} on {when:%-d %B %Y}"
     return f"{name}: where to see {article}{name} tonight"
 
 
@@ -2490,6 +2780,45 @@ OBJECT_CSS = """
 .obj-prose{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
   font-size:12px;line-height:1.45;color:#adb6c4;margin:0 0 .7rem;
   white-space:pre-wrap}
+/* This object's events, beside its name. Same shape as the eclipse page's
+   picker (.ecl-picker), because it is the same control doing the same job:
+   what this page is showing, and the others you could switch to. Repeated
+   rather than shared -- those rules live in ECLIPSE_CSS, which an object
+   page does not load. */
+/* Same 1.5rem above it as .ecl-head-row, and as a bare .obj-title on a page
+   with no picker -- wrapping the heading in a row zeroed its own margin and
+   took the space with it, so the name sat tight under the command bar on
+   exactly the pages that had gained something to put beside it. */
+.obj-head-row{display:flex;align-items:center;gap:14px;flex-wrap:wrap;
+  margin:1.5rem 0 14px}
+.obj-head-row .obj-title{margin:0}
+.obj-picker{position:relative;margin:0;
+  font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+.obj-picker summary{cursor:pointer;color:#c9d1d9;font-size:13px;
+  list-style:none;display:inline-flex;align-items:center;gap:10px;
+  border:1px solid #8fb6e0;border-radius:6px;padding:6px 12px}
+.obj-picker summary::-webkit-details-marker{display:none}
+.obj-picker summary:hover,.obj-picker[open] summary{border-color:#c9d1d9}
+.obj-more{color:#6e7681;font-size:11px;letter-spacing:.06em;
+  text-transform:uppercase}
+.obj-panel{position:absolute;top:calc(100% + 6px);left:0;z-index:30;
+  min-width:280px;background:#0d1117;border:1px solid #30363d;
+  border-radius:6px;box-shadow:0 8px 24px rgba(0,0,0,.7)}
+.obj-panel ul{list-style:none;margin:0;padding:8px 12px}
+.obj-panel li{padding:3px 0;font-size:13px;white-space:nowrap}
+.obj-panel li a{color:#87d7ff;text-decoration:none}
+.obj-panel li a:hover{text-decoration:underline}
+/* The one you are looking at, marked rather than linked away from. */
+.obj-pick-here a{color:#c9d1d9}
+
+/* What is happening tonight, boxed. It is the one block on this column
+   that is not a durable fact about the object, and the reason the page was
+   opened at all when it arrives from an event list, so it reads as a note
+   pinned to the page rather than as two more rows of the table. The border
+   is the same blue the section headings are set in. */
+.obj-tonight{border:1px solid #2c4a6b;border-radius:7px;
+  padding:.55rem .75rem .7rem;margin:.9rem 0 1.1rem;background:#0b1119}
+.obj-tonight dt.obj-sec{margin-top:0}
 /* Section headings span the pair and sit above their rows. */
 .obj-facts dt.obj-sec{grid-column:1 / -1;color:#8fb6e0;font-size:11px;
   letter-spacing:.09em;text-transform:uppercase;margin:.85rem 0 .1rem}
@@ -2600,7 +2929,12 @@ def object_html(r, canonical, text, data, place=None, base_url="",
     heading, rest = "", text
     for i, l in enumerate(lines):
         if l.strip():
-            heading = ansi_to_html(l).strip()
+            # The event tail belongs to the terminal's heading, where there
+            # is no room for anything but text. The browser gets it as the
+            # picker beside the name instead, so it is not said twice on
+            # one line. Split before the markup, not after: by then it is a
+            # coloured span and the seam is gone.
+            heading = ansi_to_html(l.split("  /  ")[0]).strip()
             rest = "\n".join(lines[i + 1:]).lstrip("\n")
             break
     # Two columns: what the object is, and what it is doing tonight.
@@ -2617,6 +2951,9 @@ def object_html(r, canonical, text, data, place=None, base_url="",
     # 1000px they stack, static first, because on a phone you scroll and the
     # orientation should arrive before the numbers.
     title_html = f'<h1 class="obj-title">{heading}</h1>' if heading else ""
+    picker = object_picker_html(data, canonical, place)
+    if title_html and picker:
+        title_html = f'<div class="obj-head-row">{title_html}{picker}</div>'
     fallback_static, _, live = rest.partition(OBJECT_SLOT)
     if rungs:
         # The live half through the same ladder the place page uses: every
@@ -2691,7 +3028,11 @@ def object_html(r, canonical, text, data, place=None, base_url="",
         header=header_html(f"{place}/{canonical}" if place else canonical),
         controls=controls_html(EXPLORE),
         wide_class=" w-wide", coming_up_card="",
-        kbd_urls="{}", shortcuts_hint="", body=body)
+        # The event picker is the eclipse page's picker, so it gets that
+        # page's script: escape closes it, and so does a click anywhere
+        # else. Only shipped where there is one to close.
+        kbd_urls="{}", shortcuts_hint="",
+        body=body + (eclipse_page.picker_script() if picker else ""))
 
 
 def eclipse_head(f, key, place, base_url):
@@ -4613,22 +4954,37 @@ def _event_line(e, r):
 
 
 def _event_url(e, r):
-    """The chart for the moment this event is worth looking at.
+    """Where this event opens, at the moment it is worth looking at.
 
-    Not the event's own instant: a shower peaking at 04:10 wants the chart for
-    the middle of its window, and anything with a best moment wants that. The
-    compass bearing rides along as ?facing= so the chart opens pointed at the
-    thing rather than at a default panorama.
+    Not the event's own instant: a shower peaking at 04:10 wants the middle
+    of its window, and anything with a best moment wants that.
+
+    The thing itself, when the event is about a thing. An event names a
+    body -- Perseids, Venus at opposition, the full Moon -- and that body
+    has a page with its own chart, a crosshair already on it, its rise and
+    set times and what it is. Sending a reader to a bare chart with a
+    ?find= on it gave them the crosshair and none of the rest, on a page
+    that was not about what they clicked.
+
+    Eclipses go to their own page rather than to the Sun's or the Moon's,
+    when it is one of the eclipses that page can compute.
     """
     when = e.get("best_local") or e["when_local"]
-    url = f"/{quote(r.place.slug)}?t={when:%Y-%m-%dT%H:%M}"
-    # ?find= beats ?facing=: facing only points the chart the right way, find
-    # actually puts a crosshair on the thing. Clicking "Perseids" and getting
-    # an unmarked night chart was the whole complaint.
+    stamp = f"?t={when:%Y-%m-%dT%H:%M}"
+    place = quote(r.place.slug)
+
+    if e["kind"] == "eclipse":
+        key = _event_date(e).strftime("%Y-%m-%d")
+        if eclipse_page.by_key(key):
+            return f"/{place}/eclipse/{key}"
+
     target = _find_target_for(e)
     if target:
-        url += f"&find={quote(target)}"
-    elif e.get("compass"):
+        return f"/{place}/{quote(target)}{stamp}"
+    # Nothing to open a page for -- an equinox, a solstice. The chart for
+    # that moment, pointed the right way if the event knows a direction.
+    url = f"/{place}{stamp}"
+    if e.get("compass"):
         url += f"&facing={e['compass']}"
     return url
 

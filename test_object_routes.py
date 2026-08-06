@@ -740,6 +740,104 @@ def test_the_live_half_holds_tonights_sky(client):
     assert "Escape velocity" not in live
 
 
+def test_a_page_asked_for_a_moment_says_which_moment(client):
+    """Every row of /events opens an object page with ?t= on it, and those
+    pages announced themselves as "now" -- a page about 5 October, opened
+    eight weeks early, headed "Zurich now" with a title offering to show it
+    tonight. is_now means the chart was not shifted off the moment asked
+    for, which is a different question from whether that moment is the
+    present one."""
+    got = client.get("/Zurich/Saturn?t=2026-10-05T01:13", headers=BROWSER)
+    assert "Zürich now" not in got.text and "Zurich now" not in got.text
+    # The chart is drawn for 01:10 on the 5th, in the place's own clock and
+    # not UTC -- 23:10Z is already the 5th in Zurich.
+    assert "5 Oct" in got.text
+
+
+def test_a_page_opened_for_an_event_is_titled_by_that_event(client):
+    """Clicking "Saturn at opposition" in a list of events and landing on a
+    page offering to show you Saturn on a date, with no word about why that
+    date, is the click going unanswered. The title names the event and
+    carries the date the list filed it under -- not the date of the moment
+    the chart happens to be drawn for, which is the night after."""
+    got = client.get("/Zurich/Saturn?t=2026-10-05T01:13", headers=BROWSER)
+    assert "<title>Saturn at opposition, 4 October 2026</title>" in got.text
+
+
+def test_the_same_night_block_holds_what_is_not_already_said(client):
+    """The block is the eclipse page's, heading and placement and all, and
+    it lists what ELSE is up. The event the page is about is already the
+    heading and the picker, and repeating it in a block headed "the same
+    night" tells the reader what they just read.
+
+    28 August is the case that shows both halves: a full Moon and a partial
+    lunar eclipse, a few minutes apart, on one page."""
+    got = client.get("/Zurich/Moon?t=2026-08-28T06:07", headers=BROWSER)
+    static = got.text.split('<aside class="obj-static">')[1].split("</aside>")[0]
+    assert "The same night" in static
+    assert "Partial lunar eclipse" in static
+    assert static.count("Full Moon") == 0, "already the heading and the picker"
+
+
+def test_the_boxed_block_ends_where_it_should(client):
+    """It is its own <dl> so it can carry a border. Opening one and never
+    closing it drew the box around Physical and History as well."""
+    got = client.get("/Zurich/Moon?t=2026-08-28T06:07", headers=BROWSER)
+    boxed = got.text.split('class="obj-facts obj-tonight"')[1].split("</dl>")[0]
+    assert "Partial lunar eclipse" in boxed
+    assert "Physical" not in boxed and "Distance" not in boxed
+
+
+def test_the_picker_closes_on_escape_and_on_a_click_outside(client):
+    """<details> does neither natively, so a menu opened by accident sat
+    over the page until it was clicked again. The same script the eclipse
+    page uses, since it is the same control."""
+    got = client.get("/Zurich/Moon", headers=BROWSER)
+    assert "Escape" in got.text
+    assert "pointerdown" in got.text
+    assert ".obj-picker" in got.text
+
+
+def test_a_page_with_no_picker_ships_no_script_for_one(client):
+    """The stylesheet is one string for every object page, so the rules
+    travel either way. The markup and the script are what should not."""
+    got = client.get("/Zurich/Vega", headers=BROWSER)
+    assert '<details class="obj-picker"' not in got.text
+    assert "pointerdown" not in got.text
+
+
+def test_an_eclipse_in_the_picker_opens_the_eclipse_page(client):
+    """It has a page that answers far more about it than the Moon's page
+    can, and the events list already sends people there."""
+    got = client.get("/Zurich/Moon?t=2026-08-28T06:07", headers=BROWSER)
+    assert 'href="/Zurich/eclipse/2026-08-28"' in got.text
+
+
+def test_the_best_night_line_says_why_it_looked_past_tonight(client):
+    """It pointed a year away from a page reached by clicking "closest and
+    brightest of the year", and both are right: the ranking is dark hours,
+    altitude and moonlight, and it does not count distance at all."""
+    import api
+    got = client.get("/Zurich/Saturn?t=2026-10-05T01:13",
+                     headers={"user-agent": "curl/8"})
+    # Unwrapped: the sentence is wider than the column and the phrases that
+    # matter fall across the break.
+    flat = " ".join(api.strip_ansi(got.text).split())
+    assert "2027-10-01" in flat
+    assert "not how close a planet is" in flat
+    # Both nights named. "Tonight" was wrong twice over: this page can be
+    # read in August for a night in October, and the night it is about is
+    # not the night the reader is having.
+    assert "the Moon is 34% lit on 4 October and 1% on 2027-10-01" in flat
+    assert "lit tonight" not in flat
+
+
+def test_a_page_with_no_moment_asked_for_still_says_now(client):
+    """The other half of the same rule: without ?t= nothing changes."""
+    got = client.get("/Zurich/Saturn", headers=BROWSER)
+    assert "where to see Saturn tonight" in got.text
+
+
 def test_a_terminal_never_sees_the_split_marker(client):
     """It is a browser layout hint. A terminal reads straight down through
     both halves and must not receive a stray control sequence."""

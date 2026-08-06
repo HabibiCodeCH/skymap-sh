@@ -777,30 +777,52 @@ def picker_html(entry, now_utc, place=None, escape=html.escape):
             '</div></details>')
 
 
-def picker_script():
-    """Escape closes the eclipse list.
+PICKER_SELECTOR = ".ecl-picker,.obj-picker"
 
-    <details> has no native close-on-escape, so a dropdown opened by accident
-    stays open over the page until it is clicked again. Focus goes back to
-    the summary, so escape leaves the keyboard where it found it.
+
+def picker_script():
+    """Escape and a click outside both close a picker.
+
+    <details> has neither natively, so a dropdown opened by accident stays
+    open over the page until it is clicked again -- which is not how any
+    other menu on any other page behaves. Focus goes back to the summary, so
+    escape leaves the keyboard where it found it.
+
+    Serves the eclipse list and the object pages' event list, which are the
+    same control: this ships with both, and the selector is the only thing
+    that knows there are two of them.
 
     Separate from frames_script on purpose: that one only ships where there
-    is an animation, and the list is on every eclipse page including the ones
-    with nothing to draw.
+    is an animation, and a picker is on every one of these pages including
+    the ones with nothing to draw.
     """
     return ("<script>\n(function(){\n"
-            "  var d=document.querySelector('.ecl-picker');\n"
-            "  if(!d)return;\n"
+            f"  var sel='{PICKER_SELECTOR}';\n"
+            "  var all=document.querySelectorAll(sel);\n"
+            "  if(!all.length)return;\n"
             "  document.addEventListener('keydown',function(e){\n"
-            "    if(e.key!=='Escape'||!d.open)return;\n"
-            "    e.preventDefault();\n"
+            "    if(e.key!=='Escape')return;\n"
+            "    for(var i=0;i<all.length;i++){\n"
+            "      var d=all[i];if(!d.open)continue;\n"
+            "      e.preventDefault();\n"
             # One level at a time, the way escape works anywhere else: the
             # list of later eclipses closes first and leaves the panel it
             # opened out of still open.
-            "    var more=d.querySelector('.ecl-more-list[open]');\n"
-            "    var box=more||d;\n"
-            "    box.open=false;\n"
-            "    var s=box.querySelector('summary');if(s)s.focus();\n"
+            "      var more=d.querySelector('details[open]');\n"
+            "      var box=more||d;\n"
+            "      box.open=false;\n"
+            "      var s=box.querySelector('summary');if(s)s.focus();\n"
+            "      return;\n"
+            "    }\n"
+            "  });\n"
+            # Pointerdown, not click: a click that lands on something which
+            # moves or is replaced never reaches this handler, and the menu
+            # is left open behind whatever the reader just did.
+            "  document.addEventListener('pointerdown',function(e){\n"
+            "    for(var i=0;i<all.length;i++){\n"
+            "      var d=all[i];\n"
+            "      if(d.open&&!d.contains(e.target))d.open=false;\n"
+            "    }\n"
             "  });\n"
             "})();\n</script>")
 
