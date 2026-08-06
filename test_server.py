@@ -924,11 +924,20 @@ class NotFoundsAreCountedSeparately(unittest.TestCase):
     def test_notfound_reaches_the_log_the_charts_and_the_tables(self):
         server._hour_key = dt.datetime.utcnow().strftime("%Y-%m-%dT%H:00")
         server._hour_stat.update({"requests": 2, "hit": 2, "miss": 0,
-                                  "day": 2, "night": 0, "notfound": 3})
+                                  "day": 2, "night": 0, "notfound": 0})
+        # A difference, not a total. The day's figure is the hours already
+        # logged plus the one in progress, and any other test in this process
+        # that asked for a page that does not exist is in the logged half --
+        # which is a real thing tests do on purpose, so asserting the total
+        # made this fail for a reason that had nothing to do with 404s
+        # reaching the rollup.
+        base = server.stats_daily_json()["days"][-1]["notfound"]
+        server._hour_stat["notfound"] = 3
         self.assertEqual(server.stats_hourly_json()["hours"][-1]["notfound"], 3)
         self.assertIn("404", server.stats_hourly_text())
         self.assertIn("404", server.stats_daily_text())
-        self.assertEqual(server.stats_daily_json()["days"][-1]["notfound"], 3)
+        self.assertEqual(server.stats_daily_json()["days"][-1]["notfound"],
+                         base + 3)
 
     def test_an_hour_with_no_404s_keeps_the_key_out_of_the_log(self):
         # The log is never trimmed, so a key on every line of it is a cost

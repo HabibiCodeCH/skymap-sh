@@ -5255,9 +5255,33 @@ def _catalog_data():
     # column, on the one page whose job is to be a list of true things.
     ours = [("Milky Way", "barred spiral, centre in Sagittarius",
              sky.DSO_GLYPH["gal"][0], sky.DSO_GLYPH["gal"][1])]
+    # Eclipses. They are not objects and they do not live in the object
+    # namespace -- /eclipse is a page about a date, not about a thing in the
+    # sky -- but the catalogue's promise is "everything below has its own
+    # page", and these had pages nothing on the site linked to. Anybody who
+    # did not already know the URL could not get there.
+    #
+    # The next few, not all forty-two: this is the shape of a table with a
+    # future in it, and the page itself lists the rest.
+    eclipses = eclipse_page.upcoming(dt.datetime.utcnow(), count=6)
     return dict(ours=ours,
                solar_system=solar_system, asterisms=sorted(a["name"] for a in asterisms),
-               showers=showers, named_stars=named_stars, named_dso=named_dso)
+               showers=showers, named_stars=named_stars, named_dso=named_dso,
+               eclipses=eclipses)
+
+
+# The Sun and the Moon, the same glyphs the chart draws them with and the
+# same pair the eclipse page's own list uses.
+ECLIPSE_GLYPH = {True: ("☀", _SUN_C), False: ("☾", C.MOON)}
+
+
+def _eclipse_row(entry):
+    """(glyph, colour, label, when, regions) for one catalogue row."""
+    solar = eclipse_page.is_solar(entry)
+    glyph, colour = ECLIPSE_GLYPH[solar]
+    when = dt.datetime.fromisoformat(entry["when_utc"])
+    return (glyph, colour, entry["type"],
+            when.strftime("%d %b %Y").lstrip("0"), entry["regions"])
 
 
 def catalog_text(color=True):
@@ -5293,6 +5317,13 @@ def catalog_text(color=True):
     for sh in d["showers"]:
         L.append(f"  {P(_SHOWER_GLYPH, C.LABEL)} {sh['name']:<27} "
                  f"up to {sh['zhr']:>3}/hour")
+    L.append("")
+    L.append(head("ECLIPSES -- soonest first"))
+    for e in d["eclipses"]:
+        glyph, colour, kind, when, regions = _eclipse_row(e)
+        L.append(f"  {P(glyph, colour)} {P(f'{when:12}', C.HEAD)} "
+                 f"{kind:14} {regions}")
+    L.append(f"  {'':2} {'':12} curl skymap.sh/eclipse for the next one")
     L.append("")
     L.append(head(f"CONSTELLATIONS ({len(d['asterisms'])})"))
     L += _columns(d["asterisms"], 18, 5)
@@ -5388,6 +5419,17 @@ def catalog_html():
         L.append(f"  {col(_SHOWER_GLYPH, C.LABEL)} "
                  f"{link_col(nm, C.LABEL) + _pad_html(len(nm), 27)}"
                  f" up to {sh['zhr']:>3}/hour")
+    L.append("")
+    L.append(head("ECLIPSES -- soonest first"))
+    for e in d["eclipses"]:
+        glyph, colour, kind, when, regions = _eclipse_row(e)
+        key = eclipse_page.key_of(e)
+        link_html = (f'<a href="/eclipse/{key}" target="_blank" rel="noopener">'
+                     f'<span style="color:{_ansi_hex(C.HEAD)}">{html.escape(when)}'
+                     f'</span></a>' + _pad_html(len(when), 12))
+        L.append(f"  {col(glyph, colour)} {link_html} "
+                 f"{html.escape(kind)}{_pad_html(len(kind), 14)} "
+                 f"{html.escape(regions)}")
     L.append("")
     L.append(head(f"CONSTELLATIONS ({len(d['asterisms'])})"))
     for i in range(0, len(d["asterisms"]), 5):

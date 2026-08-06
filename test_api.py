@@ -1880,6 +1880,11 @@ if __name__ == "__main__":
     unittest.main()
 
 
+# Catalogue groups that are pages rather than objects: reached by typing
+# the page name in the bar, not by completing an object name.
+NOT_AN_OBJECT = {"eclipses"}
+
+
 class EveryCatalogGroupIsSearchable(unittest.TestCase):
     """The search bar offered solar system, stars, deep sky and
     constellations, and silently skipped showers -- the one group that is
@@ -1906,11 +1911,25 @@ class EveryCatalogGroupIsSearchable(unittest.TestCase):
             "showers": "perse",
             "asterisms": "big",
         }
-        self.assertEqual(set(probes), set(d),
+        # Eclipses are the one group that is not an object and is not
+        # completed by name -- there is no name to type, only a date. The
+        # bar reaches them as a page, the way /events and /catalog are
+        # reached, and NOT_AN_OBJECT is where that is asserted. Listed here
+        # so a group added later still has to be accounted for.
+        self.assertEqual(set(probes) | NOT_AN_OBJECT, set(d),
                          "a catalog group has been added or renamed; give it "
-                         "a probe here and a loop in complete_objects()")
+                         "a probe here and a loop in complete_objects(), or "
+                         "add it to NOT_AN_OBJECT and say how it is reached")
         for group, q in probes.items():
             self.assertTrue(api.complete_objects(q), f"{group} completes nothing")
+
+    def test_the_groups_that_are_not_objects_are_reachable_anyway(self):
+        """A catalogue row nothing can navigate to is a dead end. These are
+        pages rather than objects, so the search bar has to offer them by
+        page name instead."""
+        import objects
+        self.assertIn("eclipse", api.SEARCH_PAGES)
+        self.assertIn("eclipse", objects.RESERVED)
 
     def test_a_shower_completion_resolves_to_a_real_page(self):
         import objects
