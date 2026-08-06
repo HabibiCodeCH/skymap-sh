@@ -149,13 +149,64 @@ class TheSunIsDrawnAsItLooks(unittest.TestCase):
         mid = rows[len(rows) // 2]
         self.assertEqual(mid[len(mid) // 2], " ")
 
-    def test_the_corona_stays_inside_the_frame(self):
+    def test_the_corona_fills_the_frame_without_being_cut_by_it(self):
         """It is what sets the scale: drawn at the partial size the halo ran
-        off the top and bottom and stopped reading as a ring."""
+        off the top and bottom and stopped reading as a ring at all.
+
+        Not every row, because the edge is deliberately ragged and the
+        streamers only point where they point. Most of them, and nothing
+        touching the very edge, which would mean something was clipped."""
         rows = eclipse.disc_art(KEY, 43.3619, -5.8494, color=False)
         self.assertEqual(len(rows), eclipse.ART_ROWS)
-        self.assertTrue(rows[0].strip(), "top row empty, corona is too small")
-        self.assertTrue(rows[-1].strip(), "corona clipped at the bottom")
+        drawn = [i for i, r in enumerate(rows) if r.strip()]
+        self.assertGreaterEqual(len(drawn), eclipse.ART_ROWS - 3)
+        self.assertLessEqual(min(drawn), 2)
+        self.assertGreaterEqual(max(drawn), eclipse.ART_ROWS - 3)
+
+    def test_the_corona_touches_the_moon(self):
+        """It used to start at 1.13 Moon-radii, leaving a ring of black
+        between the disc and the first dot. The inner corona is the
+        brightest part of the real thing and it is on the limb."""
+        rows = eclipse.disc_art(KEY, 43.3619, -5.8494, color=False)
+        mid = rows[len(rows) // 2]
+        drawn = [i for i, ch in enumerate(mid) if ch != " "]
+        # Walking in from the left: dots, then the solid rim, then the hole,
+        # with nothing between the rim and the hole.
+        rim = mid.index("+")
+        hole = mid.index(" ", rim)
+        self.assertTrue(set(mid[rim:hole]) == {"+"}, mid)
+        self.assertGreater(hole - rim, 1, "the bright rim is a single cell")
+        self.assertLess(rim, hole)
+        self.assertIn(rim, drawn)
+
+    def test_the_corona_is_not_a_circle(self):
+        """Streamers and a ragged edge. Dots on a perfect circle read as a
+        circle however faint they are."""
+        rows = eclipse.disc_art(KEY, 43.3619, -5.8494, color=False)
+        reach = [max((len(r) / 2 - i for i, ch in enumerate(r) if ch != " "),
+                     default=0) for r in rows]
+        wide = [x for x in reach if x]
+        self.assertGreater(max(wide) - min(wide), 4,
+                           "the outer edge is the same distance out all round")
+
+    def test_the_corona_thins_out_with_distance(self):
+        """A band of even dots reads as an outline. This one is a glow."""
+        rows = eclipse.disc_art(KEY, 43.3619, -5.8494, color=False)
+        mid = rows[len(rows) // 2]
+        left = mid[:mid.index("+")]
+        near = sum(ch != " " for ch in left[len(left) // 2:])
+        far = sum(ch != " " for ch in left[:len(left) // 2])
+        self.assertGreater(near, far, "the corona is as dense at the edge "
+                                      "as it is at the limb")
+
+    def test_the_streamers_do_not_move_between_frames(self):
+        """They are placed from the eclipse's date, not at random: spikes
+        that jumped every frame would read as static, not as a corona."""
+        a = eclipse.disc_art(KEY, 43.3619, -5.8494, color=False)
+        b = eclipse.disc_art(KEY, 43.3619, -5.8494, color=False)
+        self.assertEqual(a, b)
+        self.assertNotEqual(eclipse._corona_phase(KEY),
+                            eclipse._corona_phase("2027-08-02"))
 
     def test_the_crescent_is_thicker_than_a_single_cell(self):
         """At 90% covered the surviving crescent is a tenth of the diameter.

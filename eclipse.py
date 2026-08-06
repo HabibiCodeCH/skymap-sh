@@ -220,23 +220,40 @@ CELL_X = 2.0                     # matches art.CELL; see its comment there
 # cell of radius is a tenth of a cell of crescent. Drawn at the totality
 # size it came out as a dotted line with gaps in it.
 #
-# Totality has to leave room for the corona, which reaches 1.28 Moon-radii
-# and the Moon is up to 1.04 Sun-radii, so the Sun has to come down to
-# about 6.2 or the halo runs off the top and bottom and stops reading as a
-# ring at all.
+# Totality has to leave room for the corona, and the corona now reaches
+# about 1.45 Moon-radii before its streamers, with the Moon up to 1.04
+# Sun-radii. Eight rows of room above the centre divided by that is a Sun of
+# about 5, which is what leaves the halo somewhere to be.
 SUN_R_PARTIAL = 8.0
-SUN_R_TOTAL = 6.2
+SUN_R_TOTAL = 5.0
 
 # Bright core to dimmer limb. Not physics -- real limb darkening is slight --
 # it is what stops a flat disc of one character reading as a hole rather
 # than a light.
 SUN_TONES = ((0.55, 231), (0.85, 227), (1.01, 220))
-# Warm, not white. The real corona is pearl-white, but on this page it sits
-# next to a Sun drawn in 220/227 and a track drawn in 196, and a grey ring
-# read as a rendering artefact rather than as light. Two tones so it falls
-# off outward instead of stopping at a hard edge.
-CORONA_INNER = 221
-CORONA_OUTER = 214
+# --- the corona ------------------------------------------------------------
+# It used to be a band of identical dots between two radii, with a gap of
+# black between the Moon's edge and the first of them. That reads as a dotted
+# circle, which is what it was. Five things make it read as a corona:
+#
+# 1. It touches the Moon. The inner corona is brightest right at the limb,
+#    and the black gap was the loudest wrong thing in the picture.
+# 2. It fades outward. Density falls off with radius rather than stopping at
+#    an edge, so it is a glow and not an outline.
+# 3. Streamers. A real corona has a handful of long spikes, and they are the
+#    single feature that says "corona" rather than "halo".
+# 4. A ragged edge. Dots on a perfect circle read as a circle however faint
+#    they are, so the outer boundary wobbles.
+# 5. Colour temperature. Near-white at the limb, warming outward. Three tones
+#    rather than two: the real thing is pearl-white, but next to a Sun drawn
+#    in 220/227 a grey ring read as a rendering artefact rather than light.
+CORONA_LIMB = 1.01        # where it starts, in Moon radii: on the limb
+CORONA_RIM = 1.18         # the bright inner ring, drawn solid
+CORONA_REACH = 1.45       # how far the halo goes with no streamer
+STREAMER_REACH = 0.70     # how much further along one
+STREAMERS = 6
+CORONA_TONES = ((1.20, 231), (1.42, 222), (99.0, 214))
+CORONA_GLYPHS = ((1.24, "+"), (99.0, "·"))
 
 # Each cell sampled on a 3x3 grid instead of at its centre. At 90% covered
 # the surviving crescent is about a tenth of the Sun's diameter, which is
@@ -260,6 +277,73 @@ def _disc_tone(rr):
         if rr <= edge:
             return col
     return SUN_TONES[-1][1]
+
+
+def _corona_phase(key):
+    """Where this eclipse's streamers point.
+
+    Fixed per eclipse rather than random, so they are in the same place in
+    every frame of the animation and on every reader's page. A corona whose
+    spikes moved between frames would read as static.
+    """
+    # Mixed rather than summed. Summing the characters gave 12 August 2026
+    # and 2 August 2027 the same answer, because the same digits are in both
+    # dates -- and two eclipses with identical streamers is the one thing
+    # this is meant to avoid.
+    h = 0
+    for ch in key:
+        h = (h * 131 + ord(ch)) & 0xFFFFFFFF
+    return (h % 3600) / 3600.0 * 2 * math.pi
+
+
+def _corona_reach(ang, phase, room):
+    """How far out the corona goes at this angle, in Moon radii.
+
+    Two sine terms wobble the boundary so it is not a circle, and a few
+    narrow lobes make the streamers. `room` is how far the frame allows in
+    this direction: streamers along the frame's long axis get to be long,
+    the ones pointing at the top edge get cut short, which is also roughly
+    what a real corona does near solar minimum.
+    """
+    reach = CORONA_REACH * (1.0 + 0.09 * math.sin(3 * ang + phase)
+                            + 0.05 * math.sin(5 * ang - phase))
+    for i in range(STREAMERS):
+        lobe = math.cos(ang - (phase + 2 * math.pi * i / STREAMERS))
+        if lobe > 0:
+            reach += STREAMER_REACH * lobe ** 6
+    return min(reach, room)
+
+
+def _speckle(d, ang):
+    """A stable 0..1 for a patch of sky around the Moon.
+
+    Positioned in the Moon's own frame, not the picture's, so the texture
+    travels with the Moon instead of the corona swimming through a fixed
+    field of dots as the animation runs.
+    """
+    i = int(d * 34) * 1009 + int(ang * 38.2) * 9176
+    return ((i * 1103515245 + 12345) >> 8 & 0xFFFF) / 65535.0
+
+
+def _corona_cell(d, ang, phase, room):
+    """(colour, glyph) for one cell of corona, or None where there is none."""
+    if d < CORONA_LIMB:
+        return None
+    if d <= CORONA_RIM:
+        # The bright rim, drawn solid. It is what gives the black disc a
+        # crisp edge instead of fading into sparse dots.
+        return CORONA_TONES[0][1], "+"
+    reach = _corona_reach(ang, phase, room)
+    if d > reach:
+        return None
+    # Thinning out with distance, so it ends by running out rather than by
+    # stopping.
+    density = (1.0 - (d - CORONA_RIM) / max(1e-6, reach - CORONA_RIM)) ** 0.7
+    if _speckle(d, ang) > density:
+        return None
+    col = next(c for edge, c in CORONA_TONES if d <= edge)
+    ch = next(g for edge, g in CORONA_GLYPHS if d <= edge)
+    return col, ch
 
 
 def disc_art(key, lat, lon, at=None, color=True, sun_r=None):
@@ -309,6 +393,11 @@ def disc_art(key, lat, lon, at=None, color=True, sun_r=None):
     # Fundamental-plane x is celestial east, y is north. On screen north is
     # up and east is left, so both signs flip.
     mx, my = -s["u"] / n * sep, -s["v"] / n * sep
+    # How much room the frame leaves, measured in the same units the drawing
+    # is done in, so a streamer can be told to stop at the edge rather than
+    # be clipped by it.
+    x_max, y_max = (ART_COLS - 1) / 2.0 / CELL_X, (ART_ROWS - 1) / 2.0
+    phase = _corona_phase(key)
 
     out = []
     for r in range(ART_ROWS):
@@ -330,18 +419,20 @@ def disc_art(key, lat, lon, at=None, color=True, sun_r=None):
                 ch = _glyph_for(frac)
             elif total:
                 # Corona, and only during totality, because that is the only
-                # time it is visible at all. A thin halo just off the limb.
-                d = math.hypot(x0 - mx, y0 - my) / moon_r
-                if 1.0 <= d <= 1.13:
-                    col, ch = CORONA_INNER, "\u00b7"
-                elif 1.13 < d <= 1.28:
-                    col, ch = CORONA_OUTER, "\u00b7"
-                else:
-                    # Inside the Moon as well as outside the halo. Without
-                    # the lower bound this branch swallowed the hole and
-                    # drew a solid disc of dots -- the eclipse with the
-                    # eclipse painted in.
-                    col, ch = None, " "
+                # time it is visible at all. Nothing inside the Moon: without
+                # a lower bound this branch swallowed the hole and drew a
+                # solid disc of dots, the eclipse with the eclipse painted in.
+                ex, ey = x0 - mx, y0 - my
+                d = math.hypot(ex, ey) / moon_r
+                cell = None
+                if d >= CORONA_LIMB:
+                    ang = math.atan2(ey, ex)
+                    room = min(
+                        (x_max - abs(mx)) / max(1e-6, abs(math.cos(ang))),
+                        (y_max - abs(my)) / max(1e-6, abs(math.sin(ang)))
+                    ) / moon_r
+                    cell = _corona_cell(d, ang, phase, room)
+                col, ch = cell if cell else (None, " ")
             else:
                 col, ch = None, " "
             if col is None:
