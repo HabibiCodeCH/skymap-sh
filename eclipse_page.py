@@ -433,9 +433,13 @@ def picker_html(entry, now_utc, place=None, escape=html.escape):
     for e in upcoming(now_utc):
         k = key_of(e)
         d = dt.datetime.fromisoformat(e["when_utc"])
-        # The mark says which ones can answer "what about from here", so the
-        # difference is visible before you click rather than after.
-        precise = "&#9679;" if k in besselian.ELEMENTS else "&#9675;"
+        # The Sun and the Moon, the same glyphs the sky chart draws them
+        # with, so the list says what kind of eclipse each one is at a
+        # glance. That happens to be the same distinction the plain dots
+        # used to make: a solar eclipse has Besselian elements and can
+        # answer "what about from here", a lunar one has none and never
+        # will, because the elements are a solar construction.
+        precise = "&#9728;" if k in besselian.ELEMENTS else "&#9789;"
         lbl = escape(d.strftime("%d %b %Y").lstrip("0"))
         body = (f'<b>{lbl}</b>' if k == here
                 else f'<a href="{base}/{k}">{lbl}</a>')
@@ -452,8 +456,8 @@ def picker_html(entry, now_utc, place=None, escape=html.escape):
             # happened to end, which put "date" on one line and "and regions
             # only" on the next and read as a third entry.
             '<p class="ecl-key">'
-            '<span>&#9679; local times computed here</span>'
-            '<span>&#9675; date and regions only</span></p>'
+            '<span>&#9728; solar, local times computed here</span>'
+            '<span>&#9789; lunar, date and regions only</span></p>'
             '</div></details>')
 
 
@@ -527,16 +531,10 @@ ECLIPSE_CSS = """
 .ecl-mapwrap{container-type:inline-size;margin:0 0 2px}
 .ecl-map{line-height:1.0;font-variant-ligatures:none;overflow-x:auto;margin:0;
   font-size:min(11px,1.6cqw)}
-.ecl-safety{border-left:2px solid #d29922;padding:2px 0 2px 12px;margin:0;
-  color:#c9d1d9;font-size:12px;line-height:1.5;
-  font-family:ui-sans-serif,-apple-system,"Segoe UI",Roboto,sans-serif;
-  /* Pushed to the far side of the heading row, and capped so it stays a
-     block of text rather than five words per line across the page. */
-  margin-left:auto;max-width:min(560px,52%)}
+.ecl-safety{border-left:2px solid #d29922;padding:2px 0 2px 12px;
+  margin:4px 0 2px;color:#c9d1d9;font-size:12px;line-height:1.5;
+  font-family:ui-sans-serif,-apple-system,"Segoe UI",Roboto,sans-serif}
 .ecl-safety b{color:#d29922;font-weight:600}
-/* Under the heading rather than beside it once there is no room for two
-   things on a line. */
-@media (max-width:900px){.ecl-safety{max-width:none;margin-left:0}}
 /* The times are the heading of this column, not a row underneath it. The
    sentence that used to sit here said the same thing in words, one line
    above the numbers it was describing. */
@@ -706,6 +704,11 @@ def live_html(f, map_rows, legend, ansi_to_html, chart_pre,
             '</span>'
             '</div>')
     # No times row here: it is the column's heading now (see live_head_html).
+    #
+    # The warning sits between the drawing and the map: directly after the
+    # thing that shows you what you would be looking at, and before the thing
+    # that tells you where to go and look at it.
+    out.append(safety_html(f, escape))
     if map_rows:
         # Named, because a band of red dots across northern Spain is not
         # self-explanatory, and the map answers a different question from

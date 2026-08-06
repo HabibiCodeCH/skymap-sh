@@ -2545,10 +2545,6 @@ def eclipse_html(r, f, key, entry, map_rows, legend, disc=None,
     body = ('<div class="ecl-head-row">'
             '<h1 class="obj-title"><span>Upcoming eclipses</span></h1>'
             + eclipse_page.picker_html(entry, r.when_utc, place)
-            # Beside the heading, not at the foot of the column. It is the
-            # only thing on the page that can stop somebody damaging their
-            # eyes, and it was last.
-            + eclipse_page.safety_html(f)
             + '</div>'
             + '<div class="obj-cols">'
             f'<aside class="obj-static">'

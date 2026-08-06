@@ -104,9 +104,19 @@ class ItDegradesRatherThanBreaks(unittest.TestCase):
 
     def test_an_eclipse_with_no_mask_draws_nothing(self):
         # Same policy as the /stats map: a page with no map beats a 500.
-        self.assertFalse(eclipse.has_map("2027-08-02"))
-        self.assertEqual(eclipse.render("2027-08-02"), [])
-        self.assertIsNone(eclipse.region("2027-08-02"))
+        # A lunar date, which will never have one: there is no shadow track
+        # on the ground to draw. This used to name 2027-08-02, which has a
+        # map now that every solar eclipse in the table gets one.
+        self.assertFalse(eclipse.has_map("2026-08-28"))
+        self.assertEqual(eclipse.render("2026-08-28"), [])
+        self.assertIsNone(eclipse.region("2026-08-28"))
+
+    def test_every_solar_eclipse_we_can_compute_has_a_map(self):
+        """build_eclipsemap.py is a build step, and a build step that has not
+        been re-run is invisible until somebody opens the page it was for."""
+        for key in besselian.ELEMENTS:
+            self.assertTrue(eclipse.has_map(key), key)
+            self.assertTrue(eclipse.render(key, color=False), key)
 
 
 class TheLegendDescribesTheMapItIsUnder(unittest.TestCase):
@@ -161,6 +171,40 @@ class TheSunIsDrawnAsItLooks(unittest.TestCase):
 
     def test_an_eclipse_with_no_elements_draws_nothing(self):
         self.assertEqual(eclipse.disc_art("2026-08-28", 47.37, 8.54), [])
+
+
+class TheTrackIsWhereTheTotalityIs(unittest.TestCase):
+    """track() walks the shadow axis and hands back the central line, and it
+    is what chooses each eclipse's map window. It shipped with two signs
+    flipped, which is the same as using -d: it produced a curve of the right
+    shape, the right length and the right duration, mirrored onto the wrong
+    part of the planet. Every point it returned was a partial eclipse and
+    nothing said so, because nothing was checking.
+
+    The check is the one that cannot be fooled by a plausible curve: ask the
+    solver what each point sees."""
+
+    def test_every_point_on_the_central_line_is_total(self):
+        for key in ("2026-08-12", "2027-08-02", "2028-07-22"):
+            pts = eclipse.track(key, step_minutes=1)
+            self.assertGreater(len(pts), 20, key)
+            for lat, lon, _t in pts:
+                kind = besselian.local(key, lat, lon)["kind"]
+                self.assertIn(kind, ("total", "annular"), f"{key} {lat},{lon}")
+
+    def test_it_lands_where_nasa_puts_it(self):
+        """Within 15 km of NASA's published central line. The path is 300 km
+        wide, so this is a twentieth of it."""
+        import math
+        from test_besselian import NASA_PATH
+        pts = eclipse.track("2026-08-12", step_minutes=0.25)
+        for utc, lat, lon, _w, _d in NASA_PATH[3:]:      # away from the pole
+            h, m = (int(v) for v in utc.split(":"))
+            want = h + m / 60.0
+            near = min(pts, key=lambda p: abs(p[2] % 24 - want))
+            km = math.hypot(near[0] - lat,
+                            (near[1] - lon) * math.cos(math.radians(lat))) * 111.2
+            self.assertLess(km, 15.0, f"{utc}: {km:.1f} km out")
 
 
 class TheAnimationIsClockedInLocalTime(unittest.TestCase):

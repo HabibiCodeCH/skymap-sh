@@ -53,6 +53,10 @@ SEA = " "
 _maps = None
 _grids = {}
 
+# The Earth's first eccentricity squared, from the flattening besselian.py
+# already works to, so the two cannot disagree about the shape of the planet.
+_E2 = 1.0 - besselian._FLATTENING ** 2
+
 
 def _load():
     global _maps
@@ -87,6 +91,10 @@ def cell_of(key, lat, lon):
         return None
     lat_top, lat_bot, lon_l, lon_r, w, h = r
     lon = ((lon + 180) % 360) - 180
+    # A window over the date line runs past 180 rather than being cut in
+    # two, so a place at -170 has to be looked for at 190 as well.
+    if lon < lon_l and lon_r > 180:
+        lon += 360
     if not (lat_bot <= lat <= lat_top and lon_l <= lon <= lon_r):
         return None
     row = int((lat_top - lat) / (lat_top - lat_bot) * h)
@@ -366,24 +374,61 @@ def track(key, step_minutes=2):
 
     Found by walking the shadow axis: at each instant the axis meets the
     Earth at one point, and that point is the centre of the track.
+
+    This is besselian._state's transform run backwards. Forwards it takes a
+    place to the fundamental plane:
+
+        xi   = rho_cos sin(theta)
+        eta  = rho_sin cos(d) - rho_cos cos(theta) sin(d)
+        zeta = rho_sin sin(d) + rho_cos cos(theta) cos(d)
+
+    so given (x, y) on the plane and the near-side zeta, sin(phi') is
+    y cos d + zeta sin d and theta is atan2(x, zeta cos d - y sin d). The
+    first version of this had both of those signs flipped, which is the same
+    as using -d: it produced a curve of exactly the right shape, the right
+    length and the right duration, mirrored onto the wrong part of the
+    planet. Every point it returned computed as a partial eclipse, which is
+    what test_the_track_is_where_the_totality_is now checks.
     """
     el = besselian.ELEMENTS.get(key)
     if el is None:
         return []
     out = []
-    t = -3.0
-    while t <= 3.0:
+    t = -4.0
+    while t <= 4.0:
         x, y = besselian._poly(el.x, t), besselian._poly(el.y, t)
         d = math.radians(besselian._poly(el.d, t))
         mu = math.radians(besselian._poly(el.mu, t))
-        rho2 = x * x + y * y
+        # On the ellipsoid, not a sphere. Meeus 54 flattens the fundamental
+        # plane's y and the shadow's declination first (rho1, d1) and the
+        # geometry is then the same as the spherical case. Doing it on a
+        # sphere and converting the latitude afterwards put the track 85 km
+        # west of NASA's -- a quarter of the width of the path, which is
+        # exactly the size of error a map cannot show and a reader cannot
+        # catch.
+        rho1 = math.sqrt(1.0 - _E2 * math.cos(d) ** 2)
+        sin_d1 = math.sin(d) / rho1
+        cos_d1 = besselian._FLATTENING * math.cos(d) / rho1
+        y1 = y / rho1
+        rho2 = x * x + y1 * y1
         if rho2 < 1.0:
-            zeta = math.sqrt(1.0 - rho2)
-            # Rotate the fundamental-plane point back onto the globe.
-            b1 = y * math.sin(d) + zeta * math.cos(d)
-            lat = math.degrees(math.asin(
-                y * math.cos(d) - zeta * math.sin(d)))
-            lon = math.degrees(math.atan2(x, b1) - mu)
+            b = math.sqrt(1.0 - rho2)
+            sin_phi1 = b * sin_d1 + y1 * cos_d1
+            cos_phi1 = math.sqrt(max(0.0, 1.0 - sin_phi1 * sin_phi1))
+            theta = math.atan2(x, b * cos_d1 - y1 * sin_d1)
+            # phi1 comes out geocentric; the map wants the latitude people
+            # use. tan(phi) = tan(phi1) / (1 - e^2), and 1 - e^2 is exactly
+            # the flattening constant squared. Measured against NASA's table:
+            # without this every point sits 20 km south of the central line.
+            lat = math.degrees(math.atan2(
+                sin_phi1, besselian._FLATTENING ** 2 * cos_phi1))
+            # mu is Greenwich's hour angle at TDT, but the point is being
+            # named on a planet that has turned for delta-T seconds longer
+            # than UT says. Without this the whole track sits 0.29 degrees
+            # west for this eclipse, which is 20 km and is exactly delta-T
+            # (70 s) written as an angle.
+            lon = (math.degrees(theta - mu)
+                   + 1.002738 * el.dT * 15.0 / 3600.0)
             out.append((lat, ((lon + 180) % 360) - 180,
                         el.t0 + t - el.dT / 3600.0))
         t += step_minutes / 60.0
