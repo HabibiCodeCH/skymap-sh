@@ -5806,120 +5806,7 @@ document.documentElement.classList.add('js');
  .tries{{color:#6e7681;font-size:12px;margin:0}}
  .tries a{{color:#87d7ff;text-decoration:none}}
  .tries a:hover{{text-decoration:underline}}
- /* Command bar -- an inline-editable "$ curl skymap.sh/<place>" line.
-    Everything up to and including the "/" is fixed, decorative text; #q is
-    a real input laid out inline with it via the same monospace text
-    engine, so it never has to be kept in sync with an overlay. min-width:0
-    on .field/input (not this element -- see below) is required for flex
-    children to shrink/scroll instead of blowing out the row -- the default
-    flex min-width is auto, not 0. */
- /* This is the page's main CTA -- it shouldn't visibly grow and shrink on
-    every keystroke (or every time a ghost completion of a different length
-    pops in or out from under the debounced /complete fetch). The min-width
-    floor absorbs that: .grow (a flex:1 spacer between the cursor and the
-    copy button) eats the slack whenever content is narrower than the
-    floor, pinning "copy" to the bar's right edge instead of letting the
-    whole bar visibly resize. min(560px,90vw) so it still fits a narrow
-    viewport instead of forcing horizontal overflow. */
- /* height+box-sizing:border-box (not just matching padding) is what
-    actually guarantees .find-field below renders exactly this tall --
-    letting it emerge from padding+content, the original approach, is at
-    the mercy of font-metric/nested-element quirks that can differ by a
-    pixel or two between browsers. An explicit shared number on both
-    can't drift apart. */
- .cmdbar{{display:inline-flex;align-items:center;background:#0d1117;
-         border:1px solid #30363d;border-radius:6px;padding:9px 12px;
-         margin:0;color:#7ee787;font-size:13px;cursor:text;
-         max-width:100%;min-width:min(560px,90vw);
-         box-sizing:border-box;height:45px}}
- .cmdbar .prompt{{color:#6e7681;margin-right:6px}}
- .cmdbar .fixed{{white-space:pre}}
- .cmdbar .curlword{{color:#6e7681}}
- .cmdbar .field{{display:inline-flex;min-width:0;max-width:100%}}
- .cmdbar input{{background:transparent;border:0;color:#e6edf3;font:inherit;
-               padding:0;margin:0;min-width:0;max-width:100%;outline:none}}
- .cmdbar .measure{{position:absolute;visibility:hidden;white-space:pre;left:-9999px}}
- .cmdbar .grow{{flex:1}}
- .cmdbar .barpill{{background:none;border:1px solid #30363d;color:#6e7681;
-               border-radius:4px;padding:4px 8px;margin-left:10px;
-               font:inherit;font-size:12px;cursor:pointer;white-space:nowrap}}
- .cmdbar .barpill:hover,.cmdbar .barpill[aria-expanded="true"]{{
-               border-color:#7ee787;color:#7ee787}}
- /* The bar, its dropdown and its help panel are one stack: both panels hang
-    off the bottom edge of the bar, so they need a positioning parent that is
-    the bar's width and nothing else's. .header-row cannot be it -- it also
-    holds the nav row, and "100% of that" is the whole page. */
- .bar-wrap{{position:relative;display:inline-flex;flex-direction:column;
-           min-width:0;max-width:100%}}
- .cursor{{display:inline-block;width:.55em;height:1.15em;margin-left:1px;
-         background:#7ee787;vertical-align:-0.2em;
-         animation:blink 1.06s step-end infinite}}
- .cmdbar.focused .cursor{{visibility:hidden;animation:none}}
- @keyframes blink{{0%,50%{{opacity:1}}50.01%,100%{{opacity:0}}}}
- @media (prefers-reduced-motion: reduce){{
-   .cursor{{animation:none;opacity:.55}}
- }}
- /* Suggestions under the bar, grouped by kind. The list is the merge of two
-    completion endpoints plus the page names, so a row can be a city, an
-    object or a page and the group heading is the only thing telling them
-    apart -- worth a real heading rather than an icon, since "Venus the
-    planet" and "Venus, Texas" are otherwise the same word twice. */
- .bar-dropdown{{position:absolute;top:100%;left:0;margin:4px 0 0;padding:4px;
-                 background:#0d1117;border:1px solid #30363d;border-radius:6px;
-                 min-width:min(320px,100%);max-width:100%;max-height:300px;
-                 overflow-y:auto;z-index:30;list-style:none}}
- .bar-dropdown[hidden]{{display:none}}
- .bar-group{{padding:6px 8px 2px;font-size:10.5px;letter-spacing:.09em;
-            text-transform:uppercase;color:#6e7681}}
- .bar-option{{display:flex;align-items:center;gap:8px;padding:6px 8px;
-              border-radius:4px;cursor:pointer;font-size:13px;color:#c9d1d9}}
- /* One box for every mark in the list, whatever it is. font-size and
-    line-height are pinned HERE rather than only on the size classes: a
-    crescent or a triangle carries no size class, so it was inheriting the
-    row's 13px and an unpinned line-height, which put it on a different
-    baseline and in a taller row than the dots above and below it.
-    inline-flex centres it in both directions instead of relying on the
-    text baseline, which the three dot sizes and the two marks do not
-    share. */
- /* Fixed pixels, not em. The size classes below change this element's own
-    font-size, and 1.2em is measured against THAT -- so the box was 8px wide
-    for a village and 13px for a dark-sky site, and every name in the list
-    started at a slightly different x. A mark is a fixed slot; only what
-    sits inside it changes size. */
- .bar-option .glyph{{width:16px;height:16px;flex-shrink:0;color:#6e7681;
-                    display:inline-flex;align-items:center;
-                    justify-content:center;font-size:11px;line-height:1}}
- /* Town, city, major city. Only the size changes; the box does not. */
- .bar-option .glyph.sz1{{font-size:7px}}
- .bar-option .glyph.sz2{{font-size:10px}}
- .bar-option .glyph.sz3{{font-size:13px;color:#8b949e}}
- .bar-option:hover,.bar-option.active{{background:#1c2128}}
- /* Opens under the bar, in the same stack as the dropdown and never at the
-    same time as it. Not a centred overlay: it answers a question about the
-    box directly above it, and covering the page to do that would be a
-    bigger interruption than the question deserves. */
- .search-help{{position:absolute;top:100%;left:0;margin:4px 0 0;
-              padding:14px 16px;background:#0d1117;border:1px solid #30363d;
-              border-radius:6px;min-width:min(420px,100%);max-width:100%;
-              z-index:31;font-size:12.5px;line-height:1.5}}
- .search-help[hidden]{{display:none}}
- .search-help dl{{display:grid;grid-template-columns:auto 1fr;
-                 gap:.5rem .9rem;margin:0}}
- .search-help dt{{color:#7ee787;white-space:nowrap}}
- .search-help dd{{margin:0;color:#c9d1d9}}
- /* The examples are the useful part for somebody who does not know what to
-    type, but they are not the answer -- quieter, and on their own line so
-    the four category names still read as a list. */
- .search-help .eg{{display:block;color:#6e7681;font-size:11.5px;
-                  margin-top:.1rem}}
- .search-help-slash{{margin:.9rem 0 0;padding-top:.75rem;
-                    border-top:1px solid #21262d;color:#8b949e;
-                    font-size:12px;line-height:1.55}}
- .search-help-slash b{{color:#7ee787;font-weight:normal}}
- .search-help-more{{display:inline-block;margin-top:.75rem;padding-top:.7rem;
-                   border-top:1px solid #21262d;width:100%;
-                   color:#58a6ff;text-decoration:none;font-size:12px}}
- .search-help-more:hover{{text-decoration:underline}}
+/*CMDBAR_CSS*/
  .animate-controls{{display:block;margin:0 0 8px}}
  .animate-btn{{background:#0d1117;border:1px solid #30363d;color:#ffd700;
               padding:8px 12px;border-radius:4px;font:inherit;font-size:12px;
@@ -6324,296 +6211,7 @@ function skymapRenderGif(btn){{
     btn.disabled=false;
   }});
 }}
-(function(){{
-  // Command bar: auto-size (hidden-measure technique -- field-sizing:content
-  // isn't portable yet) + click-anywhere-to-focus, so the whole bar reads as
-  // one editable command line rather than decorative text bolted onto a
-  // separate input box, plus ghost-text completion against GET /complete
-  // (SPEC-command-bar.md #3-4). Present on every page (see header_html), so
-  // no page-specific gating here -- only the element lookups are null-safe.
-  var bar=document.getElementById('bar');
-  var q=document.getElementById('q');
-  var measure=document.getElementById('measure');
-  var dropdown=document.getElementById('bar-dropdown');
-  var helpPill=document.getElementById('help-pill');
-  var helpPanel=document.getElementById('search-help');
-  if(bar&&q&&measure){{
-    var size=function(){{
-      measure.textContent=q.value||'';
-      q.style.width=(measure.offsetWidth+2)+'px';
-    }};
-    var matches=[];
-    // Strips accents the same way api.py's norm_name does server-side --
-    // without this, plain toLowerCase() rejects the server's own correctly
-    // accent-folded matches: 'zürich'.startsWith('zur') is false in JS
-    // (ü !== u as characters), so typing the ASCII "zur" would never show
-    // the "ich" ghost for "Zürich" at all.
-    var fold=function(s){{return s.normalize('NFD').replace(/[\\u0300-\\u036f]/g,'').toLowerCase();}};
-    var PAGES=/*PAGES*/;
-    var active=-1;
-
-    // The bar holds a path, so "/" splits it: everything up to the last
-    // slash is settled, and only the tail is being typed. On "Tokyo/ven"
-    // the prefix is "Tokyo/" and the tail is "ven".
-    var prefixOf=function(v){{
-      var i=v.lastIndexOf('/');
-      return i<0?'':v.slice(0,i+1);
-    }};
-    var tailOf=function(v){{
-      var i=v.lastIndexOf('/');
-      return i<0?v:v.slice(i+1);
-    }};
-    // Each segment encoded on its own, so the slashes that separate them
-    // survive. encodeURIComponent on the whole string would turn the one
-    // character doing the work into %2F.
-    var toPath=function(v){{
-      return '/'+v.split('/').map(encodeURIComponent).join('/');
-    }};
-
-    // Two endpoints rather than one merged one, deliberately: /complete is
-    // static city data cached for a week at the edge, /complete/objects has
-    // to expire hourly because the Moon's glyph tracks its real phase.
-    // Merging them server-side would drag the cities down to the Moon's
-    // cache lifetime for no gain -- the browser can hold two promises.
-    // "47.37,8.55" and "-24.63, -70.4" -- the same thing the place resolver
-    // accepts, checked here only so the dropdown can say "yes, that is a
-    // usable answer" instead of going silent because no city is spelled
-    // like a number. Range-checked, so 91,0 is not offered as a place.
-    var COORD=/^(-?\\d{{1,3}}(?:\\.\\d+)?)\\s*,\\s*(-?\\d{{1,3}}(?:\\.\\d+)?)$/;
-    var asCoords=function(v){{
-      var m=COORD.exec(v.trim());
-      if(!m)return null;
-      var la=parseFloat(m[1]), lo=parseFloat(m[2]);
-      if(!(Math.abs(la)<=90&&Math.abs(lo)<=180))return null;
-      return la+','+lo;
-    }};
-
-    // After a slash the answer can only be an object: the second segment of
-    // a path is what you are looking at, never where you are standing. So
-    // "Tokyo/ven" offers Venus and no cities at all, which is also why the
-    // place suggestions are not merely ranked lower there -- a city would
-    // build /Tokyo/Paris, and there is no such page.
-    // A crescent for somewhere you go at night, a silhouette for a
-    // monument, a dot for somewhere people live. Both are plain BMP
-    // characters present in the two bundled fonts as well as every system
-    // one, so neither needs a PNG_SUBSTITUTE entry.
-    var PLACE_MARK={{dark:'\\u263e', unesco:'\\u25b2'}};
-
-    var buildItems=function(cities,objects,v){{
-      var out=[],pre=prefixOf(v),tail=tailOf(v),f=fold(tail);
-      // Names, not paths. The prefix is already sitting in the bar a few
-      // pixels above the list, so repeating it on every row says nothing
-      // and makes the names harder to scan.
-      objects.forEach(function(o){{
-        var name=o.q||o.name;
-        out.push({{group:'Objects',label:name,glyph:o.glyph,color:o.color,
-                  href:toPath(pre+name)}});
-      }});
-      if(pre)return out;
-      var coords=asCoords(v);
-      if(coords){{
-        out.push({{group:'Places',label:coords+'  (coordinates)',
-                  glyph:'\\u25ce',color:'',size:0,href:toPath(coords)}});
-      }}
-      cities.forEach(function(c){{
-        // Either shape: {{name,size}} from the current server, or a bare
-        // string from a week-old cached response (see /complete's docstring).
-        var name=(typeof c==='string')?c:c.name;
-        var size=(typeof c==='string')?0:(c.size||0);
-        var mark=(typeof c==='string')?null:PLACE_MARK[c.kind];
-        // The row reads "Tokyo"; the slash only appears once it is chosen,
-        // in the bar, where it is an invitation to name an object. Landing
-        // on /Tokyo/ rather than /Tokyo is free: they are one page.
-        //
-        // A named site keeps its mark at full size; only the city dot is
-        // scaled by population, and a scaled crescent would read as a phase
-        // rather than as a category.
-        out.push({{group:'Places',label:name,glyph:mark||'\\u25cf',color:'',
-                  size:mark?0:size,href:toPath(name)+'/'}});
-      }});
-      PAGES.forEach(function(p){{
-        if(fold(p).startsWith(f))
-          out.push({{group:'Pages',label:p,glyph:'\\u2192',color:'',href:'/'+p}});
-      }});
-      return out;
-    }};
-
-    var renderDropdown=function(){{
-      if(!dropdown)return;
-      dropdown.innerHTML='';
-      if(!matches.length){{
-        dropdown.hidden=true;
-        q.setAttribute('aria-expanded','false');
-        return;
-      }}
-      var seen='';
-      matches.forEach(function(it,i){{
-        if(it.group!==seen){{
-          seen=it.group;
-          var h=document.createElement('li');
-          h.className='bar-group';
-          h.setAttribute('role','presentation');
-          h.textContent=it.group;
-          dropdown.appendChild(h);
-        }}
-        var li=document.createElement('li');
-        li.className='bar-option'+(i===active?' active':'');
-        li.setAttribute('role','option');
-        var g=document.createElement('span');
-        // The dot is one character at three CSS sizes rather than three
-        // different characters. Picking bullet/circle/large-circle by
-        // population would put the size at the mercy of whichever font the
-        // browser reaches for, and they are not drawn to a consistent scale
-        // across families; scaling one glyph is exact everywhere.
-        g.className='glyph'+(it.size?' sz'+it.size:'');
-        if(it.color)g.style.color=it.color;
-        g.textContent=it.glyph||'';
-        var n=document.createElement('span');
-        n.textContent=it.label;
-        li.appendChild(g);
-        li.appendChild(n);
-        // mousedown, not click: it fires before the input's blur, so a
-        // mouse pick doesn't race the blur-closes-dropdown handler.
-        li.addEventListener('mousedown',function(e){{
-          e.preventDefault();
-          location.href=it.href;
-        }});
-        dropdown.appendChild(li);
-      }});
-      dropdown.hidden=false;
-      q.setAttribute('aria-expanded','true');
-    }};
-
-    var closeDropdown=function(){{
-      matches=[];active=-1;
-      if(dropdown){{dropdown.hidden=true;dropdown.innerHTML='';}}
-      q.setAttribute('aria-expanded','false');
-    }};
-
-    var completeAbort=null, completeTimer=null;
-    var fetchMatches=function(){{
-      if(completeAbort)completeAbort.abort();
-      var v=q.value.trim();
-      // Matched on the tail, not the whole path: "Tokyo/ven" is a two-letter
-      // search for "ven", not a nine-letter one for a city called
-      // "Tokyo/ven". Without this the dropdown went blank the moment a
-      // slash was typed, which looked exactly like the bar giving up.
-      var pre=prefixOf(v), tail=tailOf(v).trim();
-      if(tail.length<2){{closeDropdown();return;}}
-      completeAbort=new AbortController();
-      var sig=completeAbort.signal;
-      var enc=encodeURIComponent(tail.slice(0,24));
-      // Either endpoint failing leaves the other's results usable rather
-      // than emptying the list -- an aborted fetch is the normal case here,
-      // one per keystroke. Past a slash the city half is not asked for at
-      // all: nothing would be done with the answer.
-      Promise.all([
-        pre?Promise.resolve([]):
-        fetch('/complete?q='+encodeURIComponent(tail.toLowerCase().slice(0,24)),
-              {{signal:sig}}).then(function(r){{return r.json();}})
-              .catch(function(){{return [];}}),
-        fetch('/complete/objects?q='+enc,{{signal:sig}})
-              .then(function(r){{return r.json();}})
-              .catch(function(){{return [];}})
-      ]).then(function(res){{
-        // Guard against a slow response for an earlier, shorter prefix
-        // landing after the reader has kept typing.
-        if(q.value.trim()!==v)return;
-        matches=buildItems(res[0]||[],res[1]||[],v);
-        active=-1;
-        renderDropdown();
-      }}).catch(function(){{}});
-    }};
-    size();
-    q.addEventListener('input',function(){{
-      size();
-      if(completeTimer)clearTimeout(completeTimer);
-      completeTimer=setTimeout(fetchMatches,120);
-    }});
-    q.addEventListener('keydown',function(e){{
-      if(e.key==='ArrowDown'||e.key==='ArrowUp'){{
-        if(!matches.length)return;
-        e.preventDefault();
-        active+=(e.key==='ArrowDown'?1:-1);
-        if(active<-1)active=matches.length-1;
-        if(active>=matches.length)active=-1;
-        renderDropdown();
-        return;
-      }}
-      if(e.key==='Escape'&&matches.length){{
-        e.preventDefault();
-        e.stopPropagation();
-        closeDropdown();
-      }}
-    }});
-    q.addEventListener('focus',function(){{bar.classList.add('focused');}});
-    q.addEventListener('blur',function(){{
-      bar.classList.remove('focused');
-      setTimeout(closeDropdown,150);
-    }});
-    bar.addEventListener('mousedown',function(e){{
-      if(helpPill&&(e.target===helpPill||helpPill.contains(e.target)))return;
-      if(e.target!==q){{
-        e.preventDefault();
-        q.focus();
-        q.setSelectionRange(q.value.length,q.value.length);
-      }}
-    }});
-    // Enter. A highlighted row wins, because the reader arrowed to it on
-    // purpose and it is the only path that knows an object should keep the
-    // place (/Tokyo/Venus, not /Venus). With nothing highlighted this falls
-    // through to the explore form's own onsubmit, which already reads #q
-    // and carries the date/time fields with it -- rather than a second
-    // "just navigate" path that could drift from it.
-    bar.addEventListener('submit',function(e){{
-      e.preventDefault();
-      if(active>=0&&matches[active]){{
-        location.href=matches[active].href;
-        return;
-      }}
-      closeDropdown();
-      // The bar holds a path, so Enter goes to that path. It used to hand
-      // the text to the explore form, which rebuilt a URL out of #q and the
-      // old find field -- that form now only contributes the date and time,
-      // and rebuilding a path it never saw the slashes in is how "Tokyo/"
-      // plus "Venus" turned back into plain /Venus.
-      var v=q.value.trim();
-      if(!v){{location.href='/';return;}}
-      var wd=document.getElementById('whenDate');
-      var wt=document.getElementById('whenTime');
-      var t=(wd&&wt&&wd.value&&wt.value)?(wd.value+'T'+wt.value):'';
-      location.href=toPath(v)+(t?'?t='+encodeURIComponent(t):'');
-    }});
-
-    // The help panel. One bar that takes places, objects and page names is
-    // only obvious once somebody tells you, and there is nowhere in a
-    // single-line prompt to write three examples.
-    if(helpPill&&helpPanel){{
-      var setHelp=function(open){{
-        helpPanel.hidden=!open;
-        helpPill.setAttribute('aria-expanded',open?'true':'false');
-        if(open)closeDropdown();
-      }};
-      helpPill.addEventListener('click',function(e){{
-        e.preventDefault();
-        e.stopPropagation();
-        setHelp(helpPanel.hidden);
-      }});
-      document.addEventListener('mousedown',function(e){{
-        if(helpPanel.hidden)return;
-        if(helpPanel.contains(e.target)||helpPill.contains(e.target))return;
-        setHelp(false);
-      }});
-      document.addEventListener('keydown',function(e){{
-        if(e.key==='Escape'&&!helpPanel.hidden){{setHelp(false);helpPill.focus();}}
-      }});
-      // Typing is the reader answering the question the panel asks, so it
-      // has served its purpose and should get out of the way of the
-      // suggestions about to appear underneath it.
-      q.addEventListener('input',function(){{if(!helpPanel.hidden)setHelp(false);}});
-    }}
-  }}
-}})();
+/*CMDBAR_JS*/
 (function(){{
   // Drawer (SPEC-command-bar.md #9) -- present on every page (see
   // header_html/controls_html), so no page-specific gating, only the
@@ -6916,11 +6514,431 @@ function skymapRenderGif(btn){{
 PAGE = PAGE.replace("/*LADDER*/",
                     chart_ladder_css().replace("{", "{{").replace("}", "}}"))
 
-# Same splice, same reason: the page-name list the dropdown offers has to be
-# the one SEARCH_HELP advertises, and a second hand-typed copy inside a
-# string template is exactly how those two drift apart. json.dumps rather
-# than a join, so the quoting is something's job rather than mine.
-PAGE = PAGE.replace("/*PAGES*/", json.dumps(list(SEARCH_PAGES)))
+# The command bar's CSS and script, kept out here rather than inline in PAGE
+# so build_sky_html.py can splice the same text into the static demo page.
+# That script used to keep its own hand copy of both, with a comment asking
+# whoever changed one to remember the other. Nobody did: the copy pill and
+# the ghost-text field were replaced by the help pill and the dropdown, and
+# the demo went on wiring up elements that no longer existed, so its search
+# bar quietly did nothing at all. The header markup was un-copied for this
+# same reason once already; this is the rest of it.
+#
+# Braces stay doubled, because both consumers are .format() templates.
+CMDBAR_CSS = """ /* Command bar -- an inline-editable "$ curl skymap.sh/<place>" line.
+    Everything up to and including the "/" is fixed, decorative text; #q is
+    a real input laid out inline with it via the same monospace text
+    engine, so it never has to be kept in sync with an overlay. min-width:0
+    on .field/input (not this element -- see below) is required for flex
+    children to shrink/scroll instead of blowing out the row -- the default
+    flex min-width is auto, not 0. */
+ /* This is the page's main CTA -- it shouldn't visibly grow and shrink on
+    every keystroke (or every time a ghost completion of a different length
+    pops in or out from under the debounced /complete fetch). The min-width
+    floor absorbs that: .grow (a flex:1 spacer between the cursor and the
+    copy button) eats the slack whenever content is narrower than the
+    floor, pinning "copy" to the bar's right edge instead of letting the
+    whole bar visibly resize. min(560px,90vw) so it still fits a narrow
+    viewport instead of forcing horizontal overflow. */
+ /* height+box-sizing:border-box (not just matching padding) is what
+    actually guarantees .find-field below renders exactly this tall --
+    letting it emerge from padding+content, the original approach, is at
+    the mercy of font-metric/nested-element quirks that can differ by a
+    pixel or two between browsers. An explicit shared number on both
+    can't drift apart. */
+ .cmdbar{{display:inline-flex;align-items:center;background:#0d1117;
+         border:1px solid #30363d;border-radius:6px;padding:9px 12px;
+         margin:0;color:#7ee787;font-size:13px;cursor:text;
+         max-width:100%;min-width:min(560px,90vw);
+         box-sizing:border-box;height:45px}}
+ .cmdbar .prompt{{color:#6e7681;margin-right:6px}}
+ .cmdbar .fixed{{white-space:pre}}
+ .cmdbar .curlword{{color:#6e7681}}
+ .cmdbar .field{{display:inline-flex;min-width:0;max-width:100%}}
+ .cmdbar input{{background:transparent;border:0;color:#e6edf3;font:inherit;
+               padding:0;margin:0;min-width:0;max-width:100%;outline:none}}
+ .cmdbar .measure{{position:absolute;visibility:hidden;white-space:pre;left:-9999px}}
+ .cmdbar .grow{{flex:1}}
+ .cmdbar .barpill{{background:none;border:1px solid #30363d;color:#6e7681;
+               border-radius:4px;padding:4px 8px;margin-left:10px;
+               font:inherit;font-size:12px;cursor:pointer;white-space:nowrap}}
+ .cmdbar .barpill:hover,.cmdbar .barpill[aria-expanded="true"]{{
+               border-color:#7ee787;color:#7ee787}}
+ /* The bar, its dropdown and its help panel are one stack: both panels hang
+    off the bottom edge of the bar, so they need a positioning parent that is
+    the bar's width and nothing else's. .header-row cannot be it -- it also
+    holds the nav row, and "100% of that" is the whole page. */
+ .bar-wrap{{position:relative;display:inline-flex;flex-direction:column;
+           min-width:0;max-width:100%}}
+ .cursor{{display:inline-block;width:.55em;height:1.15em;margin-left:1px;
+         background:#7ee787;vertical-align:-0.2em;
+         animation:blink 1.06s step-end infinite}}
+ .cmdbar.focused .cursor{{visibility:hidden;animation:none}}
+ @keyframes blink{{0%,50%{{opacity:1}}50.01%,100%{{opacity:0}}}}
+ @media (prefers-reduced-motion: reduce){{
+   .cursor{{animation:none;opacity:.55}}
+ }}
+ /* Suggestions under the bar, grouped by kind. The list is the merge of two
+    completion endpoints plus the page names, so a row can be a city, an
+    object or a page and the group heading is the only thing telling them
+    apart -- worth a real heading rather than an icon, since "Venus the
+    planet" and "Venus, Texas" are otherwise the same word twice. */
+ .bar-dropdown{{position:absolute;top:100%;left:0;margin:4px 0 0;padding:4px;
+                 background:#0d1117;border:1px solid #30363d;border-radius:6px;
+                 min-width:min(320px,100%);max-width:100%;max-height:300px;
+                 overflow-y:auto;z-index:30;list-style:none}}
+ .bar-dropdown[hidden]{{display:none}}
+ .bar-group{{padding:6px 8px 2px;font-size:10.5px;letter-spacing:.09em;
+            text-transform:uppercase;color:#6e7681}}
+ .bar-option{{display:flex;align-items:center;gap:8px;padding:6px 8px;
+              border-radius:4px;cursor:pointer;font-size:13px;color:#c9d1d9}}
+ /* One box for every mark in the list, whatever it is. font-size and
+    line-height are pinned HERE rather than only on the size classes: a
+    crescent or a triangle carries no size class, so it was inheriting the
+    row's 13px and an unpinned line-height, which put it on a different
+    baseline and in a taller row than the dots above and below it.
+    inline-flex centres it in both directions instead of relying on the
+    text baseline, which the three dot sizes and the two marks do not
+    share. */
+ /* Fixed pixels, not em. The size classes below change this element's own
+    font-size, and 1.2em is measured against THAT -- so the box was 8px wide
+    for a village and 13px for a dark-sky site, and every name in the list
+    started at a slightly different x. A mark is a fixed slot; only what
+    sits inside it changes size. */
+ .bar-option .glyph{{width:16px;height:16px;flex-shrink:0;color:#6e7681;
+                    display:inline-flex;align-items:center;
+                    justify-content:center;font-size:11px;line-height:1}}
+ /* Town, city, major city. Only the size changes; the box does not. */
+ .bar-option .glyph.sz1{{font-size:7px}}
+ .bar-option .glyph.sz2{{font-size:10px}}
+ .bar-option .glyph.sz3{{font-size:13px;color:#8b949e}}
+ .bar-option:hover,.bar-option.active{{background:#1c2128}}
+ /* Opens under the bar, in the same stack as the dropdown and never at the
+    same time as it. Not a centred overlay: it answers a question about the
+    box directly above it, and covering the page to do that would be a
+    bigger interruption than the question deserves. */
+ .search-help{{position:absolute;top:100%;left:0;margin:4px 0 0;
+              padding:14px 16px;background:#0d1117;border:1px solid #30363d;
+              border-radius:6px;min-width:min(420px,100%);max-width:100%;
+              z-index:31;font-size:12.5px;line-height:1.5}}
+ .search-help[hidden]{{display:none}}
+ .search-help dl{{display:grid;grid-template-columns:auto 1fr;
+                 gap:.5rem .9rem;margin:0}}
+ .search-help dt{{color:#7ee787;white-space:nowrap}}
+ .search-help dd{{margin:0;color:#c9d1d9}}
+ /* The examples are the useful part for somebody who does not know what to
+    type, but they are not the answer -- quieter, and on their own line so
+    the four category names still read as a list. */
+ .search-help .eg{{display:block;color:#6e7681;font-size:11.5px;
+                  margin-top:.1rem}}
+ .search-help-slash{{margin:.9rem 0 0;padding-top:.75rem;
+                    border-top:1px solid #21262d;color:#8b949e;
+                    font-size:12px;line-height:1.55}}
+ .search-help-slash b{{color:#7ee787;font-weight:normal}}
+ .search-help-more{{display:inline-block;margin-top:.75rem;padding-top:.7rem;
+                   border-top:1px solid #21262d;width:100%;
+                   color:#58a6ff;text-decoration:none;font-size:12px}}
+ .search-help-more:hover{{text-decoration:underline}}"""
+
+CMDBAR_JS = """(function(){{
+  // Command bar: auto-size (hidden-measure technique -- field-sizing:content
+  // isn't portable yet) + click-anywhere-to-focus, so the whole bar reads as
+  // one editable command line rather than decorative text bolted onto a
+  // separate input box, plus ghost-text completion against GET /complete
+  // (SPEC-command-bar.md #3-4). Present on every page (see header_html), so
+  // no page-specific gating here -- only the element lookups are null-safe.
+  var bar=document.getElementById('bar');
+  var q=document.getElementById('q');
+  var measure=document.getElementById('measure');
+  var dropdown=document.getElementById('bar-dropdown');
+  var helpPill=document.getElementById('help-pill');
+  var helpPanel=document.getElementById('search-help');
+  if(bar&&q&&measure){{
+    var size=function(){{
+      measure.textContent=q.value||'';
+      q.style.width=(measure.offsetWidth+2)+'px';
+    }};
+    var matches=[];
+    // Strips accents the same way api.py's norm_name does server-side --
+    // without this, plain toLowerCase() rejects the server's own correctly
+    // accent-folded matches: 'zürich'.startsWith('zur') is false in JS
+    // (ü !== u as characters), so typing the ASCII "zur" would never show
+    // the "ich" ghost for "Zürich" at all.
+    var fold=function(s){{return s.normalize('NFD').replace(/[\\u0300-\\u036f]/g,'').toLowerCase();}};
+    var PAGES=/*PAGES*/;
+    var active=-1;
+
+    // The bar holds a path, so "/" splits it: everything up to the last
+    // slash is settled, and only the tail is being typed. On "Tokyo/ven"
+    // the prefix is "Tokyo/" and the tail is "ven".
+    var prefixOf=function(v){{
+      var i=v.lastIndexOf('/');
+      return i<0?'':v.slice(0,i+1);
+    }};
+    var tailOf=function(v){{
+      var i=v.lastIndexOf('/');
+      return i<0?v:v.slice(i+1);
+    }};
+    // Each segment encoded on its own, so the slashes that separate them
+    // survive. encodeURIComponent on the whole string would turn the one
+    // character doing the work into %2F.
+    var toPath=function(v){{
+      return '/'+v.split('/').map(encodeURIComponent).join('/');
+    }};
+
+    // Two endpoints rather than one merged one, deliberately: /complete is
+    // static city data cached for a week at the edge, /complete/objects has
+    // to expire hourly because the Moon's glyph tracks its real phase.
+    // Merging them server-side would drag the cities down to the Moon's
+    // cache lifetime for no gain -- the browser can hold two promises.
+    // "47.37,8.55" and "-24.63, -70.4" -- the same thing the place resolver
+    // accepts, checked here only so the dropdown can say "yes, that is a
+    // usable answer" instead of going silent because no city is spelled
+    // like a number. Range-checked, so 91,0 is not offered as a place.
+    var COORD=/^(-?\\d{{1,3}}(?:\\.\\d+)?)\\s*,\\s*(-?\\d{{1,3}}(?:\\.\\d+)?)$/;
+    var asCoords=function(v){{
+      var m=COORD.exec(v.trim());
+      if(!m)return null;
+      var la=parseFloat(m[1]), lo=parseFloat(m[2]);
+      if(!(Math.abs(la)<=90&&Math.abs(lo)<=180))return null;
+      return la+','+lo;
+    }};
+
+    // After a slash the answer can only be an object: the second segment of
+    // a path is what you are looking at, never where you are standing. So
+    // "Tokyo/ven" offers Venus and no cities at all, which is also why the
+    // place suggestions are not merely ranked lower there -- a city would
+    // build /Tokyo/Paris, and there is no such page.
+    // A crescent for somewhere you go at night, a silhouette for a
+    // monument, a dot for somewhere people live. Both are plain BMP
+    // characters present in the two bundled fonts as well as every system
+    // one, so neither needs a PNG_SUBSTITUTE entry.
+    var PLACE_MARK={{dark:'\\u263e', unesco:'\\u25b2'}};
+
+    var buildItems=function(cities,objects,v){{
+      var out=[],pre=prefixOf(v),tail=tailOf(v),f=fold(tail);
+      // Names, not paths. The prefix is already sitting in the bar a few
+      // pixels above the list, so repeating it on every row says nothing
+      // and makes the names harder to scan.
+      objects.forEach(function(o){{
+        var name=o.q||o.name;
+        out.push({{group:'Objects',label:name,glyph:o.glyph,color:o.color,
+                  href:toPath(pre+name)}});
+      }});
+      if(pre)return out;
+      var coords=asCoords(v);
+      if(coords){{
+        out.push({{group:'Places',label:coords+'  (coordinates)',
+                  glyph:'\\u25ce',color:'',size:0,href:toPath(coords)}});
+      }}
+      cities.forEach(function(c){{
+        // Either shape: {{name,size}} from the current server, or a bare
+        // string from a week-old cached response (see /complete's docstring).
+        var name=(typeof c==='string')?c:c.name;
+        var size=(typeof c==='string')?0:(c.size||0);
+        var mark=(typeof c==='string')?null:PLACE_MARK[c.kind];
+        // The row reads "Tokyo"; the slash only appears once it is chosen,
+        // in the bar, where it is an invitation to name an object. Landing
+        // on /Tokyo/ rather than /Tokyo is free: they are one page.
+        //
+        // A named site keeps its mark at full size; only the city dot is
+        // scaled by population, and a scaled crescent would read as a phase
+        // rather than as a category.
+        out.push({{group:'Places',label:name,glyph:mark||'\\u25cf',color:'',
+                  size:mark?0:size,href:toPath(name)+'/'}});
+      }});
+      PAGES.forEach(function(p){{
+        if(fold(p).startsWith(f))
+          out.push({{group:'Pages',label:p,glyph:'\\u2192',color:'',href:'/'+p}});
+      }});
+      return out;
+    }};
+
+    var renderDropdown=function(){{
+      if(!dropdown)return;
+      dropdown.innerHTML='';
+      if(!matches.length){{
+        dropdown.hidden=true;
+        q.setAttribute('aria-expanded','false');
+        return;
+      }}
+      var seen='';
+      matches.forEach(function(it,i){{
+        if(it.group!==seen){{
+          seen=it.group;
+          var h=document.createElement('li');
+          h.className='bar-group';
+          h.setAttribute('role','presentation');
+          h.textContent=it.group;
+          dropdown.appendChild(h);
+        }}
+        var li=document.createElement('li');
+        li.className='bar-option'+(i===active?' active':'');
+        li.setAttribute('role','option');
+        var g=document.createElement('span');
+        // The dot is one character at three CSS sizes rather than three
+        // different characters. Picking bullet/circle/large-circle by
+        // population would put the size at the mercy of whichever font the
+        // browser reaches for, and they are not drawn to a consistent scale
+        // across families; scaling one glyph is exact everywhere.
+        g.className='glyph'+(it.size?' sz'+it.size:'');
+        if(it.color)g.style.color=it.color;
+        g.textContent=it.glyph||'';
+        var n=document.createElement('span');
+        n.textContent=it.label;
+        li.appendChild(g);
+        li.appendChild(n);
+        // mousedown, not click: it fires before the input's blur, so a
+        // mouse pick doesn't race the blur-closes-dropdown handler.
+        li.addEventListener('mousedown',function(e){{
+          e.preventDefault();
+          location.href=it.href;
+        }});
+        dropdown.appendChild(li);
+      }});
+      dropdown.hidden=false;
+      q.setAttribute('aria-expanded','true');
+    }};
+
+    var closeDropdown=function(){{
+      matches=[];active=-1;
+      if(dropdown){{dropdown.hidden=true;dropdown.innerHTML='';}}
+      q.setAttribute('aria-expanded','false');
+    }};
+
+    var completeAbort=null, completeTimer=null;
+    var fetchMatches=function(){{
+      if(completeAbort)completeAbort.abort();
+      var v=q.value.trim();
+      // Matched on the tail, not the whole path: "Tokyo/ven" is a two-letter
+      // search for "ven", not a nine-letter one for a city called
+      // "Tokyo/ven". Without this the dropdown went blank the moment a
+      // slash was typed, which looked exactly like the bar giving up.
+      var pre=prefixOf(v), tail=tailOf(v).trim();
+      if(tail.length<2){{closeDropdown();return;}}
+      completeAbort=new AbortController();
+      var sig=completeAbort.signal;
+      var enc=encodeURIComponent(tail.slice(0,24));
+      // Either endpoint failing leaves the other's results usable rather
+      // than emptying the list -- an aborted fetch is the normal case here,
+      // one per keystroke. Past a slash the city half is not asked for at
+      // all: nothing would be done with the answer.
+      Promise.all([
+        pre?Promise.resolve([]):
+        fetch('/complete?q='+encodeURIComponent(tail.toLowerCase().slice(0,24)),
+              {{signal:sig}}).then(function(r){{return r.json();}})
+              .catch(function(){{return [];}}),
+        fetch('/complete/objects?q='+enc,{{signal:sig}})
+              .then(function(r){{return r.json();}})
+              .catch(function(){{return [];}})
+      ]).then(function(res){{
+        // Guard against a slow response for an earlier, shorter prefix
+        // landing after the reader has kept typing.
+        if(q.value.trim()!==v)return;
+        matches=buildItems(res[0]||[],res[1]||[],v);
+        active=-1;
+        renderDropdown();
+      }}).catch(function(){{}});
+    }};
+    size();
+    q.addEventListener('input',function(){{
+      size();
+      if(completeTimer)clearTimeout(completeTimer);
+      completeTimer=setTimeout(fetchMatches,120);
+    }});
+    q.addEventListener('keydown',function(e){{
+      if(e.key==='ArrowDown'||e.key==='ArrowUp'){{
+        if(!matches.length)return;
+        e.preventDefault();
+        active+=(e.key==='ArrowDown'?1:-1);
+        if(active<-1)active=matches.length-1;
+        if(active>=matches.length)active=-1;
+        renderDropdown();
+        return;
+      }}
+      if(e.key==='Escape'&&matches.length){{
+        e.preventDefault();
+        e.stopPropagation();
+        closeDropdown();
+      }}
+    }});
+    q.addEventListener('focus',function(){{bar.classList.add('focused');}});
+    q.addEventListener('blur',function(){{
+      bar.classList.remove('focused');
+      setTimeout(closeDropdown,150);
+    }});
+    bar.addEventListener('mousedown',function(e){{
+      if(helpPill&&(e.target===helpPill||helpPill.contains(e.target)))return;
+      if(e.target!==q){{
+        e.preventDefault();
+        q.focus();
+        q.setSelectionRange(q.value.length,q.value.length);
+      }}
+    }});
+    // Enter. A highlighted row wins, because the reader arrowed to it on
+    // purpose and it is the only path that knows an object should keep the
+    // place (/Tokyo/Venus, not /Venus). With nothing highlighted this falls
+    // through to the explore form's own onsubmit, which already reads #q
+    // and carries the date/time fields with it -- rather than a second
+    // "just navigate" path that could drift from it.
+    bar.addEventListener('submit',function(e){{
+      e.preventDefault();
+      if(active>=0&&matches[active]){{
+        location.href=matches[active].href;
+        return;
+      }}
+      closeDropdown();
+      // The bar holds a path, so Enter goes to that path. It used to hand
+      // the text to the explore form, which rebuilt a URL out of #q and the
+      // old find field -- that form now only contributes the date and time,
+      // and rebuilding a path it never saw the slashes in is how "Tokyo/"
+      // plus "Venus" turned back into plain /Venus.
+      var v=q.value.trim();
+      if(!v){{location.href='/';return;}}
+      var wd=document.getElementById('whenDate');
+      var wt=document.getElementById('whenTime');
+      var t=(wd&&wt&&wd.value&&wt.value)?(wd.value+'T'+wt.value):'';
+      location.href=toPath(v)+(t?'?t='+encodeURIComponent(t):'');
+    }});
+
+    // The help panel. One bar that takes places, objects and page names is
+    // only obvious once somebody tells you, and there is nowhere in a
+    // single-line prompt to write three examples.
+    if(helpPill&&helpPanel){{
+      var setHelp=function(open){{
+        helpPanel.hidden=!open;
+        helpPill.setAttribute('aria-expanded',open?'true':'false');
+        if(open)closeDropdown();
+      }};
+      helpPill.addEventListener('click',function(e){{
+        e.preventDefault();
+        e.stopPropagation();
+        setHelp(helpPanel.hidden);
+      }});
+      document.addEventListener('mousedown',function(e){{
+        if(helpPanel.hidden)return;
+        if(helpPanel.contains(e.target)||helpPill.contains(e.target))return;
+        setHelp(false);
+      }});
+      document.addEventListener('keydown',function(e){{
+        if(e.key==='Escape'&&!helpPanel.hidden){{setHelp(false);helpPill.focus();}}
+      }});
+      // Typing is the reader answering the question the panel asks, so it
+      // has served its purpose and should get out of the way of the
+      // suggestions about to appear underneath it.
+      q.addEventListener('input',function(){{if(!helpPanel.hidden)setHelp(false);}});
+    }}
+  }}
+}})();"""
+
+# The page-name list the dropdown offers has to be the one SEARCH_HELP
+# advertises, and a second hand-typed copy inside a string template is
+# exactly how those two drift apart. json.dumps rather than a join, so the
+# quoting is something's job rather than mine. Substituted into the script
+# itself, not into PAGE, so anything splicing CMDBAR_JS gets it complete.
+CMDBAR_JS = CMDBAR_JS.replace("/*PAGES*/", json.dumps(list(SEARCH_PAGES)))
+
+PAGE = PAGE.replace("/*CMDBAR_CSS*/", CMDBAR_CSS)
+PAGE = PAGE.replace("/*CMDBAR_JS*/", CMDBAR_JS)
 
 
 # Only shown on an actual chart page (server.py passes "" everywhere else) --

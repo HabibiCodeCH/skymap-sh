@@ -3964,6 +3964,61 @@ class CanonicalNamesTheApex(unittest.TestCase):
         self.assertEqual(self._canonical("/paris"), self._canonical("/Paris"))
 
 
+class TheDemoPageRunsTheSameCommandBar(unittest.TestCase):
+    """/demo is pre-rendered by build_sky_html.py and committed, so it is the
+    one page that can go stale without anything failing.
+
+    It did. The header markup comes from the live header_html(), but the CSS
+    and script were a hand copy, and when the find bar and the copy pill
+    became the help pill and the dropdown, the copy kept looking up a #ghost
+    and a #copy that were no longer there. The script guards its lookups, so
+    nothing threw: the bar simply stopped running, and looked perfectly fine
+    doing it. Both blocks now come from api.CMDBAR_CSS/_JS."""
+
+    DEMO = f"{api.sky.BASE}/sky_demo.html"
+
+    def setUp(self):
+        with open(self.DEMO) as f:
+            self.page = f.read()
+
+    def test_it_looks_up_no_element_it_does_not_have(self):
+        """The exact shape of the drift, and the only check that would have
+        caught it: a lookup with no matching id is a dead feature, silently."""
+        scripts = re.findall(r"<script(?![^>]*src)[^>]*>(.*?)</script>",
+                             self.page, re.S)
+        for name in {n for s in scripts
+                     for n in re.findall(r"getElementById\('([^']+)'\)", s)}:
+            self.assertIn(f'id="{name}"', self.page, name)
+
+    def test_it_carries_the_current_bar_not_a_frozen_one(self):
+        for marker in ('id="bar-dropdown"', 'id="help-pill"',
+                       'id="search-help"', "class=\"bar-wrap\""):
+            self.assertIn(marker, self.page, marker)
+
+    def test_the_committed_page_is_not_older_than_the_header(self):
+        """Every element the live header emits has to exist on the demo too,
+        or the committed file predates a header change and the shared script
+        is wiring up half a bar."""
+        header = api.header_html("demo")
+        for name in re.findall(r'id="([^"]+)"', header):
+            self.assertIn(f'id="{name}"', self.page, name)
+
+    def test_the_builder_keeps_no_second_copy_of_the_bar(self):
+        """The rule that replaces the comment asking people to remember.
+
+        Scoped to the command bar. The drawer script is still a hand copy in
+        there, and it legitimately focuses #q, so this cannot just ban every
+        lookup -- that copy is the same hazard and worth folding in the same
+        way, but it is a separate change and has not drifted."""
+        with open(f"{api.sky.BASE}/build_sky_html.py") as f:
+            builder = f.read()
+        self.assertIn("api.CMDBAR_CSS", builder)
+        self.assertIn("api.CMDBAR_JS", builder)
+        for copied in (".cmdbar{{", "getElementById('bar')",
+                       "getElementById('measure')", "ghosttext"):
+            self.assertNotIn(copied, builder, copied)
+
+
 class TheSearchScriptDeclaresWhatItUses(unittest.TestCase):
     """A ReferenceError in that script kills the whole dropdown silently:
     the bar still looks fine, it just never suggests anything again. No

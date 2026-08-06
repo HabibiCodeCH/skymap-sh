@@ -122,13 +122,21 @@ IMG_TERM = """<div class="term"><div class="bar"><span class="dot" style="backgr
 # a hand-copied header frozen from whatever api.py looked like on the day
 # this was last generated, silently going stale (most recently: showing the
 # old static "$ curl skymap.sh/demo" chip with no #q input at all, months
-# after the live site grew an actual interactive command bar). The header
-# CSS/JS below is still a literal copy, though, same reasoning as ever --
-# this is a static build script, not a live request handler, so it can't
-# just import api.PAGE's <style>/<script> wholesale without pulling in
-# rules for things this page doesn't have (#chart-pre, #drawer, KBD...).
-# Any command-bar style/behaviour change to api.py should be mirrored here
-# too -- regenerate with `python3 build_sky_html.py` after.
+# after the live site grew an actual interactive command bar).
+#
+# The bar's CSS and script are now spliced in from api.CMDBAR_CSS/_JS for
+# the same reason, because keeping a literal copy of those went the same
+# way. The note here used to ask whoever changed api.py to remember to
+# change this too. Nobody did: the find bar and the copy pill were replaced
+# by the help pill and the dropdown, and this page went on wiring up a
+# #ghost and a #copy that no longer existed. The script is guarded, so it
+# didn't throw -- it just stopped running, and the demo's search bar sat
+# there looking fine and doing nothing.
+#
+# The old objection to importing was that api.PAGE's <style>/<script> carry
+# rules for things this page doesn't have (#chart-pre, KBD...). Two named
+# blocks rather than the whole sheet answers it: this takes the bar, and
+# nothing else. Regenerate with `python3 build_sky_html.py` after a change.
 PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>skymap.sh -- demo</title>
@@ -191,31 +199,7 @@ document.documentElement.classList.add('js');
               cursor:pointer;display:block;width:100%;box-sizing:border-box;
               text-align:center;text-decoration:none;margin:0 0 8px}}
  .animate-btn:hover{{border-color:#ffd700;text-decoration:none}}
- .cmdbar{{display:inline-flex;align-items:center;background:#0d1117;
-         border:1px solid #30363d;border-radius:6px;padding:9px 12px;
-         margin:0;color:#7ee787;font-size:13px;cursor:text;
-         max-width:100%;min-width:min(560px,90vw)}}
- .cmdbar .prompt{{color:#6e7681;margin-right:6px}}
- .cmdbar .fixed{{white-space:pre}}
- .cmdbar .curlword{{color:#6e7681}}
- .cmdbar .field{{display:inline-flex;min-width:0;max-width:100%}}
- .cmdbar input{{background:transparent;border:0;color:#e6edf3;font:inherit;
-               padding:0;margin:0;min-width:0;max-width:100%;outline:none}}
- .cmdbar .ghosttext{{color:#3d4451;white-space:pre;pointer-events:none}}
- .cmdbar .measure{{position:absolute;visibility:hidden;white-space:pre;left:-9999px}}
- .cmdbar .grow{{flex:1}}
- .cmdbar .copy{{background:none;border:1px solid #30363d;color:#6e7681;
-               border-radius:4px;padding:4px 8px;margin-left:10px;
-               font:inherit;font-size:12px;cursor:pointer;white-space:nowrap}}
- .cmdbar .copy:hover{{border-color:#7ee787;color:#7ee787}}
- .cursor{{display:inline-block;width:.55em;height:1.15em;margin-left:1px;
-         background:#7ee787;vertical-align:-0.2em;
-         animation:blink 1.06s step-end infinite}}
- .cmdbar.focused .cursor{{visibility:hidden;animation:none}}
- @keyframes blink{{0%,50%{{opacity:1}}50.01%,100%{{opacity:0}}}}
- @media (prefers-reduced-motion: reduce){{
-   .cursor{{animation:none;opacity:.55}}
- }}
+/*CMDBAR_CSS*/
  h2{{font-size:12px;text-transform:uppercase;letter-spacing:.09em;color:#8b949e;font-weight:600;margin:32px 0 10px;font-family:ui-sans-serif,-apple-system,"Segoe UI",Roboto,sans-serif}}
  h2 .n{{text-transform:none;letter-spacing:0;font-weight:400;color:#6e7681;margin-left:8px;font-family:ui-monospace,Menlo,monospace}}
  .term{{background:#080b11;border:1px solid #1b2027;border-radius:10px;overflow:hidden;box-shadow:0 10px 34px rgba(0,0,0,.6)}}
@@ -234,109 +218,7 @@ document.documentElement.classList.add('js');
 {sections}
 </div>
 <script>
-// Command bar: auto-size + click-anywhere-to-focus + ghost-text completion
-// against the live GET /complete endpoint + copy button. Literal copy of
-// api.py's command-bar IIFE (see its own comments there for the reasoning
-// behind each piece).
-(function(){{
-  var bar=document.getElementById('bar');
-  var q=document.getElementById('q');
-  var measure=document.getElementById('measure');
-  var ghost=document.getElementById('ghost');
-  var copyBtn=document.getElementById('copy');
-  if(bar&&q&&measure&&ghost){{
-    var size=function(){{
-      measure.textContent=q.value||'';
-      q.style.width=(measure.offsetWidth+2)+'px';
-    }};
-    var matches=[];
-    var fold=function(s){{return s.normalize('NFD').replace(/[\\u0300-\\u036f]/g,'').toLowerCase();}};
-    var complete=function(){{
-      var v=q.value;
-      if(!v){{ghost.textContent='';return;}}
-      var hit=matches.find(function(c){{
-        return fold(c).startsWith(fold(v))&&c.length>v.length;
-      }});
-      ghost.textContent=hit?hit.slice(v.length):'';
-    }};
-    var completeAbort=null, completeTimer=null;
-    var fetchMatches=function(){{
-      if(completeAbort)completeAbort.abort();
-      var v=q.value.trim();
-      if(v.length<2){{matches=[];complete();return;}}
-      completeAbort=new AbortController();
-      fetch('/complete?q='+encodeURIComponent(v.toLowerCase().slice(0,24)),
-            {{signal:completeAbort.signal}})
-        .then(function(r){{return r.json();}})
-        .then(function(names){{matches=names;complete();}})
-        .catch(function(){{}});
-    }};
-    size();
-    q.addEventListener('input',function(e){{
-      size();
-      if(e.inputType==='deleteContentBackward'){{matches=[];ghost.textContent='';}}
-      if(completeTimer)clearTimeout(completeTimer);
-      completeTimer=setTimeout(fetchMatches,120);
-    }});
-    q.addEventListener('keydown',function(e){{
-      if(!ghost.textContent)return;
-      var atEnd=q.selectionStart===q.value.length;
-      if(e.key==='Tab'||(e.key==='ArrowRight'&&atEnd)){{
-        e.preventDefault();
-        q.value+=ghost.textContent;
-        ghost.textContent='';
-        size();
-        q.setSelectionRange(q.value.length,q.value.length);
-      }}
-    }});
-    q.addEventListener('focus',function(){{bar.classList.add('focused');}});
-    q.addEventListener('blur',function(){{bar.classList.remove('focused');}});
-    bar.addEventListener('mousedown',function(e){{
-      if(copyBtn&&(e.target===copyBtn||copyBtn.contains(e.target)))return;
-      if(e.target!==q){{
-        e.preventDefault();
-        q.focus();
-        q.setSelectionRange(q.value.length,q.value.length);
-      }}
-    }});
-    bar.addEventListener('submit',function(e){{
-      e.preventDefault();
-      if(ghost.textContent){{
-        q.value+=ghost.textContent;
-        ghost.textContent='';
-        size();
-      }}
-      var exploreForm=document.getElementById('explore');
-      if(exploreForm){{
-        if(exploreForm.requestSubmit)exploreForm.requestSubmit();
-        else exploreForm.dispatchEvent(new Event('submit',{{cancelable:true}}));
-        return;
-      }}
-      if(q.value)location.href='/'+encodeURIComponent(q.value);
-    }});
-    if(copyBtn){{
-      if(!navigator.clipboard){{
-        copyBtn.hidden=true;
-      }}else{{
-        var copyLabel=copyBtn.textContent;
-        var copyResetTimer=null;
-        copyBtn.addEventListener('click',function(){{
-          var place=q.value+ghost.textContent;
-          var path=place.includes(' ')?
-            "'skymap.sh/"+place+"'":'skymap.sh/'+place;
-          navigator.clipboard.writeText('curl '+path).then(function(){{
-            if(copyResetTimer)clearTimeout(copyResetTimer);
-            copyBtn.textContent='✓ copied';
-            copyResetTimer=setTimeout(function(){{
-              copyBtn.textContent=copyLabel;
-              copyResetTimer=null;
-            }},1400);
-          }}).catch(function(){{}});
-        }});
-      }}
-    }}
-  }}
-}})();
+/*CMDBAR_JS*/
 (function(){{
   // Drawer -- literal copy of api.py's IIFE (see its own comments there).
   var trigger=document.getElementById('drawer-trigger');
@@ -394,6 +276,12 @@ for i, (title, sub, kwargs, cap) in enumerate(CASES, 1):
         f'<h2 id="section-{i}">{i} &middot; {title} <span class="n">{cmd}</span></h2>\n'
         f'{term_html}\n'
         f'<p class="cap">{cap}</p>')
+
+# Before .format(), because both blocks are full of real CSS and JS braces
+# and are doubled to survive it -- exactly as they are in api.PAGE, which is
+# the point of taking them verbatim rather than reformatting them here.
+PAGE = PAGE.replace("/*CMDBAR_CSS*/", api.CMDBAR_CSS)
+PAGE = PAGE.replace("/*CMDBAR_JS*/", api.CMDBAR_JS)
 
 open("sky_demo.html", "w").write(
     PAGE.format(header=api.header_html("demo"), controls=api.controls_html(api.EXPLORE),
