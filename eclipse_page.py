@@ -439,7 +439,9 @@ def picker_html(entry, now_utc, place=None, escape=html.escape):
         # used to make: a solar eclipse has Besselian elements and can
         # answer "what about from here", a lunar one has none and never
         # will, because the elements are a solar construction.
-        precise = "&#9728;" if k in besselian.ELEMENTS else "&#9789;"
+        solar = k in besselian.ELEMENTS
+        precise = ('<span class="ecl-sun">&#9728;</span>' if solar
+                   else '<span class="ecl-moon">&#9789;</span>')
         lbl = escape(d.strftime("%d %b %Y").lstrip("0"))
         body = (f'<b>{lbl}</b>' if k == here
                 else f'<a href="{base}/{k}">{lbl}</a>')
@@ -456,8 +458,10 @@ def picker_html(entry, now_utc, place=None, escape=html.escape):
             # happened to end, which put "date" on one line and "and regions
             # only" on the next and read as a third entry.
             '<p class="ecl-key">'
-            '<span>&#9728; solar, local times computed here</span>'
-            '<span>&#9789; lunar, date and regions only</span></p>'
+            '<span><span class="ecl-sun">&#9728;</span> solar, local times '
+            'computed here</span>'
+            '<span><span class="ecl-moon">&#9789;</span> lunar, date and '
+            'regions only</span></p>'
             '</div></details>')
 
 
@@ -572,6 +576,11 @@ ECLIPSE_CSS = """
 .ecl-panel{position:absolute;top:calc(100% + 6px);left:0;z-index:30;
   min-width:280px;background:#0d1117;border:1px solid #30363d;
   border-radius:6px;box-shadow:0 8px 24px rgba(0,0,0,.7)}
+/* The same colours the sky chart draws these two in: xterm 227 for the Sun
+   (sky.C.SUN) and 253 for the Moon (sky.C.MOON). A glyph that is the Sun
+   everywhere else on the site should not be grey here. */
+.ecl-sun{color:#ffff5f}
+.ecl-moon{color:#dadada}
 .ecl-picker ul{list-style:none;margin:0;padding:8px 12px}
 .ecl-picker li{padding:3px 0;font-size:13px;white-space:nowrap}
 .ecl-picker li a{color:#87d7ff}

@@ -49,7 +49,10 @@ import eclipse
 OUT = "eclipsemap.json"
 
 WIDTH, HEIGHT = 96, 44     # columns the page's live column fits, and rows
-WIDTH_KM = 5200.0          # how much ground the map covers left to right
+WIDTH_KM = 5200.0          # least ground the map covers left to right
+MAX_WIDTH_KM = 8600.0      # most, before a 250 km path stops being a line
+PAD = 0.06                 # of the land crossing's own extent, each side
+PATH_HALF_DEG = 1.8        # half the width of a path of totality, in degrees
 POLAR_LIMIT = 78.0         # degrees; above this a lat/lon box is a lie
 CELL_ASPECT = 2.0          # a character is twice as tall as it is wide
 MAX_LON_SPAN = 150.0       # degrees, for tracks near the pole
@@ -81,6 +84,24 @@ def _unwrapped(points):
     return out
 
 
+def _path_touches_land(point, polys):
+    """Is anywhere in the path of totality here on land?
+
+    The central line is a line; the path is 250 km wide either side of it,
+    and the difference decides where a map is framed. On 2 August 2027 the
+    central line crosses the sea south of the Strait and does not touch land
+    until Algeria -- but the path covers Cadiz, Gibraltar, Tangier and
+    Tetouan, and a window framed on the line alone cut all four off the
+    western edge of their own map.
+    """
+    lat, lon = point[0], point[1]
+    for dlat, dlon in ((0, 0), (PATH_HALF_DEG, 0), (-PATH_HALF_DEG, 0),
+                       (0, PATH_HALF_DEG), (0, -PATH_HALF_DEG)):
+        if wm.is_land(lon + dlon, lat + dlat, polys):
+            return True
+    return False
+
+
 def region_for(key, polys=None):
     """(lat_top, lat_bot, lon_left, lon_right, width, height), or None when
     the track never comes far enough from the pole to draw.
@@ -102,14 +123,29 @@ def region_for(key, polys=None):
            if abs(p[0]) <= POLAR_LIMIT]
     if len(pts) < 4:
         return None
-    on_land = [p for p in pts if polys and wm.is_land(p[1], p[0], polys)]
+    on_land = [p for p in pts if polys and _path_touches_land(p, polys)]
     use = on_land or pts
-    lat_c = (min(p[0] for p in use) + max(p[0] for p in use)) / 2
-    lon_c = (min(p[1] for p in use) + max(p[1] for p in use)) / 2
-
-    lat_span = CELL_ASPECT * HEIGHT * WIDTH_KM / WIDTH / 111.2
+    lat_lo, lat_hi = min(p[0] for p in use), max(p[0] for p in use)
+    lon_lo, lon_hi = min(p[1] for p in use), max(p[1] for p in use)
+    lat_c, lon_c = (lat_lo + lat_hi) / 2, (lon_lo + lon_hi) / 2
     cos_c = max(0.05, math.cos(math.radians(lat_c)))
-    lon_span = min(MAX_LON_SPAN, WIDTH_KM / (111.2 * cos_c))
+
+    # Wide enough to hold the whole land crossing, when that can be done
+    # without zooming out so far the path stops being a line. The 2 August
+    # 2027 track runs Morocco to Somalia, 58 degrees; a window sized only by
+    # WIDTH_KM cut Morocco and southern Spain off the western end, which is
+    # the part of that path most people reading this can drive to.
+    floor = WIDTH_KM / (111.2 * cos_c)
+    ceiling = MAX_WIDTH_KM / (111.2 * cos_c)
+    lon_span = min(ceiling, max(floor, (lon_hi - lon_lo) * (1 + 2 * PAD)))
+    lat_span = CELL_ASPECT * lon_span * cos_c * HEIGHT / WIDTH
+    want_lat = (lat_hi - lat_lo) * (1 + 2 * PAD)
+    if lat_span < want_lat:
+        # A north-south track. Widening is what makes room for it, because
+        # the two spans are locked together by the shape of a character.
+        lon_span = min(ceiling, want_lat * WIDTH / (CELL_ASPECT * cos_c * HEIGHT))
+        lat_span = CELL_ASPECT * lon_span * cos_c * HEIGHT / WIDTH
+    lon_span = min(lon_span, MAX_LON_SPAN)
     # Slide, never shrink, when the window runs off the top or bottom of the
     # world: a shorter map would be a different scale from every other one.
     lat_top = min(LAT_LIMIT, lat_c + lat_span / 2)
