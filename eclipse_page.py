@@ -635,42 +635,75 @@ def table_span():
     return f"{len(rows)} eclipses tracked, {first} to {last}"
 
 
-def share_html(share_url, escape=html.escape):
-    """A button that copies the eclipse's own link, without your city in it.
+def share_html(bare_url, place_url=None, place=None, escape=html.escape):
+    """A button, and behind it the two links and what each one does.
 
-    The address bar cannot offer this. Opening /eclipse/2026-08-12 bounces
-    you to /Geneva/eclipse/2026-08-12 so the page can say Geneva rather than
-    46.20,6.10 -- and from that moment the only URL you can copy has your
-    location baked into it. Sharing it tells everyone who opens it what the
-    eclipse does from Geneva, which is the wrong answer for all of them, and
-    the card that unfurls says Geneva too.
-
-    The bare URL is the one worth sharing: a person opening it is bounced to
-    their own city, and an unfurling crawler is not bounced at all and gets
-    the card that names nobody. It just needed a way out of the page.
+    Opening /eclipse/2026-08-12 bounces you to /Geneva/eclipse/2026-08-12 so
+    the page can say Geneva rather than 46.20,6.10, and from that moment the
+    only URL you can copy has your own location baked into it. Both links
+    are legitimate and they do opposite things, which is the whole reason to
+    show them together rather than pick one on the reader's behalf.
 
     Hidden until the script runs, like the animation controls: without a
-    clipboard there is nothing for it to do, and a button that does nothing
-    is worse than no button.
+    clipboard there is nothing for it to do.
     """
+    rows = [(
+        "Follows the reader",
+        bare_url,
+        "Each person who opens it sees the eclipse from where they are.",
+        "bare",
+    )]
+    if place_url and place:
+        rows.append((
+            f"Stays in {place}",
+            place_url,
+            f"Everyone who opens it sees {place}, wherever they are.",
+            "here",
+        ))
+    body = "".join(
+        f'<div class="ecl-share-row">'
+        f'<p class="ecl-share-what">{escape(label)}</p>'
+        f'<p class="ecl-share-why">{escape(why)}</p>'
+        f'<div class="ecl-share-line">'
+        f'<code id="ecl-url-{slug}">{escape(url)}</code>'
+        f'<button type="button" class="ecl-copy" data-for="ecl-url-{slug}">'
+        f'copy</button></div></div>'
+        for label, url, why, slug in rows)
     return (f'<button type="button" class="ecl-share" id="ecl-share" hidden'
-            f' data-url="{escape(share_url)}"'
-            f' title="Copy a link that shows each person their own view">'
-            f'share</button>')
+            f' aria-haspopup="dialog">share</button>'
+            f'<dialog class="ecl-share-box" id="ecl-share-box">'
+            f'<p class="ecl-share-title">Share this eclipse</p>'
+            f'{body}'
+            f'<button type="button" class="ecl-share-close" id="ecl-share-close">'
+            f'close</button>'
+            f'</dialog>')
 
 
 def share_script():
-    """Copy on click, and say so. No library: this is four lines of
-    clipboard and a label that changes back."""
+    """Open, copy, close. <dialog> brings its own backdrop and its own
+    escape key, which is most of what a modal is."""
     return ("<script>\n(function(){\n"
-            "  var b=document.getElementById('ecl-share');\n"
-            "  if(!b||!navigator.clipboard)return;\n"
+            "  var b=document.getElementById('ecl-share'),"
+            "d=document.getElementById('ecl-share-box');\n"
+            "  if(!b||!d||!navigator.clipboard||!d.showModal)return;\n"
             "  b.hidden=false;\n"
-            "  b.addEventListener('click',function(){\n"
-            "    navigator.clipboard.writeText(b.dataset.url).then(function(){\n"
-            "      b.textContent='copied';b.classList.add('ecl-shared');\n"
-            "      setTimeout(function(){b.textContent='share';"
-            "b.classList.remove('ecl-shared');},2000);\n"
+            "  b.addEventListener('click',function(){d.showModal();});\n"
+            "  var x=document.getElementById('ecl-share-close');\n"
+            "  if(x)x.addEventListener('click',function(){d.close();});\n"
+            # Clicking the backdrop closes it. The dialog element is the
+            # click target for its own backdrop, so anything landing on the
+            # dialog itself rather than on a child is outside the panel.
+            "  d.addEventListener('click',function(e){"
+            "if(e.target===d)d.close();});\n"
+            "  d.querySelectorAll('.ecl-copy').forEach(function(c){\n"
+            "    c.addEventListener('click',function(){\n"
+            "      var t=document.getElementById(c.dataset.for);\n"
+            "      if(!t)return;\n"
+            "      navigator.clipboard.writeText(t.textContent).then(function(){\n"
+            "        c.textContent='copied';c.classList.add('ecl-copied');\n"
+            "        setTimeout(function(){c.textContent='copy';"
+            "c.classList.remove('ecl-copied');},1800);\n"
+            "      });\n"
             "    });\n"
             "  });\n"
             "})();\n</script>")
@@ -943,7 +976,31 @@ ECLIPSE_CSS = """
   font-size:13px;color:#c9d1d9;background:none;cursor:pointer;
   border:1px solid #30363d;border-radius:6px;padding:6px 12px}
 .ecl-share:hover{border-color:#8fb6e0}
-.ecl-shared{color:#7ee787;border-color:#7ee787}
+/* The panel behind it. Two links that do opposite things, each with the
+   sentence that says which is which -- picking one on the reader's behalf
+   would be picking wrong for half of them. */
+.ecl-share-box{border:1px solid #30363d;border-radius:10px;background:#0d1117;
+  color:#c9d1d9;padding:20px 22px;max-width:min(560px,92vw);
+  font-family:ui-sans-serif,-apple-system,"Segoe UI",Roboto,sans-serif}
+.ecl-share-box::backdrop{background:rgba(0,0,0,.6)}
+.ecl-share-title{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  font-size:15px;color:#e6ebf2;margin:0 0 16px}
+.ecl-share-row+.ecl-share-row{margin-top:18px;padding-top:16px;
+  border-top:1px solid #21262d}
+.ecl-share-what{margin:0;font-size:13px;color:#8fb6e0;letter-spacing:.04em;
+  text-transform:uppercase}
+.ecl-share-why{margin:3px 0 9px;font-size:13px;line-height:1.45;color:#8b949e}
+.ecl-share-line{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.ecl-share-line code{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,
+  monospace;font-size:12.5px;color:#87d7ff;background:#010409;
+  border:1px solid #21262d;border-radius:6px;padding:6px 10px;
+  overflow-wrap:anywhere;flex:1;min-width:0}
+.ecl-copy,.ecl-share-close{font:inherit;font-size:12.5px;color:#c9d1d9;
+  background:none;border:1px solid #30363d;border-radius:6px;
+  padding:6px 12px;cursor:pointer}
+.ecl-copy:hover,.ecl-share-close:hover{border-color:#8fb6e0}
+.ecl-copied{color:#7ee787;border-color:#7ee787}
+.ecl-share-close{margin-top:18px}
 .ecl-head-row .obj-title{margin:0}
 /* The two drawings have to start on the same line, and what sits above them
    does not match: a short label on the left, a sentence that may wrap to two

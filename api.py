@@ -2590,10 +2590,15 @@ def eclipse_html(r, f, key, entry, map_rows, legend, disc=None,
     body = ('<div class="ecl-head-row">'
             '<h1 class="obj-title"><span>Upcoming eclipses</span></h1>'
             + eclipse_page.picker_html(entry, r.when_utc, place)
-            # The link worth sharing is the one with no place in it: it
-            # sends each reader to their own city and unfurls as the card
-            # that names nobody. The canonical, in other words.
-            + eclipse_page.share_html(canonical_url(f"/eclipse/{key}"))
+            # Both links, and what each one does. The bare one is the
+            # canonical: it sends each reader to their own city and unfurls
+            # as the card that names nobody. The other one pins the place,
+            # which is what you want when the point is "come and stand
+            # here". Neither is the right default for everybody.
+            + eclipse_page.share_html(
+                canonical_url(f"/eclipse/{key}"),
+                canonical_url(f"/{quote(place)}/eclipse/{key}") if place else None,
+                r.place.name if place else None)
             + '</div>'
             + '<div class="obj-cols">'
             f'<aside class="obj-static">'
@@ -6005,6 +6010,20 @@ document.documentElement.classList.add('js');
              flex-wrap:wrap;gap:12px;margin:0 0 8px}}
  .header-row .nav-row{{margin:0;flex:1;min-width:0}}
  .social-icons{{display:inline-flex;gap:8px;margin-left:8px;vertical-align:middle}}
+ /* On a phone the header row is the command bar and one button. Everything
+    else it carried -- home, events, help, the four social icons -- is in
+    the drawer, which is what the drawer is for, and none of it was worth a
+    second line at the top of every page. The bar loses the word "curl" and
+    the help pill to make room, so the trigger sits beside it rather than
+    under it. */
+ @media (max-width:700px){{
+   .header-row{{flex-wrap:nowrap;gap:8px}}
+   .bar-wrap{{flex:1 1 auto;min-width:0}}
+   .cmdbar{{max-width:100%}}
+   .cmdbar .curlword,.cmdbar .barpill{{display:none}}
+   .header-row .nav-row{{flex:0 0 auto}}
+   .nav-row>span>a,.nav-row .social-icons{{display:none}}
+ }}
  .social-icons a{{color:#6e7681;display:inline-flex}}
  .social-icons a:hover{{color:#c9d1d9}}
  .social-icons svg{{display:block}}
@@ -7276,6 +7295,9 @@ return false;">
 # catalog/demo/legend are less-used than events/help (which stayed in the
 # nav), and this was the one thing on every page that couldn't collapse.
 DRAWER_LINKS_HTML = """<p class="tries">
+<a href="/">home</a> ·
+<a href="/events">events</a> ·
+<a href="/help">help</a> ·
 <a href="/catalog">catalog</a> ·
 <a href="/demo">demo</a> ·
 <a href="/legend">legend</a>
@@ -7411,7 +7433,10 @@ SPHERE_PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
  .mode-cell{{appearance:none;border:0;background:transparent;color:#8b949e;
             font:inherit;cursor:pointer;width:52px;padding:8px 0 6px;
             display:flex;flex-direction:column;align-items:center;gap:2px;
-            line-height:1.05}}
+            line-height:1.05;text-decoration:none}}
+ /* A link, not a mode, so it never takes the "on" state the two below it
+    share. */
+ #mode-catalog:hover{{color:#87d7ff}}
  .mode-cell+.mode-cell{{border-top:1px solid #30363d}}
  .mode-ico{{font-size:15px}}
  .mode-lab{{font-size:9px;letter-spacing:.04em}}
@@ -7609,6 +7634,14 @@ you're holding it; anywhere else, drag to look around.</p>
 </form>
 </div>
 <div id="mode-switch">
+<!-- The way out. On a phone the home page IS this view, so without a link
+     off it the sphere is where you arrive and where you stay: every other
+     page on the site is reachable only by typing a URL. The catalogue is
+     the right destination because it is the one page that lists everything
+     that has a page of its own. First in the stack, so it reads as leaving
+     rather than as a third mode. -->
+<a id="mode-catalog" class="mode-cell" href="/catalog">
+<span class="mode-ico">&#9776;</span><span class="mode-lab">browse</span></a>
 <button type="button" id="mode-sky" class="mode-cell on" aria-pressed="true">
 <span class="mode-ico">&#9673;</span><span class="mode-lab">sky</span></button>
 <button type="button" id="mode-golden" class="mode-cell" aria-pressed="false" hidden>

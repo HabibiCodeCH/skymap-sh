@@ -3229,6 +3229,78 @@ class SpherePage(unittest.TestCase):
         self.assertNotIn("mobile_redirect", stats)
 
 
+class ThePhoneHasAWayOutOfTheSphere(unittest.TestCase):
+    """A phone landing on the root is sent to the sphere, which is right --
+    but the sphere had no link off it, so that was where you arrived and
+    where you stayed. Every other page on the site was reachable only by
+    typing a URL."""
+
+    def setUp(self):
+        cm = TestClient(server.app)
+        self.client = cm.__enter__()
+        self.addCleanup(cm.__exit__, None, None, None)
+
+    def test_the_sphere_links_to_the_catalogue(self):
+        got = self.client.get("/Zurich/sphere", headers=MOBILE)
+        self.assertEqual(got.status_code, 200)
+        self.assertIn('id="mode-catalog"', got.text)
+        self.assertIn('href="/catalog"', got.text)
+
+    def test_it_sits_with_the_other_two_controls(self):
+        """In the switch that is always on screen, not somewhere a thumb has
+        to go looking."""
+        got = self.client.get("/Zurich/sphere", headers=MOBILE)
+        switch = got.text.split('id="mode-switch"')[1].split("</div>")[0]
+        for one in ("mode-catalog", "mode-sky", "mode-golden"):
+            self.assertIn(one, switch)
+        # First, so it reads as leaving rather than as a third mode.
+        self.assertLess(switch.index("mode-catalog"), switch.index("mode-sky"))
+
+    def test_it_is_a_link_and_not_a_mode(self):
+        """The two below it toggle and take an "on" state. This one leaves."""
+        got = self.client.get("/Zurich/sphere", headers=MOBILE)
+        tag = got.text.split('id="mode-catalog"')[0].rsplit("<", 1)[1]
+        self.assertEqual(tag.strip(), "a")
+
+
+class ThePhoneHeaderIsOneLine(unittest.TestCase):
+    """Everything the nav row carried -- home, events, help, four social
+    icons -- is in the drawer on a phone, and the bar is short enough that
+    the drawer button sits beside it instead of under it."""
+
+    def setUp(self):
+        cm = TestClient(server.app)
+        self.client = cm.__enter__()
+        self.addCleanup(cm.__exit__, None, None, None)
+
+    def test_the_drawer_carries_what_the_nav_row_stops_showing(self):
+        """Hidden is only acceptable because it is somewhere else. Every
+        link the phone stops showing has to be in the drawer, or it is
+        gone."""
+        got = self.client.get("/Zurich", headers=BROWSER)
+        drawer = got.text.split('id="drawer"')[1].split("</aside>")[0] \
+            if 'id="drawer"' in got.text else got.text
+        for href in ('href="/"', 'href="/events"', 'href="/help"',
+                     'href="/catalog"', 'href="/legend"'):
+            self.assertIn(href, drawer)
+
+    def test_the_phone_rule_hides_the_row_and_shortens_the_bar(self):
+        got = self.client.get("/Zurich", headers=BROWSER)
+        rule = got.text.split("@media (max-width:700px){")[1].split("}\n }")[0]
+        self.assertIn(".nav-row>span>a", rule)
+        self.assertIn(".nav-row .social-icons{display:none", rule)
+        self.assertIn(".curlword", rule)
+        self.assertIn("flex-wrap:nowrap", rule)
+
+    def test_the_trigger_is_never_hidden(self):
+        """It is the only thing left, so hiding it would be the end of the
+        site on a phone."""
+        got = self.client.get("/Zurich", headers=BROWSER)
+        rule = got.text.split("@media (max-width:700px){")[1].split("}\n }")[0]
+        self.assertNotIn("drawer-trigger", rule)
+        self.assertIn('id="drawer-trigger"', got.text)
+
+
 class MobileRedirectsToSphere(unittest.TestCase):
     """The text/ASCII view has no real value on a phone screen -- a mobile
     UA landing on the bare root or any named place is sent straight to that

@@ -172,20 +172,32 @@ class ThePlaceIsCarriedAndNeverInvented(RouteTest):
         for url in (f"/eclipse/{SOLAR}", f"/Geneva/eclipse/{SOLAR}",
                     f"/Ibiza/eclipse/{LUNAR}"):
             got = self.client.get(url, headers=BROWSER)
-            button = got.text.split('id="ecl-share"')[1].split(">")[0]
             key = SOLAR if SOLAR in url else LUNAR
-            self.assertIn(f'data-url="https://skymap.sh/eclipse/{key}"',
-                          button, url)
-            for city in ("Geneva", "Ibiza", "Zurich", "Z%C3%BCrich"):
-                self.assertNotIn(city, button, url)
+            box = got.text.split('id="ecl-share-box"')[1].split("</dialog>")[0]
+            self.assertIn(f"https://skymap.sh/eclipse/{key}</code>", box, url)
+
+    def test_the_place_link_is_offered_too_and_says_what_it_does(self):
+        """Both are legitimate and they do opposite things. Picking one on
+        the reader's behalf picks wrong for half of them."""
+        got = self.client.get(f"/Ibiza/eclipse/{SOLAR}", headers=BROWSER)
+        box = got.text.split('id="ecl-share-box"')[1].split("</dialog>")[0]
+        self.assertIn(f"https://skymap.sh/eclipse/{SOLAR}</code>", box)
+        self.assertIn(f"https://skymap.sh/Ibiza/eclipse/{SOLAR}</code>", box)
+        self.assertIn("from where they are", box)
+        self.assertIn("Everyone who opens it sees Ibiza", box)
+
+    def test_a_page_with_no_place_offers_only_the_one_link(self):
+        got = self.client.get(f"/eclipse/{SOLAR}", headers=BROWSER)
+        box = got.text.split('id="ecl-share-box"')[1].split("</dialog>")[0]
+        self.assertEqual(box.count("<code"), 1)
 
     def test_the_shared_link_is_the_canonical_one(self):
-        """Not a second URL to keep in step with it: the link worth sharing
-        and the link worth indexing are the same link."""
+        """Not a second URL to keep in step with it: the link that follows
+        the reader and the link worth indexing are the same link."""
         got = self.client.get(f"/Ibiza/eclipse/{SOLAR}", headers=BROWSER)
-        button = got.text.split('id="ecl-share"')[1].split(">")[0]
-        shared = button.split('data-url="')[1].split('"')[0]
-        self.assertIn(f'<link rel="canonical" href="{shared}">', got.text)
+        box = got.text.split('id="ecl-share-box"')[1].split("</dialog>")[0]
+        first = box.split("<code")[1].split(">")[1].split("<")[0]
+        self.assertIn(f'<link rel="canonical" href="{first}">', got.text)
 
     def test_a_crawler_following_it_gets_the_card_that_names_nobody(self):
         """Which is what makes the bare link the right one to share: the
