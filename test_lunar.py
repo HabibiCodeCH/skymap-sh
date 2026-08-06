@@ -216,10 +216,28 @@ class ThePicturesFollowTheNumbers(unittest.TestCase):
         self.assertEqual(eclipse.arc_art(PARTIAL, 35.68, 139.65), [])   # Tokyo
 
     def test_the_eclipse_is_marked_on_the_arc(self):
-        rows = eclipse.arc_art(PARTIAL, 40.71, -74.01, color=False)
-        body = "".join(rows)
-        self.assertIn("+", body, "the eclipsed stretch is not marked")
-        self.assertIn("·", body, "the rest of the night is not drawn")
+        """Colour carries it where there is colour, and a heavier glyph
+        where there is not: a plain terminal would otherwise show a smooth
+        curve with no eclipse anywhere on it."""
+        plain = "".join(eclipse.arc_art(PARTIAL, 40.71, -74.01, color=False))
+        self.assertIn("+", plain, "the eclipsed stretch is not marked")
+        self.assertTrue(set("-.'") & set(plain), "the rest is not drawn")
+        coloured = "".join(eclipse.arc_art(PARTIAL, 40.71, -74.01, color=True))
+        self.assertIn(f"38;5;{eclipse.ARC_UMBRA}m", coloured)
+        self.assertIn(f"38;5;{eclipse.ARC_COLOR}m", coloured)
+
+    def test_the_arc_is_a_curve_and_not_a_pyramid(self):
+        """Altitude is smooth and a row is five degrees of it, so rounding
+        to whole rows drew a flat plateau over the hour either side of
+        culmination -- the one part of the shape that is not real. The
+        fraction of a row is read as well, so the top of the arc has to use
+        more than one of the three cell glyphs."""
+        import re
+        rows = [re.sub(r"\033\[[0-9;]*m", "", r) for r in
+                eclipse.arc_art(PARTIAL, 40.71, -74.01, color=True)]
+        near_peak = "".join(rows[:3])
+        self.assertGreater(len(set(near_peak) & set("-.'")), 1,
+                           f"the top of the arc is one flat run: {rows[1]!r}")
 
     def test_the_night_map_agrees_with_the_page(self):
         """The same check the solar map gets, for the same reason: the

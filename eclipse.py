@@ -707,6 +707,13 @@ def moon_frames(key, n=FRAMES, color=True, tz=0.0):
 # and setting, with the eclipse marked on the part of it where the eclipse
 # happens, and the Moon itself somewhere along it.
 ARC_COLS, ARC_ROWS = 90, 13
+# Three glyphs sitting at the bottom, middle and top of a character cell.
+# Altitude is a smooth curve and a row is 5 degrees of it, so rounding to
+# whole rows drew the night as a pyramid: long straight flanks and a flat
+# plateau over the hour either side of culmination, which is the one part of
+# the shape that is not real. Reading the fraction of a row as well triples
+# the vertical resolution without needing a taller frame.
+ARC_GLYPH = (".", "-", "'")
 HORIZON_COLOR = 240
 ARC_COLOR = 238             # the path, before and after
 ARC_PEN = 249               # the part in the penumbra
@@ -758,10 +765,14 @@ def arc_art(key, lat, lon, at=None, color=True, tz=0.0):
         cols[horizon][c] = HORIZON_COLOR
         if alt <= 0:
             continue
-        r = horizon - 1 - int(round(alt / peak * (ARC_ROWS - 2)))
-        r = max(0, min(horizon - 1, r))
+        y = alt / peak * (ARC_ROWS - 2)
+        r = max(0, min(horizon - 1, horizon - 1 - int(y)))
         shade = _arc_shade(marks, t)
-        rows[r][c] = "·" if shade == "sun" else "+"
+        # Colour says which stretch is the eclipse, so the curve can stay one
+        # continuous line. With colour off it cannot, and a heavier mark is
+        # what carries it in a plain terminal instead.
+        rows[r][c] = (ARC_GLYPH[min(2, int((y - int(y)) * 3))]
+                      if color or shade == "sun" else "+")
         cols[r][c] = {"sun": ARC_COLOR, "penumbra": ARC_PEN,
                       "umbra": ARC_UMBRA}[shade]
 
