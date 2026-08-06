@@ -2573,17 +2573,30 @@ def compose_eclipse(r, key):
     if entry is None:
         return None
     f = eclipse_page.facts(entry, r.place, r.when_utc)
-    rows = (eclipse_map.render(key, mark=(r.place.lat, r.place.lon), color=r.color)
-            if eclipse_map.has_map(key) else [])
-    legend = eclipse_map.legend(color=r.color) if rows else ""
-    # Empty when the Sun is down here, which is right: there is nothing to
-    # draw a picture of, and the prose already says so.
-    disc = eclipse_map.disc_art(key, r.place.lat, r.place.lon, color=r.color)
-    # Local labels: the clock over the animation is read next to a timeline
-    # that is already local, and two different time zones in the same column
-    # is a trap rather than a detail.
-    frames, labels = eclipse_map.disc_frames(key, r.place.lat, r.place.lon,
-                                             color=r.color, tz=r.tz)
+    here = (r.place.lat, r.place.lon)
+    # Two kinds of eclipse, two of every picture, and the same slots. A
+    # lunar eclipse has no path to draw, so its map answers the only
+    # question that varies -- whether the Moon is up here -- and its
+    # animation is the Moon's night rather than a disc being covered.
+    #
+    # Local labels either way: the clock over the animation is read next to
+    # a timeline that is already local, and two time zones in one column is
+    # a trap rather than a detail.
+    if eclipse_page.is_solar(entry):
+        rows = (eclipse_map.render(key, mark=here, color=r.color)
+                if eclipse_map.has_map(key) else [])
+        legend = eclipse_map.legend(color=r.color) if rows else ""
+        # Empty when the Sun is down here, which is right: there is nothing
+        # to draw a picture of, and the prose already says so.
+        disc = eclipse_map.disc_art(key, *here, color=r.color)
+        frames, labels = eclipse_map.disc_frames(key, *here, color=r.color,
+                                                 tz=r.tz)
+    else:
+        rows = eclipse_map.night_map(key, mark=here, color=r.color)
+        legend = eclipse_map.night_legend(color=r.color) if rows else ""
+        disc = eclipse_map.moon_art(key, color=r.color)
+        frames, labels = eclipse_map.arc_frames(key, *here, color=r.color,
+                                                tz=r.tz)
     return (Result(eclipse_page.text(f, rows, legend, disc, r.color), f),
             entry, rows, legend, disc, frames, labels)
 

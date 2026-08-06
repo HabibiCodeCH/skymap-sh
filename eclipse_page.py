@@ -21,11 +21,13 @@ precise ones are worth nothing.
 import datetime as dt
 import html
 import json
+import re
 from urllib.parse import quote
 
 import besselian
 import eclipse as eclipse_map
 import events
+import lunar
 import sky
 
 # How many future eclipses the left column lists. Enough to show this is a
@@ -87,8 +89,81 @@ def next_computable(now_utc):
     return ahead[0] if ahead else _entries()[-1]
 
 
+# Colour codes, so a row's width can be measured in characters somebody can
+# actually see rather than in escape sequences.
+_ANSI = re.compile(r"\033\[[0-9;]*m")
+
+
 def is_solar(entry):
     return "solar" in entry["type"]
+
+
+def _clock(h, tz):
+    """Hours UT to a local HH:MM. Hours may be negative or past 24 when an
+    eclipse straddles midnight; the modulo is what makes that a clock."""
+    if h is None:
+        return None
+    s = round(((h + tz) % 24) * 3600)
+    return f"{s // 3600:02d}:{s // 60 % 60:02d}"
+
+
+def lunar_facts(out, key, place, tz):
+    """The same contract as the solar half, from lunar.py's numbers.
+
+    The timeline is deliberately the same shape and the same three labels:
+    starts, maximum, ends. A lunar eclipse has seven named contacts, and
+    printing all of them puts the two nobody can see -- the penumbral ones,
+    which are a faint grey nothing -- in the same row and the same size as
+    the moment the Moon turns copper. Moonrise and moonset go in the row
+    when they fall inside, exactly as sunset does on a solar page, because
+    they are what decides whether any of this happens above your horizon.
+    """
+    if not lunar.has(key):
+        return out
+    el = lunar.elements(key)
+    marks = lunar.contacts(key)
+    vis = lunar.visibility(key, place.lat, place.lon)
+    out["computed"] = True
+    out["kind"] = el["kind"]
+    out["um_mag"] = el["um_mag"]
+    out["visible"] = vis["visible"]
+    out["all_of_it"] = vis["all_of_it"]
+    out["alt_at_greatest"] = round(vis["alt_at_greatest"], 1)
+    out["maximum"] = _clock(marks["greatest"], tz)
+    out["duration_s"] = lunar.duration_seconds(key, "tot_min")
+
+    # The visible phase: the umbral one where there is an umbral one. A
+    # penumbral eclipse has nothing else, so there it is all there is.
+    lo = marks.get("U1", marks.get("P1"))
+    hi = marks.get("U4", marks.get("P4"))
+    out["first"], out["last"] = _clock(lo, tz), _clock(hi, tz)
+
+    window = lunar.up_window(key, place.lat, place.lon)
+    out["moon_up"] = None if window is None else (
+        _clock(window[0], tz), _clock(window[1], tz))
+    peak = lunar.peak_alt(key, place.lat, place.lon)
+    out["peak_alt"] = None if peak is None else round(peak, 1)
+    if not vis["visible"] or lo is None or hi is None:
+        out["timeline"] = []
+        return out
+
+    rows = [{"label": "starts", "ut": lo, "kind": "contact"},
+            {"label": "maximum", "ut": marks["greatest"], "kind": "contact"},
+            {"label": "ends", "ut": hi, "kind": "contact"}]
+    if window is not None:
+        for label, moment in (("moonrise", window[0]), ("moonset", window[1])):
+            if lo < moment < hi:
+                rows.append({"label": label, "ut": moment, "kind": "horizon"})
+    rows.sort(key=lambda m: m["ut"])
+    below = (lunar.moon_alt(key, place.lat, place.lon, rows[0]["ut"]) or 0) <= 0
+    for m in rows:
+        m["clock"] = _clock(m["ut"], tz)
+        if m["kind"] == "horizon":
+            below = m["label"] == "moonset"
+            continue
+        m["below_horizon"] = below
+    out["timeline"] = rows
+    return out
 
 
 def facts(entry, place, now_utc):
@@ -110,10 +185,13 @@ def facts(entry, place, now_utc):
     }
 
     # Lunar eclipses are not in besselian.ELEMENTS and never will be: the
-    # elements are a solar construction. A lunar eclipse looks the same from
-    # every place it is visible at all, so the only local question is whether
-    # the Moon is up, which sky.py answers well enough on its own.
-    if not is_solar(entry) or key not in besselian.ELEMENTS:
+    # elements are a solar construction. They have their own published
+    # circumstances instead (lunar.py), and their own question -- not how
+    # much of it you get, since everybody who can see one sees the same
+    # thing, but whether the Moon is up for it at all.
+    if not is_solar(entry):
+        return lunar_facts(out, key, place, tz)
+    if key not in besselian.ELEMENTS:
         return out
 
     circ = besselian.local(key, place.lat, place.lon)
@@ -122,6 +200,7 @@ def facts(entry, place, now_utc):
     out["obscuration"] = circ["obscuration"]
     out["magnitude"] = circ["magnitude"]
     out["on_the_edge"] = besselian.on_the_edge(circ)
+    out["sun_up"] = circ.get("sun_up", True)
     out["sun_set_during"] = circ.get("sun_set_during", False)
 
     def clock(h):
@@ -239,6 +318,8 @@ def headline(f):
     place = f["place"]
     if not f["computed"]:
         return f"{f['name']}, {_date_words(f)}"
+    if not is_solar(f):
+        return lunar_headline(f)
     if f["kind"] == "none":
         return f"{f['name']}: not visible from {place}"
     if f["kind"] == "total" and not f["on_the_edge"]:
@@ -250,9 +331,96 @@ def headline(f):
     return f"{f['obscuration'] * 100:.0f}% of the Sun covered from {place}"
 
 
+def _minutes_words(secs):
+    m = round(secs / 60.0)
+    return f"{m} minute{'s' if m != 1 else ''}"
+
+
+def lunar_headline(f):
+    place = f["place"]
+    if not f["visible"]:
+        return f"{f['name']}: not visible from {place}"
+    if f["kind"] == "total":
+        secs = f["duration_s"]
+        got = (f"the Moon is copper for {_minutes_words(secs)}"
+               if secs else "the Moon goes copper")
+        return (f"{place} sees all of it: {got}" if f["all_of_it"]
+                else f"{place} sees part of it: {got}")
+    if f["kind"] == "penumbral":
+        return f"A faint shading of the Moon, seen from {place}"
+    covered = f"{f['um_mag'] * 100:.0f}% of the Moon in shadow"
+    return (f"{covered}, from {place}" if f["all_of_it"]
+            else f"{covered}, and {place} sees part of it")
+
+
 def _date_words(f):
     when = dt.datetime.fromisoformat(f["when_utc"].rstrip("Z"))
     return when.strftime("%d %B %Y").lstrip("0")
+
+
+def lunar_prose(f):
+    """The paragraphs for a lunar eclipse.
+
+    A different set of facts from a solar one, and the difference is worth
+    saying out loud on the page: there is no path, no percentage that
+    depends on where you stand, and nothing to travel for. Half the world
+    gets the same view at the same moment. What is worth knowing is whether
+    the Moon is up here, how deep into the shadow it goes, and that this one
+    is safe to look at with anything.
+    """
+    place, out = f["place"], []
+    if not f["visible"]:
+        out.append(f"The Moon is below the horizon from {place} for the whole "
+                   f"of this eclipse, so there is nothing to see from here. "
+                   f"It is visible from {f['regions']}.")
+        return out
+
+    if f["kind"] == "total":
+        out.append(
+            f"The Moon passes entirely into the Earth's shadow"
+            + (f" for {_minutes_words(f['duration_s'])}" if f["duration_s"] else "")
+            + f", around {f['maximum']}. It does not go dark: the only light "
+              f"reaching it is sunlight bent through the whole depth of the "
+              f"Earth's atmosphere, which is why it turns copper.")
+    elif f["kind"] == "penumbral":
+        out.append(
+            f"The Moon misses the Earth's dark inner shadow and passes "
+            f"through the outer one, so this is a subtle eclipse: a faint "
+            f"grey shading across one side of the disc, deepest around "
+            f"{f['maximum']}, and easy to miss if you do not know it is "
+            f"happening.")
+    else:
+        out.append(
+            f"{f['um_mag'] * 100:.0f}% of the Moon's diameter goes into the "
+            f"Earth's dark shadow at maximum, around {f['maximum']}. The "
+            f"shadowed part turns a dull copper rather than black, and the "
+            f"edge of it is visibly curved: that curve is the shape of the "
+            f"Earth, which is how the Greeks knew.")
+
+    if f.get("alt_at_greatest") is not None and f["visible"]:
+        alt = f["alt_at_greatest"]
+        if alt < 12:
+            out.append(f"It is low from {place}, {alt:.0f}° above the horizon "
+                       f"at maximum, so you will want somewhere with a clear "
+                       f"view in that direction.")
+        else:
+            out.append(f"From {place} the Moon is {alt:.0f}° above the "
+                       f"horizon at maximum.")
+    if not f["all_of_it"] and f.get("moon_up"):
+        out.append(f"Part of it happens with the Moon below the horizon "
+                   f"here: it is up from {f['moon_up'][0]} to "
+                   f"{f['moon_up'][1]} local time.")
+
+    out.append(
+        "Everybody who can see a lunar eclipse sees the same thing at the "
+        "same moment, so there is no path to travel to and no percentage "
+        "that depends on where you stand. The only question is whether the "
+        "Moon is up, and it is up for half the planet at once.")
+    out.append("Safe to look at with anything: eyes, binoculars, a telescope. "
+               "The Moon is only ever reflecting sunlight, and during an "
+               "eclipse it is reflecting a great deal less of it than usual.")
+    out.append(f"Visible from {f['regions']}.")
+    return out
 
 
 def prose(f):
@@ -270,10 +438,20 @@ def prose(f):
                    f"not guess at what it does from {f['place']}.")
         return out
 
+    if not is_solar(f):
+        return lunar_prose(f)
+
     if f["kind"] == "none":
-        out.append(f"The Sun is below the horizon from {f['place']} while "
-                   f"this eclipse is happening, so there is nothing to see "
-                   f"from here. It crosses {f['regions']}.")
+        # Which nothing this is. The Sun can be up here with the shadow on
+        # the other side of the planet, and telling somebody in Honolulu
+        # that the Sun had set at two in the afternoon was a small lie the
+        # page had no need to tell.
+        why = ("the Sun is below the horizon from "
+               f"{f['place']} while this eclipse is happening"
+               if not f.get("sun_up") else
+               f"the shadow never reaches {f['place']}")
+        out.append(f"Nothing to see from here: {why}. "
+                   f"It crosses {f['regions']}.")
         return out
 
     if f["kind"] == "total" and not f["on_the_edge"]:
@@ -338,9 +516,27 @@ def _blurb(entry, f=None):
     if not f or not f.get("computed"):
         return " ".join(out)
     place = f["place"]
+    if not is_solar(entry):
+        if not f["visible"]:
+            out.append(f"Not visible from {place}: the Moon is below the "
+                       f"horizon throughout.")
+        elif f["kind"] == "total":
+            out.append(f"From {place} the Moon is fully in the Earth's "
+                       f"shadow around {f['maximum']}, "
+                       f"{f['alt_at_greatest']:.0f}° above the horizon.")
+        elif f["kind"] == "penumbral":
+            out.append(f"A faint shading, deepest around {f['maximum']} "
+                       f"from {place}.")
+        else:
+            out.append(f"From {place}, {f['um_mag'] * 100:.0f}% of the Moon "
+                       f"is in shadow around {f['maximum']}, "
+                       f"{f['alt_at_greatest']:.0f}° above the horizon.")
+        return " ".join(out)
     if f["kind"] == "none":
         out.append(f"Not visible from {place}: the Sun is already below the "
-                   f"horizon by then.")
+                   f"horizon by then." if not f.get("sun_up") else
+                   f"Not visible from {place}: the shadow does not reach "
+                   f"this far.")
         return " ".join(out)
     if f["kind"] == "total" and not f.get("on_the_edge"):
         out.append(f"In {place}, the Sun is completely covered for "
@@ -540,14 +736,18 @@ ECLIPSE_CSS = """
    of characters and a changed line-height shears the track diagonally. Same
    reasoning as .obj-art, and the same fix.
 
-   It is also a fixed 96 characters wide whatever the window, so at 11px it
-   needs 634px and anything narrower than that pushed it into scrolling
-   sideways inside its own box -- half of Europe off the right-hand edge,
-   with nothing to say so. Sized against the column instead: 96 characters at
-   0.6em each is 57.6em, so 1.6cqw keeps the whole track on screen with a
-   little room, and the min() means it never grows past the 11px everything
-   else on the page is drawn at. Browsers without container queries drop the
-   line and keep 11px and the scrollbar. */
+   It is also a fixed number of characters wide whatever the window, and the
+   two kinds are different: 96 columns of one region for a solar eclipse, 128
+   of the whole world for a lunar one. At a fixed 11px either would scroll
+   sideways inside its own box on a narrow column, with half the map off the
+   right-hand edge and nothing to say so.
+
+   So the width is measured in characters, not pixels. --cols comes from the
+   markup (see live_html), a monospace glyph is about 0.62em, and the clamp
+   keeps it legible at the bottom and stops the 96-column map growing to
+   fill a very wide screen at the top. Browsers without container queries
+   fall back to the 11px everything else here is drawn at, and keep the
+   scrollbar. */
 /* Same small section label as "THE SAME NIGHT" in the left column, so the
    two columns mark their sections the same way. The space above it is what
    separates the map from the drawing over it; below it, almost none, because
@@ -559,7 +759,7 @@ ECLIPSE_CSS = """
 .ecl-prose-title{margin-top:1.4rem}
 .ecl-mapwrap{container-type:inline-size;margin:0 0 2px}
 .ecl-map{line-height:1.0;font-variant-ligatures:none;overflow-x:auto;margin:0;
-  font-size:min(11px,1.6cqw)}
+  font-size:clamp(5.5px,calc(100cqw / (var(--cols,96) * 0.62)),13px)}
 .ecl-safety{border-left:2px solid #d29922;padding:2px 0 2px 12px;
   margin:4px 0 2px;color:#c9d1d9;font-size:12px;line-height:1.5;
   font-family:ui-sans-serif,-apple-system,"Segoe UI",Roboto,sans-serif}
@@ -659,6 +859,10 @@ ECLIPSE_CSS = """
   font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
   font-size:12px;color:#8b949e}
 .ecl-clock{top:9px;letter-spacing:.04em}
+/* Top left, opposite the clock: what the height of the arc means. */
+.ecl-scale{position:absolute;top:9px;left:12px;
+  font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  font-size:12px;color:#6e7681}
 /* Bottom right, out of the drawing's way. Plain text: these are four small
    words over a picture, and button chrome made them look like a video
    player had landed on it. */
@@ -682,6 +886,10 @@ def map_title(f):
     wrong in the one place a reader could check.
     """
     kind = (f.get("type") or "").lower()
+    # A lunar eclipse has no path at all. Its map answers the only question
+    # that varies from place to place: is the Moon up for it.
+    if "lunar" in kind:
+        return "Where the Moon is up for it"
     if "annular" in kind:
         return "Path of annularity"
     if "total" in kind:
@@ -717,6 +925,16 @@ def live_head_html(f, escape=html.escape):
     if f.get("on_the_edge"):
         cells.append('<div><span class="k">totality</span>'
                      '<span class="v">on the edge</span></div>')
+    elif not is_solar(f):
+        # Minutes, not seconds: a total lunar eclipse runs for an hour or
+        # more, where a total solar one is over in two.
+        if f.get("kind") == "total" and f.get("duration_s"):
+            cells.append('<div><span class="k">totality</span>'
+                         f'<span class="v">{f["duration_s"] / 60:.0f}m</span>'
+                         '</div>')
+        elif f.get("um_mag", 0) > 0:
+            cells.append('<div><span class="k">in shadow</span>'
+                         f'<span class="v">{f["um_mag"] * 100:.0f}%</span></div>')
     elif f.get("kind") == "total" and f.get("duration_s"):
         cells.append('<div><span class="k">totality</span>'
                      f'<span class="v">{f["duration_s"]:.0f}s</span></div>')
@@ -751,13 +969,20 @@ def live_html(f, map_rows, legend, ansi_to_html, chart_pre,
             # other clock on the page.
             f'<span class="ecl-clock" id="ecl-clock">'
             f'{escape(frame_labels[0])}</span>'
+            # The arc is drawn to the height the Moon actually reaches that
+            # night, not to 90 degrees: an eclipse peaking at 12 degrees on a
+            # 90-degree axis is a flat line. That makes the height a shape
+            # rather than a reading, so the scale is stated.
+            + (f'<span class="ecl-scale">peaks at '
+               f'{f["peak_alt"]:.0f}&deg;</span>'
+               if not is_solar(f) and (f.get("peak_alt") or 0) > 0 else "")
             # Controls in the frame's bottom right, next to nothing else, so
             # they read as belonging to the picture. Plain text, no button
             # chrome: white rounded rectangles sitting on the drawing looked
             # like a video player had been dropped on top of it. Hidden until
             # the script runs -- without JS the frame is a still of first
             # contact and there is nothing for them to do.
-            '<span class="ecl-controls" id="ecl-controls" hidden>'
+            + '<span class="ecl-controls" id="ecl-controls" hidden>'
             '<button type="button" id="ecl-prev" class="ecl-btn"'
             ' aria-label="previous frame">&lt;</button>'
             '<button type="button" id="ecl-toggle" class="ecl-btn"'
@@ -781,7 +1006,14 @@ def live_html(f, map_rows, legend, ansi_to_html, chart_pre,
         # Wrapped, so the map can be sized against the width of the column
         # rather than against the page. It is a fixed 96 characters wide and
         # was scrolling sideways inside its own box; see .ecl-mapwrap.
-        out.append(f'<div class="ecl-mapwrap"><pre class="ecl-map">'
+        # The column count goes into the markup, because the stylesheet
+        # cannot count characters and the two maps are different widths: a
+        # solar one is 96 columns of one region, a lunar one 128 of the whole
+        # world. Hard-coding a font size for one of them made the other
+        # either scroll sideways or sit in a third of its column.
+        cols = max(len(_ANSI.sub("", r)) for r in map_rows)
+        out.append(f'<div class="ecl-mapwrap" style="--cols:{cols}">'
+                   f'<pre class="ecl-map">'
                    f'{ansi_to_html(chr(10).join(map_rows))}</pre></div>')
         out.append(f'<p class="obj-src">{ansi_to_html(legend)}</p>')
 
@@ -841,7 +1073,8 @@ def text(f, rows, legend, disc=None, color=True):
             f"{m['label']} {m['clock']}" + ("*" if m.get("below_horizon") else "")
             for m in f["timeline"]))
         if any(m.get("below_horizon") for m in f["timeline"]):
-            out.append("  * after the Sun has set from here")
+            body = "Sun" if is_solar(f) else "Moon"
+            out.append(f"  * after the {body} has set from here")
         out.append("")
     if disc:
         out += disc + ["", "  " + disc_caption(f), ""]

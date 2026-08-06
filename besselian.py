@@ -263,9 +263,18 @@ def local(key, lat, lon, height_m=0.0):
     # this much of it is unavoidable, and it belongs here rather than in the
     # caller. How high the Sun is once it IS up remains sky.sun_altaz's job.
     if s["m"] >= s["L1"] or s["zeta"] <= 0:
+        # Two different nothings, and the page says different things about
+        # them: the Sun can be up here with the eclipse happening somewhere
+        # else entirely, or the eclipse can be overhead somewhere while the
+        # Sun is down here. Both used to come back as an undifferentiated
+        # "not visible", and the prose then explained a sunset that had not
+        # happened -- Honolulu was told the Sun was already down for the
+        # 2028 eclipse when the real answer is that the shadow was 8,000 km
+        # away over Australia.
         return dict(kind="none", name=el.name, magnitude=0.0, obscuration=0.0,
                     maximum=None, first=None, last=None,
-                    central_start=None, central_end=None, sun_set_during=False)
+                    central_start=None, central_end=None, sun_set_during=False,
+                    sun_up=s["zeta"] > 0)
 
     magnitude = (s["L1"] - s["m"]) / (s["L1"] + s["L2"])
     obsc = _obscuration(s["m"], s["L1"], s["L2"])

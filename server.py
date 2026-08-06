@@ -17,7 +17,7 @@ from fastapi.responses import (PlainTextResponse, HTMLResponse, JSONResponse,
                                StreamingResponse, FileResponse, Response,
                                RedirectResponse)
 
-import api, art, besselian, card, gif, objects, sky, tle
+import api, art, besselian, card, gif, lunar, objects, sky, tle
 
 app = FastAPI(title="skymap.sh", docs_url=None, redoc_url=None)
 
@@ -3000,11 +3000,18 @@ ECLIPSE_GIF_MS = 160
 def _respond_eclipse_gif(request: Req, place: str | None, key: str):
     if place is not None and api.lookup_place(place) is None:
         return PlainTextResponse("unknown place\n", status_code=404)
-    if key not in besselian.ELEMENTS:
+    if key not in besselian.ELEMENTS and not lunar.has(key):
         return PlainTextResponse("no elements for that eclipse\n",
                                  status_code=404)
     r = _build(request, place)
-    frames, _labels = api.eclipse_map.disc_frames(key, r.place.lat, r.place.lon)
+    # The same two pictures the page draws: a disc being covered for a solar
+    # eclipse, the Moon's whole night for a lunar one.
+    if key in besselian.ELEMENTS:
+        frames, _labels = api.eclipse_map.disc_frames(key, r.place.lat,
+                                                      r.place.lon)
+    else:
+        frames, _labels = api.eclipse_map.arc_frames(key, r.place.lat,
+                                                     r.place.lon)
     if not frames:
         # Nothing to animate where the Sun is down for the whole event.
         return PlainTextResponse("this eclipse is not visible from there\n",

@@ -172,6 +172,19 @@ class ItRefusesToGuess(unittest.TestCase):
             if "solar" in e["type"]:
                 self.assertIn(e["when_utc"][:10], besselian.ELEMENTS, e["name"])
 
+    def test_it_says_which_kind_of_nothing(self):
+        """Two different nothings. Honolulu is in daylight for the 2028
+        eclipse with the shadow 8,000 km away over Australia; Tokyo is on
+        the night side for the 2026 one. The page said "the Sun is already
+        below the horizon" for both, and for Honolulu that was simply not
+        true -- it was two in the afternoon."""
+        day = besselian.local("2028-07-22", 21.3069, -157.8583)   # Honolulu
+        self.assertEqual(day["kind"], "none")
+        self.assertTrue(day["sun_up"])
+        night = besselian.local(KEY, 35.6762, 139.6503)           # Tokyo
+        self.assertEqual(night["kind"], "none")
+        self.assertFalse(night["sun_up"])
+
     def test_a_place_nowhere_near_it_sees_nothing(self):
         # Mid-Pacific, the far side of the planet from the shadow.
         c = besselian.local(KEY, -30.0, -150.0)

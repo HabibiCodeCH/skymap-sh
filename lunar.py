@@ -20,12 +20,23 @@ import math
 
 import sky
 
-# The umbra and penumbra at the Moon's distance, in Moon radii. Both vary a
-# little with the Moon's distance and the Earth's; these are the means, and
-# they are used only to draw the picture -- every number the page states
-# comes from the catalogue instead.
+# The Earth's equatorial radius in Moon radii, 6378.14 / 1738.1. gamma is
+# published in Earth radii and the drawing works in Moon radii, and this is
+# the only number in this file that is not NASA's.
+EARTH_IN_MOON_RADII = 3.6697
+
+# Typical shadow sizes at the Moon's distance, in Moon radii, for the two
+# places that need a number before an eclipse is chosen. The real ones are
+# computed per eclipse -- see geometry() -- because they vary by a good ten
+# percent with the Moon's distance and the Earth's, and a constant 2.65 made
+# the 26 June 2029 eclipse come out at magnitude 1.81 against NASA's 1.84.
 UMBRA_R = 2.65
 PENUMBRA_R = 4.60
+
+# How fast the point the Moon stands over slides west, in degrees an hour.
+# 360 divided by the mean lunar day of 24h 50m, not by 24: the Earth turns
+# 15 degrees an hour and the Moon is moving the same way underneath it.
+LUNAR_DEG_PER_HOUR = 14.4921
 
 _ELEMENTS = None
 
@@ -108,15 +119,21 @@ def sublunar(key, ut):
     """Where the Moon is overhead at this instant, as (lat, lon).
 
     The catalogue publishes it at greatest eclipse. Away from that moment
-    the point moves the way the sky does: the Moon's declination barely
-    changes over the few hours an eclipse lasts, and the Earth turns 15
-    degrees an hour under it. Nothing here needs the Moon's own motion,
-    which is the whole reason this is trustworthy without an ephemeris.
+    the point moves the way the sky does, at the rate of the lunar day
+    rather than the solar one: the Earth turns 15 degrees an hour, and the
+    Moon is going the same way underneath, so the point it stands over
+    slides west at about 14.49. Over a night that is the difference between
+    getting moonrise right and getting it wrong by half an hour.
+
+    The declination is held fixed, which is the approximation here. It moves
+    by up to five degrees a day, so a couple of degrees over a long night --
+    enough to matter for a rise time to the minute, not enough to matter for
+    a picture of an arc.
     """
     el = elements(key)
     if not el:
         return None
-    lon = el["zen_lon"] - 15.0 * (ut - greatest_ut(el))
+    lon = el["zen_lon"] - LUNAR_DEG_PER_HOUR * (ut - greatest_ut(el))
     return el["zen_lat"], ((lon + 180) % 360) - 180
 
 
@@ -158,29 +175,54 @@ def visibility(key, lat, lon):
                 alt_at_greatest=alt_max, greatest=greatest_ut(el))
 
 
-def separation(key, ut):
-    """Distance between the Moon's centre and the shadow's, in Moon radii.
+def geometry(key):
+    """(closest approach, umbra radius, penumbra radius) in Moon radii.
 
-    Reconstructed from the published umbral magnitude rather than from an
-    orbit. Magnitude is the fraction of the Moon's diameter inside the
-    umbra, so at greatest eclipse
+    Every one of the three is read off the catalogue rather than assumed,
+    which is what makes the drawing agree with the published magnitudes
+    instead of nearly agreeing.
 
-        m = (R_umbra + 1 - s) / 2        (in Moon radii)
+    gamma is the least distance between the Moon's centre and the shadow's
+    axis, in Earth radii, so the closest approach is gamma converted. And
+    magnitude is the fraction of the Moon's diameter inside a shadow at that
+    moment, m = (R + 1 - s) / 2, which run backwards gives that shadow's
+    radius: R = 2m - 1 + s.
 
-    which fixes s there. The Moon crosses in what is very nearly a straight
-    line at a steady rate, and the published first contact fixes that rate:
-    at U1 the two discs touch, so s = R_umbra + 1. Two knowns, one line.
+    The first version used one constant umbra for every eclipse. It is out by
+    up to ten percent, which is invisible on a shallow eclipse and impossible
+    on a deep one: 26 June 2029 has a published magnitude of 1.8436, and a
+    2.65 umbra cannot produce a magnitude above 1.825 at all -- the closest
+    approach came out negative and the drawing quietly used its absolute
+    value.
     """
     el = elements(key)
     if not el:
         return None
+    s_min = abs(el["gamma"]) * EARTH_IN_MOON_RADII
+    return (s_min,
+            2.0 * el["um_mag"] - 1.0 + s_min,
+            2.0 * el["pen_mag"] - 1.0 + s_min)
+
+
+def separation(key, ut):
+    """Distance between the Moon's centre and the shadow's, in Moon radii.
+
+    Reconstructed from the published circumstances rather than from an orbit.
+    geometry() fixes the closest approach; the published first contact fixes
+    the rate, because at U1 the two discs touch and the separation there is
+    the umbra's radius plus the Moon's. Two knowns, one straight line.
+    """
+    el = elements(key)
+    geo = geometry(key)
+    if not el or geo is None:
+        return None
+    s_min, umbra_r, penumbra_r = geo
     mid = greatest_ut(el)
-    s_min = UMBRA_R + 1.0 - 2.0 * el["um_mag"]
     c = contacts(key)
     edge = c.get("U1") or c.get("P1")
     if edge is None:
         return None
-    s_edge = (UMBRA_R + 1.0) if "U1" in c else (PENUMBRA_R + 1.0)
+    s_edge = (umbra_r + 1.0) if "U1" in c else (penumbra_r + 1.0)
     dt_edge = mid - edge
     if dt_edge <= 0:
         return s_min
@@ -201,10 +243,11 @@ def shadow_centre(key, ut):
     """
     el = elements(key)
     s = separation(key, ut)
-    if el is None or s is None:
+    geo = geometry(key)
+    if el is None or s is None or geo is None:
         return None
     mid = greatest_ut(el)
-    s_min = UMBRA_R + 1.0 - 2.0 * el["um_mag"]
+    s_min = geo[0]
     along = math.sqrt(max(0.0, s * s - s_min * s_min))
     if ut < mid:
         along = -along
@@ -221,12 +264,70 @@ def shade_at(key, ut, px, py):
     there is sunlight bent through the whole of the Earth's atmosphere, and
     the atmosphere scatters the blue out of it on the way.
     """
-    c = shadow_centre(key, ut)
-    if c is None:
+    c, geo = shadow_centre(key, ut), geometry(key)
+    if c is None or geo is None:
         return "sun"
+    _s_min, umbra_r, penumbra_r = geo
     d = math.hypot(px - c[0], py - c[1])
-    if d <= UMBRA_R:
+    if d <= umbra_r:
         return "umbra"
-    if d <= PENUMBRA_R:
+    if d <= penumbra_r:
         return "penumbra"
     return "sun"
+
+
+def up_window(key, lat, lon, step_min=2.0, span_h=16.0):
+    """When the Moon is above the horizon around this eclipse, as (rise,
+    set) in hours UT. None when it never comes up while anything is
+    happening.
+
+    Found by walking the altitude rather than solving for it: the altitude
+    comes from the published sublunar point (see sublunar), so walking it is
+    walking NASA's own numbers, and a horizon crossing to the nearest couple
+    of minutes is finer than the approximation underneath it deserves.
+
+    Returned unclamped when the Moon never sets -- a summer eclipse inside
+    the Arctic circle is a real case and cutting the arc at an arbitrary
+    hour would draw a moonset that does not happen.
+    """
+    c = contacts(key)
+    if not c:
+        return None
+    lo = min(c.values()) - span_h
+    hi = max(c.values()) + span_h
+    steps = int((hi - lo) / (step_min / 60.0)) + 1
+    ts = [lo + i * step_min / 60.0 for i in range(steps)]
+    alts = [moon_alt(key, lat, lon, t) for t in ts]
+    if not any(a > 0 for a in alts):
+        return None
+    # The stretch of sky-time that overlaps the eclipse, not merely the
+    # longest one: over 32 hours there are two nights in here.
+    ecl_lo, ecl_hi = min(c.values()), max(c.values())
+    best = None
+    start = None
+    for i, a in enumerate(alts):
+        if a > 0 and start is None:
+            start = ts[i]
+        elif a <= 0 and start is not None:
+            if start <= ecl_hi and ts[i] >= ecl_lo:
+                best = (start, ts[i])
+                break
+            start = None
+    if best is None and start is not None:
+        best = (start, ts[-1])
+    return best
+
+
+def peak_alt(key, lat, lon, steps=60):
+    """The highest the Moon gets while it is up, in degrees, or None.
+
+    What the night arc is drawn to. Not the altitude at greatest eclipse:
+    the two are often far apart, and labelling a picture with a number it
+    was not scaled to is worse than not labelling it.
+    """
+    window = up_window(key, lat, lon)
+    if window is None:
+        return None
+    t0, t1 = window
+    return max(moon_alt(key, lat, lon, t0 + (t1 - t0) * i / steps) or 0.0
+               for i in range(steps + 1))

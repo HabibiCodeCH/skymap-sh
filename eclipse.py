@@ -371,7 +371,11 @@ def disc_art(key, lat, lon, at=None, color=True, sun_r=None):
     else:
         s = besselian._state(el, at + el.dT / 3600.0 - el.t0,
                              rho_sin, rho_cos, lon)
-    if s["zeta"] <= 0:
+    # Nothing to draw where the Sun is down (zeta <= 0), and nothing to draw
+    # where the Moon is nowhere near it either (m >= L1). The second case
+    # used to fall through and paint a full, uneclipsed Sun on a page whose
+    # own heading said the eclipse was not visible from there.
+    if s["zeta"] <= 0 or s["m"] >= s["L1"]:
         return []
 
     big_l1, big_l2 = s["L1"], s["L2"]
@@ -602,10 +606,10 @@ def _moon_tone(rr):
     return MOON_TONES[-1][1]
 
 
-def _umbra_tone(d):
+def _umbra_tone(d, umbra_r):
     """Colour for a point d Moon-radii from the centre of the umbra."""
     for edge, col in UMBRA_TONES:
-        if d / lunar.UMBRA_R <= edge:
+        if d / umbra_r <= edge:
             return col
     return UMBRA_TONES[-1][1]
 
@@ -627,10 +631,13 @@ def moon_art(key, at=None, color=True):
         return []
     if at is None:
         at = lunar.greatest_ut(el)
-    centre = lunar.shadow_centre(key, at)
-    if centre is None:
+    centre, geo = lunar.shadow_centre(key, at), lunar.geometry(key)
+    if centre is None or geo is None:
         return []
     sx, sy = centre
+    # Per eclipse, not constants: the shadow is a good ten percent bigger at
+    # apogee than at perigee, and the published magnitudes are what pin it.
+    _s_min, umbra_r, penumbra_r = geo
 
     out = []
     for r in range(ART_ROWS):
@@ -650,13 +657,12 @@ def moon_art(key, at=None, color=True):
             # once the pixel is divided by the Moon's drawn radius.
             px, py = x / MOON_R, y / MOON_R
             d = math.hypot(px - sx, py - sy)
-            if d <= lunar.UMBRA_R:
-                col, ch = _umbra_tone(d), SHADE_GLYPH["umbra"]
+            if d <= umbra_r:
+                col, ch = _umbra_tone(d, umbra_r), SHADE_GLYPH["umbra"]
             else:
                 col, ch = _moon_tone(rr), SHADE_GLYPH["sun"]
-                if d <= lunar.PENUMBRA_R:
-                    deep = ((lunar.PENUMBRA_R - d)
-                            / (lunar.PENUMBRA_R - lunar.UMBRA_R))
+                if d <= penumbra_r:
+                    deep = (penumbra_r - d) / (penumbra_r - umbra_r)
                     shade = next(c for edge, c in PENUMBRA_STEPS if deep <= edge)
                     if shade is not None:
                         col, ch = shade, SHADE_GLYPH["penumbra"]
@@ -691,3 +697,242 @@ def moon_frames(key, n=FRAMES, color=True, tz=0.0):
         secs = round(((t + tz) % 24) * 3600)
         labels.append(f"{secs // 3600:02d}:{secs // 60 % 60:02d}")
     return frames, labels
+
+
+# ------------------------------------------------------------ the night arc
+# The lunar equivalent of the solar animation, and deliberately a different
+# picture. A solar eclipse is over in minutes and the question is what the
+# Sun looks like; a lunar one runs for hours and the question is whether the
+# Moon is even up for it. So this draws the arc: the Moon rising, crossing,
+# and setting, with the eclipse marked on the part of it where the eclipse
+# happens, and the Moon itself somewhere along it.
+ARC_COLS, ARC_ROWS = 90, 13
+HORIZON_COLOR = 240
+ARC_COLOR = 238             # the path, before and after
+ARC_PEN = 249               # the part in the penumbra
+ARC_UMBRA = 130             # the part in the umbra
+MOON_MARK = {"sun": (255, "●"), "penumbra": (250, "●"), "umbra": (173, "●")}
+
+
+def _arc_shade(c, ut):
+    """What the Moon looks like at this moment, as one of the shade names."""
+    if not c:
+        return "sun"
+    if c.get("U2") is not None and c["U2"] <= ut <= c["U3"]:
+        return "umbra"
+    if c.get("U1") is not None and c["U1"] <= ut <= c["U4"]:
+        return "umbra"
+    if c.get("P1") is not None and c["P1"] <= ut <= c["P4"]:
+        return "penumbra"
+    return "sun"
+
+
+def arc_art(key, lat, lon, at=None, color=True, tz=0.0):
+    """The Moon's night, as lines: up over the horizon and down again.
+
+    Height is altitude, width is time from moonrise to moonset, and the
+    stretch of the arc where the eclipse happens is coloured. Scaled to the
+    highest the Moon gets rather than to 90 degrees, because an eclipse that
+    peaks at 12 degrees drawn on a 90-degree axis is a flat line and the
+    point of the picture is the shape of the night.
+
+    Empty when the Moon is not up at any point of the eclipse, which is the
+    caller's cue to say so rather than to draw an empty box.
+    """
+    window = lunar.up_window(key, lat, lon)
+    if window is None:
+        return []
+    t0, t1 = window
+    marks = lunar.contacts(key)
+    alts = []
+    for c in range(ARC_COLS):
+        t = t0 + (t1 - t0) * c / (ARC_COLS - 1)
+        alts.append((t, lunar.moon_alt(key, lat, lon, t) or 0.0))
+    peak = max(a for _t, a in alts) or 1.0
+
+    rows = [[" "] * ARC_COLS for _ in range(ARC_ROWS)]
+    cols = [[None] * ARC_COLS for _ in range(ARC_ROWS)]
+    horizon = ARC_ROWS - 1
+    for c, (t, alt) in enumerate(alts):
+        rows[horizon][c] = "-"
+        cols[horizon][c] = HORIZON_COLOR
+        if alt <= 0:
+            continue
+        r = horizon - 1 - int(round(alt / peak * (ARC_ROWS - 2)))
+        r = max(0, min(horizon - 1, r))
+        shade = _arc_shade(marks, t)
+        rows[r][c] = "·" if shade == "sun" else "+"
+        cols[r][c] = {"sun": ARC_COLOR, "penumbra": ARC_PEN,
+                      "umbra": ARC_UMBRA}[shade]
+
+    if at is not None and t0 <= at <= t1:
+        c = int(round((at - t0) / (t1 - t0) * (ARC_COLS - 1)))
+        alt = lunar.moon_alt(key, lat, lon, at) or 0.0
+        r = horizon - 1 - int(round(max(0.0, alt) / peak * (ARC_ROWS - 2)))
+        r = max(0, min(horizon - 1, r))
+        col, glyph = MOON_MARK[_arc_shade(marks, at)]
+        rows[r][c], cols[r][c] = glyph, col
+
+    out = []
+    for r in range(ARC_ROWS):
+        line, pen = [], None
+        for c in range(ARC_COLS):
+            col = cols[r][c]
+            if col is None:
+                if pen is not None and color:
+                    line.append("\033[0m")
+                pen = None
+                line.append(" ")
+                continue
+            if color and col != pen:
+                line.append(f"\033[38;5;{col}m")
+                pen = col
+            line.append(rows[r][c])
+        if pen is not None and color:
+            line.append("\033[0m")
+        out.append("".join(line))
+    return out
+
+
+def arc_frames(key, lat, lon, n=FRAMES, color=True, tz=0.0):
+    """The night, frame by frame, the Moon moving along its own arc.
+
+    Over the whole time the Moon is up rather than only the eclipse: how
+    long it is up for is the thing this picture is answering.
+    """
+    window = lunar.up_window(key, lat, lon)
+    if window is None:
+        return [], []
+    t0, t1 = window
+    frames, labels = [], []
+    for i in range(n):
+        t = t0 + (t1 - t0) * i / (n - 1)
+        art = arc_art(key, lat, lon, at=t, color=color, tz=tz)
+        if not art:
+            continue
+        frames.append(art)
+        secs = round(((t + tz) % 24) * 3600)
+        labels.append(f"{secs // 3600:02d}:{secs // 60 % 60:02d}")
+    return frames, labels
+
+
+# ------------------------------------------------------- who can see it
+# A lunar eclipse has no path, so it gets the opposite map: not a thin band
+# somebody might travel to, but the whole night side of the planet, shaded
+# by how much of the eclipse happens with the Moon above the horizon.
+#
+# The land under it is worldmap.json, the same mask the /stats heat map
+# already ships, sampled down to this width. No new build step and no second
+# copy of the coastlines to keep in step with the first.
+NIGHT_COLS, NIGHT_ROWS = 128, 26
+NIGHT_ALL = 111             # the whole eclipse, from here
+NIGHT_SOME = 67             # part of it: the Moon rises or sets partway
+NIGHT_NONE = LAND_DIM       # the Moon is down for all of it
+_night_grids = {}
+
+
+def _world_mask(cols, rows):
+    """The /stats coastlines, sampled to this size. (mask, lat_top, lat_bot)."""
+    try:
+        with open(f"{sky.BASE}/worldmap.json") as f:
+            w = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return None
+    src, sw, sh = w["rows"], w["width"], w["height"]
+    out = []
+    for r in range(rows):
+        sr = min(sh - 1, int((r + 0.5) * sh / rows))
+        line = src[sr]
+        out.append("".join(line[min(sw - 1, int((c + 0.5) * sw / cols))]
+                           for c in range(cols)))
+    return out, w["lat_top"], w["lat_bot"]
+
+
+def _night_grid(key):
+    """Per cell: how many of the eclipse's contacts happen with the Moon up.
+
+    Cached by eclipse, because it is the same for every reader -- a lunar
+    eclipse looks identical to everybody who can see it, which is the whole
+    reason this map answers "can you" rather than "how much".
+    """
+    if key in _night_grids:
+        return _night_grids[key]
+    mask = _world_mask(NIGHT_COLS, NIGHT_ROWS)
+    marks = lunar.contacts(key)
+    if mask is None or not marks:
+        return None
+    rows, lat_top, lat_bot = mask
+    # The umbral phase where there is one, the penumbral otherwise: a
+    # penumbral eclipse is all there is to see on those nights, and a
+    # partial one is not worth being up for outside the umbral phase.
+    span = [marks[k] for k in ("U1", "U4") if k in marks] or \
+           [marks[k] for k in ("P1", "P4") if k in marks]
+    when = [span[0], marks["greatest"], span[-1]]
+    grid = []
+    for r in range(NIGHT_ROWS):
+        lat = lat_top - (r + 0.5) * (lat_top - lat_bot) / NIGHT_ROWS
+        line = []
+        for c in range(NIGHT_COLS):
+            lon = -180.0 + (c + 0.5) * 360.0 / NIGHT_COLS
+            up = sum(1 for t in when
+                     if (lunar.moon_alt(key, lat, lon, t) or -1) > 0)
+            line.append(up)
+        grid.append(line)
+    _night_grids[key] = (grid, rows, lat_top, lat_bot)
+    return _night_grids[key]
+
+
+def night_cell_of(key, lat, lon):
+    got = _night_grid(key)
+    if not got:
+        return None
+    _grid, _rows, lat_top, lat_bot = got
+    if not lat_bot <= lat <= lat_top:
+        return None
+    lon = ((lon + 180) % 360) - 180
+    r = int((lat_top - lat) / (lat_top - lat_bot) * NIGHT_ROWS)
+    c = int((lon + 180.0) / 360.0 * NIGHT_COLS)
+    return (min(NIGHT_ROWS - 1, max(0, r)), min(NIGHT_COLS - 1, max(0, c)))
+
+
+def night_map(key, mark=None, color=True):
+    """Where the Moon is up for this eclipse, as lines."""
+    got = _night_grid(key)
+    if not got:
+        return []
+    grid, land, _lat_top, _lat_bot = got
+    at = night_cell_of(key, *mark) if mark else None
+    out = []
+    for r in range(NIGHT_ROWS):
+        line, pen = [], None
+        for c in range(NIGHT_COLS):
+            up = grid[r][c]
+            here = at == (r, c)
+            if land[r][c] != "#" and not here:
+                if pen is not None and color:
+                    line.append("\033[0m")
+                pen = None
+                line.append(SEA)
+                continue
+            if here:
+                col, glyph = 51, "✕"
+            else:
+                col = (NIGHT_ALL if up == 3 else
+                       NIGHT_SOME if up else NIGHT_NONE)
+                glyph = "·"
+            if color and col != pen:
+                line.append(f"\033[38;5;{col}m")
+                pen = col
+            line.append(glyph)
+        if pen is not None and color:
+            line.append("\033[0m")
+        out.append("".join(line).rstrip())
+    return out
+
+
+def night_legend(color=True):
+    parts = [(NIGHT_ALL, "· all of it"), (NIGHT_SOME, "· part of it"),
+             (NIGHT_NONE, "· Moon down")]
+    if not color:
+        return "   ".join(t for _c, t in parts)
+    return "   ".join(f"\033[38;5;{c}m{t}\033[0m" for c, t in parts)

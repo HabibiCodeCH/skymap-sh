@@ -220,6 +220,14 @@ class TheSunIsDrawnAsItLooks(unittest.TestCase):
     def test_nothing_is_drawn_where_the_sun_is_down(self):
         self.assertEqual(eclipse.disc_art(KEY, 35.6762, 139.6503), [])  # Tokyo
 
+    def test_nothing_is_drawn_where_the_eclipse_never_reaches(self):
+        """The other half of the same question, and the half that shipped
+        wrong: the Sun is up in Honolulu for the 2028 eclipse and the shadow
+        is over Australia. The guard only tested the horizon, so the page
+        drew a full, uneclipsed Sun under a heading saying the eclipse was
+        not visible from there."""
+        self.assertEqual(eclipse.disc_art("2028-07-22", 21.3069, -157.8583), [])
+
     def test_an_eclipse_with_no_elements_draws_nothing(self):
         self.assertEqual(eclipse.disc_art("2026-08-28", 47.37, 8.54), [])
 
