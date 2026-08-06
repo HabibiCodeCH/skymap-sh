@@ -14,6 +14,7 @@ import json
 import math
 
 import besselian
+import lunar
 import sky
 
 # xterm-256, the same palette sky.py's renderer uses, so api.ansi_to_html
@@ -557,6 +558,133 @@ def disc_frames(key, lat, lon, n=FRAMES, color=True, tz=0.0):
     for i in range(n):
         t = first + (last - first) * i / (n - 1)
         art = disc_art(key, lat, lon, at=t, color=color, sun_r=scale)
+        if not art:
+            continue
+        frames.append(art)
+        secs = round(((t + tz) % 24) * 3600)
+        labels.append(f"{secs // 3600:02d}:{secs // 60 % 60:02d}")
+    return frames, labels
+
+
+# ---------------------------------------------------------------- the Moon
+# A lunar eclipse gets a drawing too, and it is the same machinery: a disc
+# on the same grid, supersampled the same way, so both kinds of eclipse page
+# put a picture in the same place at the same size.
+#
+# What differs is that this one is coloured rather than cut away. The Moon
+# does not lose a bite out of it -- the whole disc stays where it is, and
+# the part inside the Earth's shadow turns copper. That colour is the point:
+# the only light reaching it there has been bent through the whole depth of
+# the Earth's atmosphere, which takes the blue out of it. Drawing the
+# shadowed part as missing would be drawing a solar eclipse.
+MOON_R = 8.0
+MOON_TONES = ((0.55, 255), (0.85, 251), (1.01, 247))
+# The penumbra graded rather than flat. It is 4.6 Moon radii across, so on a
+# shallow eclipse it covers the whole disc, and drawing all of it in one
+# shade turned the Moon into a uniform grey blob on the nights when the real
+# thing looks very nearly normal. In reality the outer half of the penumbra
+# is imperceptible; only the part close to the umbra is visibly dimmer.
+# Fraction of the way from the penumbra's outer edge to the umbra, and what
+# to draw there -- None means "no different from full sunlight".
+PENUMBRA_STEPS = ((0.45, None), (0.80, 249), (99.0, 243))
+# Copper, brightening towards the edge of the umbra, which is what the real
+# thing does: the deepest part of the shadow is the darkest and the reddest.
+UMBRA_TONES = ((0.45, 88), (0.78, 130), (99.0, 173))
+# Monochrome has to carry the same information, so the glyph changes as well
+# as the colour. Denser means brighter here, the same direction as the Sun.
+SHADE_GLYPH = {"sun": "#", "penumbra": "+", "umbra": "·"}
+
+
+def _moon_tone(rr):
+    for edge, col in MOON_TONES:
+        if rr <= edge:
+            return col
+    return MOON_TONES[-1][1]
+
+
+def _umbra_tone(d):
+    """Colour for a point d Moon-radii from the centre of the umbra."""
+    for edge, col in UMBRA_TONES:
+        if d / lunar.UMBRA_R <= edge:
+            return col
+    return UMBRA_TONES[-1][1]
+
+
+def moon_art(key, at=None, color=True):
+    """The Moon at a moment of a lunar eclipse, as lines.
+
+    `at` is hours UT; the default is greatest eclipse. Empty when there are
+    no published circumstances for this date, which the caller treats the
+    same way it treats a solar eclipse with no elements: no picture, and the
+    page says why rather than drawing a guess.
+
+    North up, east left, like everything else here. The shadow crosses from
+    the east, which is the left-hand side, because the Moon overtakes it
+    going east.
+    """
+    el = lunar.elements(key)
+    if el is None:
+        return []
+    if at is None:
+        at = lunar.greatest_ut(el)
+    centre = lunar.shadow_centre(key, at)
+    if centre is None:
+        return []
+    sx, sy = centre
+
+    out = []
+    for r in range(ART_ROWS):
+        line, pen = [], None
+        for c in range(ART_COLS):
+            y = r - (ART_ROWS - 1) / 2.0
+            x = (c - (ART_COLS - 1) / 2.0) / CELL_X
+            rr = math.hypot(x, y) / MOON_R
+            if rr > 1.0:
+                if pen is not None and color:
+                    line.append("\033[0m")
+                pen = None
+                line.append(" ")
+                continue
+            # The disc is drawn in Moon radii, which is also the unit the
+            # shadow's position comes in, so the two are directly comparable
+            # once the pixel is divided by the Moon's drawn radius.
+            px, py = x / MOON_R, y / MOON_R
+            d = math.hypot(px - sx, py - sy)
+            if d <= lunar.UMBRA_R:
+                col, ch = _umbra_tone(d), SHADE_GLYPH["umbra"]
+            else:
+                col, ch = _moon_tone(rr), SHADE_GLYPH["sun"]
+                if d <= lunar.PENUMBRA_R:
+                    deep = ((lunar.PENUMBRA_R - d)
+                            / (lunar.PENUMBRA_R - lunar.UMBRA_R))
+                    shade = next(c for edge, c in PENUMBRA_STEPS if deep <= edge)
+                    if shade is not None:
+                        col, ch = shade, SHADE_GLYPH["penumbra"]
+            if color and col != pen:
+                line.append(f"\033[38;5;{col}m")
+                pen = col
+            line.append(ch)
+        if pen is not None and color:
+            line.append("\033[0m")
+        # Not rstripped, for the same reason the solar frames are not: the
+        # frame centres its content and a trimmed line moves the drawing.
+        out.append("".join(line))
+    return out
+
+
+def moon_frames(key, n=FRAMES, color=True, tz=0.0):
+    """The whole lunar eclipse, first contact to last, as n drawings."""
+    c = lunar.contacts(key)
+    if not c:
+        return [], []
+    first = c.get("P1") or c.get("U1")
+    last = c.get("P4") or c.get("U4")
+    if first is None or last is None:
+        return [], []
+    frames, labels = [], []
+    for i in range(n):
+        t = first + (last - first) * i / (n - 1)
+        art = moon_art(key, at=t, color=color)
         if not art:
             continue
         frames.append(art)

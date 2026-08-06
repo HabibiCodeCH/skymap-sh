@@ -610,17 +610,24 @@ ECLIPSE_CSS = """
    A nested <details>, so it costs no script: the outer panel is already a
    disclosure and this is the same trick one level down. */
 .ecl-rest{border-top:1px solid #21262d;margin-top:5px;padding-top:6px}
-.ecl-more-list{position:relative}
+/* Deliberately NOT position:relative. The panel this opens has to be
+   measured against the panel it comes out of, not against the row it hangs
+   off: relative here made "100% of the width" mean the row's width, which
+   is the panel minus its padding, so the second panel opened 17px inside
+   the first one and covered its right-hand edge. */
 .ecl-more-list summary{cursor:pointer;color:#c9d1d9;list-style:none;
   display:flex;align-items:baseline;gap:8px}
 .ecl-more-list summary::-webkit-details-marker{display:none}
-.ecl-more-list summary::after{content:"\203a";color:#6e7681;margin-left:auto}
-.ecl-more-list[open] summary::after{content:"\2039"}
+/* A plain > rather than a CSS escape. This block is a Python string, so
+   "\\203a" was read as an octal escape and a letter a, and the arrow shipped
+   as a stray control character followed by "a". */
+.ecl-more-list summary::after{content:">";color:#6e7681;margin-left:auto}
 .ecl-more-list summary:hover{color:#87d7ff}
-/* Beside the first panel, not under it, and pinned to the top of the box
-   rather than to this row: the list is long and hanging it off the last
-   entry would start it below the fold. */
-.ecl-panel-side{top:-7px;left:calc(100% + 7px);max-height:62vh;
+/* Beside the first panel and level with its top, not hanging off the row
+   that opens it: the list is long, and starting it at the bottom of the
+   first panel put most of it below the fold. Clear of the first panel
+   horizontally too, hence 100% of the panel rather than of the row. */
+.ecl-panel-side{top:0;left:calc(100% + 7px);max-height:min(62vh,520px);
   overflow-y:auto}
 /* Off the right of the screen on a narrow window, so it comes back to the
    near side there. */
