@@ -4,6 +4,7 @@
 Run:  python3 test_server.py
 """
 import datetime as dt
+import html
 import json
 import os
 import re
@@ -2010,8 +2011,14 @@ TAG_RE = re.compile(r"<[^>]+>")
 
 
 def strip_tags(s):
-    """Character width of one rendered chart line, spans removed."""
-    return TAG_RE.sub("", s)
+    """Character width of one rendered chart line, spans removed.
+
+    Entities unescaped as well, because the browser draws one apostrophe
+    where the markup carries six characters of `&#x27;`. Without this a row
+    with CASSIOPEIA'S W on it measured five columns wider than it renders,
+    which is a rung failing its breakpoint over a label that fits.
+    """
+    return html.unescape(TAG_RE.sub("", s))
 
 
 def _rungs(text):

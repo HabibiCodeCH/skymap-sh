@@ -60,9 +60,10 @@ GLYPHS = ((0.8, "●"), (3.0, "•"), (99.0, "·"))
 # tall as it is wide that makes every dot exactly square -- a 96x24 panel is
 # really a 192x96 bitmap. Box glyphs at this size staircase badly, and these
 # shapes are mostly diagonals. Still text, still pastes into a terminal.
-BRAILLE = {(0, 0): 0x01, (0, 1): 0x02, (0, 2): 0x04, (0, 3): 0x40,
-           (1, 0): 0x08, (1, 1): 0x10, (1, 2): 0x20, (1, 3): 0x80}
-BRAILLE_BASE = 0x2800
+# The table lives in sky.py, which the horizon chart draws its own asterism
+# lines from. One encoding rather than two that can drift apart.
+BRAILLE = sky.BRAILLE_DOTS
+BRAILLE_BASE = sky.BRAILLE_BASE
 
 # Star names beside the stars. Dimmer than the stars themselves and warmer
 # than the lines, so the panel reads as a drawing with labels on it rather

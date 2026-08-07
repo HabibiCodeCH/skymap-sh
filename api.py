@@ -627,7 +627,9 @@ class Request:
         # clamped once, here, so it's already canonical by the time it ever
         # reaches a cache key -- otherwise every distinct raw ?w= value before
         # clamping would be its own cache entry even if they render identically
-        self.width = max(60, min(220, int(width))) if width else None
+        self.width = (max(sky.CHART_WIDTH_MIN,
+                          min(sky.CHART_WIDTH_MAX, int(width)))
+                      if width else None)
         now = now or dt.datetime.now(dt.timezone.utc).replace(tzinfo=None)
         when = quantise_time(when, now)
         # Distinct from when_local/when_utc themselves (which always hold a
@@ -654,7 +656,7 @@ class Request:
         resolved, read-only data and are meant to be shared, not re-derived
         once per rung."""
         r2 = copy.copy(self)
-        r2.width = max(60, min(220, int(width)))
+        r2.width = max(sky.CHART_WIDTH_MIN, min(sky.CHART_WIDTH_MAX, int(width)))
         r2.panel = panel
         return r2
 
@@ -3714,7 +3716,16 @@ CHART_LADDER = ((None, 80, True),    # 94ch rendered at its widest
                 # worst and would overflow the window it was picked for.
                 (181, 170, True),
                 (199, 190, True),
-                (227, 220, True))
+                (227, 220, True),
+                # The two widest exist because the chart is set at 8px: a ch
+                # is 4.8px there, so a 1920px window is worth 400 of them and
+                # stopping at 220 would have drawn a 1056px chart in it and
+                # left the rest of the screen empty. The px figures in the
+                # notes above are from when this was set at 12px -- the
+                # breakpoints themselves are in ch and so are unaffected, but
+                # the window sizes they used to correspond to are not.
+                (267, 260, True),
+                (307, 300, True))
 
 
 # Seams in the composed text, so the browser can lay the three pieces out
@@ -3848,7 +3859,30 @@ def chart_layout(rungs, zenith, prose):
 # breakpoints are in `ch`, which is the width of a "0" in this font -- so
 # changing this changes how many rungs fit a given window without touching a
 # single breakpoint, and the ladder picks a wider chart on its own.
-CHART_FONT_PX = 12
+# The drawing's own size. Smaller than it reads, on purpose: the ladder's
+# breakpoints are in ch, so a smaller character means a given window is worth
+# more of them and the chart that gets picked for it is a wider one. Ten
+# rather than twelve takes a 1200px page from a 140-column chart to a 190,
+# and a phone from 80 to 120 -- finer asterism lines, and less of the Milky
+# Way lost under them (80% of the band survives the lines on a narrow chart,
+# 92% on a wide one).
+#
+# Eight was tried and is worse, which is only obvious once CHART_WIDTH_MAX
+# went up: on a 1920px screen both sizes reach the same 300-column ceiling,
+# so eight buys no extra sky there and draws it in 1440px instead of 1800px.
+# It wins only in the middle -- 260 columns against 220 on a 1440px laptop --
+# and it pays for that everywhere by shrinking the labels, which are
+# characters in this same grid and cannot be set larger without lifting them
+# out of the <pre> and positioning them. Ten is the balance.
+#
+# Astronomically this is free. render_linear derives its rows from its
+# columns as W * alt_rng / (2 * span), where the 2 is a character cell being
+# twice as tall as it is wide, and the generic pre{} rule sets line-height as
+# a bare 1.22 -- a multiplier, so the cell keeps its proportions at any size
+# and the sky keeps its shape.
+CHART_FONT_PX = 10
+# The caption under it is sentences, and sentences do not want to be 10px.
+CHART_PROSE_PX = 12
 
 
 def chart_ladder_css():
@@ -3914,7 +3948,7 @@ def chart_ladder_css():
         # face instead: there it is sentences among other sentences, sitting
         # under a lede and a fact list that are already set that way, and a
         # second typeface for one block read as a different document.
-        f" #chart-prose{{font-size:{CHART_FONT_PX}px;margin:6px 0 0}}",
+        f" #chart-prose{{font-size:{CHART_PROSE_PX}px;margin:6px 0 0}}",
         # The indent is padding, not two spaces of text (see
         # strip_prose_indent). A wrapped line has no leading spaces of its
         # own, so with the margin inside the text the first line of a

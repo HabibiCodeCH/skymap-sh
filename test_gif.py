@@ -81,6 +81,12 @@ class NoGlyphRendersAsTofu(unittest.TestCase):
 
     def test_every_character_a_chart_can_draw_has_a_glyph(self):
         for ch in sorted(self.chart_characters()):
+            if gif.BRAILLE_LO <= ord(ch) <= gif.BRAILLE_HI:
+                # The asterism lines are braille, and gif._glyph draws those
+                # dots itself rather than asking a font for them -- see
+                # BrailleIsDrawnBecauseNoFontHasIt below, which is what makes
+                # this exemption safe rather than a hole in the check.
+                continue
             drawn, cmap = self.drawn_as(ch)
             self.assertIn(
                 ord(drawn), cmap,

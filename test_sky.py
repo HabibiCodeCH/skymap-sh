@@ -74,7 +74,11 @@ class WidthParameter(unittest.TestCase):
         t = dt.datetime(2026, 7, 30, 22, 0)
         art, _st = sky.render_linear(t, 47.3769, 8.5417, color=False, width=99999)
         widths = [len(l) for l in art.split("\n") if l.strip()]
-        self.assertLessEqual(max(widths), 235)   # 220 cap + a few label chars
+        # Off the constant rather than off a number, because the ceiling is a
+        # budget that gets revisited and this test is about the clamp holding
+        # at all, not about where it currently sits. The slack is the left
+        # margin and a label or two reaching past the last column.
+        self.assertLessEqual(max(widths), sky.CHART_WIDTH_MAX + 15)
 
     def test_render_linear_wider_request_gives_taller_output(self):
         # Both dimensions scale by the same factor to preserve aspect, so a
@@ -428,9 +432,20 @@ class MilkyWayOnTheChart(unittest.TestCase):
         return sum(sum(1 for c in l[5:] if c in ":*#@") for l in rows[:cut])
 
     def test_a_dark_sky_gets_a_band(self):
+        """The floor is well under what a band actually draws, because what
+        it is guarding against is the band vanishing, not the exact count.
+
+        Measured on this chart: 165 cells with the asterism lines turned off,
+        152 with the old ─ ╱ │ ╲ ones over it and 140 with the braille ones.
+        Lines have always been drawn on top of the band -- it is painted into
+        the soft layer precisely so nothing else has to give way to it -- and
+        a line that follows its real path crosses about twice as many cells
+        as one snapped to four directions, so it covers twice as much of it.
+        The band underneath is identical either way.
+        """
         art, _st = sky.render_linear(self.WHEN, *self.ATACAMA, color=False,
                                      width=140, inset=False, milkyway=1)
-        self.assertGreater(self.band_cells(art), 150)
+        self.assertGreater(self.band_cells(art), 120)
 
     def test_a_floor_of_zero_draws_nothing(self):
         off, _ = sky.render_linear(self.WHEN, *self.ATACAMA, color=False,
@@ -575,3 +590,56 @@ class ShadowRatio(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AFigureOverheadIsNotDrawnAtAll(unittest.TestCase):
+    """The Summer Triangle from Los Angeles in August is the case this exists
+    for. Its stars are 24, 34 and 38 degrees apart on the sky -- a compact
+    shape -- but they sit within 26 degrees of the zenith, where azimuth stops
+    meaning much: 298, 45 and 167, right around the compass.
+
+    A panorama has to draw that as three runs each about a third of the chart
+    wide. The drawing guard reads the two widest as wrap-around junk and drops
+    them, which used to leave one side of the triangle on the page with the
+    triangle's name written against it."""
+
+    LA = (34.05, -118.24)
+    WHEN = dt.datetime(2026, 8, 7, 6, 20)      # 23:20 local
+
+    def chart(self, **kw):
+        art, _st = sky.render_linear(self.WHEN, *self.LA, color=False,
+                                     width=300, **kw)
+        return art
+
+    def test_the_three_stars_really_are_spread_round_the_compass(self):
+        """The premise, checked rather than assumed: if this stops being true
+        the test below would pass for the wrong reason."""
+        a = next(x for x in sky._load("asterisms.json")
+                 if x["name"] == "Summer Triangle")
+        stars = {s["hr"]: s for s in sky._load("stars.json")}
+        jd = sky.julian(self.WHEN)
+        lst = (sky.gmst_hours(jd) + self.LA[1] / 15.0) % 24
+        azs, alts = [], []
+        for hr in set(a["lines"][0]):
+            s = stars[hr]
+            ra, de = sky.precess(s["ra"], s["de"], jd)
+            alt, az = sky.altaz(ra, de, self.LA[0], lst)
+            azs.append(az); alts.append(alt)
+        self.assertGreater(min(alts), 60)          # all of it overhead
+        self.assertGreater(max(azs) - min(azs), 180)   # yet spread right round
+
+    def test_it_is_not_drawn_as_one_long_line(self):
+        self.assertNotIn("SUMMER TRIANGLE", self.chart())
+
+    def test_the_sector_it_would_have_taken_is_used_by_something_else(self):
+        """Rejected at selection rather than only at drawing time, so the
+        azimuth sector goes to a figure the projection can carry whole."""
+        shown = [n for n in ("KEYSTONE", "JOB'S COFFIN", "CORONA BOREALIS",
+                             "AQUILA", "TEAPOT")
+                 if n in self.chart()]
+        self.assertGreaterEqual(len(shown), 2, shown)
+
+    def test_a_figure_that_fits_is_still_drawn_whole(self):
+        """The guard has to be about the projection tearing a shape apart, not
+        about big shapes: the Big Dipper is 25 degrees long and stays."""
+        self.assertIn("BIG DIPPER", self.chart())

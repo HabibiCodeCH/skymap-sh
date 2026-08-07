@@ -1230,6 +1230,29 @@ def solar_elongation(t, jd, lat, lst):
 CARDINALS = {"N":0,"NNE":22.5,"NE":45,"ENE":67.5,"E":90,"ESE":112.5,"SE":135,"SSE":157.5,
              "S":180,"SSW":202.5,"SW":225,"WSW":247.5,"W":270,"WNW":292.5,"NW":315,"NNW":337.5}
 
+# How wide a chart anyone is allowed to ask for. ?w= comes off the query
+# string, so this is a limit rather than a preference: rows are derived from
+# columns, which makes the work grow with the square of this number, and
+# without a ceiling one request could ask for a million cells.
+#
+# Named here and used everywhere, because it was three separate literals and
+# a ceiling you cannot find is a ceiling nobody raises.
+# 300 costs about 26ms a render against 14ms at 220, and keeps 92% of the
+# Milky Way band under the asterism lines against 89%. Past that it is
+# diminishing returns on a curve that is still squaring: 440 columns is 53ms
+# for another two points of band.
+CHART_WIDTH_MIN, CHART_WIDTH_MAX = 60, 300
+
+# One braille character is 2 dots across and 4 down, so a chart drawn in them
+# is really four times the resolution down and twice across the one the eye
+# counts in characters. A terminal cell is about twice as tall as it is wide,
+# which makes each dot square. motion.py draws the constellation panels from
+# this same table -- one encoding, in one place, because two copies of a bit
+# table drift.
+BRAILLE_DOTS = {(0, 0): 0x01, (0, 1): 0x02, (0, 2): 0x04, (0, 3): 0x40,
+                (1, 0): 0x08, (1, 1): 0x10, (1, 2): 0x20, (1, 3): 0x80}
+BRAILLE_BASE = 0x2800
+
 def _walk(cells):
     """Given the ordered cells a segment passes through, pick a glyph per cell
     from the actual step taken there. One glyph for a whole segment staircases."""
@@ -1248,10 +1271,53 @@ def _walk(cells):
     return out
 
 
+# How much of the chart's width one segment of a figure may cross before it is
+# treated as the projection tearing the shape apart rather than as a real line.
+# A panorama puts the whole compass on one row, so two stars a few degrees
+# apart overhead can land at opposite ends of it.
+MAX_SEGMENT_FRAC = 0.35
+
+
+def _all_joinable(con, cpos, jd, lat, lst, joinable):
+    """True when every side of this figure is one the chart can draw.
+
+    Endpoints below the horizon are not counted against it: a constellation
+    half-risen is a normal thing to draw half of, and always has been. This is
+    only about sides the projection would stretch across the page.
+    """
+    for poly in con["lines"]:
+        seen = []
+        for h in poly:
+            if h not in cpos:
+                seen.append(None)
+                continue
+            ra, dec, _m = cpos[h]
+            ra, dec = precess(ra, dec, jd)
+            a, z = altaz(ra, dec, lat, lst)
+            seen.append(z if a > 3 else None)
+        for z1, z2 in zip(seen, seen[1:]):
+            if z1 is not None and z2 is not None and not joinable(z1, z2):
+                return False
+    return True
+
+
 def pick_constellations(cpos, cons, jd, lat, lst, alt_max, sectors=6, extra=2,
-                        in_view=None):
+                        in_view=None, joinable=None):
     """Brightest figure per azimuth sector, so the sky is covered evenly instead
-    of clustering wherever tonight's bright ones happen to sit."""
+    of clustering wherever tonight's bright ones happen to sit.
+
+    joinable(az1, az2) rejects a figure this projection cannot draw whole, and
+    is why the Summer Triangle no longer appears as a single long line. Near
+    the zenith azimuth stops meaning much: from Los Angeles in August its three
+    stars are 24, 34 and 38 degrees apart on the sky and sit at azimuth 298, 45
+    and 167 -- right around the compass. A panorama has to draw that as three
+    runs each about a third of the chart wide, the drawing guard drops the two
+    widest as wrap-around junk, and what is left is one side of a triangle with
+    the triangle's name against it.
+
+    Rejected here rather than only at drawing time so the sector it would have
+    taken goes to a figure that can actually be drawn.
+    """
     scored = []
     for con in cons:
         pts = [cpos[h] for poly in con["lines"] for h in poly if h in cpos]
@@ -1271,6 +1337,8 @@ def pick_constellations(cpos, cons, jd, lat, lst, alt_max, sectors=6, extra=2,
             continue
         if in_view and sum(1 for z in azs if in_view(z)) < 0.8 * len(azs):
             continue        # mostly outside the window: one stray line, no shape
+        if joinable and not _all_joinable(con, cpos, jd, lat, lst, joinable):
+            continue        # overhead: the projection would tear it apart
         x = sum(math.cos(z * D) for z in azs); y = sum(math.sin(z * D) for z in azs)
         caz = math.degrees(math.atan2(y, x)) % 360
         scored.append(dict(con=con, flux=flux, caz=caz,
@@ -1402,7 +1470,7 @@ def render_linear(when_utc, lat, lon, W=176, H=22, color=True, show_lines=True,
         # Rescale both dimensions by the same factor so aspect stays exactly
         # what it was -- this only changes how many terminal columns the same
         # honest render is spread across, not the geometry itself.
-        width = max(60, min(220, int(width)))
+        width = max(CHART_WIDTH_MIN, min(CHART_WIDTH_MAX, int(width)))
         scale = width / W
         W = width
         H = max(6, int(round(H * scale)))
@@ -1424,16 +1492,28 @@ def render_linear(when_utc, lat, lon, W=176, H=22, color=True, show_lines=True,
     def free(r, c):
         return (grid[r][c] == " " or soft[r][c]) and not lock[r][c]
 
-    def col_of(az):
+    # The float forms are what the asterism lines are drawn from: a line
+    # rounded to whole cells before it is drawn is a line that staircases,
+    # whatever glyph you pick for it. Everything else on the chart is a thing
+    # at a place rather than a path between two, so it rounds as it always did.
+    def colf_of(az):
         d = ((az - centre + 180) % 360) - 180
         if abs(d) > span / 2:
             return None
-        return int(round((d + span / 2) / span * (W - 1)))
+        return (d + span / 2) / span * (W - 1)
 
-    def row_of(alt):
+    def rowf_of(alt):
         if alt < alt_lo - 1e-9 or alt > alt_hi + 1e-9:
             return None
-        return H - 1 - int(round((alt - alt_lo) / alt_rng * (H - 1)))
+        return (H - 1) - (alt - alt_lo) / alt_rng * (H - 1)
+
+    def col_of(az):
+        c = colf_of(az)
+        return None if c is None else int(round(c))
+
+    def row_of(alt):
+        r = rowf_of(alt)
+        return None if r is None else int(round(r))
 
     def place(az, alt, ch, col, over=False):
         c, r = col_of(az), row_of(alt)
@@ -1583,9 +1663,42 @@ def render_linear(when_utc, lat, lon, W=176, H=22, color=True, show_lines=True,
         cpos = {t["hr"]: [t["ra"], t["de"], t["m"]]
                 for t in _load("stars.json")}
         cons = _load("asterisms.json")
+        def joinable(z1, z2):
+            """Whether these two stars can be joined without the line being
+            stretched across the page. Outside the window is not this
+            function's business -- in_view already judges those."""
+            c1, c2 = col_of(z1), col_of(z2)
+            if c1 is None or c2 is None:
+                return True
+            return abs(c2 - c1) <= W * MAX_SEGMENT_FRAC
+
         chosen = pick_constellations(cpos, cons, jd, lat, lst, alt_hi,
                                      sectors=6 if target is None else 3,
-                                     in_view=lambda z: col_of(z) is not None)
+                                     in_view=lambda z: col_of(z) is not None,
+                                     joinable=joinable)
+
+        # Every line goes into a subpixel bitmap first and only becomes
+        # characters once they are all in. Two reasons. A segment rounded to
+        # whole cells before it is drawn can only ever run in the four
+        # directions a box glyph has, which is what made these shapes
+        # staircase; and two segments crossing the same cell merge into one
+        # glyph here rather than the second overwriting the first.
+        dots = [[0] * (W * 2) for _ in range(H * 4)]
+
+        def dot_line(p, q):
+            """One segment into the bitmap. True if any of it landed."""
+            px, py = p[0] * 2, p[1] * 4
+            qx, qy = q[0] * 2, q[1] * 4
+            n = int(max(abs(qx - px), abs(qy - py))) + 1
+            hit = False
+            for k in range(n + 1):
+                t = k / n
+                sx, sy = int(round(px + (qx - px) * t)), int(round(py + (qy - py) * t))
+                if 0 <= sx < W * 2 and 0 <= sy < H * 4:
+                    dots[sy][sx] = 1
+                    hit = True
+            return hit
+
         for item in chosen:
             con = item["con"]
             item["visible"] = False
@@ -1602,26 +1715,26 @@ def render_linear(when_utc, lat, lon, W=176, H=22, color=True, show_lines=True,
                     ra, dec, _m = cpos[hip]
                     ra, dec = precess(ra, dec, jd)
                     a, z = altaz(ra, dec, lat, lst)
-                    cc = col_of(z)
-                    rr = row_of(a) if cc is not None else None
+                    cc = colf_of(z)
+                    rr = rowf_of(a) if cc is not None else None
                     pts.append((cc, rr) if rr is not None and a > 3 else None)
-                for p, q in zip(pts, pts[1:]):
-                    if not p or not q or abs(q[0] - p[0]) > W * 0.35:
-                        continue
-                    n = max(abs(q[0] - p[0]), abs(q[1] - p[1]))
-                    if n == 0:
-                        continue
-                    cells, seen = [], set()
-                    for k in range(n + 1):
-                        t = k / n
-                        cell = (int(round(p[0] + (q[0]-p[0])*t)),
-                                int(round(p[1] + (q[1]-p[1])*t)))
-                        if cell not in seen:
-                            seen.add(cell); cells.append(cell)
-                    for c, r, g in _walk(cells)[1:-1]:
-                        if 0 <= r < H and 0 <= c < W and not lock[r][c] and free(r, c):
-                            grid[r][c], tint[r][c], soft[r][c] = g, C.DIM, False
-                    item["visible"] = True
+                # All of this shape or none of it. Dropping only the sides the
+                # projection cannot carry leaves the ones it can, and a single
+                # line with SUMMER TRIANGLE written against it is worse than
+                # no triangle at all. pick_constellations has usually caught
+                # this already and given the sector to something else; this is
+                # the backstop for the paths that choose their own figures.
+                segs = [(p, q) for p, q in zip(pts, pts[1:]) if p and q]
+                if any(abs(q[0] - p[0]) > W * MAX_SEGMENT_FRAC
+                       for p, q in segs):
+                    continue
+                for p, q in segs:
+                    # Right up to the vertex, unlike the glyph version, which
+                    # dropped the end cell of every segment to keep a line off
+                    # its own star. A cell holds one character either way, and
+                    # the stars are placed over these below.
+                    if dot_line(p, q):
+                        item["visible"] = True
                 # the pattern's own vertex stars, so the nodes read clearly
                 for hip in poly:
                     if hip in cpos:
@@ -1758,6 +1871,31 @@ def render_linear(when_utc, lat, lon, W=176, H=22, color=True, show_lines=True,
             continue                           # animate frames: fully faded out
         text(item["caz"], min(max(item["calt"], alt_lo), alt_hi),
              item["con"]["name"].upper(), C.CNAME)
+
+    # And only now the asterism lines, from the bitmap every segment went
+    # into, filling whatever cells nothing else claimed.
+    #
+    # Last rather than first, which is where they used to go. A line drawn
+    # first owns its cells, and a subpixel line owns about twice as many as
+    # the old ─ ╱ │ ╲ did: two faint stars over Lima stopped being drawn
+    # because a line got to their cells before the star field did, and a
+    # constellation name jumped sixteen columns between /Zurich and
+    # /Zurich?find=, having been pushed off the spot it wanted. Drawn last,
+    # a line can no longer cost the sky an object or move a label: it breaks
+    # around them instead, which is the right way round for the thing that
+    # was always meant to be underneath.
+    if show_lines:
+        for r in range(H):
+            row = grid[r]
+            for c in range(W):
+                bits = 0
+                for dy in range(4):
+                    for dx in range(2):
+                        if dots[r * 4 + dy][c * 2 + dx]:
+                            bits |= BRAILLE_DOTS[(dx, dy)]
+                if bits and free(r, c):
+                    row[c], tint[r][c], soft[r][c] = (
+                        chr(BRAILLE_BASE + bits), C.DIM, False)
 
     # label the row nearest each 10 deg step, so the ticks survive any H
     ticks10 = {}
