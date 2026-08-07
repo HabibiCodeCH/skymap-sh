@@ -24,3 +24,7 @@ rngc.dat
 PROJECT_STATE.md
 NOTES.md
 DEPLOY.md
+
+# The editor's own permission list. Local paths, local worktree names,
+# and whatever tunnel was open that day -- none of it is about this project.
+.claude/
