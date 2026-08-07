@@ -3801,17 +3801,44 @@ def chart_pre(inner):
     return f'<pre id="chart-pre" class="chart-pre">{inner}</pre>'
 
 
-def chart_ladder(rungs):
+def size_chart_head(body):
+    """Set the chart's first line at reading size rather than the chart's.
+
+    That line is a sentence about the sky -- the place, the time, the Moon,
+    how dark it is, how many stars -- and not part of the drawing, so it has
+    no business shrinking every time the drawing gets denser.
+
+    Wrapped where it sits rather than lifted out of the <pre>, because it is
+    not the same line at every rung: the summary drops parts to fit the width
+    it is given, and there are nine widths on a page. The span is safe to put
+    round it because ansi_to_html closes its colour spans at the end of the
+    line -- it never straddles the newline.
+    """
+    lines = body.split("\n")
+    for i, l in enumerate(lines):
+        if l.strip():
+            lines[i] = f'<span class="chart-head">{l}</span>'
+            break
+    return "\n".join(lines)
+
+
+def chart_ladder(rungs, head=False):
     """`rungs` is [(cols, panel, html), ...] in CHART_LADDER order.
 
     No id on the individual rungs: there are several of them and an id has
     to be unique, which is the one thing a repeated <pre id="chart-pre">
     could not be. data-cols is read at click time by the animate button --
     the stream has to arrive at whatever width is actually on screen, and
-    only CSS knows which rung that is."""
+    only CSS knows which rung that is.
+
+    head is off by default because the object pages lift their first line out
+    of the <pre> entirely, into the lede beside the object's name. Asking for
+    it there would put a reading-size span round the top row of the drawing.
+    """
     blocks = "".join(
         '<pre class="chart-pre" data-cols="%d"%s>%s</pre>'
-        % (cols, ' data-panel="1"' if panel else "", body)
+        % (cols, ' data-panel="1"' if panel else "",
+           size_chart_head(body) if head else body)
         for cols, panel, body in rungs)
     return f'<div id="chart-ladder">{blocks}</div>'
 
@@ -3837,7 +3864,7 @@ def strip_prose_indent(text):
     return _PROSE_INDENT.sub(r"\1", text)
 
 
-def chart_layout(rungs, zenith, prose):
+def chart_layout(rungs, zenith, prose, head=False):
     """The ladder with the inset floated over it and the prose pinned below.
 
     zenith and prose come out of any one rung (see split_chart_parts) rather
@@ -3852,7 +3879,8 @@ def chart_layout(rungs, zenith, prose):
     inset = (f'<pre id="chart-zenith" aria-label="zenith inset">{zenith}</pre>'
              if zenith.strip() else "")
     below = (f'<pre id="chart-prose">{prose}</pre>' if prose.strip() else "")
-    return (f'<div id="chart-stage">{chart_ladder(rungs)}{inset}</div>{below}')
+    return (f'<div id="chart-stage">{chart_ladder(rungs, head)}'
+            f'{inset}</div>{below}')
 
 
 # One number for the chart, the inset and the prose under it. The ladder's
@@ -3949,6 +3977,13 @@ def chart_ladder_css():
         # under a lede and a fact list that are already set that way, and a
         # second typeface for one block read as a different document.
         f" #chart-prose{{font-size:{CHART_PROSE_PX}px;margin:6px 0 0}}",
+        # The chart's first line, at reading size like the prose under it
+        # rather than at the drawing's. pre-wrap because it is now wider than
+        # the chart it sits above: 120 characters at 12px is 864px against a
+        # 720px chart on a small laptop, and a line that cannot wrap would
+        # take the whole <pre> into a horizontal scroll.
+        f" #chart-ladder .chart-head{{font-size:{CHART_PROSE_PX}px;"
+        f"white-space:pre-wrap}}",
         # The indent is padding, not two spaces of text (see
         # strip_prose_indent). A wrapped line has no leading spaces of its
         # own, so with the margin inside the text the first line of a
@@ -4386,7 +4421,13 @@ def _compose_sky(r):
     # is the one thing a rung's breakpoint cannot survive.
     summary = ""
     if r.panel:
-        spare = _effective_width(r) - len(_head_prefix(r)) - 3
+        # In the browser this row is set at reading size while the chart under
+        # it is set smaller, so a character of header is wider than a column
+        # of chart and the two cannot be counted in the same units. Scale the
+        # whole line's budget by the ratio first, then take the fixed parts
+        # off it -- the place and the moment are set in that size too.
+        room = int(_effective_width(r) * CHART_FONT_PX / CHART_PROSE_PX)
+        spare = room - len(_head_prefix(r)) - 3
         spare -= len(mode) + 3 if mode else 0
         summary = _sky_summary(st, p.lat, max(20, spare), note=sky_note(p.lat, p.lon))
     head = _horizon_head(r, mode, summary=summary)

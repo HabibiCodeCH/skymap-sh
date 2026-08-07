@@ -2244,7 +2244,10 @@ def _respond(request: Req, place: str | None):
                 if rung_prose:
                     prose = _rendered(rung_prose)
                 rungs.append((cols, panel, _rendered(chart)))
-            chart_html = api.chart_layout(rungs, zenith, prose)
+            # head=True: this page keeps its summary line inside the <pre>,
+            # so it is sized there. The object pages lift theirs out into the
+            # lede instead and must not ask for this.
+            chart_html = api.chart_layout(rungs, zenith, prose, head=True)
         else:
             chart_html = api.chart_pre(_rendered(html_text))
         # A place named in the URL gets its own card; the bare domain keeps
