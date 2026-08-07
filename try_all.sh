@@ -28,7 +28,6 @@ run python3 cli.py 0,0 "$N"
 fi
 
 if [ "$SECT" = all ] || [ "$SECT" = views ]; then
-run python3 cli.py Zurich "$N" --disc
 run python3 cli.py Zurich "$N" --facing=N
 run python3 cli.py Zurich "$N" --facing=NNW --span=90
 run python3 cli.py Zurich "$N" --facing=S --span=180

@@ -96,12 +96,6 @@ class WidthParameter(unittest.TestCase):
         self.assertTrue(8 < rows_narrow < 20)
         self.assertTrue(16 < rows_wide < 30)
 
-    def test_disc_render_hits_the_requested_width(self):
-        t = dt.datetime(2026, 7, 30, 22, 0)
-        art, _st = sky.render(t, 47.3769, 8.5417, color=False, width=60)
-        widths = [len(l) for l in art.split("\n") if l.strip()]
-        self.assertLessEqual(max(widths), 60)
-
 
 class DeepSkyOverlay(unittest.TestCase):
     """deepsky.json objects only appear when a dso_limit is explicitly
@@ -131,10 +125,10 @@ class DeepSkyOverlay(unittest.TestCase):
 
 
 class StarsVisible(unittest.TestCase):
-    """stars_visible() is the same star filter render() uses internally,
+    """stars_visible() is the same star filter the chart uses internally,
     pulled out as its own function so the mobile 3D sphere view can get
     positions without drawing ASCII -- these tests guard against the
-    extraction drifting from what render() actually draws."""
+    extraction drifting from what render_linear() actually draws."""
 
     def test_respects_the_magnitude_cutoff(self):
         jd = sky.julian(dt.datetime(2026, 7, 30, 22, 0))
@@ -144,10 +138,12 @@ class StarsVisible(unittest.TestCase):
         self.assertTrue(all(s["m"] <= 2.0 for s, _a, _z in visible))
         self.assertTrue(all(a > 0 for _s, a, _z in visible))
 
-    def test_matches_render_disc_star_count(self):
+    def test_matches_the_star_count_the_chart_draws(self):
+        """Against render_linear now that the disc view is gone. It is the
+        same set either way -- checked before the swap, not assumed."""
         when = dt.datetime(2026, 7, 30, 22, 0)
         lat, lon, mag_limit = 47.3769, 8.5417, 4.2
-        _art, st = sky.render(when, lat, lon, mag_limit=mag_limit)
+        _art, st = sky.render_linear(when, lat, lon, mag_limit=mag_limit)
         jd = sky.julian(when)
         lst = (sky.gmst_hours(jd) + lon / 15.0) % 24
         visible = sky.stars_visible(mag_limit, jd, lat, lst)

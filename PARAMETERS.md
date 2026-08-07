@@ -58,7 +58,6 @@ next to the place and find fields for this, no need to hand-type `?t=`.
 | you type | you get |
 |---|---|
 | nothing | `horizon panorama, 0-70° + zenith inset` |
-| `--disc` / `?view=disc` | `looking up, north at top` |
 | `--facing=NW` / `?facing=NW` | `facing NW, 140° wide, true shape` |
 | `--facing=S --span=90` / `?facing=S&span=90` | `facing S, 90° wide, true shape` |
 | `--night` / `?night=1` | forces the star chart in daylight |
@@ -83,9 +82,9 @@ IC-numbered targets (the Heart, Soul, Pelican and Cocoon nebulae) aren't in
 there. Four glyphs: `◍` galaxy, `⁂` open/globular cluster, `✳` nebula, `◈`
 planetary nebula. About 30 of the well-known ones (Andromeda Galaxy, Orion
 Nebula, Whirlpool Galaxy, the Double Cluster…) are labelled by name, the same
-way stars and planets are. Only on the horizon and disc views: `--dso` has
-no effect on `--find` or the daytime Sun's-path view, since there is nothing
-to overlay there.
+way stars and planets are. Only on the horizon view: `--dso` has no effect
+on `--find` or the daytime Sun's-path view, since there is nothing to
+overlay there.
 
 ## Zoom into a quadrant
 
@@ -108,8 +107,7 @@ computed fresh from `facing`/`span` every time, not stored anywhere, so
 of the URL matches. There's no persistent session: to zoom in, rerun the same
 command with `--quadrant=` (or `?quadrant=`) added; a crop doesn't draw its own
 sub-grid, so there's no further zoom past one cell. An unrecognised letter is
-reported and ignored, falling back to the full view. Horizon view only: `disc`
-and `--find` ignore it.
+reported and ignored, falling back to the full view. `--find` ignores it.
 
 While the Sun is up you get `the Sun's path today` whatever else you asked for:
 its arc, with rise, transit and set, and the marker on where it is right now.
@@ -342,7 +340,7 @@ python3 cli.py Zurich 2026-07-30T22:00 --facing=NNW --span=90
 python3 cli.py Sydney 2026-07-30T21:00
 python3 cli.py Reykjavik 2026-06-21T23:00          never gets dark
 python3 cli.py "Tromso, NO" 2026-12-21T12:00       polar night
-python3 cli.py Nairobi 2026-07-30T21:00 --disc     equatorial sky
+python3 cli.py Nairobi 2026-07-30T21:00            equatorial sky
 python3 cli.py Zurich 2026-08-12T23:00             Perseid peak, no Moon
 python3 cli.py Zurich --find=Saturn
 python3 cli.py Singapore --json

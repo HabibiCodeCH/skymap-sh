@@ -2181,10 +2181,6 @@ class WidthLadder(unittest.TestCase):
         self.assertNotIn('class="w w-wide"', resp.text)
         self.assertNotIn('<div id="chart-ladder">', resp.text)
 
-    def test_disc_view_opts_out(self):
-        resp = self.client.get("/Zurich?t=2026-07-30T23:00&view=disc", headers=BROWSER)
-        self.assertNotIn('<div id="chart-ladder">', resp.text)
-
     def test_find_view_gets_the_ladder_too(self):
         # find used to crop to a narrow window (opted out, same as facing=)
         # -- it draws the full panorama now, same width as the ordinary

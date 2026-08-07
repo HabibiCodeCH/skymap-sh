@@ -42,7 +42,7 @@ def main(argv):
     r = api.Request(
         place=pos[0] if pos else "Zurich",
         when=when,
-        view="disc" if flags.get("--disc") else "horizon",
+        view="horizon",
         facing=flags.get("--facing") or None,
         span=float(flags["--span"]) if flags.get("--span") else None,
         find=flags.get("--find") or None,

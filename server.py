@@ -117,6 +117,11 @@ _hits = _misses = 0
 # for the product question: which places, which objects, which views.
 from collections import Counter
 STARTED = time.time()
+# Views that existed once and no longer do. Their totals stay in _stat and on
+# disk -- deleting them would quietly rewrite the record of what the site used
+# to be -- but they are left out of everything that reads like a live counter.
+# view:disc was the whole sky drawn as a circle; two people ever opened it.
+RETIRED_VIEWS = ("view:find", "view:disc")
 _stat = Counter()
 _places = Counter()
 # Frozen. This was the "which object" leaderboard back when finding one meant
@@ -1183,11 +1188,12 @@ def stats_text(n=50, map_slot=False):
         L.append(f"  {'png':12} {_stat['png']:>8,}")
         L.append("")
     L.append("views")
-    # view:find keeps its historical total in _stat (and on disk) but is no
-    # longer written to, so it is skipped here: a line that can only ever
-    # show the same number again reads as a stuck counter, not as history.
+    # view:find and view:disc keep their historical totals in _stat (and on
+    # disk) but neither is written to any more, so both are skipped here: a
+    # line that can only ever show the same number again reads as a stuck
+    # counter, not as history.
     for k in sorted(k for k in _stat if k.startswith("view:")
-                    and k != "view:find"):
+                    and k not in RETIRED_VIEWS):
         L.append(f"  {k[5:]:12} {_stat[k]:>8,}")
     if _stat["iss"]:
         L.append(f"  {'iss':12} {_stat['iss']:>8,}")
@@ -1331,7 +1337,7 @@ def stats_json(n=50):
                     golden_off=_stat["golden:off"],
                     top_teased=dict(_events_teased.most_common(n))),
         views={k[5:]: v for k, v in _stat.items()
-               if k.startswith("view:") and k != "view:find"},
+               if k.startswith("view:") and k not in RETIRED_VIEWS},
         pages={k[5:]: v for k, v in _stat.items() if k.startswith("page:")},
         modes={k[5:]: v for k, v in _stat.items() if k.startswith("mode:")},
         errors={k[7:]: v for k, v in _stat.items() if k.startswith("status:")},
@@ -1742,7 +1748,7 @@ def _build(request: Req, place: str | None):
     return api.Request(
         place=place,
         when=when,
-        view="disc" if q.get("view") == "disc" else "horizon",
+        view="horizon",
         facing=q.get("facing") or None,
         span=span,
         find=q.get("find") or None,
@@ -2195,7 +2201,7 @@ def _respond(request: Req, place: str | None):
         # and the ladder would quietly override them. That's also what keeps
         # a shared ...?w=170 link, the CLI, and the animate stream on the
         # single-render path they have always been on.
-        fits_width = r.view != "disc" and not r.facing
+        fits_width = not r.facing
         laddered = fits_width and not r.width
         # Called fresh here rather than read off res.data -- _compose_find
         # doesn't set coming_up_card (find already answers "what's worth

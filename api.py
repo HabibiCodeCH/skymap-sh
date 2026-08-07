@@ -20,7 +20,7 @@ import motion
 import objects
 from sky import (C, paint, julian, gmst_hours, altaz, angsep, compass, moon_glyph,
                  phase_name, resolve_target, visibility, next_visible,
-                 solar_elongation, find_text, find_marker, sky_read, render, render_linear,
+                 solar_elongation, find_text, find_marker, sky_read, render_linear,
                  sun, moon, planet, sun_arc, sun_events, dark_enough, DSO_LEGEND)
 import events as ev_mod
 
@@ -4247,7 +4247,6 @@ def _png_url(r):
     if r.dso: q.append("dso=1")
     if r.quadrant: q.append(f"quadrant={r.quadrant}")
     if r.find: q.append(f"find={quote(r.find)}")
-    if r.view == "disc": q.append("view=disc")
     if not r.lines: q.append("nolines=1")
     if r.when_explicit: q.append(f"t={r.when_local:%Y-%m-%dT%H:%M}")
     qs = ("?" + "&".join(q)) if q else ""
@@ -4370,47 +4369,41 @@ def _compose_sky(r):
     mag_limit = _fade_mag_limit(sun_alt)
     dso_limit = DSO_LIMIT if r.dso else None
     mw_floor = _milkyway_floor_now(p.lat, p.lon, sun_alt)
-    if r.view == "disc" and not r.facing:
-        art, st = render(r.when_utc, p.lat, p.lon, height=34, color=c,
-                         show_lines=r.lines, width=r.width, mag_limit=mag_limit,
-                         dso_limit=dso_limit)
-        mode = "looking up, north at top"
-    else:
-        art, st = render_linear(r.when_utc, p.lat, p.lon, color=c, show_lines=r.lines,
-                                tle=r.tle, facing=r.facing, span=r.span,
-                                width=r.width if r.facing else _effective_width(r),
-                                height=None if r.facing else _horizon_height(r),
-                                mag_limit=mag_limit, line_limit=mag_limit,
-                                # "Sun" and "Moon" must stay in the set even
-                                # when neither is bright enough to be
-                                # "visible" here -- render_linear only
-                                # computes alt/az for bodies that survive
-                                # this filter, and sky_read() below needs
-                                # st["sun"]["alt"] and st["moon"]["alt"]
-                                # unconditionally. Missing "Moon" here is
-                                # what let ?night=1 during actual daylight
-                                # crash with a KeyError.
-                                bodies=_fade_visible_bodies(sun_alt, jd) | {"Sun", "Moon"},
-                                dso_limit=dso_limit, quadrant=r.quadrant,
-                                quadrants=r.quadrant_requested, side_panel=r.panel,
-                                milkyway=mw_floor)
-        quad_bit = f", quadrant {st['quad_applied']}" if st.get("quad_applied") else ""
-        # a quadrant crop replaces the zenith inset (there's no room, and no
-        # need -- the crop already narrows the view), so the header must stop
-        # promising an inset that render_linear didn't actually draw.
-        no_inset = st.get("quad_applied") is not None
-        mode = (f"facing {r.facing.upper()}, {int(round(st['span']))}° wide"
-                f"{' (' + st['clamped'] + ')' if st['clamped'] else ''}, true shape{quad_bit}"
-                if r.facing else
-                f"horizon panorama, 0-70°{quad_bit}" if no_inset else
-                f"horizon panorama, 0-70° + zenith inset{quad_bit}")
-        # On the laddered page the default panorama says nothing the chart
-        # is not already showing: the axis is labelled 0-70 down its left
-        # edge and the inset is right there in the corner. A facing window
-        # or a quadrant crop is different -- that one is not obvious from
-        # looking, so it keeps its label.
-        if r.panel and not r.facing and not quad_bit:
-            mode = ""
+    art, st = render_linear(r.when_utc, p.lat, p.lon, color=c, show_lines=r.lines,
+                            tle=r.tle, facing=r.facing, span=r.span,
+                            width=r.width if r.facing else _effective_width(r),
+                            height=None if r.facing else _horizon_height(r),
+                            mag_limit=mag_limit, line_limit=mag_limit,
+                            # "Sun" and "Moon" must stay in the set even
+                            # when neither is bright enough to be
+                            # "visible" here -- render_linear only
+                            # computes alt/az for bodies that survive
+                            # this filter, and sky_read() below needs
+                            # st["sun"]["alt"] and st["moon"]["alt"]
+                            # unconditionally. Missing "Moon" here is
+                            # what let ?night=1 during actual daylight
+                            # crash with a KeyError.
+                            bodies=_fade_visible_bodies(sun_alt, jd) | {"Sun", "Moon"},
+                            dso_limit=dso_limit, quadrant=r.quadrant,
+                            quadrants=r.quadrant_requested, side_panel=r.panel,
+                            milkyway=mw_floor)
+    quad_bit = f", quadrant {st['quad_applied']}" if st.get("quad_applied") else ""
+    # a quadrant crop replaces the zenith inset (there's no room, and no
+    # need -- the crop already narrows the view), so the header must stop
+    # promising an inset that render_linear didn't actually draw.
+    no_inset = st.get("quad_applied") is not None
+    mode = (f"facing {r.facing.upper()}, {int(round(st['span']))}° wide"
+            f"{' (' + st['clamped'] + ')' if st['clamped'] else ''}, true shape{quad_bit}"
+            if r.facing else
+            f"horizon panorama, 0-70°{quad_bit}" if no_inset else
+            f"horizon panorama, 0-70° + zenith inset{quad_bit}")
+    # On the laddered page the default panorama says nothing the chart
+    # is not already showing: the axis is labelled 0-70 down its left
+    # edge and the inset is right there in the corner. A facing window
+    # or a quadrant crop is different -- that one is not obvious from
+    # looking, so it keeps its label.
+    if r.panel and not r.facing and not quad_bit:
+        mode = ""
 
     # One row on the browser page: place, moment, Moon and planets. The CLI
     # keeps its own two-part header and its own prose, untouched.
@@ -4501,7 +4494,7 @@ def _compose_sky(r):
     data = dict(
         place=p.name, near=p.near, lat=p.lat, lon=p.lon, tz_offset=r.tz,
         when_utc=r.when_utc.isoformat() + "Z", when_local=r.when_local.isoformat(),
-        view="disc" if (r.view == "disc" and not r.facing) else "horizon",
+        view="horizon",
         facing=r.facing, span=round(st.get("span", 360), 1),
         sun_alt=round(altaz(su["ra"], su["dec"], p.lat, st["lst"])[0], 1),
         moon=dict(phase=phase_name(mo["age"]), illum=round(mo["illum"] * 100),
@@ -4986,8 +4979,8 @@ def _compose_day(r):
     ]
     if ev["polar_day"]:
         lines.append("The Sun does not set here today.")
-    if r.facing or r.view == "disc":
-        lines.append("The Sun's path is a whole-sky view, so facing and view were "
+    if r.facing:
+        lines.append("The Sun's path is a whole-sky view, so facing was "
                      "ignored here. Add --night (or ?night=1) to force a star "
                      "chart in daylight.")
     # only promise what will actually be above the horizon once it is dark
@@ -6063,17 +6056,6 @@ def compose_chart_only(r):
                                  height=_png_export_height(r))
         head = _horizon_head(r, _sun_path_mode(r))
         return paint(head, C.HEAD, c) + "\n\n" + art
-    if r.view == "disc" and not r.facing:
-        jd = julian(r.when_utc)
-        lst = (gmst_hours(jd) + p.lon / 15.0) % 24
-        su = sun(jd)
-        sun_alt, _ = altaz(su["ra"], su["dec"], p.lat, lst)
-        art, _st = render(r.when_utc, p.lat, p.lon, height=34, color=c,
-                          show_lines=r.lines, width=r.width,
-                          mag_limit=_fade_mag_limit(sun_alt),
-                          dso_limit=DSO_LIMIT if r.dso else None)
-        head = _horizon_head(r, "looking up, north at top")
-        return paint(head, C.HEAD, c) + "\n\n" + art
     jd = julian(r.when_utc)
     lst = (gmst_hours(jd) + p.lon / 15.0) % 24
     su = sun(jd)
@@ -6140,7 +6122,6 @@ automatically -- no flag needed.
 
 VIEWS
   ?view=horizon    panorama, N-E-S-W-N, altitude 0-70° + zenith inset (default)
-  ?view=disc       whole sky as a circle, north up, east left
   ?facing=NW       140° window centred on a bearing, shapes undistorted
   ?span=90         window width, 90-344° (only with facing)
 

@@ -1108,9 +1108,10 @@ class FindOnThePngExport(unittest.TestCase):
 
 
 class PngUrlCarriesEveryRenderingParameter(unittest.TestCase):
-    """find= wasn't the only one missing -- t=, view=disc and nolines= all
-    changed what /horizon.png actually rendered without ever reaching the
-    "Share as a PNG" link either. Same bug, three more instances of it."""
+    """find= wasn't the only one missing -- t= and nolines= also changed
+    what /horizon.png actually rendered without ever reaching the "Share as
+    a PNG" link either. Same bug, more instances of it. (view=disc was a
+    third; the view itself is gone.)"""
 
     def test_explicit_time_travels_with_the_link(self):
         r = api.Request(place="Zurich", when=dt.datetime(2026, 8, 12, 18, 0))
@@ -1122,10 +1123,6 @@ class PngUrlCarriesEveryRenderingParameter(unittest.TestCase):
         # pinned to the moment it happened to be generated.
         r = api.Request(place="Zurich")
         self.assertNotIn("t=", api._png_url(r))
-
-    def test_disc_view_travels_with_the_link(self):
-        r = api.Request(place="Zurich", view="disc")
-        self.assertIn("view=disc", api._png_url(r))
 
     def test_nolines_travels_with_the_link(self):
         r = api.Request(place="Zurich", lines=False)
