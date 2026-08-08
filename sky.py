@@ -32,6 +32,21 @@ class C:
     LABEL = "\033[38;5;250m"
     HEAD = "\033[38;5;255m"
     MUTE = "\033[38;5;242m"
+    # Up, in the right place, and not yet pickable out by eye. Between
+    # sunset and full dark the fade threshold admits almost nothing, so the
+    # chart used to be an empty grid for the best part of two hours. Drawn
+    # in this instead, the field arrives whole at sunset and lights up star
+    # by star as the sky darkens -- nothing moves, nothing pops in, only the
+    # colour changes.
+    #
+    # 237 (#3a3a3a) on the xterm greyscale ramp, where each step is +10 on
+    # all three channels. Two steps under HOR (239) so a field of these
+    # cannot be mistaken for the horizon rule, and three clear of the
+    # background dots at 234 so it still reads as something rather than as
+    # empty sky. It was 241 first, which was legible but not obviously
+    # *unlit* -- the whole effect is the contrast against a lit star at
+    # 252-255, and that wants most of the ramp between them.
+    UNLIT = "\033[38;5;237m"
     PLANET = "\033[38;5;180m"
     MOON = "\033[38;5;253m"
     DSO = "\033[38;5;120m"      # deep-sky objects -- green, so they read
@@ -1234,7 +1249,7 @@ def render_linear(when_utc, lat, lon, W=176, H=22, color=True, show_lines=True,
                   alt_lo=None, alt_hi=None, target=None, overlay=None,
                   bodies=None, inset=True, width=None, height=None, dso_limit=None,
                   quadrant=None, quadrants=False, side_panel=False,
-                  alt_bands=None, notes=None, milkyway=False):
+                  alt_bands=None, notes=None, milkyway=False, dim_limit=None):
     """Horizon panorama. facing=None gives the full 360 deg sweep; facing='SW'
     gives a window centred there, which is narrow enough to be undistorted.
 
@@ -1242,7 +1257,20 @@ def render_linear(when_utc, lat, lon, W=176, H=22, color=True, show_lines=True,
     appended below the sweep) and hands its lines back via st['zenith_lines']
     instead, for a caller that wants to lay it out beside the chart rather
     than under it. Default False keeps every existing caller (the CLI
-    included) byte-identical."""
+    included) byte-identical.
+
+    dim_limit draws the sky twice over. Stars down to mag_limit are lit and
+    take their real colour; stars between mag_limit and dim_limit are up but
+    not yet pickable out by eye, and are drawn in C.UNLIT. Asterism lines
+    follow the same rule against line_limit. The point is that dim_limit is
+    the limit the sky is *heading for*, so the field the chart draws at
+    sunset is the field it will still be drawing at full dark -- what changes
+    over those two hours is colour, not composition, and nothing pops into
+    existence. st['visible'] keeps counting only the lit ones, so the star
+    count above the chart stays an honest answer to "what can I see".
+
+    None (the default) means no second pass and no unlit anything, which is
+    every existing caller byte-for-byte."""
     req_span = span                    # the else-branch below clobbers `span`
     if facing is not None:
         # Rows are capped at 46 so output stays a sane height. Below ~90 deg of
@@ -1473,26 +1501,19 @@ def render_linear(when_utc, lat, lon, W=176, H=22, color=True, show_lines=True,
                     soft[r][start + k], lock[r][start + k] = False, True
                 break
 
-    if quad_cells:                      # dotted cell boundaries, letters follow later
-        QC = "\033[38;5;240m"
-        az_bounds = sorted({round(c["az_centre"] - c["az_span"] / 2, 4) for c in quad_cells}
-                           | {round(c["az_centre"] + c["az_span"] / 2, 4) for c in quad_cells})
-        alt_bounds = sorted({round(c["alt_lo"], 4) for c in quad_cells}
-                            | {round(c["alt_hi"], 4) for c in quad_cells})
-        for az in az_bounds:
-            c = col_of(az)
-            if c is None:
-                continue
-            for r in range(H):
-                if grid[r][c] == " ":
-                    grid[r][c], tint[r][c], soft[r][c] = "┊", QC, True
-        for a in alt_bounds:
-            r = row_of(a)
-            if r is None:
-                continue
-            for c in range(0, W, 2):
-                if grid[r][c] == " ":
-                    grid[r][c], tint[r][c], soft[r][c] = "┈", QC, True
+    # The two thresholds everything below is drawn against: what appears at
+    # all, and what appears lit. Equal unless dim_limit was asked for, which
+    # is what makes the default path identical to the one that had no notion
+    # of an unlit star.
+    #
+    # max(), not dim_limit outright: a caller that already asks for a deeper
+    # field than the sky is heading for (find= draws to 5.0) must not have it
+    # cut back to 4.0 by a feature about twilight.
+    star_draw_limit = mag_limit if dim_limit is None else max(mag_limit, dim_limit)
+    # line_limit None means "draw every line", so there is nothing for a
+    # second threshold to add and the unlit pass stays off.
+    line_draw_limit = (line_limit if line_limit is None or dim_limit is None
+                       else max(line_limit, dim_limit))
 
     chosen = []
     if show_lines:
@@ -1524,9 +1545,17 @@ def render_linear(when_utc, lat, lon, W=176, H=22, color=True, show_lines=True,
         # staircase; and two segments crossing the same cell merge into one
         # glyph here rather than the second overwriting the first.
         dots = [[0] * (W * 2) for _ in range(H * 4)]
+        # A second bitmap for the segments that are up but not yet lit. Two
+        # bitmaps rather than one with a flag per dot, because the merging is
+        # the whole reason the bitmap exists: two lit segments crossing a cell
+        # have to become one glyph, and so do two unlit ones, but a lit and an
+        # unlit crossing must not average into some third colour. Kept apart,
+        # flushed in order, lit wins the cell.
+        dim_dots = [[0] * (W * 2) for _ in range(H * 4)]
 
-        def dot_line(p, q):
+        def dot_line(p, q, lit=True):
             """One segment into the bitmap. True if any of it landed."""
+            grid_ = dots if lit else dim_dots
             px, py = p[0] * 2, p[1] * 4
             qx, qy = q[0] * 2, q[1] * 4
             n = int(max(abs(qx - px), abs(qy - py))) + 1
@@ -1535,7 +1564,7 @@ def render_linear(when_utc, lat, lon, W=176, H=22, color=True, show_lines=True,
                 t = k / n
                 sx, sy = int(round(px + (qx - px) * t)), int(round(py + (qy - py) * t))
                 if 0 <= sx < W * 2 and 0 <= sy < H * 4:
-                    dots[sy][sx] = 1
+                    grid_[sy][sx] = 1
                     hit = True
             return hit
 
@@ -1550,14 +1579,21 @@ def render_linear(when_utc, lat, lon, W=176, H=22, color=True, show_lines=True,
                     # itself, so lines and names fade in/out in step with the
                     # stars they connect. Ordinary requests leave it unset and
                     # keep the existing all-or-nothing show_lines behaviour.
-                    if hip not in cpos or (line_limit is not None and cpos[hip][2] > line_limit):
+                    #
+                    # Gated on line_draw_limit, then each endpoint remembers
+                    # whether it is lit: an unlit endpoint still gets a point,
+                    # so the shape is complete from sunset, and it is the
+                    # colour of the segment that changes as its ends come on.
+                    if hip not in cpos or (line_draw_limit is not None
+                                           and cpos[hip][2] > line_draw_limit):
                         pts.append(None); continue
                     ra, dec, _m = cpos[hip]
                     ra, dec = precess(ra, dec, jd)
                     a, z = altaz(ra, dec, lat, lst)
                     cc = colf_of(z)
                     rr = rowf_of(a) if cc is not None else None
-                    pts.append((cc, rr) if rr is not None and a > 3 else None)
+                    end_lit = line_limit is None or _m <= line_limit
+                    pts.append((cc, rr, end_lit) if rr is not None and a > 3 else None)
                 # All of this shape or none of it. Dropping only the sides the
                 # projection cannot carry leaves the ones it can, and a single
                 # line with SUMMER TRIANGLE written against it is worse than
@@ -1573,34 +1609,57 @@ def render_linear(when_utc, lat, lon, W=176, H=22, color=True, show_lines=True,
                     # dropped the end cell of every segment to keep a line off
                     # its own star. A cell holds one character either way, and
                     # the stars are placed over these below.
-                    if dot_line(p, q):
+                    #
+                    # Both ends, not either: a segment running from a star you
+                    # can see to one you cannot is not yet a line you could
+                    # trace, so it stays unlit until the fainter end arrives.
+                    seg_lit = p[2] and q[2]
+                    if dot_line(p, q, lit=seg_lit) and seg_lit:
+                        # Only a lit segment marks the figure visible. The
+                        # name rides on this flag, and a constellation named
+                        # over stars nobody can pick out yet is a caption for
+                        # a picture that is not there.
                         item["visible"] = True
                 # the pattern's own vertex stars, so the nodes read clearly
                 for hip in poly:
                     if hip in cpos:
                         ra, dec, m = cpos[hip]
-                        if line_limit is not None and m > line_limit:
+                        if line_draw_limit is not None and m > line_draw_limit:
                             continue
                         ra, dec = precess(ra, dec, jd)
                         a, z = altaz(ra, dec, lat, lst)
                         if a > 0:
+                            node_lit = line_limit is None or m <= line_limit
                             place(z, a, "●" if m < 3.2 else "•",
-                                  star_colour(None), over=True)
+                                  star_colour(None) if node_lit else C.UNLIT,
+                                  over=node_lit)
 
     stars = _load("stars.json")
     visible = []
     for s in stars:
-        if s["m"] > mag_limit:
+        if s["m"] > star_draw_limit:
             continue
         ra, de = precess(s["ra"], s["de"], jd)
         a, z = altaz(ra, de, lat, lst)
         if a <= 0:
             continue
-        visible.append((s, a, z))
+        lit = s["m"] <= mag_limit
+        # Only the lit ones. `visible` is what the star count and the
+        # brightest-few list are built from, and an unlit star is one you
+        # cannot see -- counting it would make the line above the chart say
+        # 287 stars over a sky showing none.
+        if lit:
+            visible.append((s, a, z))
+        col = star_colour(s.get("ci")) if lit else C.UNLIT
+        # The glyph is chosen by magnitude either way, so a star keeps its
+        # size when it lights up and only its colour moves.
         if a > alt_hi:
-            inset_items.append((a, z, glyph_for(s["m"]), star_colour(s.get("ci")), None))
+            inset_items.append((a, z, glyph_for(s["m"]), col, None))
         else:
-            place(z, a, glyph_for(s["m"]), star_colour(s.get("ci")), over=s["m"] < 2.0)
+            # An unlit star never wins a cell from a lit one: over= stays
+            # false for it whatever its magnitude, so a bright star that has
+            # not come on yet cannot displace a fainter one that has.
+            place(z, a, glyph_for(s["m"]), col, over=lit and s["m"] < 2.0)
 
     dso = deepsky_visible(dso_limit, jd, lat, lst)
     for o, a, z in dso:
@@ -1728,14 +1787,77 @@ def render_linear(when_utc, lat, lon, W=176, H=22, color=True, show_lines=True,
         for r in range(H):
             row = grid[r]
             for c in range(W):
-                bits = 0
+                bits = dim_bits = 0
                 for dy in range(4):
                     for dx in range(2):
                         if dots[r * 4 + dy][c * 2 + dx]:
                             bits |= BRAILLE_DOTS[(dx, dy)]
+                        if dim_dots[r * 4 + dy][c * 2 + dx]:
+                            dim_bits |= BRAILLE_DOTS[(dx, dy)]
+                # Lit first and on its own: a cell carrying any lit dot is a
+                # lit cell, and its unlit dots are dropped rather than mixed
+                # in. Merging the two bitmaps would put a grey glyph where a
+                # figure crosses itself, which is the one place the eye is
+                # most likely to be looking.
                 if bits and free(r, c):
                     row[c], tint[r][c], soft[r][c] = (
                         chr(BRAILLE_BASE + bits), C.DIM, False)
+                # Genuinely empty, not merely free(). free() counts a soft
+                # cell as available, which is how a lit line gets to draw
+                # over a quadrant divider or the Milky Way -- fine for a
+                # line you can actually trace, wrong for one that is not lit
+                # yet. An unlit line is the faintest thing on the chart and
+                # displaces nothing: it cost seven divider cells before this
+                # was qualified, on a view whose whole purpose is the grid.
+                elif dim_bits and grid[r][c] == " " and not lock[r][c]:
+                    row[c], tint[r][c], soft[r][c] = (
+                        chr(BRAILLE_BASE + dim_bits), C.UNLIT, False)
+
+    # The quadrant grid, last of everything that draws into the chart.
+    #
+    # It used to go first, into empty cells only, which made it a grid in
+    # name and a scatter of tick marks in practice: every star, label and
+    # asterism line it passed behind punched a hole in it, and on a busy
+    # chart barely a hundred cells of four full-height dividers survived.
+    # A grid you turned on to pick a quadrant out of is the one thing on
+    # the page that has to be followable end to end, so it now draws over
+    # the sky rather than around it.
+    #
+    # Locked cells are the exception, and the only one: those are text --
+    # object names, constellation labels, the quadrant letters themselves,
+    # all placed above -- and a divider through the middle of a word costs
+    # more than the pixel of grid it buys.
+    #
+    # Yellow, matching the A-L letters it belongs to, but two steps down
+    # from their 226: the letters are what you read and the grid is what
+    # you follow, and at the same brightness a full-height rule every
+    # fifty-odd columns shouted over the sky it is drawn on.
+    if quad_cells:
+        QC = "\033[38;5;178m"
+        az_bounds = sorted({round(c["az_centre"] - c["az_span"] / 2, 4) for c in quad_cells}
+                           | {round(c["az_centre"] + c["az_span"] / 2, 4) for c in quad_cells})
+        alt_bounds = sorted({round(c["alt_lo"], 4) for c in quad_cells}
+                            | {round(c["alt_hi"], 4) for c in quad_cells})
+        # Horizontals first, so the verticals win every crossing. The
+        # verticals are the full height of the chart and the ones an eye
+        # actually follows from a letter down to the horizon; the
+        # horizontals are dashes every other column and read as a band
+        # either way. Drawn the other way round, each vertical came out with
+        # a gap at every altitude boundary it passed.
+        for a in alt_bounds:
+            r = row_of(a)
+            if r is None:
+                continue
+            for c in range(0, W, 2):
+                if not lock[r][c]:
+                    grid[r][c], tint[r][c], soft[r][c] = "┈", QC, True
+        for az in az_bounds:
+            c = col_of(az)
+            if c is None:
+                continue
+            for r in range(H):
+                if not lock[r][c]:
+                    grid[r][c], tint[r][c], soft[r][c] = "┊", QC, True
 
     # label the row nearest each 10 deg step, so the ticks survive any H
     ticks10 = {}

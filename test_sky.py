@@ -639,3 +639,169 @@ class AFigureOverheadIsNotDrawnAtAll(unittest.TestCase):
         """The guard has to be about the projection tearing a shape apart, not
         about big shapes: the Big Dipper is 25 degrees long and stays."""
         self.assertIn("BIG DIPPER", self.chart())
+
+
+class TheUnlitFieldThroughTwilight(unittest.TestCase):
+    """Between sunset and full dark the fade threshold admits almost nothing,
+    so the chart used to be a grid with a horizon on it. dim_limit draws the
+    field the sky is heading for, unlit, and lets it colour in."""
+
+    # Nautical twilight over Zurich: a handful of stars lit, most not.
+    WHEN = dt.datetime(2026, 8, 7, 19, 40)
+    LAT, LON = 47.38, 8.54
+
+    def chart(self, **kw):
+        return sky.render_linear(self.WHEN, self.LAT, self.LON, width=160, **kw)
+
+    def test_omitting_it_draws_no_unlit_anything(self):
+        """Every existing caller -- the CLI included -- is byte-identical."""
+        art, _st = self.chart(mag_limit=0.11, line_limit=0.11)
+        self.assertNotIn(sky.C.UNLIT, art)
+
+    def test_passing_none_is_the_same_as_omitting_it(self):
+        a, _ = self.chart(mag_limit=0.11, line_limit=0.11)
+        b, _ = self.chart(mag_limit=0.11, line_limit=0.11, dim_limit=None)
+        self.assertEqual(a, b)
+
+    def test_the_field_arrives_before_it_lights_up(self):
+        """The whole point: at nautical twilight three stars are genuinely
+        pickable out, and the chart shows where the rest of them are."""
+        art, st = self.chart(mag_limit=0.11, line_limit=0.11, dim_limit=4.0)
+        self.assertLess(len(st["visible"]), 20)
+        self.assertGreater(art.count(sky.C.UNLIT), 50)
+
+    def test_the_star_count_stays_honest(self):
+        """st['visible'] is what the line above the chart counts. An unlit
+        star is one you cannot see, so it must not be in there."""
+        _art, dim = self.chart(mag_limit=0.11, line_limit=0.11, dim_limit=4.0)
+        _art, plain = self.chart(mag_limit=0.11, line_limit=0.11)
+        self.assertEqual(len(dim["visible"]), len(plain["visible"]))
+
+    def test_the_field_is_the_one_full_dark_will_show(self):
+        """Composition does not change across twilight, only colour -- so
+        nothing pops into existence while you are looking at it."""
+        _art, dark = self.chart(mag_limit=4.0, line_limit=4.0)
+        art, _ = self.chart(mag_limit=0.11, line_limit=0.11, dim_limit=4.0)
+        # Every star full dark will light is already on the twilight chart,
+        # in one colour or the other.
+        drawn = art.count(sky.C.UNLIT) + art.count(sky.star_colour(None))
+        self.assertGreater(drawn, 0)
+        self.assertGreaterEqual(len(dark["visible"]), 100)
+
+    def test_at_full_dark_there_is_nothing_left_unlit(self):
+        """dim_limit and mag_limit have met, so the second pass adds nothing
+        and the chart is the ordinary one."""
+        art, _st = self.chart(mag_limit=4.0, line_limit=4.0, dim_limit=4.0)
+        self.assertNotIn(sky.C.UNLIT, art)
+
+    def test_a_deeper_field_than_the_sky_is_heading_for_is_not_cut_back(self):
+        """find= draws to 5.0. A feature about twilight must not take stars
+        away from a caller that asked for more of them."""
+        deep, _ = self.chart(mag_limit=5.0, line_limit=None, dim_limit=4.0)
+        plain, _ = self.chart(mag_limit=5.0, line_limit=None)
+        self.assertEqual(deep, plain)
+
+    def test_lines_are_sketched_in_too(self):
+        """Asked for explicitly: the figure appears whole from sunset and
+        colours in with its stars rather than assembling segment by segment."""
+        art, _st = self.chart(mag_limit=0.11, line_limit=0.11, dim_limit=4.0)
+        unlit_rows = [ln for ln in art.split("\n") if sky.C.UNLIT in ln]
+        self.assertTrue(unlit_rows)
+
+    def test_an_unnamed_figure_is_not_captioned_before_it_is_lit(self):
+        """A constellation name over stars nobody can pick out yet is a
+        caption for a picture that is not there.
+
+        The names come off st['cons'] rather than a hand-written list: which
+        figures this chart picks is a function of the date and the latitude,
+        and a list written here goes stale the moment either moves."""
+        # color=False: names are painted a character at a time, so with the
+        # escapes in they are never a contiguous substring to search for.
+        dim, dim_st = self.chart(mag_limit=-4.0, line_limit=-4.0,
+                                 dim_limit=4.0, color=False)
+        lit, lit_st = self.chart(mag_limit=4.0, line_limit=4.0, color=False)
+        self.assertTrue(lit_st["cons"], "no figures chosen -- test proves nothing")
+        self.assertGreater(sum(1 for n in lit_st["cons"] if n.upper() in lit), 0)
+        # Nothing lit, so nothing captioned.
+        self.assertEqual([n for n in dim_st["cons"] if n.upper() in dim], [])
+
+
+class TheQuadrantGridIsFollowable(unittest.TestCase):
+    """It is drawn last and over the sky, not first and around it. A grid you
+    turned on in order to pick a quadrant out of is the one thing on the page
+    that has to be traceable end to end."""
+
+    WHEN = dt.datetime(2026, 8, 8, 0, 0)
+    V = "┊"
+
+    def _chart(self, **kw):
+        art, _st = sky.render_linear(self.WHEN, 47.38, 8.54, width=220,
+                                     quadrants=True, color=False, **kw)
+        return art
+
+    def _body(self, art):
+        return [l for l in art.split("\n") if len(l) > 170]
+
+    def test_each_divider_runs_the_height_of_the_chart(self):
+        """Four fifths of every row, on the busiest chart the site draws.
+
+        Not every row: the horizon rule wins its own, being the one line that
+        means more than the grid does, and a divider that happens to pass
+        through a constellation name gives up a cell per letter. Before this
+        was drawn last, a divider through a crowded stretch of sky kept
+        barely half its cells."""
+        art = self._chart(dso_limit=6.0)
+        body = self._body(art)
+        cols = sorted({c for l in body for c, ch in enumerate(l) if ch == self.V})
+        self.assertGreaterEqual(len(cols), 3)
+        for c in cols:
+            drawn = sum(1 for l in body if len(l) > c and l[c] == self.V)
+            self.assertGreaterEqual(drawn, len(body) * 0.8, (c, drawn, len(body)))
+
+    def test_a_skyful_of_labels_barely_dents_it(self):
+        """Drawn first, into empty cells only, it lost a cell to every star,
+        label and asterism line it passed behind."""
+        dense = self._chart(dso_limit=6.0).count(self.V)
+        plain = self._chart().count(self.V)
+        self.assertGreater(dense, plain * 0.9, (dense, plain))
+
+    def test_it_still_breaks_for_text(self):
+        """The one exception, and the only one: a divider through the middle
+        of a word costs more than the cell of grid it buys."""
+        self.assertIn("KEYSTONE", self._chart(dso_limit=6.0))
+
+    def test_it_is_yellow_like_the_letters_it_belongs_to(self):
+        """Two steps down from the letters' 226: the letters are what you
+        read, the grid is what you follow."""
+        art, _st = sky.render_linear(self.WHEN, 47.38, 8.54, width=220,
+                                     quadrants=True, dso_limit=6.0)
+        self.assertIn("38;5;178", art)          # the grid
+        self.assertIn("38;5;226", art)          # the A-L letters, brighter
+        self.assertNotIn("38;5;240m" + self.V, art)   # not the old grey
+
+
+class TheDimLimitWindow(unittest.TestCase):
+    """api._dim_limit decides when the sketch is on at all."""
+
+    def test_off_in_daylight(self):
+        """Drawing a star field into a bright sky would be a lie."""
+        import api
+        self.assertIsNone(api._dim_limit(10.0))
+        self.assertIsNone(api._dim_limit(0.0))
+
+    def test_on_through_twilight(self):
+        import api
+        for alt in (-0.5, -6.0, -12.0, -17.9):
+            self.assertEqual(api._dim_limit(alt), api.FULL_DARK_MAG)
+
+    def test_off_once_the_sky_is_actually_dark(self):
+        """The fade has reached the same number by then, so every star is
+        lit and there is nothing left to sketch."""
+        import api
+        self.assertIsNone(api._dim_limit(-18.0))
+        self.assertIsNone(api._dim_limit(-30.0))
+
+    def test_it_is_the_limit_the_fade_ends_on(self):
+        """Derived, not a second hand-written 4.0."""
+        import api
+        self.assertEqual(api.FULL_DARK_MAG, api._fade_mag_limit(-18))
