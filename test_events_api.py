@@ -374,9 +374,19 @@ def test_row_date_and_its_own_link_land_on_the_same_night():
     assert checked >= 6, "no linked rows found to check"
 
 
-def test_events_html_escapes_and_opens_in_a_new_tab():
+def test_events_html_escapes_and_navigates_in_the_same_tab():
+    """A tab per event is a tab the reader has to close. The list is a page
+    you look down and leave from, and back returns you to it.
+
+    Internal links only: the Bluesky handle in the footer under the list is
+    somewhere else entirely, and leaving the site is exactly the case a new
+    tab is for."""
+    import re as _re
     h = api.events_html(_req(), days=20)
-    assert 'target="_blank"' in h and 'rel="noopener"' in h
+    internal = _re.findall(r'<a href="/[^"]*"[^>]*>', h)
+    assert internal, "no linked event rows to check"
+    for a in internal:
+        assert "target=" not in a, a
     assert "<script" not in h
 
 
@@ -547,10 +557,23 @@ def test_cycle_chevron_starts_hidden_in_static_markup():
     assert '<span class="cu-cycle" id="cu-cycle" role="button" tabindex="0" hidden>' in html_out
 
 
-def test_chart_page_renders_the_card_when_one_is_due(client):
-    body = client.get("/Zurich?t=2026-08-11T23:00", headers=BROWSER).text
-    assert 'id="coming-up"' in body
-    assert "Perseids" in body
+def test_the_chart_pages_no_longer_carry_the_strip(client):
+    # By day it said what the "next up" box says, one line at a time and
+    # with a dismiss button, where the box says five rows at once and needs
+    # no dismissing. By night the chart is the whole page and the strip was
+    # the one thing between it and the top of the window.
+    #
+    # The card itself is not gone -- coming_up_card_html and events_cards
+    # are still built and still tested above, and the OG card and the CLI
+    # teaser read the same ranking. What changed is that the chart pages
+    # stopped rendering it.
+    for url in ("/Zurich?t=2026-08-11T23:00", "/Zurich?t=2026-08-11T10:00"):
+        body = client.get(url, headers=BROWSER).text
+        assert 'id="coming-up"' not in body, url
+    # And what it used to say now has a box of its own on the day page.
+    day = client.get("/Zurich?t=2026-08-11T10:00", headers=BROWSER).text
+    assert "Perseids" in day
+    assert 'id="day-next-up"' in day
 
 
 def test_chart_page_renders_nothing_on_a_quiet_night(client):
@@ -558,12 +581,17 @@ def test_chart_page_renders_nothing_on_a_quiet_night(client):
     assert 'id="coming-up"' not in body
 
 
-def test_find_view_still_gets_the_card(client):
-    # _compose_find doesn't set coming_up_card on its own Result -- the
-    # chart route calls events_cards(r) fresh, independent of which compose
-    # function ran, so find shouldn't lose the homepage highlight.
-    body = client.get("/Zurich?t=2026-08-11T23:00&find=Venus", headers=BROWSER).text
-    assert 'id="coming-up"' in body
+def test_the_card_still_builds_even_though_no_page_renders_it():
+    # The chart pages stopped showing the strip, which leaves
+    # coming_up_card_html and events_cards without a production caller.
+    # Kept and kept tested rather than deleted: the ranking behind them is
+    # the same one the day panel's deck and the OG card use, and this is the
+    # cheapest place to catch it breaking.
+    cards = api.events_cards(_req())
+    assert cards
+    out = api.coming_up_card_html(cards)
+    assert 'id="coming-up"' in out
+    assert "Perseids" in out
 
 
 def test_non_chart_pages_never_show_the_card(client):
@@ -572,11 +600,15 @@ def test_non_chart_pages_never_show_the_card(client):
         assert 'id="coming-up"' not in body, path
 
 
-def test_dismiss_is_wired_to_localstorage_keyed_on_id(client):
-    body = client.get("/Zurich?t=2026-08-11T23:00", headers=BROWSER).text
-    assert "localStorage.getItem(KEY)" in body
-    assert "localStorage.setItem(KEY" in body
-    assert "dismissed.indexOf(c.id)" in body
+def test_dismiss_is_wired_to_localstorage_keyed_on_id():
+    # Off the markup rather than off a page, now that no page renders it.
+    # Keyed on each card's own id -- stable across renders, shared with the
+    # ICS UID and the RSS GUID -- so dismissing one event does not take a
+    # different one next week with it.
+    out = api.coming_up_card_html(api.events_cards(_req()))
+    assert "localStorage.getItem(KEY)" in out
+    assert "localStorage.setItem(KEY" in out
+    assert "dismissed.indexOf(c.id)" in out
 
 
 def test_events_is_in_the_nav(client):

@@ -6,8 +6,11 @@ Run:  python3 test_api.py
 import datetime as dt
 import os
 import json
+import re
 import unittest
 import api
+import art
+import objects
 import sky
 
 
@@ -1190,11 +1193,15 @@ class FullDarkMeansAstronomicalDark(unittest.TestCase):
         # Not polar day: the Sun does still set, it just never gets far down.
         self.assertFalse(res.data["polar_day"])
 
-    def test_an_ordinary_night_still_gets_a_full_dark_time(self):
+    def test_an_ordinary_night_still_gets_a_darkest_time(self):
+        """The word is "darkest" rather than "fully dark". The time is still
+        astronomical dusk -- what changed is the claim made about it, since
+        a city sky never gets fully dark whatever the Sun does, and
+        "darkest" is true at both ends without needing to know the Bortle."""
         res = api.compose(api.Request(place="Geneva", when=self.ORDINARY, color=False))
         self.assertIsNotNone(res.data["dark_from"])
         self.assertFalse(res.data["never_fully_dark"])
-        self.assertIn("fully dark", res.data["prose"])
+        self.assertIn("darkest", res.data["prose"])
 
     def test_dark_from_matches_astronomical_and_not_nautical_dusk(self):
         r = api.Request(place="Geneva", when=self.ORDINARY, color=False)
@@ -1654,8 +1661,7 @@ class CatalogText(unittest.TestCase):
 
 class CatalogHtml(unittest.TestCase):
     """catalog_html() is the browser-only twin of catalog_text() -- every
-    object links to its own page, opened in a new tab so browsing the catalog
-    never navigates away from the chart on screen.
+    object links to its own page, in the same tab.
 
     These used to link to /?find=<name>, which framed the object on a chart
     of the current sky. Every catalogue entry now has a page of its own, and
@@ -1663,9 +1669,15 @@ class CatalogHtml(unittest.TestCase):
     where it is tonight, it has a stable URL worth sharing, and it is what a
     search engine indexes."""
 
-    def test_a_star_links_to_its_own_page_in_a_new_tab(self):
+    def test_a_star_links_to_its_own_page(self):
         h = api.catalog_html()
-        self.assertIn('href="/Sirius" target="_blank" rel="noopener"', h)
+        self.assertIn('href="/Sirius"', h)
+
+    def test_nothing_in_the_catalog_opens_a_new_tab(self):
+        """486 entries that each spawn a tab is a browser to tidy up. Back
+        returns you to the catalog, which is what a list is for."""
+        h = api.catalog_html()
+        self.assertNotIn('target="_blank"', h)
 
     def test_moon_link_uses_the_plain_name_not_the_phase_annotated_display(self):
         # Displayed as "Moon (waning gibbous)" or similar, but only the bare
@@ -1673,7 +1685,7 @@ class CatalogHtml(unittest.TestCase):
         # into the href.
         import sky
         h = api.catalog_html()
-        self.assertIn('href="/Moon" target="_blank" rel="noopener"', h)
+        self.assertIn('href="/Moon"', h)
         age = sky.moon(sky.julian(dt.datetime.utcnow()))["age"]
         self.assertIn(f"Moon ({sky.phase_name(age)})", h)
 
@@ -1997,3 +2009,846 @@ class OnePictureHeader(unittest.TestCase):
         for k, v in before.items():
             if isinstance(v, dict):
                 self.assertEqual(st[k], v, k)
+
+
+class TheDayChartIsShorterInABrowser(unittest.TestCase):
+    """The Sun's arc used to take the star chart's full height in a browser
+    and leave 640px of black under it -- on the page 73% of arrivals land on.
+
+    It is half-ish that now, but only through the width ladder: r.panel is
+    the browser path and nothing else, and it is part of server._cache_key,
+    so `curl skymap.sh/Zurich` cannot be served the short one or share a
+    cache entry with it."""
+
+    NOON = dt.datetime(2026, 8, 7, 12, 0)
+
+    def test_a_terminal_still_gets_the_full_height(self):
+        r = api.Request(place="Zurich", when=self.NOON)
+        self.assertEqual(api._day_height(r), api._horizon_height(r))
+
+    def test_a_browser_gets_fewer_rows(self):
+        r = api.Request(place="Zurich", when=self.NOON, width=300, panel=True)
+        self.assertLess(api._day_height(r), api._horizon_height(r))
+
+    def test_the_short_chart_really_is_shorter(self):
+        """Not just the number -- the drawing itself."""
+        wide = api.Request(place="Zurich", when=self.NOON, width=300)
+        panel = wide.sized(300, True)
+        tall = api._compose_day(wide).text.count("\n")
+        short = api._compose_day(panel).text.count("\n")
+        self.assertLess(short, tall)
+
+    def test_it_is_a_resolution_change_and_not_a_crop(self):
+        """The same slice of sky, drawn with fewer rows. If this ever became
+        a crop, the top of the arc would be the first thing to go -- so the
+        Sun's greatest altitude is what proves it did not."""
+        wide = api.Request(place="Zurich", when=self.NOON, width=300)
+        panel = wide.sized(300, True)
+        self.assertAlmostEqual(api._compose_day(wide).data["max_alt"],
+                               api._compose_day(panel).data["max_alt"], places=6)
+
+    def test_the_floor_holds_at_the_narrowest_rung(self):
+        """The 80-column rung is 17 rows before the multiplier and 12 after
+        the floor catches it. Fewer than that and 70 degrees of sky would be
+        drawn on a handful of lines."""
+        r = api.Request(place="Zurich", when=self.NOON,
+                        width=api.CHART_LADDER[0][1], panel=True)
+        self.assertGreaterEqual(api._day_height(r), 12)
+
+
+class TheTonightPanel(unittest.TestCase):
+    """What goes beside the shrunk arc. Reads the day view's own JSON payload
+    rather than recomputing anything, so a number can only be wrong here by
+    being wrong at ?format=json too."""
+
+    def _req(self, place, when):
+        return api.Request(place=place, when=when, width=300, panel=True)
+
+    def _data(self, place, when):
+        return api._compose_day(self._req(place, when)).data
+
+    def _panel(self, place, when):
+        r = self._req(place, when)
+        return api.day_tonight_html(r, api._compose_day(r).data)
+
+    def test_it_carries_only_what_the_summary_line_does_not(self):
+        """The line above it already gives the place, the clock, sunrise,
+        sunset, first stars, full dark and which planets are up. Repeating
+        those five facts eighteen inches lower was half the reason the page
+        did not fit on a screen."""
+        html = self._panel("Zurich", dt.datetime(2026, 8, 7, 12, 0))
+        self.assertIn("moon", html)
+        for gone in ("first stars", "fully dark", "sun highest"):
+            self.assertNotIn(gone, html, gone)
+
+    def test_the_times_match_the_payload(self):
+        when = dt.datetime(2026, 8, 7, 12, 0)
+        data, html = self._data("Zurich", when), self._panel("Zurich", when)
+        # The Moon is what is left in the grid.
+        self.assertIn(data["moon"]["phase"], html)
+        # The button still points at first stars, which is the moment there
+        # is something on the chart rather than the moment the light goes.
+        self.assertIn(data["first_stars"][:16], html)
+
+    def test_every_drawing_is_its_own_way_into_the_night(self):
+        """There is no general "show me tonight's sky" button any more. Each
+        slide links to the thing it is a picture of, at the moment that thing
+        is worth looking at, which is four more useful links than one vague
+        one."""
+        when = dt.datetime(2026, 8, 7, 12, 0)
+        html = self._panel("Zurich", when)
+        self.assertNotIn("dt-cta", html)
+        self.assertIn('class="dt-art-box" href="/Zurich/', html)
+
+    def test_a_night_that_never_darkens_is_said_on_the_line_above(self):
+        """Reykjavik in June has no astronomical dusk at all. That fact did
+        not disappear with the row -- the summary line carries it, which is
+        exactly why the row was redundant."""
+        when = dt.datetime(2026, 6, 21, 12, 0)
+        r = self._req("Reykjavik", when)
+        res = api._compose_day(r)
+        self.assertTrue(res.data["never_fully_dark"])
+        self.assertNotIn("never tonight", self._panel("Reykjavik", when))
+        self.assertIn("never fully dark", api.strip_ansi(res.text))
+
+    def test_polar_day_drops_the_countdown_rather_than_faking_one(self):
+        """No sunset means no first stars, so there is nothing to link to and
+        no time to print. The panel keeps what it does know."""
+        when = dt.datetime(2026, 6, 21, 12, 0)
+        data = self._data("Longyearbyen", when)
+        html = self._panel("Longyearbyen", when)
+        self.assertIsNone(data["first_stars"])
+        self.assertNotIn("first stars", html)
+        self.assertNotIn("dt-cta", html)
+        # The box is still there, still says what the Moon is doing, and
+        # simply has no button to offer.
+        self.assertIn('id="day-tonight"', html)
+        self.assertIn("moon", html)
+
+    def test_a_night_view_gets_no_panel_at_all(self):
+        """The guard that lets the caller stay one line."""
+        r = api.Request(place="Zurich", when=dt.datetime(2026, 8, 7, 23, 0),
+                        width=300, panel=True)
+        self.assertEqual(api.day_tonight_html(r, api.compose(r).data), "")
+
+    def test_a_payload_with_nothing_in_it_still_renders(self):
+        """Every row is optional now. The box is the drawing and the button;
+        the grid is whatever is left worth saying."""
+        r = self._req("Zurich", dt.datetime(2026, 8, 7, 12, 0))
+        html = api.day_tonight_html(r, dict(view="day", visible_tonight=[],
+                                            moon={}, events={}))
+        self.assertIn('id="day-tonight"', html)
+
+    def test_the_links_use_the_places_own_slug(self):
+        """"New York" is two words and its slug is one. The panel takes the
+        slug off the request rather than being handed one, which is what
+        stops these links and the rest of the page disagreeing about the URL
+        for the place they are both describing."""
+        r = self._req("New York", dt.datetime(2026, 8, 7, 12, 0))
+        html = api.day_tonight_html(r, api._compose_day(r).data)
+        self.assertEqual(r.place.slug, "NewYork")
+        self.assertIn(f'href="/{r.place.slug}/', html)
+
+
+class TheNextUpList(unittest.TestCase):
+    """Five rows under the arc, from the same _events_for/_event_date/
+    _event_url that /{place}/events uses -- so the short list and the long
+    one cannot disagree about a date or a destination."""
+
+    def _r(self, place="Zurich", when=dt.datetime(2026, 8, 7, 12, 0)):
+        return api.Request(place=place, when=when, width=300, panel=True)
+
+    def test_it_stops_at_five(self):
+        # class="nu-row and not class="nu-row": a row on a night carrying
+        # more than one event is class="nu-row nu-super".
+        html = api.day_next_up_html(self._r())
+        self.assertEqual(html.count('class="nu-row'), api.DAY_NEXT_UP_ROWS)
+
+    def test_the_rows_are_the_ones_the_events_page_would_show(self):
+        r = self._r()
+        html = api.day_next_up_html(r)
+        want = api._events_for(r, days=api.EVENTS_WINDOW_DAYS,
+                               visible_only=True)[:api.DAY_NEXT_UP_ROWS]
+        for e in want:
+            self.assertIn(api.html.escape(e["headline"]), html)
+            self.assertIn(api.html.escape(api._event_url(e, r)), html)
+
+    def test_the_dates_are_the_evening_you_go_outside(self):
+        """_event_date, not the peak instant -- the 2026 Perseid maximum is
+        13 Aug 02:10 UT and belongs on the 12th, which is what every almanac
+        and this site's own event list say."""
+        r = self._r()
+        for e in api._events_for(r, days=api.EVENTS_WINDOW_DAYS,
+                                 visible_only=True)[:api.DAY_NEXT_UP_ROWS]:
+            self.assertIn(f"{api._event_date(e):%a %d %b}", api.day_next_up_html(r))
+
+    def test_it_only_lists_what_you_could_actually_go_and_see(self):
+        """The long list has room to say "happening, but not from here" and
+        why; five rows do not, and a row you cannot act on is worse than one
+        fewer row.
+
+        Matched on the url rather than the headline, because headlines repeat:
+        "Moon and Mercury 2.0° apart" is a reachable event in August and an
+        unreachable one in October, so a headline test would pass or fail on
+        which month it happened to run in."""
+        r = self._r()
+        html = api.day_next_up_html(r)
+        blocked = [e for e in api._events_for(r, days=api.EVENTS_WINDOW_DAYS,
+                                              visible_only=False)
+                   if e["visible"] is False]
+        self.assertTrue(blocked, "nothing unreachable in the window -- "
+                                 "this test would pass on an empty page")
+        for e in blocked:
+            self.assertNotIn(api.html.escape(api._event_url(e, r)), html)
+
+    def test_it_offers_the_full_list(self):
+        self.assertIn('href="/Zurich/events"', api.day_next_up_html(self._r()))
+
+    def test_nothing_coming_up_renders_nothing(self):
+        self.assertEqual(api.day_next_up_html(self._r(), n=0), "")
+
+
+class TheEventTailIsWrittenOnce(unittest.TestCase):
+    """Both lists render "where to look and when". Sharing _event_tail is
+    what stops them ending up disagreeing about whether a shower says its
+    rate or a conjunction says its altitude."""
+
+    def test_the_long_list_still_reads_the_same(self):
+        r = api.Request(place="Zurich", when=dt.datetime(2026, 8, 7, 12, 0))
+        for e in api._events_for(r, days=api.EVENTS_WINDOW_DAYS, visible_only=True):
+            line = api._event_line(e, r)
+            for piece in api._event_tail(e):
+                self.assertIn(piece, line)
+
+    def test_a_shower_says_its_rate_in_both(self):
+        r = api.Request(place="Zurich", when=dt.datetime(2026, 8, 7, 12, 0))
+        shower = next(e for e in api._events_for(r, days=api.EVENTS_WINDOW_DAYS,
+                                                 visible_only=True)
+                      if e["kind"] == "meteor_shower")
+        self.assertTrue(any("/hr" in p for p in api._event_tail(shower)))
+        self.assertIn("/hr", api._event_line(shower, r))
+        self.assertIn("/hr", api.day_next_up_html(
+            api.Request(place="Zurich", when=dt.datetime(2026, 8, 7, 12, 0),
+                        width=300, panel=True)))
+
+
+class TheDayLayout(unittest.TestCase):
+    """Head above, arc and panel side by side, the list beneath. Every piece
+    is optional and degrades by disappearing."""
+
+    def test_every_piece_present(self):
+        out = api.day_layout("HEAD", "CHART", "PANEL", "LIST")
+        self.assertIn('id="day-split"', out)
+        for want in ("HEAD", "CHART", "PANEL", "LIST"):
+            self.assertIn(want, out)
+        self.assertTrue(out.startswith("HEAD"))
+
+    def test_the_list_sits_under_the_chart_and_not_under_the_grid(self):
+        """The panel beside the arc is taller than the arc, so a list below
+        the whole grid started below the fold with a hand's width of black
+        above it. In the left column it fills exactly that gap."""
+        out = api.day_layout("", "CHART", "PANEL", "LIST")
+        main = out.split('id="day-main"')[1].split('PANEL')[0]
+        self.assertIn("CHART", main)
+        self.assertIn("LIST", main)
+
+    def test_the_title_says_what_the_box_is(self):
+        out = api.day_layout("", "CHART", "PANEL", "")
+        self.assertIn("the sky above you now", out)
+
+    def test_no_panel_leaves_the_chart_full_width(self):
+        out = api.day_layout("", "CHART", "", "LIST")
+        self.assertNotIn('id="day-split"', out)
+        self.assertEqual(out, "CHARTLIST")
+
+    def test_nothing_but_the_chart_returns_it_untouched(self):
+        self.assertEqual(api.day_layout("", "CHART", "", ""), "CHART")
+
+    def test_the_chart_column_can_shrink(self):
+        """#chart-ladder is a container-type:inline-size query container, so
+        it measures its parent. min-width:0 on the column is what lets that
+        parent be narrower than the widest rung inside it -- without it the
+        grid track refuses to go below min-content and the panel is pushed
+        off the right edge."""
+        # PAGE is a format template, so every CSS brace in it is doubled.
+        css = api.PAGE
+        self.assertIn("#day-chart,#night-chart{{min-width:0;background:#04060a}}", css)
+        self.assertIn("minmax(0,1fr) 300px", css)
+
+    def test_the_panel_column_is_wide_enough_for_the_drawing(self):
+        """45 characters (art.COLS) at 10px in a 0.6em monospace is 270px,
+        and the box adds 12px of padding either side. At 280px the last two
+        columns of every planet were clipped off."""
+        self.assertGreaterEqual(300 - 24, art.COLS * 10 * 0.6)
+
+
+class TheSummaryLineGetsItsOwnBox(unittest.TestCase):
+    """It was the chart's first line, sized as prose inside a <pre> of
+    drawing. Out here it is a sentence in a box, and it gets the full width
+    of the page rather than whatever the picture left it."""
+
+    def _rungs(self):
+        return [(80, True, "\n  HEAD-80\n\n 70° chart eighty\n"),
+                (120, True, "\n  HEAD-120 longer\n\n 70° chart one twenty\n")]
+
+    def test_the_line_leaves_the_chart(self):
+        head, rungs = api.lift_chart_head(self._rungs())
+        self.assertIn("HEAD-80", head)
+        self.assertIn("HEAD-120 longer", head)
+        for _cols, _panel, body in rungs:
+            self.assertNotIn("HEAD-", body)
+            self.assertIn("70°", body)
+
+    def test_one_line_per_rung_because_the_line_is_not_one_line(self):
+        """The summary drops pieces to fit the width it is given, so there
+        are as many versions of it as there are rungs, and the box picks its
+        own the same way the chart picks its own."""
+        head, _rungs = api.lift_chart_head(self._rungs())
+        self.assertEqual(head.count('<span class="dh">'), 2)
+
+    def test_the_blank_line_under_it_goes_too(self):
+        """It was the gap between the sentence and the drawing. The drawing
+        now starts the box, so the gap would be a hole at the top of it."""
+        _head, rungs = api.lift_chart_head(self._rungs())
+        self.assertTrue(rungs[0][2].startswith(" 70°"))
+
+    def test_the_line_reads_in_the_order_the_day_happens(self):
+        """Sun up, where it is now, how high it gets, Sun down, stars, dark.
+        Grouped by kind instead -- times together, angles together -- it read
+        as a table that had lost its headings. The current position moves
+        with the clock: in front of the high point in the morning and behind
+        it in the afternoon."""
+        def line(hour):
+            r = api.Request(place="Zurich", when=dt.datetime(2026, 8, 7, hour, 0),
+                            width=300, panel=True)
+            return api.strip_ansi(api._compose_day(r).text.split("\n")[1])
+        for hour, order in ((10, ["\u2191", "\u2600", "high", "\u2193",
+                                  "stars", "darkest"]),
+                            (17, ["\u2191", "high", "\u2600", "\u2193",
+                                  "stars", "darkest"])):
+            got = line(hour)
+            at = [got.index(w) for w in order]
+            self.assertEqual(at, sorted(at), f"{hour}:00 -> {got}")
+
+    def test_the_bearings_are_on_the_line(self):
+        """The one fact here you cannot work out from the others. "Sunrise
+        06:11" says when to set an alarm; "06:11 64 deg ENE" says which
+        window to stand at."""
+        r = api.Request(place="Zurich", when=dt.datetime(2026, 8, 7, 10, 0),
+                        width=300, panel=True)
+        got = api.strip_ansi(api._compose_day(r).text.split("\n")[1])
+        self.assertRegex(got, r"\u2191\d\d:\d\d \d+\u00b0[NESW]+")
+        self.assertRegex(got, r"\u2193\d\d:\d\d \d+\u00b0[NESW]+")
+
+    def test_the_place_and_the_moment_arrive_as_their_own_span(self):
+        """Which is the only way to bold part of a line that reaches the
+        page as pre-rendered ANSI -- CSS needs an element to hold."""
+        r = api.Request(place="Zurich", when=dt.datetime(2026, 8, 7, 10, 0),
+                        width=300, panel=True)
+        raw = api._compose_day(r).text.split("\n")[1]
+        head, _rungs = api.lift_chart_head([(220, True, api.ansi_to_html(raw))])
+        self.assertIn('<span class="dh"><span style="color:', head)
+        self.assertEqual(head.count("<span style="), 2)
+
+    def test_the_two_space_indent_comes_off(self):
+        """Every prose line in the composed text carries it. In a box of its
+        own it is a margin made of characters, which cannot line up with a
+        title set in a different size -- so it comes off here and goes back
+        as padding in CSS."""
+        head, _rungs = api.lift_chart_head(
+            [(80, True, '\n  <span style="color:#eeeeee">  Zurich · 07 Aug</span>\n\nchart')])
+        self.assertIn('<span style="color:#eeeeee">Zurich', head)
+
+    def test_a_rung_with_nothing_in_it_is_left_alone(self):
+        head, rungs = api.lift_chart_head([(80, True, "\n\n")])
+        self.assertEqual(head, "")
+        self.assertEqual(rungs, [(80, True, "\n\n")])
+
+    def test_both_ladders_come_off_one_table(self):
+        """Generated from CHART_LADDER by the same function, so the box and
+        the chart under it cannot drift apart -- they measure different
+        widths, which is the point, but off the same table."""
+        joined = api.chart_ladder_css()
+        self.assertIn("#day-head-ladder .dh:nth-child", joined)
+        for min_ch, _cols, _panel in api.CHART_LADDER:
+            if min_ch is None:
+                continue
+            self.assertIn(f"@container (min-width:{min_ch}ch)", joined)
+
+    def test_the_chart_ladders_breakpoints_are_written_unscaled(self):
+        """It is pinned at CHART_FONT_PX, so its own scale factor is 1 and
+        the thresholds come out as the integers CHART_LADDER holds -- not
+        "107.0ch", which is the same width and a gratuitous diff."""
+        joined = "".join(api._ladder_rules("#chart-ladder", ".chart-pre",
+                                           api.CHART_FONT_PX))
+        self.assertNotIn(".0ch", joined)
+        for min_ch, _cols, _panel in api.CHART_LADDER:
+            if min_ch is not None:
+                self.assertIn(f"(min-width:{min_ch}ch)", joined)
+
+    def test_a_larger_ladder_asks_for_fewer_of_its_own_characters(self):
+        """The bug this exists to catch: a ch resolves against the query
+        container's own font, so the same 1222px box is 203ch to the 10px
+        chart and 123ch to the 16.5px summary line. Handed the chart's raw
+        thresholds the line cleared one of six and sat on rung 2 of 12 at
+        every window size, planets and star count included in the markup and
+        shown at none of them."""
+        joined = "".join(api._ladder_rules("#day-head-ladder", ".dh",
+                                           api.DAY_HEAD_PX))
+        scale = api.CHART_FONT_PX / api.DAY_HEAD_PX
+        self.assertLess(scale, 1)
+        for min_ch, _cols, _panel in api.CHART_LADDER:
+            if min_ch is None:
+                continue
+            at = round(min_ch * scale, 1)
+            at = int(at) if at == int(at) else at
+            self.assertIn(f"(min-width:{at}ch)", joined)
+            # And emphatically not the chart's own number, which is the
+            # whole of the defect.
+            self.assertNotIn(f"(min-width:{min_ch}ch)", joined)
+
+    def test_the_widest_rung_is_reachable_in_a_real_box(self):
+        """A 4K display is about 380 of the summary's characters wide. If the
+        top rung needed more than that it could never appear on any screen,
+        which is what the unscaled thresholds asked for (227 of them at
+        16.5px is a 3750px box for the chart column alone)."""
+        joined = "".join(api._ladder_rules("#day-head-ladder", ".dh",
+                                           api.DAY_HEAD_PX))
+        asked = [float(s.split("ch)")[0])
+                 for s in joined.split("(min-width:")[1:]]
+        self.assertLess(max(asked), 380)
+
+    def test_the_stage_never_asks_the_ladder_for_an_intrinsic_width(self):
+        """#chart-ladder is container-type:inline-size, which *contains* the
+        inline axis -- it contributes nothing to a parent asking for
+        max-content or fit-content, which resolve to 0 rather than to the
+        chart's width.
+
+        This has now collapsed the chart twice: once through fit-on, which
+        stranded the zenith inset off the left edge, and once through
+        anim-wide, where theatre mode on the day page grew a box 614px tall
+        and 0px wide around a 1281px chart. Both times the markup was correct
+        and only the layout was gone, which is why it reads as unreproducible
+        from the server. No rule that reaches #chart-stage may ask for a
+        shrink-to-fit width while the ladder is inside it."""
+        joined = api.chart_ladder_css()
+        for rule in joined:
+            if "#chart-stage" not in rule:
+                continue
+            for shrink in ("max-content", "min-content", "fit-content"):
+                self.assertNotIn(shrink, rule, rule)
+
+    def test_the_ladder_is_still_a_query_container(self):
+        """The premise of the test above -- if this stops being true the
+        containment rule no longer applies and that test proves nothing."""
+        joined = "".join(api.chart_ladder_css())
+        self.assertIn("#chart-ladder{container-type:inline-size", joined)
+
+    def test_the_summary_box_folds_away_for_any_animation(self):
+        """Keyed on anim-on -- an animation is playing -- and not on
+        anim-wide, which only says the chart found room to grow into.
+
+        The night chart already fills its box, so skymapAnimZoom's k never
+        clears 1.05 and anim-wide is never set there. The box stayed up
+        through the whole animation showing the moment the page loaded for,
+        while the frame's own header underneath it said something else."""
+        css = "".join(api.chart_ladder_css())
+        self.assertIn("html.anim-on #day-head", css)
+        self.assertNotIn("html.anim-wide #day-head", css)
+
+    def test_the_page_reserves_room_for_the_fixed_shortcut_bar(self):
+        """.kbd-hint is position:fixed, so it is out of the flow and nothing
+        under it reserves room on its own. The page hands that room back as
+        body padding, and it has to be the bar plus the page's one gap --
+        a flat 40 left 7px, half what every other pair of boxes gets."""
+        self.assertIn(f"padding:24px 16px {api.KBD_BAR_H + api.BOX_GAP}px",
+                      api.PAGE)
+        # And no leftover format field: PAGE is .format()ed per request, so
+        # an unsubstituted {BOTTOM_PAD} would raise KeyError on every page.
+        self.assertNotIn("{BOTTOM_PAD}", api.PAGE)
+
+    def test_after_dark_the_chart_is_the_page_not_a_box_on_it(self):
+        """The border and padding were the only things making it a card --
+        the background is already the page's own -- and between them they
+        cost 47px of height on a page whose rows are chosen from its width
+        with no idea how tall the window is. 1440x800 overflowed by 48."""
+        # Doubled braces: PAGE is the pre-.format() template.
+        self.assertIn("#night-chart{{border:0;border-radius:0;"
+                      "padding:0 0 0 13px}}", api.PAGE)
+        self.assertIn("#night-chart>.box-head{{display:none}}", api.PAGE)
+
+    def test_the_left_edge_does_not_move(self):
+        """13px of padding where there were 12 of padding and 1 of border, so
+        the chart's first column sits exactly where it did and still lines up
+        with the headline box above it. Derived from .day-box rather than
+        asserted flat, so changing the card's own padding cannot silently
+        knock the chart a pixel out of line with the box above it."""
+        night = re.search(r"#night-chart\{\{border:0;border-radius:0;"
+                          r"padding:0 0 0 (\d+)px\}\}", api.PAGE)
+        self.assertIsNotNone(night)
+        box = re.search(r"\.day-box\{\{background:#0d1117;"
+                        r"border:(\d+)px solid[^}]*?padding:(\d+)px", api.PAGE,
+                        re.S)
+        self.assertIsNotNone(box)
+        self.assertEqual(int(night.group(1)),
+                         int(box.group(2)) + int(box.group(1)))
+
+    def test_the_day_chart_keeps_its_box(self):
+        """One card among several beside the tonight panel; a borderless one
+        would be the odd box out."""
+        self.assertNotIn("#day-chart{{border:0", api.PAGE)
+        self.assertNotIn("#day-chart>.box-head{{display:none}}", api.PAGE)
+
+    def test_the_box_measures_itself_at_reading_size(self):
+        """A ch resolves against the query container's own font, so the size
+        has to be pinned on the container itself -- inheritance would leave
+        it measuring in whatever the generic pre{} rule last said."""
+        joined = api.chart_ladder_css()
+        self.assertIn(f"#day-head-ladder{{container-type:inline-size;"
+                      f"font-size:{api.DAY_HEAD_PX}px}}", joined)
+
+
+class TheSummaryLineDropsBlocksWorstFirst(unittest.TestCase):
+    """It is one line at every width, so something has to go as the box gets
+    narrower. Which thing goes is the decision under test."""
+
+    def _st(self):
+        star = {"m": 1.2, "n": "Vega"}
+        return {"moon": {"alt": 11.0, "az": 67.0, "age": 7.4, "illum": 0.29},
+                "sun": {"alt": -19.0},
+                "up": [{"name": "Saturn", "mag": 0.8, "alt": 29.0, "az": 112.0},
+                       {"name": "Uranus", "mag": 5.7, "alt": 10.0, "az": 67.0}],
+                "visible": [(star, 60.0, 300.0)] * 223}
+
+    def _at(self, width):
+        return api._sky_summary(self._st(), 47.38, width,
+                                note="Bortle 8 est. (Zürich)")
+
+    def _narrowest_holding(self, text):
+        """The tightest width at which `text` is still on the line."""
+        return min(w for w in range(20, 220) if text in self._at(w))
+
+    def test_everything_is_there_when_there_is_room(self):
+        full = self._at(200)
+        for block in ("29%", "Saturn", "full dark", "Bortle 8", "223 stars"):
+            self.assertIn(block, full)
+
+    def test_the_star_count_outlives_the_bortle_note(self):
+        """Swapped deliberately. The count is how much is up right now and it
+        runs from two to four hundred over an evening; the note is the same
+        sentence every night from the same place."""
+        self.assertLess(self._narrowest_holding("223 stars"),
+                        self._narrowest_holding("Bortle 8"))
+
+    def test_the_planets_outlive_both(self):
+        self.assertLess(self._narrowest_holding("Saturn"),
+                        self._narrowest_holding("223 stars"))
+
+    def test_the_moon_survives_every_trim(self):
+        """It decides how much of the rest is worth looking for."""
+        self.assertIn("29%", self._at(20))
+
+    def test_the_named_stars_go_before_anything_else(self):
+        """Longest block on the line, and the only one whose contents are
+        already labelled on the chart a few rows down."""
+        st = self._st()
+        wide = api._sky_summary(st, 47.38, 400, n_stars=3, note="Bortle 8")
+        self.assertIn("Vega", wide)
+        # Tight enough to lose one block: it is that one.
+        tight = api._sky_summary(st, 47.38, len(wide) - 4, n_stars=3,
+                                 note="Bortle 8")
+        self.assertNotIn("Vega", tight)
+        self.assertIn("223 stars", tight)
+
+
+class TheHeaderNamesOnlyWhatTheChartCannotSay(unittest.TestCase):
+    """"horizon panorama, 0-70°" described the default view, and the default
+    is already labelled by the drawing: the axis runs 0-70 down the left edge
+    and the inset is captioned in its corner. Worst of all when something
+    joined it -- zooming into one twelfth of the sky read "horizon panorama,
+    0-70°, quadrant K", a panorama being the one thing that view is not."""
+
+    def _head(self, **kw):
+        r = api.Request(place="Zurich", when=dt.datetime(2026, 8, 8, 2, 0),
+                        width=220, **kw)
+        # First non-blank: the render opens with a blank line.
+        return next(l for l in api.strip_ansi(api.compose(r).text).splitlines()
+                    if l.strip())
+
+    def test_the_plain_view_says_nothing_about_being_a_panorama(self):
+        self.assertNotIn("horizon panorama", self._head())
+        self.assertNotIn("0-70", self._head())
+
+    def test_a_quadrant_crop_names_only_the_quadrant(self):
+        head = self._head(quadrant="K")
+        self.assertIn("quadrant K", head)
+        self.assertNotIn("panorama", head)
+
+    def test_a_facing_window_keeps_its_description(self):
+        """Which way it points and how wide it is cannot be read off the
+        drawing, so that one stays."""
+        head = self._head(facing="N", span=90)
+        self.assertIn("facing N", head)
+        self.assertIn("true shape", head)
+        self.assertNotIn("panorama", head)
+
+    def test_the_export_and_the_animation_dropped_it_too(self):
+        """Both built their own copy of this line, so both had to be changed:
+        a PNG someone shares and a frame mid-animation are views like any
+        other. Checked on the rendered text rather than the source, which
+        would only be matching the comment that explains the change."""
+        r = api.Request(place="Zurich", when=dt.datetime(2026, 8, 8, 2, 0),
+                        width=220)
+        self.assertNotIn("horizon panorama",
+                         api.strip_ansi(api.compose_chart_only(r)))
+        body, _sun_alt = api.compose_frame(r)
+        self.assertNotIn("horizon panorama", api.strip_ansi(body))
+
+
+class TheTonightPanelIsAboutTonight(unittest.TestCase):
+    """It is headed TONIGHT, so everything in it has to be tonight. It used
+    to draw from the next fortnight, which put "Perseids peak, Wed 12 Aug"
+    in front of a reader on the 8th -- and put it there twice, because the
+    upcoming-events list under the arc was already carrying that row."""
+
+    def _slides(self, when):
+        r = api.Request(place="Zurich", when=when, width=220, panel=True)
+        return r, api.day_panel_slides(r, api.compose(r).data)
+
+    def test_an_event_days_away_is_not_in_it(self):
+        """8 Aug 2026: the Perseids peak on the 12th and Venus reaches
+        greatest elongation on the 14th. Neither is tonight."""
+        _r, slides = self._slides(dt.datetime(2026, 8, 8, 14, 0))
+        caps = " ".join(c for _l, c, _u in slides)
+        self.assertNotIn("Perseids", caps)
+        self.assertNotIn("greatest elongation", caps)
+
+    def test_tonights_event_is_in_it(self):
+        """The same shower, viewed on the night it actually peaks."""
+        _r, slides = self._slides(dt.datetime(2026, 8, 12, 14, 0))
+        self.assertIn("Perseids", " ".join(c for _l, c, _u in slides))
+
+    def test_the_small_hours_belong_to_the_evening_before(self):
+        """A conjunction at 02:11 on the 12th is something you go outside for
+        on the evening of the 11th, and it is filed under that night."""
+        _r, slides = self._slides(dt.datetime(2026, 8, 11, 14, 0))
+        self.assertIn("Mercury", " ".join(c for _l, c, _u in slides))
+
+    def test_a_quiet_night_still_has_something_to_draw(self):
+        """It falls through to the planets that are up and then to the
+        brightest star, so the box never comes out empty."""
+        for when in (dt.datetime(2026, 8, 8, 14, 0),
+                     dt.datetime(2026, 8, 20, 14, 0),
+                     dt.datetime(2026, 9, 15, 14, 0)):
+            _r, slides = self._slides(when)
+            self.assertTrue(slides, when)
+            for lines, _c, _u in slides:
+                self.assertTrue(lines)
+
+    def test_every_slide_is_tonight(self):
+        """The property, over a run of dates rather than the handful picked
+        above.
+
+        Tonight's evening or the morning after it, because those are one
+        night: a caption reads "Wed 12 Aug" for a conjunction at 02:11 that
+        a reader goes out for on the evening of the 11th. Anything two days
+        out is the bug this is here to catch."""
+        for day in range(1, 29):
+            when = dt.datetime(2026, 8, day, 14, 0)
+            r, slides = self._slides(when)
+            night = api._night_of(r.when_local)
+            ok = {f"{night:%a %d %b}",
+                  f"{night + dt.timedelta(days=1):%a %d %b}"}
+            for _lines, cap, _u in slides:
+                if " · " not in cap or cap.endswith("up tonight"):
+                    continue
+                self.assertTrue(any(d in cap for d in ok), (day, cap, ok))
+
+
+class TheEclipseCountdownBox(unittest.TestCase):
+    """A solar eclipse is the one thing on this list that happens in
+    daylight, so it is the one thing a reader of a daylight page could walk
+    outside and watch. It gets the top of the panel for the week before."""
+
+    def _box(self, place, when):
+        return api.day_eclipse_html(api.Request(place=place, when=when,
+                                                width=300, panel=True))
+
+    def test_it_appears_in_the_week_before(self):
+        """12 Aug 2026 is total across Spain and deeply partial from Zurich."""
+        html = self._box("Zurich", dt.datetime(2026, 8, 7, 12, 0))
+        self.assertIn('id="day-eclipse"', html)
+        self.assertIn("in 5 days", html)
+        self.assertIn("/Zurich/eclipse/2026-08-12", html)
+
+    def test_the_title_counts_down(self):
+        for day, want in ((5, "in 7 days"), (11, "tomorrow"), (12, "today")):
+            html = self._box("Zurich", dt.datetime(2026, 8, day, 12, 0))
+            self.assertIn(want, html, f"12 Aug seen from {day} Aug")
+
+    def test_the_clock_is_the_local_maximum_and_not_a_shifted_global_one(self):
+        """An event's when_local is the *global* greatest-eclipse instant
+        shifted by the timezone offset -- a local-looking rendering of
+        somebody else's moment. For Zurich on 12 Aug 2026 it reads 19:47
+        against a real local maximum of 20:17. Half an hour, on the one kind
+        of event where half an hour decides whether you see it."""
+        r = api.Request(place="Zurich", when=dt.datetime(2026, 8, 7, 12, 0),
+                        width=300, panel=True)
+        want = api.eclipse_page.facts(api.eclipse_page.by_key("2026-08-12"),
+                                      r.place, r.when_utc)["maximum"]
+        self.assertIn(f"at {want}", api.day_eclipse_html(r))
+        # And it is the same clock the eclipse's own page prints, which is
+        # the point: two pages about one moment cannot disagree about when.
+        self.assertEqual(want, "20:17")
+
+    def test_a_lunar_eclipse_gets_the_box_too(self):
+        """Solar alone put this on screen about twice a year. With lunar in
+        it, the box turns up often enough to be a thing readers look for."""
+        r = api.Request(place="Zurich", when=dt.datetime(2026, 8, 21, 12, 0),
+                        width=300, panel=True)
+        html = api.day_eclipse_html(r)
+        self.assertIn('id="day-eclipse"', html)
+        self.assertIn("28 Aug", html)
+        # Drawn as the Moon in the shadow, not as a bitten Sun.
+        self.assertIn('class="dt-art"', html)
+
+    def test_it_is_absent_the_rest_of_the_year(self):
+        """Eight days out is one day too far. If this box were always there
+        it would be furniture, and furniture stops being read."""
+        self.assertEqual(self._box("Zurich", dt.datetime(2026, 8, 4, 12, 0)), "")
+        self.assertEqual(self._box("Zurich", dt.datetime(2026, 3, 1, 12, 0)), "")
+
+    def test_the_disc_is_drawn_for_here_and_not_in_general(self):
+        """The whole content of a partial eclipse is how much of the Sun
+        this place loses, so the drawing is the local one."""
+        html = self._box("Zurich", dt.datetime(2026, 8, 10, 12, 0))
+        self.assertIn('class="dt-art"', html)
+
+    def test_a_place_the_shadow_misses_gets_no_box(self):
+        """Sydney sees nothing of the 12 Aug 2026 eclipse. Counting down to
+        an eclipse that never rises there would be a straight lie."""
+        self.assertEqual(self._box("Sydney", dt.datetime(2026, 8, 10, 12, 0)), "")
+
+
+class TheTonightPanelDraws(unittest.TestCase):
+    """A drawing above the numbers: the best thing coming, then a planet
+    that will be up, then the brightest star that will be. Each step down is
+    a step further from "worth setting an alarm for", and the last one always
+    has an answer."""
+
+    def _req(self, place, when):
+        return api.Request(place=place, when=when, width=300, panel=True)
+
+    def test_the_event_it_picks_is_the_one_the_site_ranks_first(self):
+        """Through ev_mod.next_events, the same ranking the coming-up strip
+        uses, so the picture and the strip above it cannot point at
+        different things.
+
+        Viewed on the 12th, the night the shower peaks. It used to be viewed
+        on the 7th and still expected the Perseids, because the panel drew
+        from the next fortnight -- which is the thing that put an event five
+        days out under a heading reading TONIGHT."""
+        r = self._req("Zurich", dt.datetime(2026, 8, 12, 12, 0))
+        picture = api.day_panel_art(r, api._compose_day(r).data)
+        self.assertIsNotNone(picture)
+        _lines, caption, url = picture
+        self.assertIn("Perseids", caption)
+        self.assertIn("/Zurich/Perseids", url)
+
+    def test_the_same_shower_five_days_out_is_not_drawn(self):
+        """The other half of the rule above, and the reason it changed."""
+        r = self._req("Zurich", dt.datetime(2026, 8, 7, 12, 0))
+        picture = api.day_panel_art(r, api._compose_day(r).data)
+        self.assertIsNotNone(picture)          # never empty
+        _lines, caption, _url = picture
+        self.assertNotIn("Perseids", caption)
+
+    def test_a_quiet_fortnight_falls_through_to_a_planet(self):
+        r = self._req("Zurich", dt.datetime(2026, 3, 1, 12, 0))
+        data = api._compose_day(r).data
+        picture = api.day_panel_art(r, data)
+        self.assertIsNotNone(picture)
+        _lines, caption, _url = picture
+        if data["visible_tonight"]:
+            self.assertIn("up tonight", caption)
+
+    def test_the_last_resort_finds_a_star_and_it_is_the_right_one(self):
+        """Tested directly because no real page reaches it: something is
+        always coming up or a planet is always out. It is the branch that
+        guarantees the panel is never empty, so it is worth knowing it works
+        rather than assuming."""
+        for place, when, want in (("Zurich", dt.datetime(2026, 1, 15, 22, 0), "Sirius"),
+                                  ("Sydney", dt.datetime(2026, 6, 15, 20, 0), "Canopus")):
+            r = self._req(place, when)
+            star = api._brightest_star_tonight(r, when)
+            self.assertIsNotNone(star, place)
+            self.assertEqual(star["n"], want)
+            sp = objects.star_info(star["hr"]).get("sp")
+            self.assertTrue(art.star_art_for(sp), f"{want} draws nothing")
+
+    def test_a_place_with_no_night_draws_nothing_rather_than_pretending(self):
+        """Reykjavik in midsummer has no first stars at all. There is no
+        tonight to illustrate, and a picture there would be decoration."""
+        r = self._req("Reykjavik", dt.datetime(2026, 6, 21, 12, 0))
+        data = api._compose_day(r).data
+        self.assertIsNone(data["first_stars"])
+        self.assertIsNone(api.day_panel_art(r, data))
+
+    def test_a_new_moon_draws_nothing_and_the_next_thing_gets_the_slot(self):
+        """Drawn honestly a new Moon is a black disc: correct, and useless in
+        a panel whose job is to give somebody a reason to go outside."""
+        self.assertEqual(api._moon_art_for(0.0, False), [])
+        self.assertTrue(api._moon_art_for(0.55, True))
+
+    def test_the_countdown_words(self):
+        self.assertEqual(api._countdown(0), "today")
+        self.assertEqual(api._countdown(1), "tomorrow")
+        self.assertEqual(api._countdown(6), "in 6 days")
+
+    def test_days_are_counted_by_date_and_not_by_hours(self):
+        """An eclipse at 09:00 tomorrow is tomorrow's eclipse even though it
+        is fifteen hours away. Counting elapsed hours would call it today at
+        six this evening and send somebody out on the wrong morning."""
+        now = dt.datetime(2026, 8, 7, 18, 0)
+        self.assertEqual(api._days_until(dt.datetime(2026, 8, 8, 9, 0), now), 1)
+        self.assertEqual(api._days_until(dt.datetime(2026, 8, 7, 23, 30), now), 0)
+
+    def test_the_drawing_is_centred_in_a_box_of_fixed_height(self):
+        """Blank rows come off and then go back on evenly. Trimming is what
+        stops five dead rows between a picture and its caption; padding is
+        what stops the box changing height from one town to the next, which
+        it did -- the same eclipse is 12 rows from Zurich and 15 from
+        Madrid, because the disc is drawn where the Sun is."""
+        block = api._art_block(["", "  ", " x ", "", "  "], "cap", "/somewhere")
+        drawn = block.split('aria-hidden="true">')[1].split("</pre>")[0]
+        self.assertEqual(len(drawn.split("\n")), api.DAY_ART_ROWS)
+        self.assertEqual(drawn.strip(), "x")
+        # Centred, not hanging from the top.
+        rows = drawn.split("\n")
+        above = next(i for i, l in enumerate(rows) if l.strip())
+        self.assertEqual(above, len(rows) - 1 - above)
+
+    def test_every_drawing_the_panel_can_show_fits_that_box(self):
+        """9 rows for a bright star, 15 for a shower, 17 for a planet. The
+        box is the tallest of them, so nothing is ever cropped."""
+        import eclipse as eclipse_map
+        drawings = [art.planet_art("Saturn", illuminated=0.76),
+                    art.planet_art("Moon", illuminated=1.0),
+                    art.shower_art("Perseids"),
+                    art.star_art_for("A1Vm"),
+                    eclipse_map.disc_art("2026-08-12", 47.38, 8.54),
+                    eclipse_map.disc_art("2026-08-12", 40.42, -3.70)]
+        for lines in drawings:
+            block = api._art_block(lines, "cap", "")
+            drawn = block.split('aria-hidden="true">')[1].split("</pre>")[0]
+            self.assertEqual(len(drawn.split("\n")), api.DAY_ART_ROWS)
+
+    def test_the_caption_is_escaped(self):
+        block = api._art_block(["x"], "<script>", "/a&b")
+        self.assertNotIn("<script>", block)
+        self.assertIn("&amp;b", block)
+
+    def test_no_url_leaves_it_unlinked_rather_than_linked_to_nothing(self):
+        block = api._art_block(["x"], "cap", "")
+        self.assertNotIn("<a ", block)
+        self.assertIn("dt-art-box", block)
