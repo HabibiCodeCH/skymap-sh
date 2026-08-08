@@ -8539,6 +8539,27 @@ function skymapAnimShow(i){{
   if(!A||!A.frames.length)return;
   A.at=Math.max(0,Math.min(A.frames.length-1,i));
   A.pre.innerHTML=ansiToHtml(A.frames[A.at]);
+  // Entering theatre mode happens here, on the first frame to actually
+  // reach the page, and not back when the button was pressed.
+  //
+  // A frame is two rows taller than the still chart -- it carries its own
+  // header and the blank line under it -- and it arrives a fetch later,
+  // about 250ms. Done at the press, the summary box collapsed immediately
+  // and the chart jumped up 61px, then the frame landed and pushed it back
+  // down 25. Two movements a quarter second apart, which on the night page
+  // is the whole of what entering an animation looks like. The day page had
+  // the same 429 -> 451 -> 641 stagger and got away with it only because
+  // its zoom was animating over the top.
+  //
+  // Both changes now land in one task, so the browser lays out once. The
+  // zoom is better off here too: it measures the pre to work out how much
+  // it can grow, and the pre now holds the frame it is going to show rather
+  // than the still it is replacing.
+  if(!A.entered){{
+    A.entered=true;
+    document.documentElement.classList.add('anim-on');
+    skymapAnimZoom(true);
+  }}
   skymapAnimSyncPng();
 }}
 
@@ -8950,6 +8971,7 @@ function skymapAnimate(btn){{
   var cols=pre&&pre.getAttribute('data-cols');
   if(cols&&!/[?&]w=/.test(liveUrl))liveUrl+='&w='+cols;
   A=window.skymapAnim={{frames:[],at:-1,playing:true,done:false,timer:null,
+                       entered:false,
                        btn:btn,pre:pre,base:pre.innerHTML,loadingDso:false,
                        plain:{{}},dsoFrames:{{}},dsoOn:{{}},
                        ms:parseInt(btn.getAttribute('data-frame-ms'),10)||150,
@@ -8958,17 +8980,12 @@ function skymapAnimate(btn){{
   // control, so greying it out would take the mouse-only way to pause with
   // it.
   btn.disabled=false;btn.textContent='⏸ pause';
-  // An animation is playing. Set before the zoom and independently of it:
-  // the zoom is conditional (skymapAnimZoom bails when there is no room to
-  // gain, which is always on the night page) and folding the summary box
-  // away is not. The frame carries its own header and that header moves;
-  // leaving the static one above it means two headers disagreeing about
-  // what time it is.
-  document.documentElement.classList.add('anim-on');
-  // Full screen for the duration. Done here rather than in the key handler
-  // so the button and the space bar behave the same way -- two ways to
-  // start one thing should not start two different things.
-  skymapAnimZoom(true);
+  // Entering theatre mode -- folding the summary box away and giving the
+  // chart the room -- is deliberately not done here. It waits for the first
+  // frame, in skymapAnimShow, so the box going and the frame's own header
+  // arriving are one movement rather than two a fetch apart. Both paths in
+  // still meet there: the button and the space bar call this same function,
+  // so they cannot start two different things.
   if(window.skymapSetHint)window.skymapSetHint(SKYMAP_ANIM_HINT);
   fetch(liveUrl).then(function(resp){{
     var reader=resp.body.getReader();
