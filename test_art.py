@@ -8,6 +8,7 @@ plain ASCII ever reaches the page.
 """
 import datetime as dt
 import math
+import re
 import unittest
 
 import api
@@ -226,3 +227,228 @@ class OnlyWhereThereIsSomethingToDraw(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AsterismPortraits(unittest.TestCase):
+    """An asterism has no disc to light, so what gets drawn is its shape --
+    which is the whole reason the thing has a name. On the horizon chart the
+    Plough is seven stars among two hundred at whatever angle tonight holds
+    it; on its own page it is a saucepan.
+
+    Same source as the chart's own figures: asterisms.json for the chains,
+    stars.json for the positions. Nothing hand-drawn."""
+
+    def _names(self):
+        import json
+        return [c["name"] for c in json.load(open("asterisms.json"))]
+
+    def _plain(self, lines):
+        return [re.sub(r"\x1b\[[0-9;]*m", "", l) for l in lines]
+
+    def test_every_asterism_has_one(self):
+        """28 of them, and a page with a picture-shaped hole is worse than a
+        page that never promised one."""
+        for name in self._names():
+            self.assertTrue(art.asterism_art(name), name)
+
+    def test_an_unknown_name_draws_nothing(self):
+        self.assertEqual(art.asterism_art("Nonesuch"), [])
+        self.assertEqual(art.asterism_art(""), [])
+        self.assertEqual(art.asterism_art(None), [])
+
+    def test_it_is_stars_joined_by_lines(self):
+        for name in self._names():
+            plain = self._plain(art.asterism_art(name))
+            stars = sum(l.count("●") + l.count("•") + l.count("·") for l in plain)
+            braille = sum(1 for l in plain for ch in l if 0x2800 <= ord(ch) <= 0x28FF)
+            self.assertGreaterEqual(stars, 2, f"{name}: no stars drawn")
+            self.assertGreaterEqual(braille, 3, f"{name}: no lines drawn")
+
+    def test_the_two_star_pointers_are_drawn_rather_than_skipped(self):
+        """The Pointers is Rigil Kentaurus, Hadar and the line between them.
+        That line is the entire content of the name -- it points at the
+        Southern Cross -- so a minimum of three stars would have thrown away
+        the one asterism whose picture is only a line."""
+        plain = self._plain(art.asterism_art("The Pointers"))
+        self.assertTrue(plain)
+        self.assertEqual(sum(l.count("●") for l in plain), 2)
+
+    def test_it_fits_the_box(self):
+        for name in self._names():
+            plain = self._plain(art.asterism_art(name))
+            self.assertLessEqual(len(plain), art.AST_ROWS, name)
+            for l in plain:
+                self.assertLessEqual(len(l), art.AST_COLS, f"{name}: {l!r}")
+
+    def test_no_blank_row_at_the_top_or_bottom(self):
+        """The margin is there to keep stars off the edge, not to pad the
+        frame out with empty lines."""
+        for name in self._names():
+            plain = self._plain(art.asterism_art(name))
+            self.assertTrue(plain[0].strip(), name)
+            self.assertTrue(plain[-1].strip(), name)
+
+    def test_the_shape_is_not_squashed(self):
+        """A braille dot is half a cell wide and half a cell tall, so the
+        sub-pixel grid is already square and must NOT get the CELL
+        correction the planets need. With it, Cassiopeia's W came out as a
+        shallow V.
+
+        Measured on Orion's Belt, which is three stars in a near-straight
+        line about 3 degrees long: on a square grid its drawn length is many
+        times its drawn thickness, and halving the vertical scale would tilt
+        and shorten it."""
+        plain = self._plain(art.asterism_art("Orion's Belt"))
+        rows = len(plain)
+        cols = max(len(l) for l in plain)
+        # The belt is a long thin thing however it is rotated; if the aspect
+        # were halved it would fit in the box with room to spare instead of
+        # filling one axis of it.
+        self.assertGreaterEqual(max(cols / art.AST_COLS, rows / art.AST_ROWS), 0.8)
+
+    def test_it_reaches_the_object_page_through_art_for(self):
+        self.assertTrue(art.art_for(dict(object="Big Dipper", kind="asterism")))
+        self.assertEqual(art.art_for(dict(object="Big Dipper", kind="star",
+                                          star={})), [])
+
+    def test_a_planet_is_unaffected(self):
+        """The asterism branch sits above the PALETTES lookup, so this is the
+        check that it did not swallow anything on the way past."""
+        self.assertTrue(art.art_for(dict(object="Saturn", kind="planet")))
+        self.assertEqual(art.art_for(dict(object="Nowhere", kind="planet")), [])
+
+
+class ShowerPortraits(unittest.TestCase):
+    """A radiant is a point in empty sky, so the drawing is of the shower
+    coming out of it, over the real stars around it. The Perseids are the one
+    event of the year a lot of people go outside for and the page had no
+    picture at all."""
+
+    def _showers(self):
+        import json
+        return json.load(open("showers.json"))
+
+    def _plain(self, lines):
+        return [re.sub(r"\x1b\[[0-9;]*m", "", l) for l in lines]
+
+    def test_every_shower_has_one(self):
+        for sh in self._showers():
+            self.assertTrue(art.shower_art(sh["name"]), sh["name"])
+
+    def test_the_names_people_type_all_resolve(self):
+        """"Perseids", "Perseid" and the canonical "Perseids radiant" are the
+        three forms sky.py already accepts, and the object pages hand over the
+        third one."""
+        first = art.shower_art("Perseids")
+        for alias in ("Perseid", "Perseids radiant", "PERSEIDS", " perseids "):
+            self.assertEqual(art.shower_art(alias), first, alias)
+
+    def test_an_unknown_name_draws_nothing(self):
+        self.assertEqual(art.shower_art("Nonesuch"), [])
+        self.assertEqual(art.shower_art(""), [])
+        self.assertEqual(art.shower_art(None), [])
+
+    def test_the_radiant_is_marked_and_nothing_covers_it(self):
+        """It is the one thing in the frame that is not a star. Drawn before
+        the stars, a star wins the cell and hides the subject."""
+        for sh in self._showers():
+            plain = self._plain(art.shower_art(sh["name"]))
+            self.assertEqual(sum(l.count("+") for l in plain), 1, sh["name"])
+
+    def test_it_is_stars_and_trails(self):
+        for sh in self._showers():
+            plain = self._plain(art.shower_art(sh["name"]))
+            stars = sum(l.count("●") + l.count("•") + l.count("·") for l in plain)
+            braille = sum(1 for l in plain for ch in l
+                          if 0x2800 <= ord(ch) <= 0x28FF)
+            self.assertGreaterEqual(stars, 10, f"{sh['name']}: empty sky")
+            self.assertGreaterEqual(braille, 15, f"{sh['name']}: no meteors")
+
+    def test_a_sparse_patch_of_sky_still_gets_its_stars(self):
+        """Some radiants sit in genuinely empty sky. The magnitude limit opens
+        a step at a time rather than leaving a portrait with four stars in
+        it, which is why the Orionids and the Taurids look like anything."""
+        for name in ("Orionids", "Northern Taurids", "Southern Taurids"):
+            plain = self._plain(art.shower_art(name))
+            stars = sum(l.count("●") + l.count("•") + l.count("·") for l in plain)
+            self.assertGreaterEqual(stars, art.SHOWER_MIN_STARS - 2, name)
+
+    def test_a_busier_shower_gets_more_meteors(self):
+        """The count carries the rate. Not the rate itself -- 150 streaks in a
+        45-column box is a smear -- but a reader comparing two pages should
+        see the ordering."""
+        def trails(name):
+            return sum(1 for l in self._plain(art.shower_art(name))
+                       for ch in l if 0x2800 <= ord(ch) <= 0x28FF)
+        self.assertGreater(trails("Geminids"), trails("Draconids"))
+        self.assertGreater(trails("Perseids"), trails("Ursids"))
+
+    def test_it_fits_the_box(self):
+        for sh in self._showers():
+            plain = self._plain(art.shower_art(sh["name"]))
+            self.assertLessEqual(len(plain), art.SHOWER_ROWS, sh["name"])
+            for l in plain:
+                self.assertLessEqual(len(l), art.SHOWER_COLS, sh["name"])
+
+    def test_it_is_the_same_picture_every_time(self):
+        """Seeded off the shower's own name, not the global generator, so the
+        terminal, the browser and the PNG export agree -- and so a page does
+        not redraw itself differently on every reload."""
+        for sh in self._showers()[:4]:
+            self.assertEqual(art.shower_art(sh["name"]),
+                             art.shower_art(sh["name"]), sh["name"])
+
+    def test_it_reaches_the_object_page_through_art_for(self):
+        self.assertTrue(art.art_for(dict(object="Perseids radiant",
+                                         kind="radiant")))
+
+
+class TheGalaxyFromOutside(unittest.TestCase):
+    """The one drawing here that is not computed from a catalogue: there is no
+    photograph of the Milky Way from outside it, so the shape is a model. Two
+    major arms off the ends of the bar, after the Spitzer star counts."""
+
+    def _plain(self, lines):
+        return [re.sub(r"\x1b\[[0-9;]*m", "", l) for l in lines]
+
+    def test_it_draws(self):
+        self.assertTrue(art.milkyway_art())
+
+    def test_the_sun_is_marked(self):
+        """The one measured thing in the frame, and the only reason to draw
+        the Galaxy from a viewpoint nobody has ever had."""
+        plain = self._plain(art.milkyway_art())
+        self.assertEqual(sum(l.count("☉") for l in plain), 1)
+        self.assertEqual(sum(l.count("☉")
+                             for l in self._plain(art.milkyway_art(sun=False))), 0)
+
+    def test_the_sun_sits_off_centre_by_its_real_distance(self):
+        """8.2 kpc out of a 16 kpc disc, so it is about halfway to the rim --
+        not at the centre, which is the single most common thing people get
+        wrong about where we live."""
+        plain = self._plain(art.milkyway_art())
+        row = next(i for i, l in enumerate(plain) if "☉" in l)
+        # Drawn below the centre, as in the NASA rendering the structure
+        # follows. Blank rows are trimmed off the top, so measure against the
+        # drawn extent rather than against MW_ROWS.
+        self.assertGreater(row, len(plain) * 0.55)
+
+    def test_it_fits_the_box(self):
+        plain = self._plain(art.milkyway_art())
+        self.assertLessEqual(len(plain), art.MW_ROWS)
+        for l in plain:
+            self.assertLessEqual(len(l), art.MW_COLS)
+
+    def test_the_arms_are_continuous(self):
+        """Drawn as scattered points an arm reads as noise. The ridge is laid
+        down unconditionally and the scatter goes round it, which is the
+        difference between the third attempt at this and the fourth."""
+        plain = self._plain(art.milkyway_art())
+        braille = sum(1 for l in plain for ch in l if 0x2800 <= ord(ch) <= 0x28FF)
+        self.assertGreater(braille, 120)
+
+    def test_it_is_the_same_picture_every_time(self):
+        self.assertEqual(art.milkyway_art(), art.milkyway_art())
+
+    def test_it_reaches_the_object_page_through_art_for(self):
+        self.assertTrue(art.art_for(dict(object="Milky Way", kind="milkyway")))
