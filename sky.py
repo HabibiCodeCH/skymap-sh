@@ -664,11 +664,15 @@ def _zenith_inset(items, alt_max, color, indent, IW=21, IH=11, lat=0.0,
     for r in range(IH):
         row = "".join(paint(g[r][c], t[r][c], color) if g[r][c] != " " and t[r][c]
                       else g[r][c] for c in range(IW))
-        extra = ""
-        if r - 1 < len(named) and r >= 1:
-            nm, col = named[r - 1]
-            extra = "   " + paint(nm, col, color)
-        lines.append(" " * indent + row.rstrip() + extra)
+        lines.append(" " * indent + row.rstrip())
+    # Names under the disc, never beside it -- the same reason the target
+    # label already went here. A column to the right is as wide as its
+    # longest entry, so the inset's own width depended on what happened to
+    # be overhead: "Andromeda Galaxy" made the whole box wider than the
+    # panorama it floats on and shoved the disc left to make room. Under it,
+    # the inset is IW wide whatever it is showing, and nothing moves.
+    for nm, col in named:
+        lines.append(" " * indent + paint("  " + nm, col, color))
     if target_label:
         # No glyph beside the label. The mark is already on the disc above
         # and the label carries the same colour, which is the legend.
@@ -1851,14 +1855,18 @@ def render_linear(when_utc, lat, lon, W=176, H=22, color=True, show_lines=True,
                 inset_items.append((a, z, ch, col, None))
             else:
                 place(z, a, ch, col, over=True)
-        # The marker is not carried up with the arc. Where the Sun is *now*
-        # is what the body loop below draws, glyph and name, and both in the
-        # inset gave it two markers and two labels -- "SUN" beside "Sun" over
-        # one ☀. The arc is the overlay's contribution up there; the position
-        # is the body's.
+        # The marker goes up with its arc. This is the only thing that puts
+        # the Sun in the inset, and it has to be: the day chart's `bodies`
+        # does not include the Sun -- the animation's is
+        # _fade_visible_bodies, which is about what is visible in a dark sky
+        # -- so the body loop below never sees it. Adding it there instead
+        # worked but cost the panorama its own marker, because a body's ☀ is
+        # drawn over the overlay's ◉ and quietly replaced it.
         if over_mark:
             ma, mz = over_mark
-            if ma <= alt_hi:
+            if ma > alt_hi:
+                inset_items.append((ma, mz, "☀", over_col, over_lbl))
+            else:
                 place(mz, ma, "◉", over_col, over=True)
                 if over_lbl:
                     text(mz, ma, over_lbl, over_col)

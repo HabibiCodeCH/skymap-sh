@@ -5279,7 +5279,7 @@ def _compose_day(r):
     art, st = render_linear(r.when_utc, p.lat, p.lon, color=c, show_lines=False,
                             mag_limit=_fade_mag_limit(sa_now), alt_lo=0.0, alt_hi=alt_hi,
                             overlay=(arc, SUN_COL, "SUN", (sa_now, sz_now)),
-                            bodies=show | {"Sun"}, width=_effective_width(r),
+                            bodies=show, width=_effective_width(r),
                             side_panel=r.panel,
                             height=_day_height(r),
                             alt_bands=alt_bands, notes=notes)
@@ -7350,7 +7350,7 @@ def compose_chart_only(r):
         art, _st = render_linear(r.when_utc, p.lat, p.lon, color=c, show_lines=False,
                                  mag_limit=_fade_mag_limit(sa_now), alt_lo=0.0, alt_hi=alt_hi,
                                  overlay=(arc, SUN_COL, "SUN", (sa_now, sz_now)),
-                                 bodies=show | {"Sun"}, inset=False, width=_png_export_width(r),
+                                 bodies=show, inset=False, width=_png_export_width(r),
                                  height=_png_export_height(r))
         head = _horizon_head(r, _sun_path_mode(r))
         return paint(head, C.HEAD, c) + "\n\n" + art
