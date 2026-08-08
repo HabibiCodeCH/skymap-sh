@@ -1052,7 +1052,37 @@ def visibility(t, jd, lat, lst, min_alt=8.0):
 
 
 def next_visible(t, lat, lon, start_utc, days=40, step_min=10, min_alt=12.0):
-    """First moment it clears min_alt in a sky dark enough for its brightness."""
+    """First moment it clears min_alt in a sky dark enough for its brightness.
+
+    Two conditions have to hold at once -- the thing high enough, the sky
+    dark enough -- and for something rising into morning twilight they are
+    closing on each other, so their overlap can be minutes wide. Sampling
+    every step_min from start_utc, the coarse grid either landed inside that
+    overlap or stepped clean over it, and which one it did was decided by
+    the minute of the hour the caller happened to ask at:
+
+        start 16:00 -> 2026-08-27 04:00   Jupiter over Zurich, 12.20 deg
+        start 16:02 -> 2026-08-26 04:02                        12.06 deg
+        start 16:10 -> 2026-08-27 04:00
+        start 16:12 -> 2026-08-26 04:02
+
+    So /Zurich/jupiter answered "Wed 26 Aug" or "Thu 27 Aug" depending on
+    when in the hour you opened it, and the whole page moved with it -- the
+    distance, the elongation and the chart are all drawn for whatever moment
+    comes back from here.
+
+    The grid stays, because forty days at one-minute resolution is 57,600
+    solar positions and this is on the request path. What changes is that it
+    is no longer trusted on its own: whenever either condition differs from
+    the sample before, the ten minutes between them are walked a minute at a
+    time. An overlap short enough to fall between two samples has to turn at
+    least one of the two conditions on inside that gap, so it cannot hide
+    from this -- and a sample that does qualify walks backwards the same way,
+    to report the moment the window opened rather than the first tick that
+    noticed.
+
+    Minutes, not seconds: every caller renders this as HH:MM.
+    """
     mag = t["mag"] if t.get("mag") is not None else t.get("faint")
     # Asked about the Sun at night, the answer is sunrise. Left to the rules
     # below it would search forty days for a dark sky with the Sun up, find
@@ -1060,18 +1090,46 @@ def next_visible(t, lat, lon, start_utc, days=40, step_min=10, min_alt=12.0):
     is_sun = t["kind"] == "sun"
     if is_sun:
         min_alt = 0.0
-    n = int(days * 24 * 60 / step_min)
-    for i in range(1, n):
-        when = start_utc + dt.timedelta(minutes=i * step_min)
+
+    def at(when):
+        """(dark enough, altitude, azimuth) -- the two conditions and where."""
         jd = julian(when)
         lst = (gmst_hours(jd) + lon / 15.0) % 24
         su = sun(jd)
         sa, _ = altaz(su["ra"], su["dec"], lat, lst)
-        if not is_sun and not dark_enough(sa, mag):
-            continue
         a, z = target_altaz(t, jd, lat, lst)
-        if a >= min_alt:
-            return when, a, z
+        return (is_sun or dark_enough(sa, mag)), a, z
+
+    # start_utc itself is not an answer -- the caller already knows it is not
+    # visible now, which is why it is asking -- but it is the left-hand end
+    # of the first gap, and a window opening inside that gap is as real as
+    # any other.
+    p_dark, p_alt, _pz = at(start_utc)
+    n = int(days * 24 * 60 / step_min)
+    for i in range(1, n):
+        when = start_utc + dt.timedelta(minutes=i * step_min)
+        dark, a, z = at(when)
+        if dark and a >= min_alt:
+            # Back to the start of the window, not the tick that spotted it.
+            best = (when, a, z)
+            for k in range(1, step_min):
+                earlier = when - dt.timedelta(minutes=k)
+                if earlier <= start_utc:
+                    break
+                d2, a2, z2 = at(earlier)
+                if not (d2 and a2 >= min_alt):
+                    break
+                best = (earlier, a2, z2)
+            return best
+        # Nothing here, but if either condition turned over inside this gap
+        # the two may have overlapped in between.
+        if dark != p_dark or (a >= min_alt) != (p_alt >= min_alt):
+            for k in range(step_min - 1, 0, -1):
+                inside = when - dt.timedelta(minutes=k)
+                d2, a2, z2 = at(inside)
+                if d2 and a2 >= min_alt:
+                    return inside, a2, z2
+        p_dark, p_alt = dark, a
     return None, None, None
 
 

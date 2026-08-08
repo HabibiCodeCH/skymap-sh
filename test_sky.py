@@ -805,3 +805,74 @@ class TheDimLimitWindow(unittest.TestCase):
         """Derived, not a second hand-written 4.0."""
         import api
         self.assertEqual(api.FULL_DARK_MAG, api._fade_mag_limit(-18))
+
+
+class NextVisibleDoesNotDependOnWhenYouAsk(unittest.TestCase):
+    """Two conditions have to hold at once -- the thing high enough, the sky
+    dark enough -- and for something rising into morning twilight their
+    overlap can be minutes wide. Sampled every ten minutes from the moment
+    asked, the grid either landed inside that overlap or stepped over it,
+    decided by the minute of the hour the caller happened to ask at."""
+
+    LAT, LON = 47.38, 8.54          # Zurich
+    DAY = dt.datetime(2026, 8, 7)
+
+    def _target(self, name, when):
+        import api
+        jd = sky.julian(when)
+        lst = (sky.gmst_hours(jd) + self.LON / 15.0) % 24
+        return api.resolve_target(name, jd, self.LAT, lst)
+
+    def _answers(self, name, hour=16, minutes=(0, 1, 2, 3, 5, 7, 12, 22, 32, 47, 59)):
+        out = set()
+        for m in minutes:
+            when = self.DAY.replace(hour=hour, minute=m)
+            tgt = self._target(name, when)
+            self.assertIsNotNone(tgt, name)
+            w, _a, _z = sky.next_visible(tgt, self.LAT, self.LON, when)
+            out.add(w)
+        return out
+
+    def test_jupiter_gives_one_answer_whatever_minute_you_ask(self):
+        """The case this was found on. It used to answer Thu 27 Aug from
+        :00, :10, :20 and Wed 26 Aug from :02, :12, :22 -- a whole day
+        apart, and the page is drawn for whichever came back, so its
+        distance, elongation and chart all moved with it."""
+        self.assertEqual(len(self._answers("jupiter")), 1)
+
+    def test_it_finds_the_earlier_window_not_the_one_after_it(self):
+        """The overlap on 26 August is real; two thirds of the grid phases
+        simply stepped over it and reported the next morning."""
+        w = self._answers("jupiter").pop()
+        self.assertEqual(w.date(), dt.date(2026, 8, 26))
+
+    def test_the_answer_is_the_moment_the_window_opens(self):
+        """Not the first tick that noticed it. A sample that qualifies walks
+        back a minute at a time to the start of its own window."""
+        when = self.DAY.replace(hour=16, minute=0)
+        tgt = self._target("jupiter", when)
+        w, a, _z = sky.next_visible(tgt, self.LAT, self.LON, when)
+        before = w - dt.timedelta(minutes=1)
+        jd = sky.julian(before)
+        lst = (sky.gmst_hours(jd) + self.LON / 15.0) % 24
+        alt, _az = sky.target_altaz(tgt, jd, self.LAT, lst)
+        # The minute before is not yet good enough -- either too low or the
+        # sky has not caught up.
+        su = sky.sun(jd)
+        sa, _ = sky.altaz(su["ra"], su["dec"], self.LAT, lst)
+        mag = tgt["mag"] if tgt.get("mag") is not None else tgt.get("faint")
+        self.assertFalse(alt >= 12.0 and sky.dark_enough(sa, mag))
+        self.assertGreaterEqual(a, 12.0)
+
+    def test_other_targets_are_stable_too(self):
+        for name in ("saturn", "vega", "m31", "neptune"):
+            self.assertEqual(len(self._answers(name)), 1, name)
+
+    def test_something_never_up_still_comes_back_empty(self):
+        """The forty-day give-up path is untouched."""
+        when = self.DAY.replace(hour=16, minute=0)
+        tgt = self._target("canopus", when)
+        w, a, z = sky.next_visible(tgt, self.LAT, self.LON, when)
+        self.assertIsNone(w)
+        self.assertIsNone(a)
+        self.assertIsNone(z)
