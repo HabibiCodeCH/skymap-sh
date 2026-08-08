@@ -913,3 +913,90 @@ class TheShowerRadiantIsMarkedOnTheChart(unittest.TestCase):
         self.assertNotIn("PERSEIDS",
                          self._chart(radiant=dict(name="Perseids", alt=-20.0,
                                                   az=45.0)))
+
+
+class ChartLabelsLinkToTheirPages(unittest.TestCase):
+    """A label with a page behind it is a link to it. The chart is painted a
+    cell at a time, so by the time it is a string a label is a run of
+    separate colour spans with nothing left to match on -- sky.py marks the
+    run while the row is assembled and api turns the markers into anchors."""
+
+    WHEN = dt.datetime(2026, 8, 8, 23, 0)
+    LAT, LON = 47.38, 8.54
+
+    def _chart(self, link=None):
+        art, _st = sky.render_linear(self.WHEN, self.LAT, self.LON,
+                                     width=220, color=False, link=link)
+        return art
+
+    def test_no_link_asked_for_emits_no_markers(self):
+        """A terminal never sees one -- it would print as a control code."""
+        art = self._chart()
+        for mark in (sky.LINK_START, sky.LINK_SEP, sky.LINK_END):
+            self.assertNotIn(mark, art)
+
+    def test_a_named_label_is_wrapped(self):
+        art = self._chart(link=lambda n: f"/Zurich/{n}")
+        self.assertIn(sky.LINK_START, art)
+        self.assertIn(sky.LINK_SEP, art)
+        self.assertIn(sky.LINK_END, art)
+
+    def test_a_label_with_no_page_is_left_alone(self):
+        """link returning None is how "this one has no page" is said."""
+        art = self._chart(link=lambda n: None)
+        self.assertNotIn(sky.LINK_START, art)
+
+    def test_every_open_marker_is_closed(self):
+        art = self._chart(link=lambda n: f"/Zurich/{n}")
+        self.assertEqual(art.count(sky.LINK_START), art.count(sky.LINK_END))
+        self.assertEqual(art.count(sky.LINK_START), art.count(sky.LINK_SEP))
+
+    def test_the_drawing_is_otherwise_identical(self):
+        """Character for character, once the markers come out: a link must
+        not move anything or change what is drawn."""
+        plain = self._chart()
+        linked = self._chart(link=lambda n: f"/Zurich/{n}")
+        for mark in (sky.LINK_END, sky.LINK_SEP):
+            linked = linked.replace(mark, "")
+        import re as _re
+        linked = _re.sub(f"{sky.LINK_START}[^\n]*?(?=[A-Za-z0-9])", "", linked, count=0)
+        self.assertEqual(len(plain.split("\n")), len(linked.split("\n")))
+
+
+class TheRadiantGoesToTheInsetWhenItClimbsOut(unittest.TestCase):
+    """The Perseid radiant reaches 79 degrees from Zurich, so it climbed off
+    the top of the panorama at about 04:00 and the chart stopped mentioning
+    the shower for the rest of the night -- the part of the night it is best
+    in. A planet or a bright star has always moved to the zenith inset there;
+    this one simply vanished."""
+
+    LAT, LON = 47.38, 8.54
+
+    def _chart(self, hour, alt, az=0.0):
+        art, _st = sky.render_linear(dt.datetime(2026, 8, 9, hour, 0),
+                                     self.LAT, self.LON, width=220, color=False,
+                                     radiant=dict(name="Perseids", alt=alt, az=az))
+        return art
+
+    def _where(self, art):
+        rows = art.split("\n")
+        label = [i for i, l in enumerate(rows) if "PERSEIDS" in l]
+        inset = [i for i, l in enumerate(rows) if "zenith" in l]
+        if not label:
+            return "missing"
+        return "inset" if inset and label[0] > inset[0] else "chart"
+
+    def test_below_the_cap_it_is_on_the_panorama(self):
+        self.assertEqual(self._where(self._chart(3, 65.7, 40.0)), "chart")
+
+    def test_above_the_cap_it_is_in_the_inset(self):
+        for hour, alt in ((4, 73.2), (5, 78.6), (6, 78.3)):
+            self.assertEqual(self._where(self._chart(hour, alt, 40.0)), "inset",
+                             (hour, alt))
+
+    def test_it_never_simply_disappears(self):
+        """The bug, stated as the property: at no altitude it can reach is
+        the radiant absent from both."""
+        for alt in range(5, 90, 5):
+            self.assertNotEqual(self._where(self._chart(3, float(alt), 40.0)),
+                                "missing", alt)

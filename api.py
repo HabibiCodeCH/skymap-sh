@@ -4691,7 +4691,8 @@ def _compose_sky(r):
                             bodies=_fade_visible_bodies(sun_alt, jd) | {"Sun", "Moon"},
                             dso_limit=dso_limit, quadrant=r.quadrant,
                             quadrants=r.quadrant_requested, side_panel=r.panel,
-                            milkyway=mw_floor, radiant=_chart_radiant(r))
+                            milkyway=mw_floor, radiant=_chart_radiant(r),
+                            link=_chart_link(r))
     # "horizon panorama, 0-70°" is gone from every view, browser and
     # terminal alike. It described the default, and the default needs no
     # describing: the axis is labelled 0-70 down the left edge and the inset
@@ -5503,6 +5504,29 @@ def _events_for(r, days=EVENTS_WINDOW_DAYS, visible_only=True):
     p = r.place
     return ev_mod.upcoming(p.lat, p.lon, r.tz, now_utc=r.when_utc, days=days,
                            visible_only=visible_only)
+
+
+def _chart_link(r):
+    """name -> the object's page here, or None if it has no page.
+
+    Browser only. A terminal cannot click a star, and the markers this
+    produces would print as control characters if they ever reached one.
+    """
+    if not r.panel:
+        return None
+    place = quote(r.place.slug)
+
+    def link(name):
+        canonical = objects.resolve_name(name)
+        if not canonical:
+            return None
+        return f"/{place}/{quote(canonical)}{_chart_link_when(r)}"
+    return link
+
+
+def _chart_link_when(r):
+    """Carry the moment through, so a label opens the sky it was drawn in."""
+    return f"?t={r.when_local:%Y-%m-%dT%H:%M}" if r.when_explicit else ""
 
 
 def _chart_radiant(r):
@@ -7810,6 +7834,28 @@ def _xterm_hex(n):
     return "#%02x%02x%02x" % (v, v, v)
 
 
+def _anchor_markers(s):
+    """sky.LINK_START/SEP/END -> <a>/</a>, on already-escaped HTML.
+
+    The chart is painted one cell at a time, so a label is a run of separate
+    colour spans by the time it is a string and there is nothing left to
+    match on. sky.py puts these markers down while the row is assembled, when
+    the label's extent is still known, and this is where they become links.
+
+    The anchor goes outside the spans, so the colours inside it are untouched
+    and a linked label is character-for-character what it was.
+    """
+    out = []
+    for i, chunk in enumerate(s.split(sky.LINK_START)):
+        if i == 0:
+            out.append(chunk)
+            continue
+        href, _, rest = chunk.partition(sky.LINK_SEP)
+        body, _, tail = rest.partition(sky.LINK_END)
+        out.append(f'<a class="sky-link" href="{href}">{body}</a>{tail}')
+    return "".join(out)
+
+
 def ansi_to_html(text):
     out, pos, open_span = [], 0, False
     for m in ANSI.finditer(text):
@@ -7821,11 +7867,18 @@ def ansi_to_html(text):
     out.append(html.escape(text[pos:]))
     if open_span:
         out.append("</span>")
-    return "".join(out)
+    # After escaping, so a label's own characters can never be read as
+    # markup, and the href is one we built rather than anything from a page.
+    return _anchor_markers("".join(out))
+
+
+# The link markers as well as the escapes. Nothing but the browser ever wants
+# either, and a terminal printing a stray \x01 would be a visible bug.
+_MARKERS = re.compile(f"[{sky.LINK_START}{sky.LINK_SEP}{sky.LINK_END}]")
 
 
 def strip_ansi(text):
-    return ANSI.sub("", text)
+    return _MARKERS.sub("", ANSI.sub("", text))
 
 
 # Live map for /stats, injected through PAGE's {extra} slot rather than into
@@ -8209,6 +8262,13 @@ document.documentElement.classList.add('js');
    and everything including the drawing follows it. */
  pre{{margin:0;font-size:11px;line-height:1.22;overflow-x:auto;
      font-variant-ligatures:none;font-family:inherit}}
+/* A label on the chart that has a page behind it. Character-for-character
+   what it was: the colour comes from the spans inside the anchor and is left
+   alone, and there is no underline, no weight change and no hover colour.
+   The chart is a drawing and a blue underlined star name would be a hole in
+   it. The pointer is the whole affordance, which is what a reader gets
+   anyway the moment they move the mouse across it. */
+ a.sky-link{{color:inherit;text-decoration:none}}
  /* Bigger than the generic pre{{}} above -- meant to be scoped to the chart
     page only, but #chart-pre is the *same id* every page's <pre> uses, so
     a bare #chart-pre selector here was never actually scoped at all --

@@ -155,11 +155,37 @@ Follow the pattern already in the tree at server.py:2428, which serves
 
 **Notes that matter:**
 
-- **A deploy can strand a browser mid-visit.** HTML cached in a browser for up to 225 s can
-  reference a hash the new process no longer serves. A 404 on the stylesheet is an unstyled
-  page, which on a monospace ASCII site is catastrophic rather than cosmetic. Either keep
-  serving *any* requested hash by falling back to the current bundle, or hold the previous
-  build's bundles for one deploy cycle. Decide this before writing the route, not after.
+- **A deploy can strand a browser mid-visit, and the route must be built to survive it.**
+  The hash lives inside the HTML, and that HTML sits in a browser cache for up to 225 s
+  (`max-age=225`). So:
+
+  ```
+  12:00:00  browser loads /Geneva, stores HTML referencing /app.a3f9c1.css
+  12:01:00  deploy lands; the new process only knows /app.b7e204.css
+  12:02:00  browser, still inside its 225 s, requests /app.a3f9c1.css
+            -> 404 -> the page renders with no CSS at all
+  ```
+
+  An unstyled page here is not "a bit ugly". The whole layout is ASCII art holding its shape
+  in a monospace grid, so losing the stylesheet collapses it into scrambled text. The window
+  is short but it lands squarely on whoever was using the site at deploy time, and deploys
+  are frequent.
+
+  **Decision: the hash is write-only. Match `/app.{hash}.css` as a path parameter and ignore
+  the captured value — always serve the current bundle.** The hash exists solely to change
+  the URL when the content changes, which is what makes `immutable` safe on the way out. It
+  is not an identifier to look anything up by.
+
+  Rejected alternative: retaining the previous build's bundles for one deploy cycle. More
+  literally correct, but it means storing old bundles somewhere and deciding when to bin
+  them, in exchange for preventing a mismatch that is only ever one version of your own CSS
+  wide. Not worth the bookkeeping.
+
+  Consequence to accept knowingly: a browser can receive CSS one deploy newer than the HTML
+  it is styling. Across a single deploy of your own stylesheet that is nearly always
+  invisible, and it is strictly better than no stylesheet. If a deploy ever makes a genuinely
+  breaking CSS change, the 225 s exposure is the same one the inline version already has
+  today.
 - **Every new route needs a `/stats` counter in the same change.** Project rule, no
   exceptions. Four counters, and they belong in `_stat` under a `page:` or `asset:` prefix
   so they persist — note `_eclipse_keys` is the standing example of what happens when a
@@ -230,7 +256,12 @@ Written in the same commits as the changes, not after.
 - Every page type still renders identically. Compare rendered DOM before and after,
   ignoring the swapped `<style>`/`<script>` blocks.
 - The hashed routes return the right `Cache-Control` and the right content type.
-- The stale-hash fallback from §5 actually serves something rather than 404ing.
+- **A stale or nonsense hash still returns 200 with the current bundle**, per the §5
+  decision. Test the real case (`/app.deadbeef.css`) and the degenerate one, and assert the
+  body matches what the live `PAGE` references. This is the test that stops a future
+  refactor quietly reintroducing a lookup by hash.
+- The hash actually changes when the bundle content changes. Without this, `immutable` goes
+  from safe to a year-long stale-cache bug.
 - `/help` and `/legend` do not reference the chart bundle at all.
 - The four new `/stats` counters increment.
 
@@ -244,8 +275,11 @@ Written in the same commits as the changes, not after.
    particularly first paint on a cold cache, per §6.
 3. Deploy, then confirm on prod: `cf-cache-status` on the new asset URLs should be `MISS`
    then `HIT`, and the per-page compressed sizes should match the §4 acceptance figures.
-4. Watch `/stats` for the new counters and for the 404 rate, which is the signal that the
-   stale-hash case from §5 was got wrong.
+4. Watch `/stats` for the new counters. Under the §5 decision an asset 404 should be
+   impossible, so **any** 404 on `/app.*` or `/chart.*` means the route pattern is wrong and
+   is worth treating as a rollback signal rather than a curiosity. Deploy once, then reload
+   a page that was open beforehand — that is the exact case §5 exists for, and it takes ten
+   seconds to check by hand.
 
 ---
 

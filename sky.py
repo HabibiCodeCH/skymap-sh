@@ -67,6 +67,17 @@ def paint(s, c, on=True):
     return f"{c}{s}{C.OFF}" if on else s
 
 
+# Markers for a linked run of cells, in the C0 range so nothing a chart draws
+# can collide with them. The chart is a character grid painted one cell at a
+# time, so by the time it is a string a label like "PERSEIDS" is eight
+# separate colour spans and there is nothing left to recognise -- these are
+# put down while the row is assembled, when the label's extent is still
+# known, and api.ansi_to_html turns them into an anchor.
+#
+# Only ever emitted when a caller asks for links. A terminal never sees one.
+LINK_START, LINK_SEP, LINK_END = "\x01", "\x02", "\x03"
+
+
 # ---------------------------------------------------------------- time
 def julian(d):
     y, m = d.year, d.month
@@ -1308,7 +1319,7 @@ def render_linear(when_utc, lat, lon, W=176, H=22, color=True, show_lines=True,
                   bodies=None, inset=True, width=None, height=None, dso_limit=None,
                   quadrant=None, quadrants=False, side_panel=False,
                   alt_bands=None, notes=None, milkyway=False, dim_limit=None,
-                  radiant=None):
+                  radiant=None, link=None):
     """Horizon panorama. facing=None gives the full 360 deg sweep; facing='SW'
     gives a window centred there, which is narrow enough to be undistorted.
 
@@ -1414,6 +1425,12 @@ def render_linear(when_utc, lat, lon, W=176, H=22, color=True, show_lines=True,
     tint = [[None] * W for _ in range(H)]
     soft = [[False] * W for _ in range(H)]
     lock = [[False] * W for _ in range(H)]
+    # row -> [(start_col, end_col, href)] for labels that have a page behind
+    # them. Empty unless the caller passed link=, which only the browser does.
+    anchors = {}
+
+    def href_for(name):
+        return link(name) if link and name else None
     inset_items = []                # (alt, az, glyph, colour, name|None)
 
     def free(r, c):
@@ -1449,7 +1466,7 @@ def render_linear(when_utc, lat, lon, W=176, H=22, color=True, show_lines=True,
         if 0 <= r < H and not lock[r][c] and (over or free(r, c)):
             grid[r][c], tint[r][c], soft[r][c] = ch, col, False
 
-    def _try(r, c, s, colr, dx):
+    def _try(r, c, s, colr, dx, href=None):
         start = c + dx if dx > 0 else c - len(s) + dx
         if not (0 <= r < H and 0 <= start and start + len(s) <= W):
             return False
@@ -1458,15 +1475,20 @@ def render_linear(when_utc, lat, lon, W=176, H=22, color=True, show_lines=True,
         for k, ch in enumerate(s):
             grid[r][start + k], tint[r][start + k] = ch, colr
             soft[r][start + k], lock[r][start + k] = False, True
+        if href:
+            # Where the label ended up, so the row assembly can wrap it. The
+            # placement search tries seven rows and six offsets before it
+            # settles, so this is the only point that knows.
+            anchors.setdefault(r, []).append((start, start + len(s), href))
         return True
 
-    def text(az, alt, s, colr):
+    def text(az, alt, s, colr, href=None):
         c, r = col_of(az), row_of(alt)
         if c is None or r is None:
             return False
         for dr in (0, -1, 1, -2, 2, -3, 3):
             for dx in (2, -2, 5, -5, 9, -9):
-                if _try(r + dr, c, s, colr, dx):
+                if _try(r + dr, c, s, colr, dx, href):
                     return True
         return False
 
@@ -1769,7 +1791,16 @@ def render_linear(when_utc, lat, lon, W=176, H=22, color=True, show_lines=True,
     #
     # Orchid, the colour the events strip and the shower portraits already
     # use, so a reader who has seen one recognises the other.
-    if radiant and row_of(radiant["alt"]) is not None \
+    #
+    # Above alt_hi it goes to the zenith inset, the way a planet or a bright
+    # star does. Without that it simply vanished: the Perseid radiant reaches
+    # 79 degrees from Zurich, so it climbed off the top of the panorama at
+    # about 04:00 and the chart stopped mentioning the shower for the rest of
+    # the night -- the part of the night the shower is best in.
+    if radiant and radiant["alt"] > alt_hi:
+        inset_items.append((radiant["alt"], radiant["az"], "+",
+                            "\033[38;5;213m", radiant["name"].upper()))
+    elif radiant and row_of(radiant["alt"]) is not None \
             and col_of(radiant["az"]) is not None:
         # "+", the same mark art.py puts at the radiant of its shower
         # portraits, rather than the "☄" the events list uses for the row.
@@ -1778,7 +1809,8 @@ def render_linear(when_utc, lat, lon, W=176, H=22, color=True, show_lines=True,
         # worse than one that marks the spot with a cross.
         RAD = "\033[38;5;213m"
         place(radiant["az"], radiant["alt"], "+", RAD, over=True)
-        text(radiant["az"], radiant["alt"], radiant["name"].upper(), RAD)
+        text(radiant["az"], radiant["alt"], radiant["name"].upper(), RAD,
+             href_for(radiant["name"]))
 
     if overlay:                            # Sun: thin path, marker on where it IS
         over_pts, over_col, over_lbl, over_mark = overlay
@@ -1808,7 +1840,7 @@ def render_linear(when_utc, lat, lon, W=176, H=22, color=True, show_lines=True,
             inset_items.append((b["alt"], b["az"], gl, colr, b["name"])); continue
         place(b["az"], b["alt"], gl, colr, over=True)
         if not (target and target["name"] == b["name"]):
-            text(b["az"], b["alt"], b["name"], colr)
+            text(b["az"], b["alt"], b["name"], colr, href_for(b["name"]))
 
     top3 = [v for v in sorted(visible, key=lambda v: v[0]["m"]) if v[0].get("n")][:3]
     for s, a, z in top3:
@@ -1816,7 +1848,7 @@ def render_linear(when_utc, lat, lon, W=176, H=22, color=True, show_lines=True,
             inset_items.append((a, z, "★", "\033[38;5;231m", s["n"])); continue
         place(z, a, "★", "\033[38;5;231m", over=True)
         if not (target and target["name"] == s["n"]):
-            text(z, a, s["n"], C.HEAD)
+            text(z, a, s["n"], C.HEAD, href_for(s["n"]))
 
     # deepsky.json's cn field is hand-curated to the ~30 well-known objects
     # (build_deepsky.py), so every one visible gets a label -- no brightness
@@ -1825,7 +1857,7 @@ def render_linear(when_utc, lat, lon, W=176, H=22, color=True, show_lines=True,
         if not o.get("cn") or a > alt_hi:
             continue
         _gl, col = DSO_GLYPH[o["t"]]
-        text(z, a, o["cn"], col)
+        text(z, a, o["cn"], col, href_for(o["cn"]))
 
     if target is not None:
         TC = TARGET_C
@@ -1849,7 +1881,8 @@ def render_linear(when_utc, lat, lon, W=176, H=22, color=True, show_lines=True,
         if line_limit is not None and not item.get("visible", False):
             continue                           # animate frames: fully faded out
         text(item["caz"], min(max(item["calt"], alt_lo), alt_hi),
-             item["con"]["name"].upper(), C.CNAME)
+             item["con"]["name"].upper(), C.CNAME,
+             href_for(item["con"]["name"]))
 
     # And only now the asterism lines, from the bitmap every segment went
     # into, filling whatever cells nothing else claimed.
@@ -1948,9 +1981,22 @@ def render_linear(when_utc, lat, lon, W=176, H=22, color=True, show_lines=True,
     out = []
     for r in range(H):
         lab = f"{ticks10[r]:>3}°" if r in ticks10 else "    "
-        row = "".join(paint(grid[r][c], tint[r][c], color)
-                      if grid[r][c] != " " and tint[r][c] else grid[r][c] for c in range(W))
-        out.append(paint(f"{lab:<4} ", C.MUTE, color) + row.rstrip())
+        opens = {a: (b, u) for a, b, u in anchors.get(r, ())}
+        closes = {b for _a, b, _u in anchors.get(r, ())}
+        cells = []
+        for c in range(W):
+            if c in closes:
+                cells.append(LINK_END)
+            if c in opens:
+                cells.append(LINK_START + opens[c][1] + LINK_SEP)
+            cells.append(paint(grid[r][c], tint[r][c], color)
+                         if grid[r][c] != " " and tint[r][c] else grid[r][c])
+        if W in closes:
+            cells.append(LINK_END)
+        row = "".join(cells)
+        # rstrip would eat a trailing LINK_END and leave an anchor open, so
+        # the tail is trimmed of spaces only.
+        out.append(paint(f"{lab:<4} ", C.MUTE, color) + row.rstrip(" "))
     if alt_lo <= 0.5:
         out.append(paint(" " * LM + "─" * W, C.HOR, color))
     else:
