@@ -5856,9 +5856,16 @@ def _event_tail(e):
     return tail
 
 
-def _event_line(e, r):
-    """One event as a table row: when, glyph, what, and where to look."""
-    when = f"{_event_date(e):%a %d %b}"
+def _event_line(e, r, when=None):
+    """One event as a table row: when, glyph, what, and where to look.
+
+    when overrides the date column. The running-shower group passes an empty
+    one: those rows sit under a heading that already says "on now", and a
+    shower is not a date -- printing today's under it read as a claim that
+    the Perseids happen on the 8th.
+    """
+    if when is None:
+        when = f"{_event_date(e):%a %d %b}"
     head = f"{e.get('glyph', ' ')} {e['headline']}"
     return f"  {when:<11} {head:<34} {', '.join(_event_tail(e))}".rstrip()
 
@@ -5943,6 +5950,25 @@ def _event_rows(r, days, colour_free=False):
                  f"{abs(p.lon):.2f}°{'E' if p.lon >= 0 else 'W'}  ·  "
                  f"next {days} days  ·  local time", None))
     rows.append(("blank", "", None))
+
+    # On now, above the dated rows. A shower is not a date -- the Perseids
+    # run from 17 July to 24 August -- so it has no row in a list ordered by
+    # when things happen, and without this the list said nothing about them
+    # on any of the thirty-seven nights that are not the peak.
+    #
+    # Its own group rather than a row among them: dated "today" it would sort
+    # to the top of the list every day and read as an event happening today,
+    # which is not the same claim.
+    running = _running_now(r)
+    if running:
+        rows.append(("mute", "  On now:", None))
+        for e in running:
+            rows.append(("event", _event_line(e, r, when=""), _event_url(e, r)))
+            note = e.get("moon_verdict") or e.get("note")
+            if note:
+                for l in textwrap.wrap(note, 62):
+                    rows.append(("mute", f"  {'':<11} {l}", None))
+        rows.append(("blank", "", None))
 
     if not here:
         rows.append(("mute", "  Nothing above the horizon here in the next "

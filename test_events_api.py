@@ -131,7 +131,10 @@ def test_shower_is_filed_under_the_evening_not_the_peak_instant():
     night — the peak is in the small hours — and the night is what a reader
     plans around."""
     text = api._compose_events(_req(), days=14).text
-    line = [l for l in text.split("\n") if "Perseids" in l][0]
+    # "Perseids peak", not just "Perseids": the list now opens with an "on
+    # now" group carrying the shower's activity period, which is undated on
+    # purpose. This test is about the peak row's date.
+    line = [l for l in text.split("\n") if "Perseids peak" in l][0]
     assert "Wed 12 Aug" in line, line
     assert "22:10" in line                      # the window starts that evening
 
@@ -142,7 +145,7 @@ def test_list_date_and_calendar_entry_agree():
     block = [b for b in ics.split("BEGIN:VEVENT") if "Perseids" in b][0]
     start = re.search(r"DTSTART:(\d{8})", block).group(1)
     line = [l for l in api._compose_events(_req(), days=14).text.split("\n")
-            if "Perseids" in l][0]
+            if "Perseids peak" in l][0]
     assert start == "20260812"
     assert "12 Aug" in line
 
@@ -341,7 +344,10 @@ def test_every_linked_row_opens_something_specific():
 
 def test_event_link_uses_the_best_moment_not_the_instant():
     h = api.events_html(_req(), days=20)
-    row = [l for l in h.split("\n") if "Perseids" in l][0]
+    # The peak row. The list opens with an "on now" group for the shower's
+    # activity period, whose link is tonight's best moment rather than the
+    # peak's -- a different row answering a different question.
+    row = [l for l in h.split("\n") if "Perseids peak" in l][0]
     assert "t=2026-08-13T04:50" in row, row
 
 
