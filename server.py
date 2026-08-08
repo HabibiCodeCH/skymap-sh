@@ -1264,6 +1264,17 @@ def stats_text(n=50, map_slot=False):
                  f"{total:,} daylight charts)")
         L.append(f"  {'switched off':12} {g_off:>8,}")
         L.append("")
+    # The day page's tonight panel and next-up list, counted against the
+    # daylight charts that could have carried them. Not the same denominator
+    # as golden:shown -- that one counts every daylight chart including curl's,
+    # and this is browser-only -- so it is printed as its own share rather
+    # than folded into the block above and read as a percentage of the wrong
+    # total.
+    d_panel = _stat["day:panel"]
+    if d_panel:
+        L.append("day page")
+        L.append(f"  {'panel':12} {d_panel:>8,}  (browser daylight charts)")
+        L.append("")
     pages = sorted(k for k in _stat if k.startswith("page:"))
     if pages:
         L.append("pages")
@@ -1336,6 +1347,9 @@ def stats_json(n=50):
                     golden_shown=_stat["golden:shown"],
                     golden_off=_stat["golden:off"],
                     top_teased=dict(_events_teased.most_common(n))),
+        # day_page, not day: `day` above is already the daylight/night request
+        # split, and that one is the older, more-read number of the two.
+        day_page=dict(panel=_stat["day:panel"]),
         views={k[5:]: v for k, v in _stat.items()
                if k.startswith("view:") and k not in RETIRED_VIEWS},
         pages={k[5:]: v for k, v in _stat.items() if k.startswith("page:")},
@@ -1786,9 +1800,16 @@ UNKNOWN = """\
 
 
 def _cache_key(r, daytime):
+    # quadrant_requested as well as quadrant, and they are not the same
+    # question. A bare ?quadrant -- show me the grid, I have not picked a
+    # letter yet -- leaves r.quadrant None and only turns dso on, so its key
+    # was identical to plain ?dso=1's. Whichever of the two was asked for
+    # first won the entry and the other was served its answer: ?quadrant came
+    # back with no grid, or ?dso=1 came back wearing one. ?quadrant&nodso=1
+    # collided with the plain view the same way.
     q = (round(r.place.lat, 1), round(r.place.lon, 1), r.view, r.facing, r.span,
          (r.find or "").lower(), bool(r.tle), r.night, r.width, r.dso, r.quadrant,
-         r.lines, r.panel, r.golden)
+         r.quadrant_requested, r.lines, r.panel, r.golden)
     bucket = DAY_BUCKET if daytime else NIGHT_BUCKET
     stamp = int(r.when_utc.timestamp() // bucket)
     return (q, stamp)
@@ -2211,7 +2232,15 @@ def _respond(request: Req, place: str | None):
         # (events_cards, not events_card): the odd night two things are
         # both genuinely close -- an eclipse and a shower peak a day apart,
         # say -- gets both, cycled, not just whichever ranks higher.
-        coming_up_card = api.coming_up_card_html(api.events_cards(r))
+        # Gone from the chart pages entirely. By day it said the same thing
+        # the "next up" box says, one line at a time and with a dismiss
+        # button, where the box says five rows at once and needs no
+        # dismissing. By night the chart is the whole page and the strip was
+        # the one thing standing between it and the top of the window.
+        #
+        # events_cards() is still called nowhere else on this path, so this
+        # is a line of work saved as well as a strip of the fold.
+        coming_up_card = ""
         # strip_duplicate_ui_lines: the prose repeats itself once real UI
         # exists for the same thing -- Coming up (the card above), Share
         # as a PNG (the drawer button), See tonight's chart now (a curl
@@ -2250,10 +2279,30 @@ def _respond(request: Req, place: str | None):
                 if rung_prose:
                     prose = _rendered(rung_prose)
                 rungs.append((cols, panel, _rendered(chart)))
-            # head=True: this page keeps its summary line inside the <pre>,
-            # so it is sized there. The object pages lift theirs out into the
-            # lede instead and must not ask for this.
-            chart_html = api.chart_layout(rungs, zenith, prose, head=True)
+            # Same day/night gate the quadrant and golden-hour controls above
+            # use. The Sun's arc renders at 70% height in a browser
+            # (api._day_height), and this is what fills the room: where and
+            # when you are in a box of its own, the night it is counting down
+            # to beside the arc, and the next few events under both.
+            #
+            # res.data, not a recomputation -- that is the day view's own JSON
+            # payload, already built by _compose_day for ?format=json.
+            day_page = not r.night and daytime
+            # Both views take the summary line out of the drawing and into a
+            # box of its own, so head=False either way. The object pages
+            # lift theirs into the lede instead and never ask for it.
+            head_html, rungs = api.lift_chart_head(rungs)
+            chart_html = api.chart_layout(rungs, zenith, prose, head=False)
+            if day_page:
+                chart_html = api.day_layout(
+                    head_html, chart_html,
+                    api.day_side_html(r, res.data),
+                    api.day_next_up_html(r))
+                _stat["day:panel"] += 1
+            else:
+                # After dark there is nothing to put beside the chart, so
+                # the chart gets the width.
+                chart_html = api.night_layout(head_html, chart_html)
         else:
             chart_html = api.chart_pre(_rendered(html_text))
         # A place named in the URL gets its own card; the bare domain keeps
@@ -2773,7 +2822,10 @@ def robots():
 # catalogue, which would be noise no crawler should spend budget on and
 # would go stale immediately anyway (every page is a live render).
 SITEMAP_PLACES = ("Nairobi", "Tokyo", "London", "New York", "Buenos Aires", "Sydney")
-SITEMAP_STATIC = ("/", "/demo", "/help", "/legend")
+# /eclipse is here and /catalog is not, which is a decision rather than an
+# oversight: /eclipse is text about a specific event on a specific date, and
+# /catalog is an index of pages that are each in this sitemap already.
+SITEMAP_STATIC = ("/", "/demo", "/help", "/legend", "/eclipse")
 
 
 @app.get("/sitemap.xml", response_class=Response)
@@ -2791,6 +2843,20 @@ def sitemap():
     # to read that tag. Blocking it would leave the duplicates indexable by
     # URL alone with no canonical ever seen.
     urls += [f"https://skymap.sh/{quote(n)}" for n in objects.sitemap_names()]
+    # One page per eclipse still to come. These are the closest thing here to
+    # an ordinary web page -- a fixed date, a fixed track across the Earth,
+    # text that will read the same next year as it does today -- so they are
+    # worth a crawler's time in a way a live sky render is not.
+    #
+    # Only the ones ahead. Every eclipse back to 2001 is in the table and
+    # resolves, but a sitemap is a list of what is worth indexing now, and
+    # nobody is searching for the path of the 2006 totality.
+    #
+    # Through api, which is how the /eclipse route below reaches it too --
+    # server.py has never imported eclipse_page directly and this is not the
+    # place to start.
+    urls += [f"https://skymap.sh/eclipse/{api.eclipse_page.key_of(e)}"
+             for e in api.eclipse_page.upcoming(dt.datetime.utcnow(), count=None)]
     body = ('<?xml version="1.0" encoding="UTF-8"?>\n'
             '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n' +
             "".join(f"<url><loc>{u}</loc></url>\n" for u in urls) +
