@@ -876,3 +876,40 @@ class NextVisibleDoesNotDependOnWhenYouAsk(unittest.TestCase):
         self.assertIsNone(w)
         self.assertIsNone(a)
         self.assertIsNone(z)
+
+
+class TheShowerRadiantIsMarkedOnTheChart(unittest.TestCase):
+    """The chart said nothing about a shower at all. events.active_shower()
+    was written for this and never called by anything, so the page could
+    print "the Perseids are running, radiant 51 deg NE" in prose over a
+    drawing that gave no hint where that was."""
+
+    WHEN = dt.datetime(2026, 8, 8, 21, 0)
+    LAT, LON = 47.38, 8.54
+
+    def _chart(self, **kw):
+        art, _st = sky.render_linear(self.WHEN, self.LAT, self.LON,
+                                     width=220, color=False, **kw)
+        return art
+
+    def test_no_radiant_asked_for_draws_nothing(self):
+        """Every existing caller, the CLI included, is untouched."""
+        self.assertNotIn("PERSEIDS", self._chart())
+
+    def test_it_marks_the_spot_and_names_it(self):
+        art = self._chart(radiant=dict(name="Perseids", alt=40.0, az=45.0))
+        self.assertIn("PERSEIDS", art)
+
+    def test_the_mark_is_one_a_font_actually_has(self):
+        """test_gif's tofu check is the real guard; this is the reason. The
+        events list uses a comet for the row and neither bundled font has a
+        glyph for it, so the chart uses the cross art.py already puts at the
+        radiant of its shower portraits."""
+        art = self._chart(radiant=dict(name="Perseids", alt=40.0, az=45.0))
+        self.assertNotIn("☄", art)
+        self.assertIn("+", art)
+
+    def test_a_radiant_below_the_horizon_is_not_drawn(self):
+        self.assertNotIn("PERSEIDS",
+                         self._chart(radiant=dict(name="Perseids", alt=-20.0,
+                                                  az=45.0)))

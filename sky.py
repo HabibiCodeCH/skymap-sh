@@ -1307,7 +1307,8 @@ def render_linear(when_utc, lat, lon, W=176, H=22, color=True, show_lines=True,
                   alt_lo=None, alt_hi=None, target=None, overlay=None,
                   bodies=None, inset=True, width=None, height=None, dso_limit=None,
                   quadrant=None, quadrants=False, side_panel=False,
-                  alt_bands=None, notes=None, milkyway=False, dim_limit=None):
+                  alt_bands=None, notes=None, milkyway=False, dim_limit=None,
+                  radiant=None):
     """Horizon panorama. facing=None gives the full 360 deg sweep; facing='SW'
     gives a window centred there, which is narrow enough to be undistorted.
 
@@ -1757,6 +1758,27 @@ def render_linear(when_utc, lat, lon, W=176, H=22, color=True, show_lines=True,
                 place(mk[2], mk[1], "Ξ", ISS, over=True)
                 text(mk[2], mk[1], "ISS", ISS)
                 break
+
+    # The radiant of whatever shower is running, marked where the meteors
+    # come from. Same shape as the ISS marker above: one glyph and a name.
+    #
+    # The chart had nothing on it about a shower at all -- events.
+    # active_shower() was written for this and never called by anything --
+    # so the page could say "the Perseids are running, radiant 51 deg NE" in
+    # prose over a drawing that gave no hint where that was.
+    #
+    # Orchid, the colour the events strip and the shower portraits already
+    # use, so a reader who has seen one recognises the other.
+    if radiant and row_of(radiant["alt"]) is not None \
+            and col_of(radiant["az"]) is not None:
+        # "+", the same mark art.py puts at the radiant of its shower
+        # portraits, rather than the "☄" the events list uses for the row.
+        # Neither bundled font has a glyph for that one -- test_gif's tofu
+        # check catches it -- and a chart that exports as an empty box is
+        # worse than one that marks the spot with a cross.
+        RAD = "\033[38;5;213m"
+        place(radiant["az"], radiant["alt"], "+", RAD, over=True)
+        text(radiant["az"], radiant["alt"], radiant["name"].upper(), RAD)
 
     if overlay:                            # Sun: thin path, marker on where it IS
         over_pts, over_col, over_lbl, over_mark = overlay

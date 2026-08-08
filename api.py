@@ -4700,7 +4700,7 @@ def _compose_sky(r):
                             bodies=_fade_visible_bodies(sun_alt, jd) | {"Sun", "Moon"},
                             dso_limit=dso_limit, quadrant=r.quadrant,
                             quadrants=r.quadrant_requested, side_panel=r.panel,
-                            milkyway=mw_floor)
+                            milkyway=mw_floor, radiant=_chart_radiant(r))
     # "horizon panorama, 0-70°" is gone from every view, browser and
     # terminal alike. It described the default, and the default needs no
     # describing: the axis is labelled 0-70 down the left edge and the inset
@@ -5512,6 +5512,35 @@ def _events_for(r, days=EVENTS_WINDOW_DAYS, visible_only=True):
     p = r.place
     return ev_mod.upcoming(p.lat, p.lon, r.tz, now_utc=r.when_utc, days=days,
                            visible_only=visible_only)
+
+
+def _chart_radiant(r):
+    """The shower radiant to mark on the chart, at the chart's own moment.
+
+    Not the alt/az the event carries: that is where the radiant sits at the
+    *best* moment of the night, which is the right answer for a list row and
+    the wrong one for a drawing of 22:00. Recomputed here from the radiant's
+    coordinates so the glyph lands where the sky actually has it.
+
+    Peaks count as well as merely-running nights -- on the peak the chart is
+    the one place a reader most wants to be shown where to look.
+    """
+    if r.facing or r.quadrant:
+        return None                      # a crop has its own subject
+    running = _running_now(r)
+    peaks = [e for e in _events_for(r, days=2, visible_only=True)
+             if e["kind"] == "meteor_shower"
+             and ev_mod._same_night(e["when_utc"], r.when_utc, r.tz)]
+    best = (peaks + running)[:1]
+    if not best:
+        return None
+    e = best[0]
+    jd = julian(r.when_utc)
+    lst = (gmst_hours(jd) + r.place.lon / 15.0) % 24
+    alt, az = altaz(e["radiant_ra"], e["radiant_dec"], r.place.lat, lst)
+    if alt <= 0:
+        return None
+    return dict(name=e["name"], alt=alt, az=az)
 
 
 def _running_now(r, visible_only=True):
