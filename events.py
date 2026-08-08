@@ -439,6 +439,41 @@ def _same_night(a_utc, b_utc, tz_offset):
     return night(a_utc) == night(b_utc)
 
 
+def radiant_tonight(now_utc, tz_offset=0, bortle=None):
+    """(name, ra, dec) of the shower to mark on a chart, or None.
+
+    Deliberately cheap: no localise, no best_dark_moment, no global scan. An
+    animation calls this once per frame -- ninety-six of them for a day --
+    and everything the marker needs is the shower's name and where its
+    radiant is, which the table already holds. Working out the best moment
+    of the night for each frame would be both slow and beside the point,
+    since a frame is already about one moment.
+
+    Peaks are exempt from the Bortle floor here, as everywhere: a shower
+    peaking tonight is worth pointing at wherever you are, and the chart is
+    the one place a reader most wants to be shown where.
+    """
+    jd = julian(now_utc)
+    best = None
+    for sh in _showers():
+        if not shower_active(sh, jd):
+            continue
+        peaks = _same_night(from_julian(_lon_moment(sh["solar_lon"], jd)),
+                            now_utc, tz_offset)
+        if not peaks and bortle is not None \
+                and sh["zhr"] < _active_zhr_floor(bortle):
+            continue
+        # The strongest thing up, and a peak beats a merely-running night of
+        # the same strength.
+        rank = (peaks, sh["zhr"])
+        if best is None or rank > best[0]:
+            best = (rank, sh)
+    if best is None:
+        return None
+    sh = best[1]
+    return dict(name=sh["name"], ra=sh["ra"], dec=sh["dec"])
+
+
 def _lon_moment(lon_j2000, jd_near):
     """When Earth is at this J2000 solar longitude, nearest jd_near.
 
@@ -451,7 +486,7 @@ def _lon_moment(lon_j2000, jd_near):
                    guess - 3.0, guess + 3.0)
 
 
-def active_showers(now_utc, bortle=None):
+def active_showers(now_utc, bortle=None, tz_offset=0):
     """Showers running tonight, as one event spanning the whole period.
 
     A shower is not a moment. The Perseids run from 17 July to 24 August and
@@ -507,7 +542,13 @@ def active_showers(now_utc, bortle=None):
             peak_zhr=sh["zhr"], radiant_ra=sh["ra"], radiant_dec=sh["dec"],
             glyph="☄", at_peak=False, phase=phase,
             starts_utc=starts, ends_utc=ends, peak_utc=peak,
-            headline=f"{sh['name']} {phase}",
+            # The span in the headline, local dates. "Perseids ongoing" on
+            # its own leaves the obvious question unanswered -- running until
+            # when? -- and the row has nothing else to say it, since its date
+            # column is deliberately blank.
+            headline=(f"{sh['name']} {phase} "
+                      f"({_local(starts, tz_offset):%d %b}"
+                      f" - {_local(ends, tz_offset):%d %b})"),
             note=sh.get("note", ""),
         ))
     return out
@@ -879,7 +920,7 @@ def running_now(lat, lon, tz_offset, now_utc=None, bortle=None,
                if e["kind"] == "meteor_shower"
                and _same_night(e["when_utc"], now_utc, tz_offset)}
     out = [localise(e, lat, lon, tz_offset)
-           for e in active_showers(now_utc, bortle=bortle)
+           for e in active_showers(now_utc, bortle=bortle, tz_offset=tz_offset)
            if e["name"] not in peaking]
     if visible_only:
         out = [e for e in out if e["visible"] is not False]

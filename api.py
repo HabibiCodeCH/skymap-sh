@@ -2985,7 +2985,6 @@ OBJECT_CSS = """
    So the h1 keeps the body's 11px for measurement and the span inside it
    carries the size. 2ch then means two body characters, exactly. */
 .obj-title{display:flex;align-items:center;gap:.26em;
-  font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
   font-size:30px;font-weight:600;letter-spacing:-.01em;
   line-height:1.15;margin:1.5rem 0 .35rem}
 /* No left padding. It used to carry a two-character indent to line up with
@@ -3011,8 +3010,7 @@ OBJECT_CSS = """
    every planet into an ellipse. overflow is hidden rather than scrolled --
    the art is sized to fit this column, and a scrollbar under it would be a
    sign something is wrong rather than something to use. */
-.obj-art{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
-  font-size:11px;line-height:1.2;margin:0;overflow:hidden;
+.obj-art{font-size:11px;line-height:1.2;margin:0;overflow:hidden;
   font-variant-ligatures:none;-webkit-font-smoothing:none}
 /* A frame, so the portrait reads as a plate rather than as loose characters
    that happened to land above the text. Flex-centred both ways: the drawing
@@ -3054,14 +3052,12 @@ OBJECT_CSS = """
 
 /* The lede sentence and the fact rows. Proportional text, not monospace:
    these are sentences and numbers to read, not a drawing to preserve. */
-.obj-lede{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
-  color:#c9d1d9;font-size:15px;line-height:1.5;margin:.1rem 0 1.1rem}
+.obj-lede{color:#c9d1d9;font-size:15px;line-height:1.5;margin:.1rem 0 1.1rem}
 /* The live column's heading is the same sentence-sized text as the lede
    opposite it, and both sit at the top of their column so the two halves
    start on one line rather than a few pixels apart. */
 .obj-live-head{margin:.1rem 0 .2rem;font-size:16.5px;color:#e6ebf2}
-.obj-subhead{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
-  font-size:12.5px;line-height:1.4;color:#7d8694;margin:0 0 .8rem}
+.obj-subhead{font-size:12.5px;line-height:1.4;color:#7d8694;margin:0 0 .8rem}
 .obj-subhead a.ics{color:#8fb6e0;text-decoration:none;
   border-bottom:1px dotted #4b5568}
 .obj-subhead a.ics:hover{color:#b7d4f5;border-bottom-color:#7f93ad}
@@ -3075,8 +3071,7 @@ OBJECT_CSS = """
    column. Told apart by colour instead: the tan is xterm 180, the same the
    terminal paints it, because it is a note about the sky rather than a
    reading off it. */
-.obj-what{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
-  font-size:12.5px;line-height:1.5;color:#d7af87;margin:-.4rem 0 .9rem}
+.obj-what{font-size:12.5px;line-height:1.5;color:#d7af87;margin:-.4rem 0 .9rem}
 /* The live column's text margin, in the browser. Every line under these
    three sits two characters in, because the chart's <pre> keeps them and a
    <pre> prints what it is given. These three are lifted out into real HTML,
@@ -3100,13 +3095,11 @@ OBJECT_CSS = """
    reader who wants it will look for it at the foot of the facts. */
 
 
-.obj-src{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
-  font-style:italic;font-size:11px;line-height:1.45;color:#666e7d;
+.obj-src{font-style:italic;font-size:11px;line-height:1.45;color:#666e7d;
   margin:1.4rem 0 0;padding-top:.7rem;border-top:1px solid #1c2027}
 /* The live half's prose, above its chart, in the chart's own face and size
    so the two read as one block. */
-.obj-prose{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
-  font-size:12px;line-height:1.45;color:#adb6c4;margin:0 0 .7rem;
+.obj-prose{font-size:12px;line-height:1.45;color:#adb6c4;margin:0 0 .7rem;
   white-space:pre-wrap}
 /* This object's events, beside its name. Same shape as the eclipse page's
    picker (.ecl-picker), because it is the same control doing the same job:
@@ -3124,8 +3117,7 @@ OBJECT_CSS = """
 .obj-head-row{display:flex;align-items:center;gap:14px;flex-wrap:wrap;
   margin:1.5rem 0 26px}
 .obj-head-row .obj-title{margin:0}
-.obj-picker{position:relative;margin:0;
-  font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+.obj-picker{position:relative;margin:0}
 .obj-picker summary{cursor:pointer;color:#c9d1d9;font-size:13px;
   list-style:none;display:inline-flex;align-items:center;gap:10px;
   border:1px solid #8fb6e0;border-radius:6px;padding:6px 12px}
@@ -4191,8 +4183,7 @@ def chart_ladder_css():
         # column 0. As padding it applies to the whole box, so all lines
         # share one left edge. 2ch is the width of two characters in this
         # element's own font, which is exactly what the spaces were.
-        " .obj-live #chart-prose{font-family:ui-monospace,SFMono-Regular,"
-        "Menlo,Consolas,monospace;font-size:13.5px;line-height:1.5;"
+        " .obj-live #chart-prose{font-size:13.5px;line-height:1.5;"
         "color:#adb6c4;margin:10px 0 0;white-space:pre-wrap;padding-left:2ch}",
     ]
     return "\n".join(lines)
@@ -5527,20 +5518,16 @@ def _chart_radiant(r):
     """
     if r.facing or r.quadrant:
         return None                      # a crop has its own subject
-    running = _running_now(r)
-    peaks = [e for e in _events_for(r, days=2, visible_only=True)
-             if e["kind"] == "meteor_shower"
-             and ev_mod._same_night(e["when_utc"], r.when_utc, r.tz)]
-    best = (peaks + running)[:1]
-    if not best:
+    _mag, bortle = sky_brightness(r.place.lat, r.place.lon)
+    sh = ev_mod.radiant_tonight(r.when_utc, r.tz, bortle)
+    if sh is None:
         return None
-    e = best[0]
     jd = julian(r.when_utc)
     lst = (gmst_hours(jd) + r.place.lon / 15.0) % 24
-    alt, az = altaz(e["radiant_ra"], e["radiant_dec"], r.place.lat, lst)
+    alt, az = altaz(sh["ra"], sh["dec"], r.place.lat, lst)
     if alt <= 0:
         return None
-    return dict(name=e["name"], alt=alt, az=az)
+    return dict(name=sh["name"], alt=alt, az=az)
 
 
 def _running_now(r, visible_only=True):
@@ -7107,9 +7094,13 @@ def compose_frame(r, dusk_lead_minutes=0, dawn_lag_minutes=0):
     # unlit field and the lit one have to agree about which frame they are
     # in, or a star lights up a few frames before the sketch admits it is
     # there.
+    # Per frame, so the radiant travels with the sky it belongs to. Cheap by
+    # construction -- see events.radiant_tonight, which is why this is not
+    # the same call the still chart makes.
     art, st = render_linear(r.when_utc, p.lat, p.lon, color=c, show_lines=r.lines,
                              mag_limit=mag_limit, line_limit=mag_limit, tle=None,
                              dim_limit=_dim_limit(fade_alt),
+                             radiant=_chart_radiant(r),
                              inset=False, alt_lo=0.0, alt_hi=alt_hi,
                              width=_effective_width(r), height=_horizon_height(r),
                              overlay=overlay, bodies=visible_bodies,
@@ -8183,7 +8174,6 @@ document.documentElement.classList.add('js');
   display:block;max-width:none;padding:10px 13px;border-radius:8px;
   white-space:nowrap;
   background:rgba(18,21,26,.94);border:1px solid #262c35;
-  font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
   font-size:11.5px;line-height:1.4;color:#8b93a3;text-decoration:none;
   box-shadow:0 3px 14px rgba(0,0,0,.45)}}
 .obj-feedback:hover{{border-color:#3d4757;color:#c9d1d9}}
@@ -8211,7 +8201,14 @@ document.documentElement.classList.add('js');
 }}
 @media print{{.obj-feedback{{display:none}}}}
  .w-wide{{max-width:none}}
- pre{{margin:0;font-size:11px;line-height:1.22;overflow-x:auto;font-variant-ligatures:none}}
+/* font-family:inherit is what makes the body rule above actually global. A
+   <pre> otherwise takes the browser's own default monospace whatever the
+   page says, so the charts were set in a different face from every sentence
+   around them -- Courier against SF Mono on this machine -- and the page had
+   two typefaces nobody had chosen. It is declared in one place now, on body,
+   and everything including the drawing follows it. */
+ pre{{margin:0;font-size:11px;line-height:1.22;overflow-x:auto;
+     font-variant-ligatures:none;font-family:inherit}}
  /* Bigger than the generic pre{{}} above -- meant to be scoped to the chart
     page only, but #chart-pre is the *same id* every page's <pre> uses, so
     a bare #chart-pre selector here was never actually scoped at all --
@@ -8457,9 +8454,7 @@ document.documentElement.classList.add('js');
     parts are real spaces and collapsing them would close the gaps up. Wrap
     rather than scroll, because the box is picked to fit but a long place
     name can still push one rung over. */
- #day-head .dh{{white-space:pre-wrap;line-height:1.3;color:#e6ebf2;
-               font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,
-               monospace}}
+ #day-head .dh{{white-space:pre-wrap;line-height:1.3;color:#e6ebf2}}
  /* The place and the moment, in bold. _compose_day paints them in their own
     colour precisely so they arrive as their own span and this rule has
     something to hold on to -- there is no other way to bold part of a line
@@ -8475,8 +8470,7 @@ document.documentElement.classList.add('js');
     pages give theirs one: the line-height is what makes a character cell
     twice as tall as it is wide (art.CELL), and a planet set at any other
     line-height comes back as an ellipse. */
- .dt-art{{margin:0;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,
-         monospace;font-size:10px;line-height:1.2em;white-space:pre;
+ .dt-art{{margin:0;font-size:10px;line-height:1.2em;white-space:pre;
          overflow:hidden}}
  .dt-art-box{{display:block;margin:0 0 12px;text-decoration:none;
              color:inherit}}
@@ -10135,7 +10129,7 @@ SPHERE_PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
     live orientation issues needs to see what the phone's sensors are
     actually reporting, not just the computed result. */
  #debug-hud{{position:fixed;top:34px;left:0;right:0;padding:6px 14px;
-            color:#7ee787;font-size:11px;font-family:monospace;white-space:pre;
+            color:#7ee787;font-size:11px;white-space:pre;
             background:rgba(0,0,0,.6);pointer-events:none;z-index:1000;display:none}}
  /* The existing light grey/blue HUD text is tuned for a black night sky --
     unreadable against the daytime dome's light blue. Rather than picking a
@@ -10158,7 +10152,7 @@ SPHERE_PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
               padding:8px 10px;border-radius:4px;font:inherit;font-size:16px;width:170px}}
  #place-form button{{background:#238636;border:0;color:#fff;padding:8px 14px;
                      border-radius:4px;font:inherit;font-size:13px;cursor:pointer}}
- .sky-label{{color:#c9d1d9;font-size:11px;font-family:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
+ .sky-label{{color:#c9d1d9;font-size:11px;
             white-space:nowrap;pointer-events:none}}
  .sky-label span{{display:inline-block;text-shadow:0 0 4px #000,0 0 4px #000}}
  /* The glow-shadow above exists for contrast against a black night sky --

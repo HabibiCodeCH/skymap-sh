@@ -554,7 +554,10 @@ def test_a_night_off_peak_names_the_shower_and_quotes_no_rate():
     the activity profile that would let it be scaled is not in the table."""
     got = events.active_showers(dt.datetime(2026, 8, 7, 22, 0))
     per = next(e for e in got if e["name"] == "Perseids")
-    assert per["headline"] == "Perseids ongoing"
+    # The span is in the headline now: the row's date column is blank
+    # on purpose, so "running until when" has nowhere else to live.
+    assert per["headline"].startswith("Perseids ongoing (")
+    assert "17 Jul" in per["headline"] and "24 Aug" in per["headline"]
     assert per["phase"] == "ongoing"
     assert "zhr" not in per
     assert per["peak_zhr"] == 100          # still there, for ranking only
@@ -571,7 +574,8 @@ def test_the_span_runs_start_through_peak_to_end():
         # events.running_now -- and together they are what a reader sees.
         got = (events.upcoming(47.38, 8.54, 2, now_utc=now, days=40)
                + events.running_now(47.38, 8.54, 2, now_utc=now))
-        return [e["headline"] for e in got
+        # Headline without the date span, which is asserted separately.
+        return [e["headline"].split(" (")[0] for e in got
                 if e["kind"] == "meteor_shower" and "Perseid" in e["name"]]
 
     assert label("2026-07-16") == ["Perseids peak"]          # not started
