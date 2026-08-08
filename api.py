@@ -5048,8 +5048,12 @@ def _markers_json(r):
     timer.
     """
     out = []
+    # The reader's own sky, which decides whether a shower merely running --
+    # as against peaking -- is worth pointing at from here. A five-an-hour
+    # Ursid night is a real thing under Bortle 2 and nothing at all under 8.
+    _mag, bortle = sky_brightness(r.place.lat, r.place.lon)
     for e in ev_mod.locatable_tonight(r.place.lat, r.place.lon, r.tz,
-                                      now_utc=r.when_utc):
+                                      now_utc=r.when_utc, bortle=bortle):
         out.append(dict(
             kind=e["kind"], name=e["name"], headline=e["headline"],
             alt=e["alt"], az=e["az"], compass=e.get("compass"),

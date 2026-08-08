@@ -382,6 +382,85 @@ def _precession_lon(jd):
     return 1.396971 * t + 0.0003086 * t * t
 
 
+# How bright a shower has to be at its peak before an *active* night is worth
+# telling somebody about, by how dark their sky is. A hand-picked table and a
+# judgement call, not a measured relation: it says a Bortle 8 reader is not
+# served by being told the Ursids are running, and a Bortle 2 reader is.
+#
+# Peaks are exempt. A shower peaking tonight is news wherever you are -- it is
+# the one night of the year that shower has -- and gating those would delete
+# rows that appear today. This only decides whether the forty nights *around*
+# a peak say anything at all.
+#
+# Read as: at this Bortle or darker, a shower needs at least this ZHR. It puts
+# the Perseids, Geminids and Quadrantids in a city; the Orionids, Lyrids,
+# Leonids and Delta Aquariids in the suburbs; and the Draconids, Ursids and
+# both Taurids only where the sky is genuinely dark, which is about right for
+# a five-an-hour shower.
+SHOWER_ACTIVE_FLOOR = ((3, 0), (5, 15), (7, 50), (9, 80))
+
+
+def _active_zhr_floor(bortle):
+    for limit, floor in SHOWER_ACTIVE_FLOOR:
+        if bortle <= limit:
+            return floor
+    return SHOWER_ACTIVE_FLOOR[-1][1]
+
+
+def _solar_lon_j2000(jd):
+    """Where Earth is in its orbit, in the frame the shower table uses.
+
+    The inverse of the correction meteor_showers applies: sun()["elon"] is of
+    date, the table is J2000, and the difference is most of a night by 2026.
+    """
+    return (sun(jd)["elon"] - _precession_lon(jd)) % 360
+
+
+def shower_active(sh, jd):
+    """Is this shower inside its activity period at this moment?
+
+    Ranges wrap: the Quadrantids run from 276 deg through 0 to 292.
+    """
+    lo, hi = sh.get("lon_start"), sh.get("lon_end")
+    if lo is None or hi is None:
+        return False
+    return ((_solar_lon_j2000(jd) - lo) % 360) <= ((hi - lo) % 360)
+
+
+def active_showers(now_utc, bortle=None):
+    """Showers running tonight, peak or not, as events shaped like the peaks.
+
+    The peak is one night out of anything from four to fifty-seven, and until
+    now it was the only one the site knew about: MARKER_WINDOW gave every
+    shower a flat two days either side of maximum and nothing outside that
+    existed. The Perseids are worth going outside for across most of August.
+
+    Deliberately not carrying `zhr`. That number is the rate at maximum under
+    a perfect sky, and every render path prints it as "up to N an hour" -- on
+    a night three weeks off peak it would be fiction. The activity profile
+    that would let it be scaled honestly is not in the table and is not
+    something to invent, so an active night names the shower, points at the
+    radiant and says when the sky is darkest, and quotes no rate at all.
+    `peak_zhr` rides along for ranking only.
+    """
+    jd = julian(now_utc)
+    out = []
+    for sh in _showers():
+        if not shower_active(sh, jd):
+            continue
+        if bortle is not None and sh["zhr"] < _active_zhr_floor(bortle):
+            continue
+        out.append(dict(
+            kind="meteor_shower", name=sh["name"], when_utc=now_utc,
+            id=event_id("shower-active", sh["name"], now_utc),
+            peak_zhr=sh["zhr"], radiant_ra=sh["ra"], radiant_dec=sh["dec"],
+            glyph="☄", at_peak=False,
+            headline=f"{sh['name']}, active",
+            note=sh.get("note", ""),
+        ))
+    return out
+
+
 def meteor_showers(jd0, jd1):
     """Peaks are fixed in solar longitude, not in the calendar -- the Perseids
     peak when Earth reaches the same point in its orbit, which drifts about a
@@ -404,6 +483,7 @@ def meteor_showers(jd0, jd1):
                 id=event_id("shower", sh["name"], when),
                 zhr=sh["zhr"], radiant_ra=sh["ra"], radiant_dec=sh["dec"],
                 glyph="☄", moon_illum=round(mo["illum"] * 100),
+                at_peak=True,
                 headline=f"{sh['name']} peak",
                 note=sh.get("note", ""),
             ))
@@ -763,13 +843,19 @@ MARKER_WINDOW = {
 MAX_MARKERS = 4
 
 
-def locatable_tonight(lat, lon, tz_offset, now_utc=None, limit=MAX_MARKERS):
+def locatable_tonight(lat, lon, tz_offset, now_utc=None, limit=MAX_MARKERS,
+                      bortle=None):
     """Everything worth turning to face right now, best first.
 
     Ranked by _interest rather than by time, because when the Perseids and a
     Moon-Mercury pairing land on the same night the shower is the headline.
     Anything without a real position, or that never clears the horizon in a
     dark enough sky, is dropped -- there is nothing to point at.
+
+    bortle, when given, is the reader's own sky, and it only ever decides
+    whether an *active* shower is worth mentioning -- see SHOWER_ACTIVE_FLOOR.
+    Left out, every active shower is listed. Passed in rather than looked up
+    because sky_brightness lives in api, which imports this module.
     """
     now = now_utc or dt.datetime.utcnow().replace(microsecond=0)
     widest = max(b for b, _a in MARKER_WINDOW.values())
@@ -786,14 +872,32 @@ def locatable_tonight(lat, lon, tz_offset, now_utc=None, limit=MAX_MARKERS):
         if not loc["visible"] or loc.get("az") is None:
             continue
         out.append(loc)
+    # The nights either side of a peak. Not through scan_global: reaching a
+    # Taurid peak fifty-seven days away would mean scanning four months of
+    # conjunctions and phases to find it, where the activity period is a
+    # comparison against one number and costs a solar position.
+    #
+    # A shower already here as a peak keeps that entry -- it is the better
+    # one, carrying the rate, the Moon verdict and the headline -- so the
+    # active copy is dropped rather than shown beside it.
+    named = {e["name"] for e in out if e["kind"] == "meteor_shower"}
+    for e in active_showers(now, bortle=bortle):
+        if e["name"] in named:
+            continue
+        loc = localise(e, lat, lon, tz_offset)
+        if not loc["visible"] or loc.get("az") is None:
+            continue
+        out.append(loc)
     out.sort(key=lambda e: (-_interest(e), e["when_utc"]))
     return out[:limit]
 
 
-def active_shower(lat, lon, tz_offset, now_utc=None, before=2.0, after=2.0):
+def active_shower(lat, lon, tz_offset, now_utc=None, before=2.0, after=2.0,
+                  bortle=None):
     """The shower worth pointing at right now, or None. Kept as its own entry
     point because a radiant is drawn differently from everything else."""
-    for e in locatable_tonight(lat, lon, tz_offset, now_utc, limit=99):
+    for e in locatable_tonight(lat, lon, tz_offset, now_utc, limit=99,
+                               bortle=bortle):
         if e["kind"] == "meteor_shower":
             return e
     return None
@@ -845,7 +949,13 @@ INTEREST = {"eclipse": 100, "meteor_shower": 90, "opposition": 60,
 def _interest(e):
     score = INTEREST.get(e["kind"], 0)
     if e["kind"] == "meteor_shower":
-        score += min(20, e.get("zhr", 0) / 10)
+        # peak_zhr for an active night, which carries no zhr of its own on
+        # purpose (active_showers explains why). It still has to rank: the
+        # Perseids running are worth more of the page than the Draconids.
+        score += min(20, (e.get("zhr") or e.get("peak_zhr", 0)) / 10)
+        if not e.get("at_peak", True):
+            # Below the same shower's own peak, always.
+            score -= 5
         if not e.get("moon_up", True):
             score += 10
     if e["kind"] == "conjunction":

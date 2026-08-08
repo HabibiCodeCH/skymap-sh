@@ -494,3 +494,123 @@ def test_localise_does_not_mutate_the_cached_scan():
     for e in evs:
         events.localise(e, *ZURICH)
     assert json.dumps([sorted(e.keys()) for e in evs]) == before
+
+
+# A peak is one night out of anything from four to fifty-seven, and it used to
+# be the only one the site knew about: MARKER_WINDOW gave every shower a flat
+# two days either side of maximum and nothing outside that existed. The
+# Perseids are worth going outside for across most of August.
+def _showers_by_name():
+    return {s["name"]: s for s in events._showers()}
+
+
+def test_every_peak_falls_inside_its_own_activity_period():
+    """The data guard. Both numbers come from the same IMO working list, and
+    a peak outside its own range would silently mean the shower is listed as
+    active on every night except the one that matters."""
+    for s in events._showers():
+        lo, hi, pk = s["lon_start"], s["lon_end"], s["solar_lon"]
+        span = (hi - lo) % 360
+        assert 0 < (pk - lo) % 360 < span, s["name"]
+
+
+def test_the_ranges_are_the_length_the_imo_publishes():
+    """Sanity on the span rather than on each endpoint: the Draconids run
+    about four days and the Southern Taurids about eight weeks, and anything
+    outside that band means a wrong sign or a wrapped subtraction."""
+    by = _showers_by_name()
+    assert 3 <= (by["Draconids"]["lon_end"] - by["Draconids"]["lon_start"]) % 360 <= 6
+    assert 50 <= (by["Southern Taurids"]["lon_end"]
+                  - by["Southern Taurids"]["lon_start"]) % 360 <= 62
+
+
+def test_the_quadrantids_straddle_the_new_year():
+    """Late December into January, which is the shower most likely to be got
+    wrong by anything thinking in calendar dates. Solar longitude has its
+    zero at the March equinox, so this range does not actually wrap -- see
+    the test below for one that does."""
+    q = _showers_by_name()["Quadrantids"]
+    for when, want in ((dt.datetime(2025, 12, 30, 22, 0), True),
+                       (dt.datetime(2026, 1, 2, 22, 0), True),
+                       (dt.datetime(2026, 1, 5, 22, 0), True),
+                       (dt.datetime(2026, 1, 20, 22, 0), False),
+                       (dt.datetime(2026, 2, 15, 22, 0), False)):
+        assert events.shower_active(q, events.julian(when)) is want, when
+
+
+def test_a_range_that_crosses_zero_degrees_still_works():
+    """No shower in the table crosses the March equinox today, so this is
+    the arithmetic on its own: a range is a start and an arc length, not a
+    pair of numbers to compare."""
+    march = events.julian(dt.datetime(2026, 3, 21, 12, 0))       # near 0 deg
+    wrapping = {"lon_start": 350.0, "lon_end": 10.0}
+    assert events.shower_active(wrapping, march)
+    assert not events.shower_active({"lon_start": 100.0, "lon_end": 120.0}, march)
+
+
+def test_a_night_off_peak_names_the_shower_and_quotes_no_rate():
+    """zhr is the rate at maximum under a perfect sky and every render path
+    prints it as "up to N an hour". Three weeks off peak that is fiction, and
+    the activity profile that would let it be scaled is not in the table."""
+    got = events.active_showers(dt.datetime(2026, 8, 7, 22, 0))
+    per = next(e for e in got if e["name"] == "Perseids")
+    assert per["headline"] == "Perseids, active"
+    assert "zhr" not in per
+    assert per["peak_zhr"] == 100          # still there, for ranking only
+    assert per["at_peak"] is False
+
+
+def test_the_peak_night_is_unchanged():
+    got = events.locatable_tonight(47.38, 8.54, 2,
+                                   now_utc=dt.datetime(2026, 8, 12, 22, 0), limit=9)
+    per = next(e for e in got if e["name"] == "Perseids")
+    assert per["headline"] == "Perseids peak"
+    assert per["zhr"] == 100
+    assert per["at_peak"] is True
+
+
+def test_a_shower_is_never_listed_twice_on_its_own_peak():
+    """The peak entry is the better one -- it carries the rate, the Moon
+    verdict and the headline -- so the active copy is dropped."""
+    got = events.locatable_tonight(47.38, 8.54, 2,
+                                   now_utc=dt.datetime(2026, 8, 12, 22, 0), limit=9)
+    names = [e["name"] for e in got if e["kind"] == "meteor_shower"]
+    assert len(names) == len(set(names))
+
+
+def test_a_quiet_stretch_of_the_year_lists_nothing():
+    assert events.active_showers(dt.datetime(2026, 3, 1, 22, 0)) == []
+
+
+def test_a_bright_sky_drops_the_weak_showers():
+    """25 October: the Orionids at 20 an hour and both Taurids at 5 and 7.
+    Worth a trip under a dark sky, nothing at all from a city."""
+    when = dt.datetime(2026, 10, 25, 22, 0)
+    dark = {e["name"] for e in events.active_showers(when, bortle=2)}
+    town = {e["name"] for e in events.active_showers(when, bortle=5)}
+    city = {e["name"] for e in events.active_showers(when, bortle=8)}
+    assert "Southern Taurids" in dark and "Orionids" in dark
+    assert "Orionids" in town and "Southern Taurids" not in town
+    assert city == set()
+
+
+def test_the_strong_showers_survive_a_city():
+    """The point of the floor is to stop wasting a city reader's time, not to
+    hide the Perseids from them."""
+    got = {e["name"] for e in events.active_showers(dt.datetime(2026, 8, 7, 22, 0),
+                                                    bortle=9)}
+    assert "Perseids" in got
+
+
+def test_no_bortle_given_lists_everything():
+    when = dt.datetime(2026, 10, 25, 22, 0)
+    assert ({e["name"] for e in events.active_showers(when)}
+            == {e["name"] for e in events.active_showers(when, bortle=1)})
+
+
+def test_a_peak_is_never_gated_on_the_sky():
+    """A shower peaking tonight is news wherever you are -- it is the one
+    night of the year that shower has."""
+    got = events.locatable_tonight(51.5, -0.13, 0,          # London, Bortle 9
+                                   now_utc=dt.datetime(2026, 12, 22, 22, 0), limit=9)
+    assert any(e["name"] == "Ursids" and e["at_peak"] for e in got)
