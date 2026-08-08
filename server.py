@@ -1930,6 +1930,14 @@ async def _animate(base_r, hours, base_url, is_ui=False):
         for i in range(steps):
             t = start + dt.timedelta(minutes=ANIMATE_STEP_MIN * i)
             frame_r = base_r.at(t)
+            # is_ui is already "this stream is the browser's live preview",
+            # and panel is what tells api to lay a frame out the way the page
+            # around it is laid out -- the zenith inset handed back as its own
+            # piece rather than stacked underneath as a dozen more rows. The
+            # live URL never carried it, so every browser frame was built in
+            # terminal shape and #chart-zenith sat frozen at the moment the
+            # page was loaded while the chart ran through the night.
+            frame_r.panel = bool(is_ui)
             body, _sun_alt = api.compose_frame(frame_r,
                                                dusk_lead_minutes=dusk_lead_minutes,
                                                dawn_lag_minutes=dawn_lag_minutes)

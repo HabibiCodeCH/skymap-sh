@@ -5244,8 +5244,13 @@ def _compose_day(r):
     ev = sun_events(day0, p.lat, p.lon)
     bands = sky.sun_bands(day0, p.lat, p.lon, ev)
     arc = sun_arc(day0, p.lat, p.lon, step_min=DAY_BUCKET)
-    top = max((a for _t, a in ((x[0], x[1]) for x in arc)), default=10)
-    alt_hi = max(DAY_ALT_HI_FLOOR, min(90.0, top + 8))
+    # The same cap the night chart uses, so both have the same axis and a
+    # reader moving between them is not silently rescaled. It used to be the
+    # Sun's own peak plus 8, which meant the arc always fitted and the Sun
+    # could never reach the inset -- the box was empty by construction rather
+    # than because nothing was overhead. Above the cap the arc and the Sun
+    # both go into the inset now (see render_linear's overlay block).
+    alt_hi = DAY_ALT_HI_FLOOR
     # The golden band is a range of Sun altitudes, so the arc can colour
     # itself: no time lookup, no second pass, and the marked stretch lands
     # exactly where the arc crosses those altitudes. Only the part above the
@@ -5274,7 +5279,8 @@ def _compose_day(r):
     art, st = render_linear(r.when_utc, p.lat, p.lon, color=c, show_lines=False,
                             mag_limit=_fade_mag_limit(sa_now), alt_lo=0.0, alt_hi=alt_hi,
                             overlay=(arc, SUN_COL, "SUN", (sa_now, sz_now)),
-                            bodies=show, inset=False, width=_effective_width(r),
+                            bodies=show | {"Sun"}, width=_effective_width(r),
+                            side_panel=r.panel,
                             height=_day_height(r),
                             alt_bands=alt_bands, notes=notes)
 
@@ -5445,8 +5451,15 @@ def _compose_day(r):
         # body was filtered before wrapping, above. What is left is the
         # exceptional stuff: a facing/view request this page cannot honour,
         # and anything else worth a sentence of its own.
-        out = ["", paint(prefix, C.HEAD, c) + paint(f" · {rest}", C.LABEL, c),
-               "", art, PROSE_SLOT]
+        # The inset, same slot the night chart uses. side_panel takes it out
+        # of `art` and hands it back through st, so a page that does not emit
+        # it here simply loses it -- which is why the day chart had none in a
+        # browser while a terminal got one inline.
+        zenith = st.get("zenith_lines") or []
+        out = (["", paint(prefix, C.HEAD, c) + paint(f" · {rest}", C.LABEL, c),
+                "", art]
+               + ([ZENITH_SLOT] + zenith if zenith else [])
+               + [PROSE_SLOT])
     else:
         head = _horizon_head(r, _sun_path_mode(r))
         out = ["", paint(head, C.HEAD, c), "", art, ""]
@@ -6288,9 +6301,25 @@ DAY_DECK_JS = (
     "var s=d.querySelectorAll('.dt-slide'),at=0,t=null,held=false;"
     "var bar=document.getElementById('dt-progress');"
     "var fill=bar&&bar.firstChild;"
+    # Restarting the bar is its own function because two things need it, and
+    # the second one is the point: every slide change resets it.
+    #
+    # The bar was a CSS animation looping `infinite` beside a setInterval of
+    # the same length -- two clocks started together and left to run. They
+    # drift, because setInterval is not exact and a throttled tab makes it
+    # much worse, so after a while the bar was filling against one slide and
+    # emptying against the next. Reset on the turn, it cannot: the bar
+    # always starts when the slide it belongs to starts.
+    "function restart(){if(!bar)return;bar.hidden=false;"
+    "fill.style.animation='none';void fill.offsetWidth;"
+    "fill.style.animation='';fill.style.animationPlayState='running';}"
     "function show(i){at=(i+s.length)%s.length;"
     "for(var j=0;j<s.length;j++)s[j].hidden=(j!==at);"
-    "c.textContent=(at+1)+'/'+s.length+' \\u203a';}"
+    "c.textContent=(at+1)+'/'+s.length+' \\u203a';"
+    # Only while it is turning itself. After a click the reader is steering,
+    # take() has hidden the bar, and a bar refilling under a slide nobody is
+    # counting down would be a countdown to nothing.
+    "if(t)restart();}"
     # Turns itself over so a reader who never touches it still sees the
     # whole deck. Stopped for good on the first click or key: at that point
     # they are steering, and a slide moving under a pointer that just chose
@@ -6300,10 +6329,7 @@ DAY_DECK_JS = (
     # The bar is restarted rather than resumed. It and the timer have to
     # agree about how much of the slide is left, and the only moment they
     # certainly do is at zero.
-    "function go(){stop();if(held)return;"
-    "if(bar){bar.hidden=false;fill.style.animation='none';"
-    "void fill.offsetWidth;fill.style.animation='';"
-    "fill.style.animationPlayState='running';}"
+    "function go(){stop();if(held)return;restart();"
     "t=setInterval(function(){show(at+1);},"
     f"{DECK_TURN_MS});}}"
     # Held while the pointer is over it or focus is inside it: reading a
@@ -7103,8 +7129,13 @@ def compose_frame(r, dusk_lead_minutes=0, dawn_lag_minutes=0):
     day0_local = r.when_local.replace(hour=0, minute=0, second=0, microsecond=0)
     day0 = day0_local - dt.timedelta(hours=off)
     arc = sun_arc(day0, p.lat, p.lon, step_min=DAY_BUCKET)
-    top = max((a for _t, a in ((x[0], x[1]) for x in arc)), default=45)
-    alt_hi = max(DAY_ALT_HI_FLOOR, min(90.0, top + 8))
+    # The same cap the night chart uses, so both have the same axis and a
+    # reader moving between them is not silently rescaled. It used to be the
+    # Sun's own peak plus 8, which meant the arc always fitted and the Sun
+    # could never reach the inset -- the box was empty by construction rather
+    # than because nothing was overhead. Above the cap the arc and the Sun
+    # both go into the inset now (see render_linear's overlay block).
+    alt_hi = DAY_ALT_HI_FLOOR
 
     # Below the horizon the Sun overlay disappears entirely, trail included --
     # otherwise the trail (coloured once, for the whole arc, by the *current*
@@ -7125,7 +7156,7 @@ def compose_frame(r, dusk_lead_minutes=0, dawn_lag_minutes=0):
                              mag_limit=mag_limit, line_limit=mag_limit, tle=None,
                              dim_limit=_dim_limit(fade_alt),
                              radiant=_chart_radiant(r),
-                             inset=False, alt_lo=0.0, alt_hi=alt_hi,
+                             side_panel=r.panel, alt_lo=0.0, alt_hi=alt_hi,
                              width=_effective_width(r), height=_horizon_height(r),
                              overlay=overlay, bodies=visible_bodies,
                              # A frame ignored ?dso= entirely, so asking an
@@ -7152,7 +7183,27 @@ def compose_frame(r, dusk_lead_minutes=0, dawn_lag_minutes=0):
     else:                  mode = ""
 
     head = _export_head(r, st, mode)
-    return paint(head, C.HEAD, c) + "\n\n" + art, sun_alt
+    body = paint(head, C.HEAD, c) + "\n\n" + art
+    # The inset travels with the frame rather than being dropped.
+    #
+    # side_panel takes it out of `art` and hands it back through st, which is
+    # what the browser wants -- the page floats it over the chart's corner
+    # instead of stacking it underneath, so it costs no rows. But a frame is
+    # one string, and until now compose_frame simply discarded st's copy: the
+    # terminal got an inset inline and the browser silently got none at all.
+    #
+    # Through the same ZENITH_SLOT the still page uses, so the two are one
+    # mechanism. skymapAnimShow splits on it and updates #chart-zenith, which
+    # also stops the inset sitting there stale at the page's own moment while
+    # the chart runs through the night.
+    # No newline after the marker: the inset's first row follows it directly,
+    # so the JS side is a plain split with nothing to trim. It had a strip
+    # there and the regex was written /^\n/ inside a Python string, where the
+    # \n is a real newline -- the literal ran across two lines, the script
+    # died on it, and every button on the page stopped working.
+    if r.panel and st.get("zenith_lines"):
+        body += "\n" + ZENITH_SLOT + "\n".join(st["zenith_lines"])
+    return body, sun_alt
 
 
 def _find_chart_only(r):
@@ -7283,8 +7334,13 @@ def compose_chart_only(r):
         day0_local = r.when_local.replace(hour=0, minute=0, second=0, microsecond=0)
         day0 = day0_local - dt.timedelta(hours=off)
         arc = sun_arc(day0, p.lat, p.lon, step_min=DAY_BUCKET)
-        top = max((a for _t, a in ((x[0], x[1]) for x in arc)), default=10)
-        alt_hi = max(DAY_ALT_HI_FLOOR, min(90.0, top + 8))
+        # The same cap the night chart uses, so both have the same axis and a
+        # reader moving between them is not silently rescaled. It used to be the
+        # Sun's own peak plus 8, which meant the arc always fitted and the Sun
+        # could never reach the inset -- the box was empty by construction rather
+        # than because nothing was overhead. Above the cap the arc and the Sun
+        # both go into the inset now (see render_linear's overlay block).
+        alt_hi = DAY_ALT_HI_FLOOR
         jd_now = julian(r.when_utc)
         lst_now = (gmst_hours(jd_now) + p.lon / 15.0) % 24
         su_now = sun(jd_now)
@@ -7294,7 +7350,7 @@ def compose_chart_only(r):
         art, _st = render_linear(r.when_utc, p.lat, p.lon, color=c, show_lines=False,
                                  mag_limit=_fade_mag_limit(sa_now), alt_lo=0.0, alt_hi=alt_hi,
                                  overlay=(arc, SUN_COL, "SUN", (sa_now, sz_now)),
-                                 bodies=show, inset=False, width=_png_export_width(r),
+                                 bodies=show | {"Sun"}, inset=False, width=_png_export_width(r),
                                  height=_png_export_height(r))
         head = _horizon_head(r, _sun_path_mode(r))
         return paint(head, C.HEAD, c) + "\n\n" + art
@@ -8718,7 +8774,15 @@ function skymapAnimShow(i){{
   var A=window.skymapAnim;
   if(!A||!A.frames.length)return;
   A.at=Math.max(0,Math.min(A.frames.length-1,i));
-  A.pre.innerHTML=ansiToHtml(A.frames[A.at]);
+  // The frame carries its own zenith inset after a marker (compose_frame),
+  // because the page floats the inset over the chart's corner rather than
+  // stacking it underneath -- so it arrives as a second piece rather than as
+  // more rows. Without this the inset sat frozen at the moment the page was
+  // built while the chart ran through the whole night under it.
+  var parts=A.frames[A.at].split({ZENITH_SLOT_JS});
+  A.pre.innerHTML=ansiToHtml(parts[0]);
+  var zen=document.getElementById('chart-zenith');
+  if(zen&&parts.length>1)zen.innerHTML=ansiToHtml(parts[1]);
   // Entering theatre mode happens here, on the first frame to actually
   // reach the page, and not back when the button was pressed.
   //
@@ -10035,6 +10099,11 @@ PAGE = PAGE.replace("{ANIM_WIDE_MS}", str(ANIM_WIDE_MS))
 # same reason applies: leaving it for .format() would look it up among the
 # per-request arguments and raise.
 PAGE = PAGE.replace("{BOTTOM_PAD}", str(KBD_BAR_H + BOX_GAP))
+# The zenith marker as a JS string literal, so the animation splits a frame on
+# exactly the bytes compose_frame joined it with. json.dumps escapes the
+# control characters, which is the whole point -- writing them into the script
+# raw would put unprintables in the page source.
+PAGE = PAGE.replace("{ZENITH_SLOT_JS}", json.dumps(ZENITH_SLOT))
 
 
 # Only shown on an actual chart page (server.py passes "" everywhere else) --

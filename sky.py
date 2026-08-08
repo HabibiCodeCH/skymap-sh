@@ -75,7 +75,11 @@ def paint(s, c, on=True):
 # known, and api.ansi_to_html turns them into an anchor.
 #
 # Only ever emitted when a caller asks for links. A terminal never sees one.
-LINK_START, LINK_SEP, LINK_END = "\x01", "\x02", "\x03"
+#
+# \x11..\x13 and not \x01..\x03: api's layout slots are "\x00\x01\x00" through
+# "\x00\x05\x00", so the low three would have matched inside every one of
+# them and torn a ZENITH_SLOT in half on its way to the browser.
+LINK_START, LINK_SEP, LINK_END = "\x11", "\x12", "\x13"
 
 
 # ---------------------------------------------------------------- time
@@ -610,8 +614,19 @@ def _zenith_inset(items, alt_max, color, indent, IW=21, IH=11, lat=0.0,
             over=True)
     put(0, 0, "+", "\033[38;5;238m")                       # the zenith itself
 
+    # Anything with a name last, so it wins its cell.
+    #
+    # These are drawn with over=True, so the later item takes the cell -- and
+    # sorted by altitude alone the Sun lost its own square to its own arc.
+    # The Sun sits on the arc by definition, the arc runs a few degrees lower
+    # either side of it, and lower means later: at Quito the ☀ appeared at
+    # noon and one o'clock and simply vanished the rest of the time it was up
+    # here, overwritten by the path it was travelling along.
+    #
+    # Named first within each group is still highest-first, which is the
+    # order the name column beside the disc reads in.
     named = []
-    for alt, az, ch, col, nm in sorted(items, key=lambda v: -v[0]):
+    for alt, az, ch, col, nm in sorted(items, key=lambda v: (bool(v[4]), -v[0])):
         r = (90.0 - alt) / span
         put(turn * -math.sin(az * D) * r, turn * math.cos(az * D) * r,
             ch, col, over=True)
@@ -639,7 +654,12 @@ def _zenith_inset(items, alt_max, color, indent, IW=21, IH=11, lat=0.0,
         # across the panorama it is supposed to sit on top of.
         target_label = target["name"].upper()
 
-    head = f"zenith {alt_max}-90°"
+    # Whatever cap the chart under it actually stopped at, not a fixed 70.
+    # The inset is the rest of the sky above that chart, so on the Sun's arc
+    # -- which stops wherever the Sun gets to -- it reads "zenith 58-90°".
+    # :.0f because the caller's cap is a float and "zenith 58.0-90°" is not
+    # something anybody writes.
+    head = f"zenith {alt_max:.0f}-90°"
     lines = [" " * indent + paint(head, C.MUTE, color)]
     for r in range(IH):
         row = "".join(paint(g[r][c], t[r][c], color) if g[r][c] != " " and t[r][c]
@@ -1818,20 +1838,40 @@ def render_linear(when_utc, lat, lon, W=176, H=22, color=True, show_lines=True,
         # colour after that. The Sun's arc uses the extra pair to draw the
         # golden-hour stretch differently from the rest of the day without
         # needing a second overlay slot and a second pass over the same arc.
+        # The stretch of arc above the cap goes into the inset rather than
+        # off the top of the chart. The inset already draws points at an
+        # alt/az, and an arc is a series of points, so this is the same
+        # mechanism rather than a second one: in the tropics the top fifth of
+        # the day used to simply not be drawn anywhere.
         for pt in over_pts or ():
             a, z = pt[1], pt[2]
             ch = pt[3] if len(pt) > 3 else "·"
             col = pt[4] if len(pt) > 4 else over_col
-            place(z, a, ch, col, over=True)
+            if a > alt_hi:
+                inset_items.append((a, z, ch, col, None))
+            else:
+                place(z, a, ch, col, over=True)
+        # The marker is not carried up with the arc. Where the Sun is *now*
+        # is what the body loop below draws, glyph and name, and both in the
+        # inset gave it two markers and two labels -- "SUN" beside "Sun" over
+        # one ☀. The arc is the overlay's contribution up there; the position
+        # is the body's.
         if over_mark:
             ma, mz = over_mark
-            place(mz, ma, "◉", over_col, over=True)
-            if over_lbl:
-                text(mz, ma, over_lbl, over_col)
+            if ma <= alt_hi:
+                place(mz, ma, "◉", over_col, over=True)
+                if over_lbl:
+                    text(mz, ma, over_lbl, over_col)
 
     for b in sorted(up, key=lambda x: -x["alt"]):
         if b["name"] == "Sun":
-            place(b["az"], b["alt"], "☀", "\033[38;5;227m", over=True); continue
+            # Overhead in the tropics, and the inset is where overhead lives.
+            if b["alt"] > alt_hi:
+                inset_items.append((b["alt"], b["az"], "☀",
+                                    "\033[38;5;227m", b["name"]))
+            else:
+                place(b["az"], b["alt"], "☀", "\033[38;5;227m", over=True)
+            continue
         # The default horizon/panorama chart used to hardcode a full circle
         # for the Moon here regardless of its actual phase -- moon_glyph()
         # was only ever reached by the disc view and the text summary.
@@ -2018,12 +2058,28 @@ def render_linear(when_utc, lat, lon, W=176, H=22, color=True, show_lines=True,
         ticks[W - 1] = "S" if centre == 0 else "N"
     out.append(paint(" " * LM + "".join(ticks).rstrip(), C.CARD, color))
     # `target` used to disqualify the inset because find meant a 26° crop
-    # with no room for one. find now draws the full panorama, so what
-    # actually matters is whether the altitude range was cropped: an
-    # inset labelled 70-90° is a lie on a chart that stops at 40°.
+    # with no room for one. find now draws the full panorama, so that went.
+    # A cropped altitude range used to disqualify it too, because an inset
+    # labelled 70-90° is a lie on a chart that stops at 40° -- but the lie
+    # was in the label, not in the inset. It is handed the chart's own cap
+    # now and says so, and inset_items has always been "everything above
+    # alt_hi", so the two agreed all along.
+    #
+    # That is what lets every chart have the same structure: the panorama,
+    # then the rest of the sky above it. The Sun's arc gets one, so does an
+    # animation frame, and neither has to special-case it.
+    #
+    # Nothing left to show above 88° -- the chart already goes to the top of
+    # the sky, and 90 minus that is a disc with no radius.
+    # Always, empty or not. Every chart has the same structure -- the
+    # panorama, and the cap of sky above it -- and a box that comes and goes
+    # depending on whether anything happens to be overhead is a layout that
+    # moves for reasons the reader cannot see. Empty, it still says what it
+    # is: this is the part of the sky the panorama cannot show, and there is
+    # nothing in it.
     zenith_lines = None
-    if facing is None and not alt_cropped and quad_applied is None and inset:
-        zenith_lines = _zenith_inset(inset_items, alt_max, color,
+    if facing is None and quad_applied is None and inset and alt_hi < 88:
+        zenith_lines = _zenith_inset(inset_items, alt_hi, color,
                                      0 if side_panel else LM, lat=lat,
                                      target=target)
         if not side_panel:
