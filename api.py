@@ -5514,6 +5514,19 @@ def _events_for(r, days=EVENTS_WINDOW_DAYS, visible_only=True):
                            visible_only=visible_only)
 
 
+def _running_now(r, visible_only=True):
+    """Showers running tonight, for the group above the dated rows.
+
+    Separate from _events_for on purpose: these are dated now, so mixing them
+    into a chronological list puts them ahead of everything and costs the
+    rows that list exists to show. See events.running_now.
+    """
+    p = r.place
+    _mag, bortle = sky_brightness(p.lat, p.lon)
+    return ev_mod.running_now(p.lat, p.lon, r.tz, now_utc=r.when_utc,
+                              bortle=bortle, visible_only=visible_only)
+
+
 def _days_away(e, now_utc):
     return (e["when_utc"] - now_utc).total_seconds() / 86400
 
@@ -5543,6 +5556,33 @@ def _event_teaser_text(e, r):
     list, not necessarily the top-ranked one)."""
     when = _when_words(e, r)
     if e["kind"] == "meteor_shower":
+        # "peak" is the wrong word for a shower merely running, and it used
+        # to be written here regardless: the span event that says the
+        # Perseids are up on 20 July came out as "Perseids peak tonight",
+        # three weeks early and flatly wrong.
+        #
+        # And "Coming up" is the wrong tense for it too. A shower running
+        # tonight is not coming up, it is on.
+        if not e.get("at_peak", True):
+            phase = e.get("phase", "ongoing")
+            # No "tonight" in any of these -- the sentence already opens with
+            # it, and "Tonight: Perseids start tonight" says it twice.
+            lead = {"start": f"the {e['name']} start",
+                    "end": f"last night of the {e['name']}",
+                    }.get(phase, f"the {e['name']} are running")
+            bits = [lead]
+            if e.get("compass") and e.get("alt"):
+                bits.append(f"radiant {e['alt']:.0f}° {e['compass']}")
+            if e.get("moon_verdict"):
+                bits.append(e["moon_verdict"])
+            # No rate. See events.active_showers: zhr is the maximum under a
+            # perfect sky, and this is not that night.
+            out = "Tonight: " + ", ".join(bits) + "."
+            if e.get("peak_utc") and phase != "end":
+                pk = e["peak_utc"] + dt.timedelta(hours=r.tz)
+                if pk.date() > r.when_local.date():
+                    out += f" Best on {pk:%a %d %b}."
+            return out
         bits = [f"{e['name']} peak {when}"]
         if e.get("zhr"):
             bits.append(f"up to {e['zhr']} an hour")
@@ -6263,9 +6303,14 @@ def day_panel_slides(r, data):
                 and 0 <= _days_until(e["when_local"], r.when_local)
                 <= DAY_ECLIPSE_LEAD_DAYS):
             continue
-        add(_event_art(e, r),
-            f"{_event_headline(e, r)} · {_event_date(e):%a %d %b}",
-            _event_url(e, r))
+        # A shower merely running is dated "tonight" by construction, and the
+        # page says what tonight is three times already -- so it gets its
+        # name and its phase and no date. Everything else keeps the date,
+        # which for a peak is the whole point of the caption.
+        cap = _event_headline(e, r)
+        if e["kind"] != "meteor_shower" or e.get("at_peak", True):
+            cap += f" · {_event_date(e):%a %d %b}"
+        add(_event_art(e, r), cap, _event_url(e, r))
 
     stamp = data.get("first_stars") or ""
     when = f"?t={stamp[:16]}" if stamp else ""
@@ -6520,6 +6565,22 @@ def day_next_up_html(r, n=DAY_NEXT_UP_ROWS):
             f'<span class="nu-what">{html.escape(e["headline"])}{badge}</span>'
             f'<span class="nu-where">{html.escape(", ".join(_event_tail(e)))}</span>'
             f'</a>')
+    # Anything running tonight goes above the dated rows, in its own group
+    # and outside the count. A shower is not a date -- the Perseids run from
+    # 17 July to 24 August -- and giving it one of the five rows put "on
+    # tonight" in front of "on the 12th" and pushed the Perseids' own peak
+    # off the page. Above them it costs nothing and answers the question the
+    # dated rows cannot: is there anything out there right now.
+    now_rows = []
+    for e in _running_now(r):
+        now_rows.append(
+            f'<a class="nu-row nu-now" href="{html.escape(_event_url(e, r))}">'
+            f'<span class="nu-when">on now</span>'
+            f'<span class="nu-glyph">{html.escape(e.get("glyph", "·"))}</span>'
+            f'<span class="nu-what">{html.escape(e["headline"])}</span>'
+            f'<span class="nu-where">{html.escape(", ".join(_event_tail(e)))}</span>'
+            f'</a>')
+    rows = now_rows + rows
     more = f"/{quote(r.place.slug)}/events"
     # The place is in the title because the list is of the place. Every row
     # is filtered on whether the thing actually clears the horizon here and
@@ -8458,6 +8519,12 @@ document.documentElement.classList.add('js');
  .nu-row.nu-super{{border-left-color:#ff87ff;
                   background:rgba(255,135,255,.045)}}
  .nu-row.nu-super .nu-when{{color:#ff87ff}}
+ /* On now, above the dated rows. Green rather than the dates' grey, because
+    it is the one line in the box that is about this minute rather than about
+    a plan -- and a rule under the last of them, so the group reads as a
+    group instead of as a row whose date failed to render. */
+ .nu-row.nu-now .nu-when{{color:#7ee787}}
+ .nu-row.nu-now:last-of-type{{border-bottom:1px solid #21262d}}
  .nu-count{{margin-left:10px;font-size:11px;color:#ff87ff;
            letter-spacing:.04em;white-space:nowrap}}
  .nu-when{{color:#6e7681}}

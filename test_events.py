@@ -554,10 +554,36 @@ def test_a_night_off_peak_names_the_shower_and_quotes_no_rate():
     the activity profile that would let it be scaled is not in the table."""
     got = events.active_showers(dt.datetime(2026, 8, 7, 22, 0))
     per = next(e for e in got if e["name"] == "Perseids")
-    assert per["headline"] == "Perseids, active"
+    assert per["headline"] == "Perseids ongoing"
+    assert per["phase"] == "ongoing"
     assert "zhr" not in per
     assert per["peak_zhr"] == 100          # still there, for ranking only
     assert per["at_peak"] is False
+
+
+def test_the_span_runs_start_through_peak_to_end():
+    """One event for the whole period alongside the peak's own, which is
+    what the list should read like from 17 July to 24 August."""
+    def label(d):
+        now = dt.datetime.fromisoformat(d + "T21:00")
+        # Both halves: the chronological list carries the peak, running_now
+        # carries the span. They are kept apart on purpose -- see
+        # events.running_now -- and together they are what a reader sees.
+        got = (events.upcoming(47.38, 8.54, 2, now_utc=now, days=40)
+               + events.running_now(47.38, 8.54, 2, now_utc=now))
+        return [e["headline"] for e in got
+                if e["kind"] == "meteor_shower" and "Perseid" in e["name"]]
+
+    assert label("2026-07-16") == ["Perseids peak"]          # not started
+    assert "Perseids start" in label("2026-07-17")
+    assert "Perseids ongoing" in label("2026-07-18")
+    assert "Perseids ongoing" in label("2026-08-11")
+    # On the peak night the span steps aside -- the peak entry says
+    # everything it does and carries the rate as well.
+    assert label("2026-08-12") == ["Perseids peak"]
+    assert label("2026-08-13") == ["Perseids ongoing"]
+    assert label("2026-08-23") == ["Perseids end"]
+    assert label("2026-08-24") == []
 
 
 def test_the_peak_night_is_unchanged():

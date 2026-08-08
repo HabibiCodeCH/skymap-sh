@@ -2158,11 +2158,24 @@ class TheNextUpList(unittest.TestCase):
     def _r(self, place="Zurich", when=dt.datetime(2026, 8, 7, 12, 0)):
         return api.Request(place=place, when=when, width=300, panel=True)
 
-    def test_it_stops_at_five(self):
+    def test_it_stops_at_five_dated_rows(self):
+        """The cap is on the dated rows. Anything running tonight sits above
+        them in its own group and outside the count -- a shower is not a date
+        and giving it one of the five put "on tonight" in front of "on the
+        12th" and pushed the Perseids' own peak off the page."""
         # class="nu-row and not class="nu-row": a row on a night carrying
         # more than one event is class="nu-row nu-super".
         html = api.day_next_up_html(self._r())
-        self.assertEqual(html.count('class="nu-row'), api.DAY_NEXT_UP_ROWS)
+        dated = html.count('class="nu-row') - html.count('class="nu-row nu-now')
+        self.assertEqual(dated, api.DAY_NEXT_UP_ROWS)
+
+    def test_the_on_now_group_sits_above_the_dated_rows(self):
+        html = api.day_next_up_html(self._r())
+        self.assertIn('class="nu-row nu-now', html)
+        self.assertIn("on now", html)
+        # Above, so it reads as a group rather than as a row whose date
+        # failed to render.
+        self.assertLess(html.index('nu-now'), html.index('nu-when">Wed'))
 
     def test_the_rows_are_the_ones_the_events_page_would_show(self):
         r = self._r()
@@ -2221,12 +2234,39 @@ class TheEventTailIsWrittenOnce(unittest.TestCase):
                 self.assertIn(piece, line)
 
     def test_a_shower_says_its_rate_in_both(self):
+        """The peak, specifically. A shower merely running carries no rate at
+        all -- see events.active_showers -- so picking the first shower in
+        the list would now pick one with nothing to assert about."""
         r = api.Request(place="Zurich", when=dt.datetime(2026, 8, 7, 12, 0))
-        shower = next(e for e in api._events_for(r, days=api.EVENTS_WINDOW_DAYS,
-                                                 visible_only=True)
-                      if e["kind"] == "meteor_shower")
+        evs = api._events_for(r, days=api.EVENTS_WINDOW_DAYS, visible_only=True)
+        shower = next(e for e in evs
+                      if e["kind"] == "meteor_shower" and e.get("at_peak"))
         self.assertTrue(any("/hr" in p for p in api._event_tail(shower)))
         self.assertIn("/hr", api._event_line(shower, r))
+
+    def test_a_shower_merely_running_quotes_no_rate(self):
+        """The other half. zhr is the maximum under a perfect sky, and a
+        night three weeks off peak is not that night.
+
+        Through _running_now, not _events_for: a span is dated now and is
+        kept out of the chronological list for that reason."""
+        r = api.Request(place="Zurich", when=dt.datetime(2026, 8, 7, 12, 0))
+        running = api._running_now(r)
+        self.assertTrue(running, "the Perseids are running on 7 August")
+        for e in running:
+            self.assertFalse(e.get("at_peak"))
+            self.assertNotIn("/hr", api._event_line(e, r))
+
+    def test_the_chronological_list_keeps_the_peak_and_only_the_peak(self):
+        """The regression this separation exists to prevent: a span dated now
+        sorted ahead of everything, took a row off the five-row cap and
+        pushed the Perseids' own peak off the page."""
+        r = api.Request(place="Zurich", when=dt.datetime(2026, 8, 7, 12, 0))
+        evs = api._events_for(r, days=api.EVENTS_WINDOW_DAYS, visible_only=True)
+        showers = [e for e in evs if e["kind"] == "meteor_shower"]
+        self.assertTrue(showers)
+        for e in showers:
+            self.assertTrue(e.get("at_peak"), e["headline"])
         self.assertIn("/hr", api.day_next_up_html(
             api.Request(place="Zurich", when=dt.datetime(2026, 8, 7, 12, 0),
                         width=300, panel=True)))
@@ -2617,11 +2657,22 @@ class TheTonightPanelIsAboutTonight(unittest.TestCase):
 
     def test_an_event_days_away_is_not_in_it(self):
         """8 Aug 2026: the Perseids peak on the 12th and Venus reaches
-        greatest elongation on the 14th. Neither is tonight."""
+        greatest elongation on the 14th. Neither is tonight.
+
+        The Perseids themselves are, though -- they run from 17 July to 24
+        August -- so what must not appear is the *peak*, dated four nights
+        out, not the shower."""
         _r, slides = self._slides(dt.datetime(2026, 8, 8, 14, 0))
         caps = " ".join(c for _l, c, _u in slides)
-        self.assertNotIn("Perseids", caps)
+        self.assertNotIn("Perseids peak", caps)
+        self.assertNotIn("12 Aug", caps)
         self.assertNotIn("greatest elongation", caps)
+
+    def test_a_shower_running_tonight_is_in_it(self):
+        """The other half of the rule above, and the reason it changed."""
+        _r, slides = self._slides(dt.datetime(2026, 8, 8, 14, 0))
+        caps = " ".join(c for _l, c, _u in slides)
+        self.assertIn("Perseids ongoing", caps)
 
     def test_tonights_event_is_in_it(self):
         """The same shower, viewed on the night it actually peaks."""
@@ -2755,13 +2806,18 @@ class TheTonightPanelDraws(unittest.TestCase):
         self.assertIn("Perseids", caption)
         self.assertIn("/Zurich/Perseids", url)
 
-    def test_the_same_shower_five_days_out_is_not_drawn(self):
-        """The other half of the rule above, and the reason it changed."""
+    def test_the_same_shower_five_days_out_is_not_drawn_as_a_peak(self):
+        """The other half of the rule above, and the reason it changed.
+
+        The Perseids are running on 7 August, so the deck may well draw them
+        -- as running. What it must not do is offer the peak, which is five
+        nights away and belongs to the list under the arc."""
         r = self._req("Zurich", dt.datetime(2026, 8, 7, 12, 0))
         picture = api.day_panel_art(r, api._compose_day(r).data)
         self.assertIsNotNone(picture)          # never empty
         _lines, caption, _url = picture
-        self.assertNotIn("Perseids", caption)
+        self.assertNotIn("peak", caption)
+        self.assertNotIn("12 Aug", caption)
 
     def test_a_quiet_fortnight_falls_through_to_a_planet(self):
         r = self._req("Zurich", dt.datetime(2026, 3, 1, 12, 0))

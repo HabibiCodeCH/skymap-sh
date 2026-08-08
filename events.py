@@ -427,13 +427,43 @@ def shower_active(sh, jd):
     return ((_solar_lon_j2000(jd) - lo) % 360) <= ((hi - lo) % 360)
 
 
-def active_showers(now_utc, bortle=None):
-    """Showers running tonight, peak or not, as events shaped like the peaks.
+def _same_night(a_utc, b_utc, tz_offset):
+    """Do these two moments belong to the same night where the reader is?
 
-    The peak is one night out of anything from four to fifty-seven, and until
-    now it was the only one the site knew about: MARKER_WINDOW gave every
-    shower a flat two days either side of maximum and nothing outside that
-    existed. The Perseids are worth going outside for across most of August.
+    A night runs across midnight, so it is named by the evening it starts:
+    noon local is the boundary, the same rule the events list files rows by.
+    """
+    def night(x):
+        return (x + dt.timedelta(hours=tz_offset)
+                - dt.timedelta(hours=12)).date()
+    return night(a_utc) == night(b_utc)
+
+
+def _lon_moment(lon_j2000, jd_near):
+    """When Earth is at this J2000 solar longitude, nearest jd_near.
+
+    Solar longitude advances about 0.9856 deg a day, so a first guess off the
+    difference is never more than a day or so out; the bisection tightens it.
+    """
+    diff = ((lon_j2000 - _solar_lon_j2000(jd_near) + 180) % 360) - 180
+    guess = jd_near + diff / 0.98565
+    return _bisect(lambda j: _wrap180(_solar_lon_j2000(j) - lon_j2000),
+                   guess - 3.0, guess + 3.0)
+
+
+def active_showers(now_utc, bortle=None):
+    """Showers running tonight, as one event spanning the whole period.
+
+    A shower is not a moment. The Perseids run from 17 July to 24 August and
+    the peak is one night of those thirty-eight; until now the peak was the
+    only one the site knew about, so on 20 July -- three nights in -- and on
+    20 August -- four before the end -- the page had nothing to say about
+    them at all. This is the other event: one per shower, present on every
+    night of its period, alongside the peak rather than instead of it.
+
+    It carries the whole span (starts_utc, ends_utc, peak_utc) so a renderer
+    can say where in it tonight falls, and the headline already does: the
+    first night starts, the last ends, everything between is ongoing.
 
     Deliberately not carrying `zhr`. That number is the rate at maximum under
     a perfect sky, and every render path prints it as "up to N an hour" -- on
@@ -450,12 +480,34 @@ def active_showers(now_utc, bortle=None):
             continue
         if bortle is not None and sh["zhr"] < _active_zhr_floor(bortle):
             continue
+        starts = from_julian(_lon_moment(sh["lon_start"], jd))
+        ends = from_julian(_lon_moment(sh["lon_end"], jd))
+        peak = from_julian(_lon_moment(sh["solar_lon"], jd))
+        # Where in the period tonight falls, asked as "was it running
+        # yesterday, will it be running tomorrow" rather than by comparing
+        # dates against the crossing.
+        #
+        # Comparing dates does not work, and the reason is worth keeping: a
+        # shower switches on partway through a night. The Perseids cross
+        # their first longitude during 17 July, so by the evening of the 17th
+        # the crossing is already yesterday and "start" never printed at all
+        # -- the first night jumped straight to "ongoing". This asks the same
+        # question the emission gate above asks, one day either side, so the
+        # first night it is running says start and the last says end by
+        # construction.
+        if not shower_active(sh, julian(now_utc - dt.timedelta(days=1))):
+            phase = "start"
+        elif not shower_active(sh, julian(now_utc + dt.timedelta(days=1))):
+            phase = "end"
+        else:
+            phase = "ongoing"
         out.append(dict(
             kind="meteor_shower", name=sh["name"], when_utc=now_utc,
-            id=event_id("shower-active", sh["name"], now_utc),
+            id=event_id("shower-active", sh["name"], starts),
             peak_zhr=sh["zhr"], radiant_ra=sh["ra"], radiant_dec=sh["dec"],
-            glyph="☄", at_peak=False,
-            headline=f"{sh['name']}, active",
+            glyph="☄", at_peak=False, phase=phase,
+            starts_utc=starts, ends_utc=ends, peak_utc=peak,
+            headline=f"{sh['name']} {phase}",
             note=sh.get("note", ""),
         ))
     return out
@@ -783,12 +835,16 @@ def _moon_verdict(illum, up):
     return "a bright Moon will drown most of it"
 
 
-def upcoming(lat, lon, tz_offset, now_utc=None, days=90, visible_only=False):
+def upcoming(lat, lon, tz_offset, now_utc=None, days=90, visible_only=False,
+             bortle=None):
     """The public entry point: what's coming up, as seen from here.
 
     visible_only drops what never clears the horizon in darkness. The default
     keeps them, because "the Geminids peak on the 14th but the radiant never
     rises here" is worth saying out loud rather than silently omitting.
+
+    bortle, when given, decides whether a shower merely running -- as against
+    peaking -- is worth mentioning from here. See SHOWER_ACTIVE_FLOOR.
     """
     now_utc = now_utc or dt.datetime.utcnow().replace(microsecond=0)
     evs = [localise(e, lat, lon, tz_offset)
@@ -797,6 +853,37 @@ def upcoming(lat, lon, tz_offset, now_utc=None, days=90, visible_only=False):
     if visible_only:
         evs = [e for e in evs if e["visible"] is not False]
     return evs
+
+
+def running_now(lat, lon, tz_offset, now_utc=None, bortle=None,
+                visible_only=True):
+    """Showers running tonight, localised. Deliberately not part of upcoming().
+
+    A span event is dated now, so putting it in the chronological list put it
+    ahead of everything: it took a row off the five-row next-up cap and
+    pushed the Perseids' own peak off the page, it went out over the ICS feed
+    in place of the peak entry, and every lookup for "the Perseids" resolved
+    to it rather than to the night worth setting an alarm for.
+
+    None of those want it. What wants it is the question "what is on
+    tonight" -- the teaser, the tonight panel, the sphere markers -- and a
+    group of its own at the top of the list, above the dated rows, where it
+    cannot displace anything.
+
+    On a shower's own peak night the span steps aside: the peak entry says
+    everything this one does and carries the rate and the Moon verdict as
+    well, and two rows for one shower on one night is noise.
+    """
+    now_utc = now_utc or dt.datetime.utcnow().replace(microsecond=0)
+    peaking = {e["name"] for e in scan_cached(now_utc, 3)
+               if e["kind"] == "meteor_shower"
+               and _same_night(e["when_utc"], now_utc, tz_offset)}
+    out = [localise(e, lat, lon, tz_offset)
+           for e in active_showers(now_utc, bortle=bortle)
+           if e["name"] not in peaking]
+    if visible_only:
+        out = [e for e in out if e["visible"] is not False]
+    return out
 
 
 # How far ahead each kind of event is worth flagging on a page that is
@@ -914,6 +1001,10 @@ def _ranked_upcoming(lat, lon, tz_offset, now_utc, within_days, horizons):
     cutoffs above, which is what the one-line teaser/card wants."""
     now = now_utc or dt.datetime.utcnow().replace(microsecond=0)
     evs = upcoming(lat, lon, tz_offset, now, days=within_days, visible_only=True)
+    # "What is on tonight" is exactly the question this answers, so the
+    # running showers belong here even though they are kept out of the
+    # chronological list -- see running_now for why those are separate.
+    evs += running_now(lat, lon, tz_offset, now)
     if horizons is not None:
         evs = [e for e in evs
                if e["kind"] in horizons
