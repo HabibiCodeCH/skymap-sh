@@ -8374,7 +8374,9 @@ def stats_live_html(ramp_hex, sizes, dot, flash_dot, tick_ms=3000):
     top of the busiest resting size is a blob rather than a dot."""
     levels = "\n".join(f" .h{i}{{color:{c}}}" for i, c in enumerate(ramp_hex))
     steps = "\n".join(f" .s{i}{{--s:{s:g}}}" for i, s in enumerate(sizes))
-    return ("<style>\n"
+    # Stripped here rather than at import: this block is built per call from
+    # the ramp it is given, so there is no constant to strip. See minify.py.
+    return minify.strip_page("<style>\n"
             " .d{display:inline-block;width:1ch;vertical-align:baseline;"
             "text-align:center;font-style:normal;\n"
             "     transform:scale(min(var(--s,1) * var(--f,1), 2.9));\n"
@@ -8465,7 +8467,7 @@ def stats_live_html(ramp_hex, sizes, dot, flash_dot, tick_ms=3000):
     document.addEventListener('DOMContentLoaded', start);
   else start();
 })();
-</script>""")
+</script>""" )
 
 
 def _side_by_side(left_lines, right_lines, gap=3):

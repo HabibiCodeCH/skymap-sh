@@ -25,6 +25,7 @@ import re
 from urllib.parse import quote
 
 import besselian
+import minify
 import eclipse as eclipse_map
 import events
 import lunar
@@ -1421,3 +1422,11 @@ def card_art(f, disc, map_rows):
     is the useful thing to say instead.
     """
     return disc if disc else (map_rows or [])
+
+
+# The comments come out of these two stylesheets here, at import, the same
+# way they do for the pages in api.py -- these are the object and eclipse
+# pages' own CSS and they reach the wire on every one of those views. The
+# source keeps every comment; see minify.py.
+SHARE_CSS = minify.strip_page(SHARE_CSS)
+ECLIPSE_CSS = minify.strip_page(ECLIPSE_CSS)

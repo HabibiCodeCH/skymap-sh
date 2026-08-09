@@ -4343,6 +4343,58 @@ if __name__ == "__main__":
     unittest.main()
 
 
+class NoCommentsReachTheWire(unittest.TestCase):
+    """The stripper runs where each blob is defined, and blobs live in more
+    than one module -- so the only honest check is to fetch every kind of
+    page and look. Three leaks were found exactly this way after the strip
+    was believed finished: the object pages' share CSS, the eclipse pages'
+    own stylesheet, and the live map script on /stats. Reading the code
+    found none of them."""
+
+    PAGES = ("/", "/Zurich?t=2026-08-19T23:00", "/Zurich?t=2026-08-19T14:00",
+             "/Zurich/jupiter", "/Zurich/vega", "/Zurich/sphere",
+             "/Zurich/events", "/help", "/legend", "/catalog", "/stats",
+             "/eclipse", "/eclipse/2026-08-12")
+
+    def setUp(self):
+        # The startup handler sets app.state.tle, which every route reads,
+        # and TestClient only runs it inside its own context manager.
+        cm = TestClient(server.app)
+        self.c = cm.__enter__()
+        self.addCleanup(cm.__exit__, None, None, None)
+
+    @staticmethod
+    def _blocks(body):
+        css = "".join(re.findall(r"<style[^>]*>(.*?)</style>", body, re.S))
+        js = []
+        for m in re.finditer(r"<script([^>]*)>(.*?)</script>", body, re.S):
+            attrs, inner = m.groups()
+            kind = re.search(r"""type\s*=\s*["']?([^"'\s>]+)""", attrs or "")
+            # An import map or a JSON-LD block is data wearing a script tag,
+            # and is left alone on purpose.
+            if kind and kind.group(1).lower() not in ("module", "text/javascript"):
+                continue
+            js.append(inner)
+        return css, "".join(js)
+
+    def test_no_page_ships_a_css_or_js_comment(self):
+        for url in self.PAGES:
+            resp = self.c.get(url, headers=BROWSER)
+            self.assertEqual(resp.status_code, 200, url)
+            css, js = self._blocks(resp.text)
+            self.assertNotIn("/*", css, f"CSS comment on {url}")
+            self.assertNotIn("/*", js, f"JS block comment on {url}")
+            self.assertFalse(re.search(r"(?m)^\s*//", js),
+                             f"JS line comment on {url}")
+
+    def test_the_pages_still_have_their_css_and_script(self):
+        """A stripper that emptied a stylesheet would pass the test above."""
+        for url in self.PAGES:
+            css, js = self._blocks(self.c.get(url, headers=BROWSER).text)
+            self.assertGreater(len(css), 500, url)
+            self.assertGreater(len(js), 500, url)
+
+
 class TheChartIsThePage(unittest.TestCase):
     """One layout, day and night. The day page used to be a different shape
     -- the Sun's arc in a narrow column with a panel of tonight beside it and
