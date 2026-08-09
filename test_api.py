@@ -76,6 +76,22 @@ def _run_page_js(names, entry, arg, setup=""):
         return got.stdout
 
 
+def _drive_page_js(names, script):
+    """Run `script` in node with `names` lifted out of the page script.
+
+    For the behaviour that only shows up in a sequence -- pause, then three
+    arrows, then the replies landing -- where checking the source proves
+    nothing and only running it does."""
+    defs = "\n".join(_grab_fn(_page_script(), n) for n in names)
+    with tempfile.TemporaryDirectory() as tmp:
+        run_path = os.path.join(tmp, "run.js")
+        with open(run_path, "w") as fh:
+            fh.write(defs + "\n" + script)
+        got = subprocess.run(["node", run_path], capture_output=True, text=True)
+        assert got.returncode == 0, got.stderr[:800]
+        return got.stdout
+
+
 # A page with an animate button and a chart that has picked a ladder rung.
 # Enough for the stepping helpers, which read the moment, the step and the
 # width off exactly those two elements.
@@ -3041,6 +3057,67 @@ class OnlyThePausedFrameGetsItsLabelsAsLinks(unittest.TestCase):
             body = _grab_fn(src, fn)
             self.assertIn("A.url", body, fn)
             self.assertNotIn("data-live-url", body, fn)
+
+    def test_every_way_of_showing_a_frame_goes_through_one_painter(self):
+        """The reason two of these shipped broken. Each new way of putting a
+        frame on screen was written by copying the last one, so each started
+        identical and then quietly grew a difference nobody saw until it was
+        used. One painter means a path cannot be missing a piece."""
+        src = _page_script()
+        for fn in ("skymapAnimShow", "skymapScrubTo"):
+            body = _grab_fn(src, fn)
+            self.assertIn("skymapPaintFrame(", body, fn)
+            self.assertNotIn("innerHTML=", body, fn)
+
+    def test_everything_that_comes_to_rest_asks_for_links(self):
+        """Pausing did, stepping did not, so stepping showed plain labels on
+        every frame but the one somebody happened to pause on."""
+        src = _page_script()
+        for fn in ("skymapAnimPlay", "skymapStepFrame"):
+            self.assertIn("skymapSettle(", _grab_fn(src, fn), fn)
+
+    @unittest.skipUnless(_have_node(), "node not available")
+    def test_three_quick_steps_still_end_on_a_linked_frame(self):
+        """The reported case: animate, pause, three arrows. The first press
+        starts a request, the next two are turned away by the busy flag, and
+        the first reply is answering a frame nobody is looking at any more.
+        Only running the sequence shows it."""
+        got = _drive_page_js(
+            ["skymapSettle", "skymapAnimShow", "skymapAnimStep",
+             "skymapAnimLinks", "skymapStepFrame", "skymapScrubTo"],
+            """
+var ASKED=[],PENDING=[];
+var document={documentElement:{classList:{add:function(){},remove:function(){}}},
+              getElementById:function(){return null;}};
+var window={skymapChartPre:function(){return {innerHTML:''};}};
+function skymapAnimCook(){return {head:'',body:'',zen:''};}
+function skymapAnimZoom(){}
+function skymapAnimSyncPng(){}
+function skymapPaintFrame(){}
+function skymapAnimFrameTime(i){return '2026-08-19T2'+i+':00';}
+function skymapFetchFrame(url){
+  ASKED.push(Number(/t=2026-08-19T2(\\d)/.exec(url)[1]));
+  return new Promise(function(res){PENDING.push(function(){res('FRAME');});});
+}
+window.skymapAnim={frames:['a','b','c','d','e','f'],cooked:{},at:0,
+  playing:false,linked:{},dsoOn:{},loadingLinks:false,
+  url:'/Zurich?animate=24&t=2026-08-19T20:00&ui=1&w=300',
+  live:null,zen:null,pre:{innerHTML:''},
+  btn:{textContent:'',getAttribute:function(){return null;}}};
+window.skymapScrub={off:0,busy:false,base:null};
+skymapSettle();
+skymapStepFrame(1);skymapStepFrame(1);skymapStepFrame(1);
+(async function(){
+  for(var i=0;i<8&&PENDING.length;i++){PENDING.shift()();
+    await new Promise(function(r){setImmediate(r);});}
+  process.stdout.write(JSON.stringify(
+    {at:window.skymapAnim.at,asked:ASKED}));
+})();
+""")
+        got = json.loads(got)
+        self.assertEqual(got["at"], 3)
+        self.assertIn(3, got["asked"],
+                      f"the frame on screen never asked for links: {got}")
 
     @unittest.skipUnless(_have_node(), "node not available")
     def test_the_browsers_own_converter_makes_them_anchors(self):

@@ -9355,6 +9355,36 @@ function skymapAnimCook(raw){{
           zen:parts.length>1?ansiToHtml(parts[1]):''}};
 }}
 
+// One frame onto the page: the three pieces a cooked frame has, into the
+// three places they go. Every path that shows a frame comes through here --
+// playing, stepping through the buffer, stepping to a moment the buffer
+// does not hold -- so none of them can quietly grow a difference from the
+// others. The elements are looked up rather than taken off the animation
+// state, because stepping can happen before any animation exists.
+function skymapPaintFrame(cooked){{
+  var pre=window.skymapChartPre();
+  if(!pre||!cooked)return;
+  // anim-on is what swaps the headline's rung ladder for the live line. A
+  // frame on screen without it means the chart moves and the headline above
+  // it stays at the page's own moment, which is the disagreement this whole
+  // rework was about.
+  document.documentElement.classList.add('anim-on');
+  var live=document.getElementById('day-head-live');
+  if(live&&cooked.head)live.innerHTML=cooked.head;
+  pre.innerHTML=cooked.body;
+  var zen=document.getElementById('chart-zenith');
+  if(zen&&cooked.zen)zen.innerHTML=cooked.zen;
+}}
+
+// The view has come to rest on a frame, so that frame gets its labels as
+// links. Called from everywhere the movement stops -- pausing, stepping,
+// arriving at the end of a run -- rather than from the pause alone, which
+// is how stepping ended up showing plain labels on every frame but the one
+// somebody happened to pause on.
+function skymapSettle(){{
+  if(window.skymapAnim&&window.skymapAnim.frames.length)skymapAnimLinks();
+}}
+
 function skymapAnimShow(i){{
   var A=window.skymapAnim;
   if(!A||!A.frames.length)return;
@@ -9376,9 +9406,7 @@ function skymapAnimShow(i){{
   // frames only) so the page can put it where the still page keeps its
   // line. It is the part of the page an animation is actually about: the
   // moment moves, the Sun crosses the horizon, blocks arrive and leave.
-  if(cooked.head&&A.live)A.live.innerHTML=cooked.head;
-  A.pre.innerHTML=cooked.body;
-  if(A.zen&&cooked.zen)A.zen.innerHTML=cooked.zen;
+  skymapPaintFrame(cooked);
   // Entering theatre mode happens here, on the first frame to actually
   // reach the page, and not back when the button was pressed.
   //
@@ -9698,7 +9726,7 @@ function skymapAnimPlay(on){{
   if(!A)return;
   A.playing=on;
   A.btn.textContent=on?'⏸ pause':(skymapAnimAtEnd(A)?'▶ replay':'▶ resume');
-  if(on)skymapAnimTick();else{{clearTimeout(A.timer);skymapAnimLinks();}}
+  if(on)skymapAnimTick();else{{clearTimeout(A.timer);skymapSettle();}}
 }}
 
 // The paused frame's labels, as links to the object pages. Asked for on
@@ -9714,6 +9742,11 @@ function skymapAnimPlay(on){{
 function skymapAnimLinks(){{
   var A=window.skymapAnim;
   if(!A||!A.frames.length||A.loadingLinks)return;
+  // Never while it is moving. This is the invariant that lets the chase at
+  // the bottom of this function call back into it from anywhere: a frame
+  // gets links because the view has come to rest on it, not because
+  // playback happened to pass through.
+  if(A.playing)return;
   var at=A.at;
   if(A.linked[at])return;
   var t=skymapAnimFrameTime(at);
@@ -9728,11 +9761,19 @@ function skymapAnimLinks(){{
     // Only if it is still the frame on screen and still paused. The reply
     // can land after somebody has stepped on or pressed play again, and
     // swapping a frame in underneath them would be a visible jump.
-    if(!frame||A.playing||A.at!==at)return;
-    A.linked[at]=true;
-    A.frames[at]=frame;
-    delete A.cooked[at];
-    skymapAnimShow(at);
+    if(frame&&!A.playing&&A.at===at){{
+      A.linked[at]=true;
+      A.frames[at]=frame;
+      delete A.cooked[at];
+      skymapAnimShow(at);
+    }}
+    // And then chase wherever the view actually is. Three quick presses of
+    // an arrow used to leave the last of them plain: the first started a
+    // request, the second and third were turned away by the busy flag, and
+    // by the time the first landed it was answering a frame nobody was
+    // looking at any more. Asking again from here is the only place that
+    // knows the request has finished.
+    skymapSettle();
   }}).catch(function(){{A.loadingLinks=false;}});
 }}
 function skymapAnimTick(){{
@@ -9904,17 +9945,7 @@ function skymapScrubTo(off){{
     S.busy=false;
     if(!frame)return;
     S.off=off;
-    var cooked=skymapAnimCook(frame);
-    // anim-on is what swaps the headline ladder for the live line, so it
-    // has to be on here too -- otherwise the chart steps and the headline
-    // above it stays at the page's own moment, which is the disagreement
-    // this whole rework was about.
-    document.documentElement.classList.add('anim-on');
-    var live=document.getElementById('day-head-live');
-    if(live&&cooked.head)live.innerHTML=cooked.head;
-    pre.innerHTML=cooked.body;
-    var zen=document.getElementById('chart-zenith');
-    if(zen&&cooked.zen)zen.innerHTML=cooked.zen;
+    skymapPaintFrame(skymapAnimCook(frame));
     // skymapSetHint and not flashHint: the latter is local to the keyboard
     // handler's own closure and calling it from out here throws.
     if(window.skymapSetHint)
@@ -9932,6 +9963,10 @@ function skymapStepFrame(d){{
   if(A&&A.frames.length&&A.at+d>=0){{
     skymapAnimStep(d);
     window.skymapScrub.off=A.at;
+    // Stopped on this one, so it gets its labels as links -- the same way
+    // pausing does. Without this, stepping through a buffer showed plain
+    // labels on every frame except whichever one somebody paused on.
+    skymapSettle();
     return true;
   }}
   skymapScrubTo(window.skymapScrub.off+d);
