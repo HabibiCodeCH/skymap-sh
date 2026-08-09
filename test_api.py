@@ -7,11 +7,69 @@ import datetime as dt
 import os
 import json
 import re
+import subprocess
+import tempfile
 import unittest
 import api
 import art
 import objects
 import sky
+
+
+# Running the page's own script, rather than reading it and believing what
+# it looks like. Several things the server does on the way out have to be
+# done a second time in the browser -- a still chart is turned into HTML by
+# Python and an animation frame by the page -- and the only way to know the
+# two agree is to run the second one.
+def _have_node():
+    try:
+        subprocess.run(["node", "--version"], capture_output=True, check=True)
+        return True
+    except (OSError, subprocess.CalledProcessError):
+        return False
+
+
+def _page_script():
+    """The biggest inline script in PAGE, as the browser receives it. The
+    template doubles its braces for .format(); the browser never sees that."""
+    body = max(re.findall(r"<script[^>]*>(.*?)</script>", api.PAGE, re.S),
+               key=len)
+    return body.replace("{{", "{").replace("}}", "}")
+
+
+def _grab_fn(src, name):
+    """One named function out of the script, braces balanced."""
+    i = src.index(f"function {name}(")
+    depth = 0
+    for k in range(src.index("{", i), len(src)):
+        if src[k] == "{":
+            depth += 1
+        elif src[k] == "}":
+            depth -= 1
+            if depth == 0:
+                return src[i:k + 1]
+    raise AssertionError(f"unbalanced: {name}")
+
+
+def _run_page_js(names, entry, arg):
+    """Call `entry(arg)` in node with `names` lifted out of the page script.
+
+    The argument goes through a file: it is a rendered chart frame, full of
+    escape sequences and layout markers, and putting that on a command line
+    or through a shell would prove nothing about what a browser does."""
+    defs = "\n".join(_grab_fn(_page_script(), n) for n in names)
+    with tempfile.TemporaryDirectory() as tmp:
+        arg_path = os.path.join(tmp, "arg.txt")
+        with open(arg_path, "w") as fh:
+            fh.write(arg)
+        run_path = os.path.join(tmp, "run.js")
+        with open(run_path, "w") as fh:
+            fh.write(f"{defs}\nconst fs=require('fs');\n"
+                     f"process.stdout.write({entry}("
+                     f"fs.readFileSync({json.dumps(arg_path)},'utf8')));\n")
+        got = subprocess.run(["node", run_path], capture_output=True, text=True)
+        assert got.returncode == 0, got.stderr[:600]
+        return got.stdout
 
 
 class Aliases(unittest.TestCase):
@@ -1220,7 +1278,11 @@ class FullDarkMeansAstronomicalDark(unittest.TestCase):
     def test_panel_head_says_no_full_dark_rather_than_a_blank_time(self):
         # The compact one-row head has its own copy of this sentence, and a
         # missing time renders there as "--", which reads as a bug.
-        r = api.Request(place="London", when=self.SOLSTICE, color=False, panel=True)
+        # An afternoon moment: tonight's times only join the line once the
+        # Sun is past its high point (see _head_day_blocks), and the
+        # solstice noon this class uses elsewhere is before it.
+        r = api.Request(place="London", when=dt.datetime(2026, 6, 21, 15, 0),
+                        color=False, panel=True)
         text = api.compose(r).text
         self.assertIn("no full dark", text)
         self.assertNotIn("dark --", text)
@@ -1283,14 +1345,18 @@ class LightPollutionDecidesTheMilkyWay(unittest.TestCase):
             self.assertEqual(api._milkyway_floor_now(46.20, 6.15, alt), 0)
 
     def test_the_note_is_short_and_says_it_is_an_estimate(self):
+        """The tilde is what says "estimate" now. It used to be "est.", plus
+        the nearest city in brackets -- sixteen characters of hedging and
+        geography on the one line where every block is competing for room."""
         note = api.sky_note(-24.63, -70.40)
-        self.assertIn("Bortle", note)
-        self.assertIn("est.", note)
-        self.assertLess(len(note), 30)
+        self.assertRegex(note, r"^Bortle ~\d$")
 
-    def test_the_note_names_the_town_when_that_is_why_there_is_no_band(self):
-        self.assertIn("Geneva", api.sky_note(46.20, 6.15))
-        self.assertNotIn("(", api.sky_note(-24.63, -70.40))
+    def test_the_note_does_not_name_a_town_on_this_line(self):
+        """The reader's own place is already the first thing on the line.
+        The prose under the chart still names the city when it is why the
+        Milky Way is missing, which is where that answer belongs."""
+        self.assertNotIn("Geneva", api.sky_note(46.20, 6.15))
+        self.assertNotIn("(", api.sky_note(46.20, 6.15))
 
     def test_the_estimate_is_memoised(self):
         import time
@@ -1998,7 +2064,9 @@ class OnePictureHeader(unittest.TestCase):
                          self._head(api.compose_frame(r)[0]))
 
     def test_a_frame_header_is_the_summary_not_the_cli_two_parter(self):
-        r = api.Request(place="Geneva", when=dt.datetime(2026, 8, 5, 22, 25),
+        # Gone midnight: the Bortle note waits for full dark, and 22:25 in
+        # August is still astronomical twilight.
+        r = api.Request(place="Geneva", when=dt.datetime(2026, 8, 6, 1, 0),
                         width=140)
         head = self._head(api.compose_frame(r)[0])
         self.assertIn("·", head)
@@ -2303,33 +2371,77 @@ class TheSummaryLineGetsItsOwnBox(unittest.TestCase):
         _head, rungs = api.lift_chart_head(self._rungs())
         self.assertTrue(rungs[0][2].startswith(" 70°"))
 
-    def test_the_line_reads_in_the_order_the_day_happens(self):
-        """Sun up, where it is now, how high it gets, Sun down, stars, dark.
-        Grouped by kind instead -- times together, angles together -- it read
-        as a table that had lost its headings. The current position moves
-        with the clock: in front of the high point in the morning and behind
-        it in the afternoon."""
-        def line(hour):
-            r = api.Request(place="Zurich", when=dt.datetime(2026, 8, 7, hour, 0),
-                            width=300, panel=True)
-            return api.strip_ansi(api._compose_day(r).text.split("\n")[1])
-        for hour, order in ((10, ["\u2191", "\u2600", "high", "\u2193",
-                                  "stars", "darkest"]),
-                            (17, ["\u2191", "high", "\u2600", "\u2193",
-                                  "stars", "darkest"])):
-            got = line(hour)
-            at = [got.index(w) for w in order]
-            self.assertEqual(at, sorted(at), f"{hour}:00 -> {got}")
+    def _day_line(self, hour):
+        r = api.Request(place="Zurich", when=dt.datetime(2026, 8, 7, hour, 0),
+                        width=300, panel=True)
+        return api.strip_ansi(api._compose_day(r).text.split("\n")[1])
 
-    def test_the_bearings_are_on_the_line(self):
-        """The one fact here you cannot work out from the others. "Sunrise
-        06:11" says when to set an alarm; "06:11 64 deg ENE" says which
-        window to stand at."""
+    def test_where_the_sun_is_now_leads_the_line(self):
+        """Straight after the moment, morning and afternoon alike, and ahead
+        of the day's own turning points. It used to sit in time order between
+        sunrise and sunset, which moved it past the high point at lunchtime
+        -- a block that moves is a block the eye has to find again, and this
+        is the one block that also has to survive the crossing into night
+        (see the night summary, which now carries it in the same place)."""
+        for hour in (10, 17):
+            got = self._day_line(hour)
+            self.assertRegex(got, r"^\s*Z\u00fcrich \u00b7 \d\d \w\w\w \d\d:\d\d \u00b7 \u2600 ")
+
+    def test_the_morning_has_lost_the_sunrise_and_kept_the_rest(self):
+        """A block is on the line while what it names is still ahead. At
+        10:00 the sunrise has happened and everything else has not."""
+        got = self._day_line(10)
+        self.assertNotIn("\u2191", got)
+        self.assertRegex(got, r"\^\d\d:\d\d")
+        self.assertRegex(got, r"\u2193\d\d:\d\d")
+        self.assertIn("darkest ", got)
+
+    def test_the_afternoon_drops_the_high_point_and_nothing_else(self):
+        """One block changes at the high point, not the whole line."""
+        got = self._day_line(17)
+        self.assertNotIn("^", got)
+        self.assertRegex(got, r"\u2193\d\d:\d\d [NESW]+")
+        self.assertIn("stars ", got)
+        self.assertIn("darkest ", got)
+
+    def test_the_high_point_has_the_same_shape_as_the_arrows(self):
+        """Mark, time, bearing -- the same three pieces as sunrise and
+        sunset. It used to be "high 55 deg at 13:30", so the Sun's three
+        moments read as two facts of one kind and one of another. The
+        altitude it carried is still in the payload and still on the chart,
+        which draws the arc it is the top of."""
         r = api.Request(place="Zurich", when=dt.datetime(2026, 8, 7, 10, 0),
                         width=300, panel=True)
         got = api.strip_ansi(api._compose_day(r).text.split("\n")[1])
-        self.assertRegex(got, r"\u2191\d\d:\d\d \d+\u00b0[NESW]+")
-        self.assertRegex(got, r"\u2193\d\d:\d\d \d+\u00b0[NESW]+")
+        self.assertRegex(got, r"\^\d\d:\d\d [NESW]+")
+        self.assertNotIn("high ", got)
+        self.assertNotIn(" at ", got)
+
+    def test_the_bearings_are_on_the_line(self):
+        """The one fact here you cannot work out from the others. "Sunset
+        20:30" says when; "20:30 WNW" says which window to stand at. Checked
+        on the afternoon and the pre-dawn line, which is where each of the
+        two arrows lives."""
+        self.assertRegex(self._day_line(17), r"\u2193\d\d:\d\d [NESW]+")
+        r = api.Request(place="Zurich", when=dt.datetime(2026, 8, 7, 5, 30),
+                        width=300, panel=True)
+        dawn = api.strip_ansi(api.compose(r).text)
+        self.assertRegex(dawn, r"\u2191\d\d:\d\d [NESW]+")
+
+    def test_a_degree_on_this_line_is_always_a_height(self):
+        """One shape, one meaning, across both views. Every degree sign in
+        the app is an altitude -- the Moon's, a planet's, a named star's, the
+        Sun's own position -- and the rise/peak/set bearing was the single
+        exception, a direction wearing the same look on the same line. A
+        degree sign run straight into compass letters is the glued form that
+        reads as a bearing, so it must not appear anywhere."""
+        for hour in (5, 10, 17, 21):
+            r = api.Request(place="Zurich", when=dt.datetime(2026, 8, 7, hour, 0),
+                            width=300, panel=True)
+            got = api.strip_ansi(api.compose(r).text.split("\n")[1])
+            self.assertNotRegex(got, r"\d\u00b0[NESW]", f"{hour}:00 -> {got}")
+            for mark in ("\u2191", "\u2193", "^"):
+                self.assertNotRegex(got, mark + r"\d\d:\d\d \d+\u00b0")
 
     def test_the_place_and_the_moment_arrive_as_their_own_span(self):
         """Which is the only way to bold part of a line that reaches the
@@ -2339,7 +2451,10 @@ class TheSummaryLineGetsItsOwnBox(unittest.TestCase):
         raw = api._compose_day(r).text.split("\n")[1]
         head, _rungs = api.lift_chart_head([(220, True, api.ansi_to_html(raw))])
         self.assertIn('<span class="dh"><span style="color:', head)
-        self.assertEqual(head.count("<span style="), 2)
+        # Four, not two: the Sun's glyph is a colour run of its own inside
+        # the second, which splits it (see paint_sun_glyph). The first span
+        # is still where you are and when, which is the one CSS bolds.
+        self.assertEqual(head.count("<span style="), 4)
 
     def test_the_two_space_indent_comes_off(self):
         """Every prose line in the composed text carries it. In a box of its
@@ -2543,6 +2658,557 @@ class TheSummaryLineDropsBlocksWorstFirst(unittest.TestCase):
                                  note="Bortle 8")
         self.assertNotIn("Vega", tight)
         self.assertIn("223 stars", tight)
+
+
+class TheSunKeepsItsPlaceAfterItSets(unittest.TestCase):
+    """The night line used to have no Sun in it at all, so at sunset every
+    block was replaced at once -- one frame of an animation, at the moment
+    somebody is most likely watching. It keeps its place down to the end of
+    astronomical twilight, which is where "twilight" stops being said."""
+
+    def _st(self, sun_alt, sun_az=290.0):
+        return {"moon": {"alt": 11.0, "az": 67.0, "age": 7.4, "illum": 0.29},
+                "sun": {"alt": sun_alt, "az": sun_az},
+                "up": [], "visible": []}
+
+    def _line(self, sun_alt):
+        return api._sky_summary(self._st(sun_alt), 47.38, 200)
+
+    def test_it_is_there_all_the_way_through_civil_twilight(self):
+        for alt in (-0.5, -3.0, -5.9):
+            self.assertIn("☀", self._line(alt), alt)
+
+    def test_it_hands_over_where_the_page_says_stars(self):
+        """CIVIL_ALT is the same threshold the day line calls "stars". Past
+        it the Sun is no longer what somebody is watching, and the night
+        line says everything worth saying."""
+        self.assertNotIn("☀", self._line(api.CIVIL_ALT))
+        self.assertNotIn("☀", self._line(-12.0))
+        self.assertNotIn("☀", self._line(-30.0))
+
+    def test_a_daylight_frame_carries_it_too(self):
+        """This summary builds the header for animation frames, which run
+        through the whole day. A frame at noon with no Sun on its line
+        would be the same hole the night line used to have, at the other
+        end. The day page composes its own line and never calls this."""
+        self.assertIn("☀ 10° up", self._line(10.0))
+
+    def test_it_leads_the_line(self):
+        """Same place as on the day line: straight after the moment, ahead
+        of the Moon. The whole point is that it does not move when the Sun
+        crosses the horizon."""
+        line = self._line(-3.0)
+        self.assertLess(line.index("☀"), line.index("29%"))
+
+    def test_the_depth_is_a_number_not_just_the_word_below(self):
+        """It is what the reader is waiting on between sunset and full dark.
+        The Moon says only "below the horizon" because its depth changes
+        nothing. The sign is a word, not a minus: "-3° up" is a
+        contradiction, and a minus is easy to lose in a line of numbers."""
+        self.assertIn("☀ 3° down WNW", self._line(-3.0))
+        self.assertNotIn("-3", self._line(-3.0))
+
+    def test_a_sun_just_under_the_horizon_does_not_say_minus_zero(self):
+        """Rounding happens before the sign is chosen, so -0.4 comes out as
+        "0° up" rather than "-0° below"."""
+        self.assertIn("☀ 0° up WNW", self._line(-0.4))
+
+    def test_the_moon_still_outlives_it_on_the_narrowest_line(self):
+        """Both are rank 0 and the Moon is what decides whether the rest of
+        the night is worth going out for."""
+        narrow = api._sky_summary(self._st(-3.0), 47.38, 20)
+        self.assertIn("29%", narrow)
+        self.assertNotIn("☀", narrow)
+
+
+class TheLineCarriesOnlyWhatIsStillAhead(unittest.TestCase):
+    """One or two blocks change at each boundary of the day, never the whole
+    line. That is what lets an animation cross sunrise and sunset without
+    the headline being swapped out from under the reader."""
+
+    P = api.Place("T", 47.38, 8.54)
+    OFF = 2.0
+    EV = dict(sunrise=dt.datetime(2026, 8, 19, 4, 27),
+              dawn_astro=dt.datetime(2026, 8, 19, 2, 27),
+              transit=dt.datetime(2026, 8, 19, 11, 30),
+              sunset=dt.datetime(2026, 8, 19, 18, 30),
+              dusk_civil=dt.datetime(2026, 8, 19, 19, 3),
+              dusk_astro=dt.datetime(2026, 8, 19, 20, 30),
+              polar_day=False)
+
+    def _at(self, hour, minute, sun_alt):
+        return [t for _rank, t, _w in api._head_day_blocks(
+            self.EV, self.P, self.OFF,
+            dt.datetime(2026, 8, 19, hour, minute), sun_alt)]
+
+    def _marks(self, hour, minute, sun_alt):
+        """The blocks by their opening mark. The sunset carries a ☀ of its
+        own (a bare down arrow beside a list of planets has no subject), so
+        it is stripped here to leave the mark that says which moment."""
+        return [t.lstrip("☀")[0] for t in self._at(hour, minute, sun_alt)]
+
+    def test_the_deep_night_carries_none_of_it(self):
+        """Before astronomical dawn the night line owns the line, the same
+        way it does after civil dusk. A sunrise five hours off is not what
+        somebody under a dark sky is reading for -- and the high point of a
+        day that has not started is worse."""
+        self.assertEqual(self._at(1, 0, -25.0), [])
+
+    def test_from_astronomical_dawn_the_sunrise_appears(self):
+        """The high point is still a fact about a day that has not
+        started, so it waits."""
+        got = self._at(3, 0, -10.0)
+        self.assertEqual(len(got), 1)
+        self.assertTrue(got[0].startswith("↑"), got)
+
+    def test_at_civil_dawn_the_whole_day_arrives_at_once(self):
+        """The one boundary where more than two blocks move, and it is the
+        right one: this is where the day starts being a day."""
+        self.assertEqual(self._marks(4, 0, -3.0), ["↑", "^", "↓", "s", "d"])
+
+    def test_after_sunrise_only_the_sunrise_goes(self):
+        self.assertEqual(self._marks(8, 0, 20.0), ["^", "↓", "s", "d"])
+
+    def test_after_the_high_point_the_sunset_and_tonight_arrive(self):
+        got = self._at(14, 0, 30.0)
+        self.assertEqual(self._marks(14, 0, 30.0)[0], "↓")
+        self.assertTrue(any(t.startswith("stars ") for t in got), got)
+        self.assertTrue(any(t.startswith("darkest ") for t in got), got)
+
+    def test_after_sunset_the_sunset_goes_and_tonight_stays(self):
+        """The one boundary the whole rework is for. Before it: Sun, Moon,
+        planets, sunset, stars, darkest. After it the sunset drops and
+        nothing else on the line moves."""
+        got = self._at(18, 45, -3.0)
+        self.assertNotIn("↓", "".join(got))
+        self.assertTrue(any(t.startswith("stars ") for t in got), got)
+        self.assertTrue(any(t.startswith("darkest ") for t in got), got)
+
+    def test_past_civil_dusk_only_the_time_the_stars_arrive(self):
+        """An hour and a half of nautical and astronomical twilight used to
+        carry neither a time to wait for nor a count to read: "darkest" had
+        dropped at civil dusk and the star count waits for full dark."""
+        self.assertEqual(self._at(19, 30, -8.0), ["darkest 22:30"])
+
+    def test_at_full_dark_even_that_goes(self):
+        """The count takes over, which is the better answer once it is
+        true."""
+        self.assertEqual(self._at(23, 0, -25.0), [])
+
+    def test_a_polar_day_says_so_instead_of_a_sunset(self):
+        ev = dict(self.EV, polar_day=True, sunset=None, dusk_civil=None,
+                  dusk_astro=None)
+        got = [t for _r, t, _w in api._head_day_blocks(
+            ev, self.P, self.OFF, dt.datetime(2026, 8, 19, 14, 0), 30.0)]
+        self.assertEqual(got, ["the Sun does not set today"])
+
+    def test_a_day_with_no_sunrise_at_all_prints_no_blank_times(self):
+        """Polar night: every block is guarded on its own event, so nothing
+        renders the "--" a missing time would give."""
+        ev = dict(self.EV, sunrise=None, sunset=None, dusk_civil=None,
+                  dusk_astro=None, polar_day=False)
+        for hour, alt in ((10, -3.0), (14, -3.0), (2, -12.0)):
+            got = api._head_day_blocks(ev, self.P, self.OFF,
+                                       dt.datetime(2026, 8, 19, hour, 0), alt)
+            self.assertNotIn("--", " ".join(t for _r, t, _w in got))
+
+
+class AnAnimationDrivesTheHeadlineRatherThanDrawingItsOwn(unittest.TestCase):
+    """The headline used to sit frozen at the moment the page loaded while
+    the chart ran through a whole night under it, and the frame drew a
+    second header of its own inside the drawing -- two headers on one page
+    disagreeing about the time. The frame hands its header over now, and the
+    box shows that instead."""
+
+    def _frame(self, hour, minute=0, **kw):
+        r = api.Request(place="Zurich",
+                        when=dt.datetime(2026, 8, 19, hour, minute),
+                        width=200, **kw)
+        return api.compose_frame(r)[0]
+
+    def test_a_browser_frame_hands_its_header_over(self):
+        head, sep, chart = self._frame(20, panel=True).partition(api.HEAD_SLOT)
+        self.assertTrue(sep, "no seam in a panel frame")
+        self.assertIn("Zürich", api.strip_ansi(head))
+        # And the chart starts straight away: the two rows the header used
+        # to cost are what made a frame taller than the still it replaced.
+        self.assertTrue(api.strip_ansi(chart).lstrip("\n").startswith(" 70°"),
+                        api.strip_ansi(chart)[:40])
+
+    def test_a_terminal_frame_still_draws_it(self):
+        """curl and the GIF have nowhere else to put it."""
+        body = self._frame(20, panel=False)
+        self.assertNotIn(api.HEAD_SLOT, body)
+        lines = api.strip_ansi(body).splitlines()
+        self.assertIn("Zürich", lines[0])
+        self.assertEqual(lines[1].strip(), "")
+
+    def test_the_seam_does_not_collide_with_another(self):
+        """Every slot is three control bytes and they are told apart by the
+        middle one. Two sharing a value would split each other's text."""
+        slots = [api.ZENITH_SLOT, api.PROSE_SLOT, api.OBJECT_SLOT,
+                 api.OBJPROSE_SLOT, api.OBJWHAT_SLOT, api.HEAD_SLOT]
+        self.assertEqual(len(set(slots)), len(slots))
+
+    def test_a_reader_handed_the_raw_text_gets_the_header_back(self):
+        """strip_slots is what a terminal asking for ?panel=1 gets: the
+        seams are places for a browser to break the text apart, and anyone
+        else should just read down the page."""
+        got = api.strip_slots(self._frame(20, panel=True))
+        self.assertNotIn(api.HEAD_SLOT, got)
+        lines = api.strip_ansi(got).splitlines()
+        self.assertIn("Zürich", lines[0])
+        self.assertEqual(lines[1].strip(), "")
+
+    def test_the_handed_over_line_is_trimmed_to_the_box(self):
+        """Untrimmed it overran the headline box on any window narrower than
+        the widest rung, which is most of them. A picture still gets the
+        whole line -- it has no box and no rung."""
+        narrow = self._frame(20, panel=True).partition(api.HEAD_SLOT)[0]
+        picture = self._frame(20, panel=False).splitlines()[0]
+        self.assertLess(len(api.strip_ansi(narrow)),
+                        len(api.strip_ansi(picture)))
+
+    def test_the_moment_moves_with_the_frames(self):
+        """The whole point. It used to read the page's own moment while the
+        chart ran through the night."""
+        seen = [api.strip_ansi(self._frame(h, panel=True)
+                               .partition(api.HEAD_SLOT)[0])
+                for h in (19, 21, 23)]
+        self.assertIn("19 Aug 19:00", seen[0])
+        self.assertIn("19 Aug 21:00", seen[1])
+        self.assertIn("19 Aug 23:00", seen[2])
+
+    def test_the_blocks_change_as_the_sun_crosses(self):
+        """Sunset on the line before, gone after; the Sun itself on both
+        sides of the horizon and off it by full dark."""
+        before = api.strip_ansi(self._frame(20, panel=True)
+                                .partition(api.HEAD_SLOT)[0])
+        after = api.strip_ansi(self._frame(21, panel=True)
+                               .partition(api.HEAD_SLOT)[0])
+        night = api.strip_ansi(self._frame(23, panel=True)
+                               .partition(api.HEAD_SLOT)[0])
+        self.assertIn("↓20:30", before)
+        self.assertNotIn("↓20:30", after)
+        self.assertIn("☀", before)
+        self.assertNotIn("☀", night)
+
+
+class OneDaysSunEventsAreWalkedOnce(unittest.TestCase):
+    """sun_events steps through the day in ten-minute jumps -- 145 solar
+    positions -- and the answer is the same for every moment in that day
+    from that place. An animation asked for it ninety-six times over one
+    day and one place."""
+
+    def setUp(self):
+        api._SUN_EVENTS_MEMO.clear()
+
+    def test_the_same_day_and_place_is_computed_once(self):
+        day0 = dt.datetime(2026, 8, 19, 0, 0)
+        a = api.sun_events_cached(day0, 47.38, 8.54)
+        b = api.sun_events_cached(day0, 47.38, 8.54)
+        self.assertIs(a, b)
+        self.assertEqual(len(api._SUN_EVENTS_MEMO), 1)
+
+    def test_it_still_answers_a_different_day_or_place(self):
+        day0 = dt.datetime(2026, 8, 19, 0, 0)
+        here = api.sun_events_cached(day0, 47.38, 8.54)
+        there = api.sun_events_cached(day0, 69.65, 18.96)
+        tomorrow = api.sun_events_cached(day0 + dt.timedelta(days=1), 47.38, 8.54)
+        self.assertNotEqual(here["sunrise"], there["sunrise"])
+        self.assertNotEqual(here["sunrise"], tomorrow["sunrise"])
+
+    def test_it_matches_the_function_it_stands_in_for(self):
+        day0 = dt.datetime(2026, 8, 19, 0, 0)
+        self.assertEqual(api.sun_events_cached(day0, 47.38, 8.54),
+                         sky.sun_events(day0, 47.38, 8.54))
+
+    def test_it_cannot_grow_without_bound(self):
+        """A miss costs a millisecond, so the whole thing is dropped rather
+        than aged -- all a cache this shape needs."""
+        for i in range(api._SUN_EVENTS_MAX + 2):
+            api.sun_events_cached(dt.datetime(2026, 1, 1) + dt.timedelta(days=i),
+                                  47.38, 8.54)
+        self.assertLessEqual(len(api._SUN_EVENTS_MEMO), api._SUN_EVENTS_MAX)
+
+
+class TheAnimatedHeadlineIsSwappedLikeTheStillOne(unittest.TestCase):
+    """A frame's line reaches the browser as ANSI and becomes HTML there, so
+    the two swaps the server makes on the still line -- the pin and the
+    dimmed directions -- have to be made again in the page script. These
+    check the page carries what that script needs."""
+
+    def _page(self, place):
+        r = api.Request(place=place, when=dt.datetime(2026, 8, 19, 21, 0),
+                        width=200, panel=True)
+        rungs = [(200, True, api.ansi_to_html(api._compose_sky(r).text))]
+        return api.lift_chart_head(rungs, r.place.near)[0]
+
+    def test_the_hint_is_handed_to_the_script(self):
+        """Handed over rather than parsed out of the line: finding where a
+        place name ends by looking at the text would be a guess."""
+        got = self._page("46.90,7.10")
+        self.assertIn('data-near="', got)
+        self.assertIn("Lausanne", got)
+
+    def test_a_named_place_hands_over_nothing(self):
+        self.assertNotIn("data-near", self._page("Zurich"))
+
+    def test_the_attribute_is_escaped(self):
+        """It goes straight into an attribute and again into a title and an
+        aria-label on the other side."""
+        got, _ = api.lift_chart_head(
+            [(80, True, '<span style="color:#eeeeee">  Zurich · 07 Aug</span>'
+                        '\n\nchart')], 'Ex"ample & Co')
+        self.assertIn('data-near="Ex&quot;ample &amp; Co"', got)
+
+
+class OnlyThePausedFrameGetsItsLabelsAsLinks(unittest.TestCase):
+    """The still chart has had them all along. A running animation replaces
+    the whole chart several times a second, and an anchor in a frame nobody
+    can click is markup for its own sake -- 144 frames of it. So the page
+    asks for them one frame at a time, on the frame it has stopped on."""
+
+    def _frame(self, **kw):
+        r = api.Request(place="Zurich", when=dt.datetime(2026, 8, 19, 23, 0),
+                        width=200, panel=True, **kw)
+        return api.compose_frame(r)[0]
+
+    def test_a_plain_frame_carries_none(self):
+        self.assertNotIn("<a ", api.ansi_to_html(self._frame()))
+
+    def test_asking_for_them_gets_them(self):
+        html = api.ansi_to_html(self._frame(links=True))
+        self.assertIn("<a ", html)
+        self.assertIn("/Zurich/", html)
+
+    def test_they_carry_the_frames_own_moment(self):
+        """A label opens the sky it was drawn in, which for a frame is the
+        frame's moment and not the page's."""
+        r = api.Request(place="Zurich", when=dt.datetime(2026, 8, 19, 20, 0),
+                        width=200, panel=True, links=True)
+        later = r.at(r.when_utc + dt.timedelta(hours=3))
+        html = api.ansi_to_html(api.compose_frame(later)[0])
+        self.assertIn("t=2026-08-19T23:00", html)
+        self.assertNotIn("t=2026-08-19T20:00", html)
+
+    def test_a_cheap_copy_of_a_request_keeps_the_flag(self):
+        """Request.at is what an animation builds every frame from, and it
+        copies field by field -- a flag left out there is a flag that only
+        works on the first frame."""
+        r = api.Request(place="Zurich", when=dt.datetime(2026, 8, 19, 23, 0),
+                        panel=True, links=True)
+        self.assertTrue(r.at(r.when_utc + dt.timedelta(minutes=10)).links)
+
+    def test_a_terminal_frame_never_gets_them(self):
+        """The markers would print as control characters, and a terminal
+        cannot click a star."""
+        r = api.Request(place="Zurich", when=dt.datetime(2026, 8, 19, 23, 0),
+                        width=200, panel=False, links=True)
+        self.assertNotIn("<a ", api.ansi_to_html(api.compose_frame(r)[0]))
+
+    def test_a_refetched_frame_asks_at_the_width_on_screen(self):
+        """The width is not in data-live-url. CSS picks the ladder rung, the
+        script reads it off the element and appends it to its own copy of
+        the URL -- so anything that goes back to the attribute asks for the
+        default width and gets a chart two thirds the size of the one it is
+        replacing. Measured: 221 columns against 358.
+
+        Both refetches have to read the resolved URL. This checks the page
+        script itself, because the mistake is invisible in any output the
+        server can be asked for."""
+        src = _page_script()
+        self.assertIn("url:liveUrl", src)
+        for fn in ("skymapAnimDeepSky", "skymapAnimLinks"):
+            body = _grab_fn(src, fn)
+            self.assertIn("A.url", body, fn)
+            self.assertNotIn("data-live-url", body, fn)
+
+    @unittest.skipUnless(_have_node(), "node not available")
+    def test_the_browsers_own_converter_makes_them_anchors(self):
+        """The one that matters, and the one whose absence shipped a broken
+        feature: a still chart is turned into HTML by Python and a frame by
+        the page's own script, so anything the Python side does on the way
+        out has to be done there too. Without it the markers arrived as
+        literal text and a paused frame printed its own hrefs across the
+        sky. Checked by running the page's real ansiToHtml over a real
+        frame rather than by reading it."""
+        frame = self._frame(links=True).partition(api.HEAD_SLOT)[2]
+        got = _run_page_js(["escapeHtml", "xtermHex", "anchorMarkers",
+                            "ansiToHtml"], "ansiToHtml", frame)
+        self.assertIn('<a class="sky-link" href="/Zurich/', got)
+        for marker in (sky.LINK_START, sky.LINK_SEP, sky.LINK_END):
+            self.assertNotIn(marker, got)
+        self.assertNotIn("&#x1", got)      # nor escaped into an entity
+
+
+class TheDarkAnswersWaitUntilItIsDark(unittest.TestCase):
+    """The Bortle estimate and the star count are both answers about a fully
+    dark sky. Printed through twilight they are a description of two hours
+    from now and a number in freefall -- 114 stars at astronomical dawn, 40
+    twenty minutes later -- on the line that has least room to spare."""
+
+    def _line(self, sun_alt):
+        star = {"m": 1.2, "n": "Vega"}
+        st = {"moon": {"alt": 11.0, "az": 67.0, "age": 7.4, "illum": 0.29},
+              "sun": {"alt": sun_alt, "az": 290.0}, "up": [],
+              "visible": [(star, 60.0, 300.0)] * 223}
+        return api._sky_summary(st, 47.38, 300, note="Bortle ~8")
+
+    def test_both_are_there_at_full_dark(self):
+        for block in ("Bortle ~8", "223 stars"):
+            self.assertIn(block, self._line(-20.0))
+
+    def test_neither_survives_any_twilight(self):
+        for alt in (-17.9, -12.0, -8.0, -3.0):
+            got = self._line(alt)
+            self.assertNotIn("Bortle", got, alt)
+            self.assertNotIn("stars", got, alt)
+
+    def test_the_moon_being_down_is_one_word(self):
+        """"below the horizon" spent seventeen characters on the one block
+        with nothing to report, and "down" pairs with the "up SSW" the rest
+        of the line uses."""
+        st = {"moon": {"alt": -20.0, "az": 67.0, "age": 7.4, "illum": 0.48},
+              "sun": {"alt": -20.0, "az": 290.0}, "up": [], "visible": []}
+        got = api._sky_summary(st, 47.38, 300)
+        self.assertIn("48% down", got)
+        self.assertNotIn("below the horizon", got)
+
+
+class TheAfternoonCarriesTheLightItself(unittest.TestCase):
+    """golden, blue and the shadow note used to exist only inside the day
+    chart's own header, where an animation dropped them and a narrow browser
+    never saw them. Two of the three have a home on the line now."""
+
+    def _bands(self):
+        return dict(golden_am=dict(start=dt.datetime(2026, 8, 19, 4, 7),
+                                   end=dt.datetime(2026, 8, 19, 5, 9)),
+                    golden_pm=dict(start=dt.datetime(2026, 8, 19, 17, 48),
+                                   end=dt.datetime(2026, 8, 19, 18, 50)))
+
+    def test_it_names_the_next_window_not_both(self):
+        """The morning one is over by the time anybody reads an afternoon
+        line, and the block answers "when should I be outside", which has
+        one answer."""
+        self.assertEqual(
+            api._golden_block(self._bands(), 2.0, dt.datetime(2026, 8, 19, 14, 0)),
+            "golden 19:48")
+
+    def test_standing_in_one_it_says_when_it_ends(self):
+        self.assertEqual(
+            api._golden_block(self._bands(), 2.0, dt.datetime(2026, 8, 19, 18, 0)),
+            "golden \u2192 20:50")
+
+    def test_after_the_last_one_it_says_nothing(self):
+        self.assertEqual(
+            api._golden_block(self._bands(), 2.0, dt.datetime(2026, 8, 19, 19, 0)),
+            "")
+
+    def test_the_shadow_says_how_long_and_which_way(self):
+        """Which way is the Sun's bearing turned around: the shadow falls
+        away from the light."""
+        self.assertEqual(api._shadow_block(45.0, 180.0), "shadows 1.0x N")
+
+    def test_a_shadow_at_the_horizon_is_capped_rather_than_absurd(self):
+        """cot(h) is 57x half a degree up, where the slope of the ground you
+        are standing on matters more than the arithmetic."""
+        self.assertIn(f">{api.SHADOW_CAP:.0f}x", api._shadow_block(0.5, 270.0))
+
+    def test_neither_outlives_the_sun(self):
+        self.assertEqual(api._shadow_block(-1.0, 270.0), "")
+
+
+class TheSunGlyphIsColouredByWhereTheSunIs(unittest.TestCase):
+    """Red-orange-yellow above the horizon, the blue hour under it, grey by
+    the time it is about to leave the line."""
+
+    def test_it_shares_the_charts_own_ramp_while_the_sun_is_up(self):
+        """Two ramps that drifted apart would put a yellow glyph over a red
+        marker."""
+        for alt in (60.0, 20.0, 2.0):
+            self.assertEqual(api._sun_head_color(alt), api._sun_color(alt))
+
+    def test_it_turns_blue_the_moment_the_sun_is_down(self):
+        self.assertEqual(api._sun_head_color(-0.5), api._SUN_DOWN_GRADIENT[0])
+
+    def test_it_is_grey_by_the_point_it_leaves_the_line(self):
+        """The ramp is spent over exactly the stretch the glyph is on
+        screen for, so it arrives at grey as the block goes rather than
+        two thirds of the way through a gradient nobody sees the end of."""
+        self.assertEqual(api._sun_head_color(api.CIVIL_ALT),
+                         api._SUN_DOWN_GRADIENT[-1])
+
+    def test_painting_hands_the_line_back_its_own_colour(self):
+        """A reset here would strip the rest of the line to the terminal's
+        default, which is the whole line after the first block."""
+        painted = api.paint_sun_glyph(f"{sky.C.LABEL}☀ 55°SSW",
+                                      55.0, sky.C.LABEL, True)
+        self.assertIn(api._sun_head_color(55.0) + "☀" + sky.C.LABEL,
+                      painted)
+        self.assertNotIn("☀" + sky.C.OFF, painted)
+
+    def test_a_terminal_without_colour_gets_the_line_untouched(self):
+        plain = "☀ 55°SSW"
+        self.assertEqual(api.paint_sun_glyph(plain, 55.0, sky.C.LABEL, False),
+                         plain)
+
+    def test_only_the_position_block_is_coloured(self):
+        """The sunset block carries the same glyph as a label. Colouring it
+        by the current altitude would say something untrue about a time
+        hours away -- and if the position block is absent, as it is through
+        the night, nothing on the line should be coloured at all."""
+        line = "☀ 3° down WNW · ☀↓20:30 WNW"
+        got = api.paint_sun_glyph(line, -3.0, sky.C.LABEL, True)
+        self.assertEqual(got.count(api._sun_head_color(-3.0)), 1)
+        self.assertIn("· ☀↓20:30", got)
+        night = api.paint_sun_glyph("◑ 48% down · ☀↓20:30 WNW", -20.0,
+                                    sky.C.LABEL, True)
+        self.assertEqual(night, "◑ 48% down · ☀↓20:30 WNW")
+
+
+class TheDirectionsAreSetSmallerThanTheirFacts(unittest.TestCase):
+    """The fact you act on is the time or the height; the direction is the
+    detail that says which window to stand at."""
+
+    def test_the_three_moments_of_the_sun_get_it(self):
+        got = api.dim_directions("↑06:27 ENE · ↓20:30 WNW · ^13:30 S")
+        self.assertEqual(got.count('<span class="dir">'), 3)
+        self.assertIn('↑06:27 <span class="dir">ENE</span>', got)
+        self.assertIn('^13:30 <span class="dir">S</span>', got)
+
+    def test_every_height_on_either_line_gets_it_too(self):
+        """The Sun's own position, the Moon's, a planet's -- day line and
+        night line alike. The tail is "up SSW" or "down WNW"; the number
+        stays at reading size because it is the fact."""
+        got = api.dim_directions("☀ 55° up SSW · ◑ 47% 15° up SSW "
+                                 "· Venus 12° up WSW")
+        self.assertEqual(got.count('<span class="dir">'), 3)
+        self.assertIn('55° <span class="dir">up SSW</span>', got)
+        self.assertIn('12° <span class="dir">up WSW</span>', got)
+
+    def test_a_sun_under_the_horizon_gets_it(self):
+        got = api.dim_directions("☀ 3° down WNW")
+        self.assertIn('3° <span class="dir">down WNW</span>', got)
+
+    def test_the_glyph_labelling_the_sunset_is_dimmed_but_not_the_other_one(self):
+        """A down arrow beside a list of planets is a mark with no subject,
+        so the sunset block names its own. The block that says where the Sun
+        is now keeps its full size and its own colour -- it is the fact, not
+        a label on one."""
+        got = api.dim_directions("☀ 3° down WNW · ☀↓20:30 WNW")
+        self.assertIn('<span class="dir">☀</span>↓20:30', got)
+        self.assertTrue(got.startswith("☀ 3°"), got)
+
+    def test_the_moon_being_down_is_left_alone(self):
+        """"below the horizon" is the whole fact and has no direction in it.
+        It is also the block that survives every trim, so it is the last
+        thing that should be set smaller than its neighbours."""
+        line = "◑ 48% below the horizon"
+        self.assertEqual(api.dim_directions(line), line)
+
+    def test_an_empty_line_is_handed_straight_back(self):
+        self.assertEqual(api.dim_directions(""), "")
 
 
 class TheHeaderNamesOnlyWhatTheChartCannotSay(unittest.TestCase):

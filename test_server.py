@@ -115,15 +115,42 @@ class AnimateBrowserVsTerminal(unittest.TestCase):
         self.assertIsNotNone(m)
         self.assertNotIn("w=", m.group(1))
 
-    def test_playback_runs_at_the_speed_the_server_streams_at(self):
-        # The page's tick reads this rather than hardcoding a matching
-        # number. Retune ANIMATE_FRAME_DELAY alone and playback would drift
-        # behind the stream, then catch up in jumps.
+    def test_playback_runs_at_the_pace_the_page_was_given(self):
+        # The page's tick reads this rather than hardcoding a number, so
+        # retuning the pace cannot leave the browser playing at a speed
+        # nobody chose.
         resp = self.client.get("/Ibiza?animate=24", headers=BROWSER)
         m = re.search(r'data-frame-ms="(\d+)"', resp.text)
         self.assertIsNotNone(m)
-        self.assertEqual(int(m.group(1)),
-                         int(server.ANIMATE_FRAME_DELAY * 1000))
+        self.assertEqual(int(m.group(1)), server.ANIMATE_PLAY_MS)
+
+    def test_a_paused_frame_can_ask_for_its_labels_as_links(self):
+        """One frame at a time. Counted in /stats like every other
+        parameter, which also counts how often anybody stops an animation
+        to look something up."""
+        before = server._stat["param:links"]
+        resp = self.client.get("/Zurich?t=2026-08-19T23:00&animate=1&ui=1"
+                               "&w=200&links=1", headers=BROWSER)
+        self.assertEqual(resp.status_code, 200)
+        self.assertGreater(server._stat["param:links"], before)
+
+    def test_a_linked_frame_does_not_share_a_cache_entry(self):
+        """Otherwise whichever was asked for first wins and the other is
+        served its answer -- a paused frame with no links, or a running one
+        carrying markup it has no use for."""
+        r = server.api.Request(place="Zurich",
+                               when=dt.datetime(2026, 8, 19, 23, 0), panel=True)
+        plain = server._cache_key(r, False)
+        r.links = True
+        self.assertNotEqual(plain, server._cache_key(r, False))
+
+    def test_playback_is_slower_than_the_stream_that_feeds_it(self):
+        """The two used to be one number, so playback could only ever run
+        level with the network -- any hiccup showed as a stall and then a
+        catch-up in jumps. Playing a little slower means the buffer only
+        grows, so a frame is always there when the tick comes."""
+        self.assertGreater(server.ANIMATE_PLAY_MS,
+                           int(server.ANIMATE_FRAME_DELAY * 1000))
 
     def test_frames_are_buffered_rather_than_painted_as_they_land(self):
         # Painting straight off the stream leaves nothing to pause on or
@@ -2452,7 +2479,13 @@ class WidthLadder(unittest.TestCase):
             self.assertNotIn("Sunrise ", text, url)   # the sentence it came from
             # and the row that replaced them is there. "never fully dark" can
             # appear in it, which is why that phrase is not what is checked.
-            self.assertRegex(text, r"☀ \d+°[NESW]+")
+            # Checked with the tags taken off. The block reaches the page in
+            # three pieces now -- the glyph in a colour of its own
+            # (paint_sun_glyph) and the direction in a size of its own
+            # (dim_directions) -- so matching the raw HTML would be matching
+            # the markup rather than the sentence.
+            self.assertRegex(re.sub(r"<[^>]+>", "", text),
+                             r"☀ \d+° up [NESW]+")
 
     def test_a_plain_night_chart_has_nothing_left_below_it(self):
         # Moon, planets, twilight and the star count all ride on the top
@@ -4412,9 +4445,22 @@ class TheChartIsThePage(unittest.TestCase):
 
     def test_the_headline_stays_up_through_an_animation(self):
         """It is where and when you are, and an animation is exactly when
-        "when" is changing."""
+        "when" is changing. The box never folds away -- what changes is
+        which of the two lines inside it is showing: the ladder of rungs the
+        page was built with, or the one the frames are writing."""
         body = self._body(self.DAY)
-        self.assertNotIn("html.anim-on #day-head", body)
+        self.assertNotIn("html.anim-on #day-head{", body)
+        self.assertIn("html.anim-on #day-head-ladder{display:none}", body)
+        self.assertIn("html.anim-on #day-head-live{display:block}", body)
+
+    def test_the_animation_has_somewhere_to_write_its_headline(self):
+        """An empty box beside the ladder. It cannot be a thirteenth rung:
+        the rungs are shown and hidden by container queries on :nth-child,
+        so one replacement line would appear at a single width and vanish at
+        every other."""
+        body = self._body(self.DAY)
+        self.assertIn('<div id="day-head-live"', body)
+        self.assertIn("#day-head-live{display:none", body)
 
     def test_a_terminal_gets_none_of_the_markup(self):
         text = self.c.get(self.DAY).text

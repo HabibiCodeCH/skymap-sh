@@ -1072,6 +1072,11 @@ def _tally(r, daytime, hit, mode, status, data, colour=True, referrer=None,
         _stat["param:w"] += 1
     if r.panel:
         _stat["param:panel"] += 1
+    # One per paused animation frame whose labels were asked for as links,
+    # which is also a count of how often anybody stops an animation to look
+    # something up -- the reason the parameter exists.
+    if r.links:
+        _stat["param:links"] += 1
     if not colour:
         _stat["param:plain"] += 1
     _places[r.place.name] += 1
@@ -1785,6 +1790,9 @@ def _build(request: Req, place: str | None):
         # plain URL stays clean and only someone who turned it off carries a
         # parameter for it.
         nogolden=bool(q.get("nogolden")),
+        # Anchors on an animation frame's labels. The page asks for it one
+        # frame at a time, on the frame it has paused on. See api.Request.
+        links=bool(q.get("links")),
     )
 
 
@@ -1809,7 +1817,7 @@ def _cache_key(r, daytime):
     # collided with the plain view the same way.
     q = (round(r.place.lat, 1), round(r.place.lon, 1), r.view, r.facing, r.span,
          (r.find or "").lower(), bool(r.tle), r.night, r.width, r.dso, r.quadrant,
-         r.quadrant_requested, r.lines, r.panel, r.golden)
+         r.quadrant_requested, r.lines, r.panel, r.golden, r.links)
     bucket = DAY_BUCKET if daytime else NIGHT_BUCKET
     stamp = int(r.when_utc.timestamp() // bucket)
     return (q, stamp)
@@ -1843,17 +1851,66 @@ def _cached(r):
 # in shape, so it gets its own concurrency cap rather than reusing the
 # per-request rate limiter, which only charges one token regardless of how
 # long a request stays open.
-ANIMATE_FRAME_DELAY = 0.15         # seconds per frame -- under local test now,
-                                    # constant throughout, no slowdown anywhere
-ANIMATE_STEP_MIN = 15              # simulated minutes per frame (4/hour)
-ANIMATE_DUSK_LEAD_FRAMES = 5       # night sky starts showing this many frames
-                                    # early at dusk -- good as-is, don't touch
-ANIMATE_DAWN_LAG_FRAMES = 3        # stars last longer past dawn instead of
+# Three numbers decide what an animation looks like, and they are separate
+# on purpose -- they used to be one, and that made every question about it
+# the same question.
+#
+#   ANIMATE_STEP_MIN   how much sky passes between frames
+#   ANIMATE_PLAY_MS    how long each frame is on screen
+#   ANIMATE_FRAME_DELAY  how fast the server hands them over
+#
+# Ten minutes is where the step stops paying, and it is worth writing down
+# why rather than leaving it as taste.
+#
+# The chart is a character grid, so every position snaps to a cell. A column
+# is about 3.1 degrees wide at the usual width and the sky turns 0.25
+# degrees a minute, so ten minutes moves a star most of a column and five
+# moves it less than half of one -- at a five-minute step two frames in
+# three put it back in the cell it was already in. The jumps that read as
+# jerky are the grid's, and no frame rate touches them.
+#
+# What a finer step does refine is everything not on the grid: the twilight
+# fade, the Sun glyph's colour, and the headline's own numbers. That is real,
+# and it is why this is ten and not fifteen. It stops at ten because the day
+# chart's Sun arc is bucketed at DAY_BUCKET, ten minutes, so below that the
+# daytime trail cannot differ at all.
+#
+# Duration is the other half. A 24-hour run is 144 frames at 130ms, about 19
+# seconds -- the same length as the old 96 frames at 200ms, for half again
+# the bytes. Five minutes at 150ms was the alternative: 288 frames, 6MB, and
+# 43 seconds of watching, which is the part anybody would actually feel.
+#
+# The wire delay has to stay under the play rate or the buffer drains and
+# playback stalls waiting on the network. A frame costs about 12ms to build,
+# so 90ms of sleep hands one over every ~102ms against 130ms of playback --
+# ahead, with room for a slow frame. There is a test on that inequality.
+ANIMATE_STEP_MIN = 10              # simulated minutes per frame (6/hour)
+ANIMATE_PLAY_MS = 130              # how long the page holds each frame
+ANIMATE_FRAME_DELAY = 0.09         # seconds between frames on the wire
+# The GIF follows the stream rather than keeping a pace of its own. A shared
+# clip is "here is what I just watched", so it should be what was watched:
+# the same step and the same speed, or the thing somebody sends on is a
+# different animation from the one they saw.
+#
+# It is not free. Every frame is a rendered image rather than a line of
+# text, so the step decides Pillow work and file size instead of bandwidth
+# -- a six-hour clip goes from 24 frames to 36, and 117KB to about 175KB.
+# Worth it for the two not disagreeing.
+GIF_STEP_MIN = ANIMATE_STEP_MIN
+GIF_FRAME_MS = ANIMATE_PLAY_MS
+# In minutes, not frames. These are tuned by eye against the sky rather than
+# against the frame rate -- how early the night field starts showing, how
+# long the stars last past dawn -- so they have to hold their value when the
+# step changes. As frame counts (5 and 3, times a 15-minute step) they came
+# to 75 and 45 minutes, and moving the step to ten would silently have made
+# them 50 and 30. Same numbers, said in the units that mean something.
+ANIMATE_DUSK_LEAD_MIN = 75         # night sky starts showing this early at
+                                    # dusk -- good as-is, don't touch
+ANIMATE_DAWN_LAG_MIN = 45          # stars last longer past dawn instead of
                                     # cutting off early -- the fade curve is
                                     # non-linear, so this is tuned by measured
-                                    # effect (~4 frames later), not a literal
-                                    # frame count; see compose_frame's
-                                    # dawn_lag_minutes
+                                    # effect, not by arithmetic; see
+                                    # compose_frame's dawn_lag_minutes
 ANIMATE_MAX_CONCURRENT = 250       # the text stream costs ~1.4ms of CPU and
                                     # no image buffers per frame (measured),
                                     # so this is cheap -- unlike the GIF
@@ -1904,7 +1961,7 @@ def _sweep_gif_cache():
 
 def _render_and_save_gif(gif_id, frames):
     _sweep_gif_cache()
-    data = gif.frames_to_gif(frames, int(ANIMATE_FRAME_DELAY * 1000))
+    data = gif.frames_to_gif(frames, GIF_FRAME_MS)
     with open(os.path.join(GIF_DIR, f"{gif_id}.gif"), "wb") as f:
         f.write(data)
     return data
@@ -1923,8 +1980,8 @@ async def _animate(base_r, hours, base_url, is_ui=False):
     global _animate_active
     steps = int(hours * 60 / ANIMATE_STEP_MIN)
     start = base_r.when_utc
-    dusk_lead_minutes = ANIMATE_DUSK_LEAD_FRAMES * ANIMATE_STEP_MIN
-    dawn_lag_minutes = ANIMATE_DAWN_LAG_FRAMES * ANIMATE_STEP_MIN
+    dusk_lead_minutes = ANIMATE_DUSK_LEAD_MIN
+    dawn_lag_minutes = ANIMATE_DAWN_LAG_MIN
     _animate_active += 1
     try:
         for i in range(steps):
@@ -2155,12 +2212,13 @@ def _respond(request: Req, place: str | None):
             '<div class="animate-controls">'
             f'<button id="animate-btn" class="animate-btn" '
             f'data-live-url="/{r.place.slug}?animate=24&t={live_t}{live_w}&ui=1" '
-            # The page's playback tick reads this instead of hardcoding a
-            # matching number, so retuning the stream's pace here can't
-            # leave the browser playing at a different speed than it
-            # receives -- which would show as playback drifting behind the
-            # stream and then catching up in jumps.
-            f'data-frame-ms="{int(ANIMATE_FRAME_DELAY * 1000)}" '
+            # The page's playback tick reads this rather than hardcoding a
+            # number, so retuning the pace here cannot leave the browser
+            # playing at a speed nobody chose. It is ANIMATE_PLAY_MS and not
+            # the wire delay: playing a little slower than the frames arrive
+            # is what keeps the buffer ahead, so the tick never waits on the
+            # network. See the constant for the rest of the reasoning.
+            f'data-frame-ms="{ANIMATE_PLAY_MS}" '
             # Simulated minutes per frame, so the page can work out which
             # moment the paused frame is showing and ask for that one again
             # with deep sky on.
@@ -2305,8 +2363,9 @@ def _respond(request: Req, place: str | None):
             # Both take the summary line out of the drawing and into a box of
             # its own, so head=False either way. The object pages lift theirs
             # into the lede instead and never ask for it.
-            head_html, rungs = api.lift_chart_head(rungs)
+            head_html, rungs = api.lift_chart_head(rungs, r.place.near)
             head_html = api.pin_near(head_html, r.place.near)
+            head_html = api.dim_directions(head_html)
             chart_html = api.chart_layout(rungs, zenith, prose, head=False)
             on_pill, on_modal = api.sky_pill_html(r, res.data)
             header = api.header_html(f"{r.place.name}/", pill=on_pill)
@@ -3327,12 +3386,14 @@ def animate_gif_inline(request: Req, place: str):
             hours = 24.0
         hours = max(1.0, min(24.0, hours))
         base_r = _build(request, place)
-        steps = int(hours * 60 / ANIMATE_STEP_MIN)
-        dusk_lead_minutes = ANIMATE_DUSK_LEAD_FRAMES * ANIMATE_STEP_MIN
-        dawn_lag_minutes = ANIMATE_DAWN_LAG_FRAMES * ANIMATE_STEP_MIN
+        # GIF_STEP_MIN, not the stream's: a shared file wants fewer, larger
+        # steps. See the constant.
+        steps = int(hours * 60 / GIF_STEP_MIN)
+        dusk_lead_minutes = ANIMATE_DUSK_LEAD_MIN
+        dawn_lag_minutes = ANIMATE_DAWN_LAG_MIN
         frames = []
         for i in range(steps):
-            t = base_r.when_utc + dt.timedelta(minutes=ANIMATE_STEP_MIN * i)
+            t = base_r.when_utc + dt.timedelta(minutes=GIF_STEP_MIN * i)
             gif_r = base_r.at(t)
             gif_r.width = GIF_RENDER_WIDTH
             body, _sun_alt = api.compose_frame(gif_r, dusk_lead_minutes=dusk_lead_minutes,

@@ -12,6 +12,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import art
 import eclipse as eclipse_map
+import minify
 import eclipse_page
 import sky
 import brand
@@ -406,14 +407,16 @@ def _milkyway_floor_now(lat, lon, sun_alt):
 
 
 def sky_note(lat, lon):
-    """One short clause for the chart's top line: how dark it is here. The
-    estimate is crude and says so -- "est." is doing real work in that
-    string. The nearest city is named only when it is the reason the Milky
-    Way is absent, where it answers the obvious next question."""
+    """One short clause for the chart's top line: how dark it is here.
+
+    "Bortle ~8", not "Bortle 8 est. (Zürich)". The estimate is crude and has
+    to say so, but the tilde says it in one character where "est." spent
+    four, and the city that spent twelve more was answering a question
+    nobody had asked on this line -- it is the reader's own place, and the
+    prose below the chart still names the city when the Milky Way is
+    missing because of it."""
     _mag, b = sky_brightness(lat, lon)
-    near = _nearest_city(lat, lon, prefer_radius_deg=0.5, max_radius_deg=1.5)
-    where = f" ({near[7]})" if near and not _BORTLE_FLOOR[b] else ""
-    return f"Bortle {b} est.{where}"
+    return f"Bortle ~{b}"
 
 
 # How far out a city can still honestly be called "here". Derived from its
@@ -581,7 +584,7 @@ class Request:
     def __init__(self, place=None, when=None, view="horizon", facing=None, span=None,
                  find=None, iss=False, lines=True, color=True, fallback=None,
                  tle=None, now=None, night=False, width=None, dso=False, quadrant=None,
-                 nodso=False, panel=False, nogolden=False):
+                 nodso=False, panel=False, nogolden=False, links=False):
         self.place = resolve_place(place, fallback)
         self.view, self.facing, self.span = view, facing, span
         self.find, self.iss, self.lines, self.color = find, iss, lines, color
@@ -623,6 +626,14 @@ class Request:
         # the opt-out, which also keeps the plain URL free of it and every
         # existing link rendering the fuller view rather than the older one.
         self.golden = not nogolden
+        # Anchors on an animation frame's labels. Off by default and asked
+        # for one frame at a time, because a run is 144 frames and every
+        # label in every one of them would be an anchor -- markup the page
+        # rebuilds six times a second and nobody can click while it moves.
+        # The page turns it on for the frame it has paused on, which is the
+        # only frame anybody can reach. The still chart is unaffected: it has
+        # had links all along and never asks for this.
+        self.links = links
         self.tle = tle
         # clamped once, here, so it's already canonical by the time it ever
         # reaches a cache key -- otherwise every distinct raw ?w= value before
@@ -672,6 +683,7 @@ class Request:
         r2.dso, r2.quadrant = self.dso, self.quadrant
         r2.quadrant_requested, r2.nodso = self.quadrant_requested, self.nodso
         r2.panel, r2.golden = self.panel, self.golden
+        r2.links = self.links
         r2.when_utc = when_utc
         r2.when_local = when_utc + dt.timedelta(hours=self.place.offset(when_utc))
         r2.tz = self.place.offset(when_utc)
@@ -3755,6 +3767,12 @@ OBJPROSE_SLOT = "\x00\x04\x00"
 # line inside the timing block, because the browser sets it as a separate
 # paragraph and a newline inside a <p> is just a space.
 OBJWHAT_SLOT = "\x00\x05\x00"
+# And where an animation frame's header ends and its chart begins. Browser
+# frames only: a terminal and a GIF both want the header inside the drawing,
+# which is the only header they have, while the page has a headline box the
+# still line already lives in, and two headers disagreeing about the time is
+# what this replaces.
+HEAD_SLOT = "\x00\x06\x00"
 
 
 def strip_slots(text):
@@ -3764,7 +3782,8 @@ def strip_slots(text):
     cannot be handed three positioned boxes just gets the chart, the inset
     and the prose one after another, which is what they got before."""
     return text.replace(ZENITH_SLOT + "\n", "").replace(PROSE_SLOT + "\n", "") \
-               .replace(ZENITH_SLOT, "").replace(PROSE_SLOT, "")
+               .replace(ZENITH_SLOT, "").replace(PROSE_SLOT, "") \
+               .replace(HEAD_SLOT, "\n\n")
 
 
 def split_chart_parts(text):
@@ -4345,50 +4364,347 @@ def _head_when(r, when_local=None):
 # How wide each block of the night summary is held open, in characters.
 # Sized for the realistic worst case rather than for what is there now:
 # "below the horizon" is the longest thing the Moon block says, four
-# planets with altitudes and compass points is about fifty characters, and
+# planets with heights and compass points is about sixty characters, and
 # "nautical twilight" is the longest twilight label. A block that fits its
 # own content exactly is a block that moves the moment the content changes.
-SUMMARY_W = {"moon": 24, "planets": 50, "dark": 17, "note": 24, "stars": 9}
+#
+# The line is three characters per position longer since the heights gained
+# their "up" (see where_up), which is enough that the padded version no
+# longer fits the widest rung on a twilight night -- the Sun's own block is
+# there as well as everything else. render() falls back to unpadded when
+# that happens, so those nights get a line that shifts as its numbers do.
+# A full-dark night, which is most of them, still pads.
+# The planets block is deliberately 0, meaning "do not pad". Padding is
+# here to absorb a digit changing -- the Moon climbing from 9 to 10 degrees
+# used to shunt the whole line sideways -- and this block does not change by
+# a digit, it changes by a whole planet setting. Held open at its
+# four-planet width it left a 47-character hole on an evening with one
+# planet up, which is a worse fault than the shift it was preventing.
+SUMMARY_W = {"sun": 15, "moon": 17, "planets": 0, "dark": 17, "note": 10,
+             "stars": 9}
 
 
-def _sky_summary(st, lat, width, n_stars=0, note="", pad=False):
+def where_up(alt, az):
+    """`55° up SSW` -- how high, then which way, with a word between them
+    saying which is which.
+
+    It used to be `55°SSW`, and that reads as a bearing: azimuth is the
+    quantity conventionally measured in degrees from north, so a degree sign
+    against a compass point says "bearing 55, i.e. SSW" -- which is not only
+    the wrong fact but an impossible one, 55 being ENE. Every observing
+    source writes it the long way for exactly this reason ("an altitude of
+    10 degrees above your eastern horizon"), and this app's own prose
+    already does: "55 degrees up in the SSW".
+
+    Three characters per block, spent so that one shape on the page means
+    one thing: a degree is a height, letters are a direction."""
+    return f"{alt:.0f}\N{DEGREE SIGN} up {compass(az)}"
+
+# Where the day line hands over to the night line, in Sun altitude. Civil
+# twilight at both ends: the Sun arrives on the line at civil dawn and
+# leaves it at civil dusk, which is also the moment the page calls "stars".
+CIVIL_ALT = -6.0
+
+# And where the sky is finally dark. The Bortle estimate and the star count
+# both wait for it: the estimate describes a fully dark sky, and a star
+# count taken through twilight is a number in freefall -- 114 at
+# astronomical dawn, 40 twenty minutes later. Neither is worth the room
+# while the answer is still changing.
+ASTRO_ALT = -18.0
+
+# How wide each of the Sun's day blocks is held open when the line is
+# padded, same reasoning as SUMMARY_W: a block sized to its own content is
+# a block that moves the moment the content changes.
+DAY_BLOCK_W = {"rise": 13, "high": 10, "set": 13, "stars": 12, "dark": 15,
+               "golden": 18, "shadow": 17}
+
+
+def _day0(r):
+    """Local midnight of the day this request is about, as a UTC instant --
+    what sun_events wants. Three composers were each rebuilding it inline
+    from when_local and the offset."""
+    off = r.place.offset(r.when_utc)
+    return (r.when_local.replace(hour=0, minute=0, second=0, microsecond=0)
+            - dt.timedelta(hours=off))
+
+
+# One day's Sun events, remembered. sun_events walks the day in ten-minute
+# steps -- 145 positions, about a millisecond -- and the answer is the same
+# for every moment in that day from that place. An animation asks for it
+# ninety-six times over one day and one place, which is ninety-five walks
+# whose answer was already known.
+#
+# Small and bounded: an animation touches one day, a page one or two. Old
+# entries are dropped wholesale rather than by age, which is all a cache
+# this shape needs -- the cost of a miss is a millisecond.
+_SUN_EVENTS_MEMO = {}
+_SUN_EVENTS_MAX = 256
+
+
+def sun_events_cached(day0, lat, lon):
+    """sun_events, memoised on the day and the place. Rounded to four
+    decimals, about ten metres -- two requests that far apart cannot differ
+    in a time printed to the minute."""
+    key = (day0, round(lat, 4), round(lon, 4))
+    got = _SUN_EVENTS_MEMO.get(key)
+    if got is None:
+        if len(_SUN_EVENTS_MEMO) >= _SUN_EVENTS_MAX:
+            _SUN_EVENTS_MEMO.clear()
+        got = _SUN_EVENTS_MEMO[key] = sun_events(day0, lat, lon)
+    return got
+
+
+def _golden_block(bands, off, when_utc):
+    """`golden 19:48`, or `golden → 20:50` while you are standing in one.
+    The next golden window, not both of them -- the morning one is over by
+    the time anybody reads an afternoon line, and this block exists to
+    answer "when should I be outside", which has one answer.
+
+    The arrow rather than the word "until": the line already reads arrows as
+    the Sun's own marks, and it is one cell against five.
+
+    One of the three facts that used to live only in the chart's own header
+    (with the blue hour and the shadow), where a browser had to read the
+    drawing to find them and an animation dropped them entirely."""
+    for key in ("golden_am", "golden_pm"):
+        b = bands.get(key)
+        if not b:
+            continue
+        if when_utc < b["start"]:
+            return f"golden {_hm(b['start'], off)}"
+        if when_utc <= b["end"]:
+            return f"golden \N{RIGHTWARDS ARROW} {_hm(b['end'], off)}"
+    return ""
+
+
+def _shadow_block(sun_alt, sun_az):
+    """`shadows 0.7x NNE` -- how long yours is and which way it falls.
+
+    The one block on the day line that is different in every frame of an
+    animation rather than a time that sits still all afternoon, which is
+    most of why it is worth its room.
+
+    Capped: cot(h) is 9.5x at the top of the golden band and 57x half a
+    degree above the horizon, and somewhere in there the slope of the ground
+    you are standing on matters more than the arithmetic does."""
+    ratio = sky.shadow_ratio(sun_alt)
+    if ratio is None:
+        return ""
+    size = f">{SHADOW_CAP:.0f}x" if ratio > SHADOW_CAP else f"{ratio:.1f}x"
+    return f"shadows {size} {compass((sun_az + 180) % 360)}"
+
+
+def _head_day_blocks(ev, p, off, when_utc, sun_alt, sun_az=None, bands=None):
+    """The Sun's own day, staged: (rank, text, width) for whichever of
+    sunrise, high point, sunset, first stars and darkest is worth carrying
+    at this moment.
+
+    The rule is one line long: a block is on the headline while the thing it
+    names is still ahead, and goes once it has passed. That is what lets the
+    line cross sunset without being replaced -- at every boundary through
+    the day one or two blocks change and the rest hold their place, where
+    before the whole line was swapped at the horizon.
+
+    Reading down a day: the deep night carries none of it; from
+    astronomical dawn the sunrise appears alone; from civil dawn the rest of
+    the day arrives at once and then empties out block by block as each
+    thing happens -- the sunrise at sunrise, the high point at the high
+    point, the sunset at sunset, the first stars when they come out. After
+    civil dusk the night line owns the line again.
+
+    Nothing here is bounded by "today". Every block is guarded on its own
+    event being present, so a polar day (no sunrise, no sunset) and a polar
+    night (no transit above the horizon, no dusk) each come out with only
+    the blocks that are true there rather than with "--:--"."""
+    rise, transit, sset = ev.get("sunrise"), ev.get("transit"), ev.get("sunset")
+    first = ev.get("dusk_civil") or ev.get("dusk_nautical")
+    dark = ev.get("dusk_astro")
+    dawn = ev.get("dawn_astro")
+
+    def _mark(ch, t, key, sun=False):
+        """`↓20:30 WNW`, or `☀↓20:30 WNW` where the arrow alone could be
+        read as belonging to whatever sits beside it. A bare down arrow next
+        to a list of planets is a mark with no subject; the glyph names the
+        subject in one cell, and dim_directions sets it small and grey so it
+        labels the block rather than competing with the time."""
+        az = sky.sun_altaz(t, p.lat, p.lon)[1]
+        glyph = "\N{BLACK SUN WITH RAYS}" if sun else ""
+        return (2 if ch != "^" else 3,
+                f"{glyph}{ch}{_hm(t, off)} {compass(az)}",
+                DAY_BLOCK_W[key] + len(glyph))
+
+    # Which half of the day this is. The transit is the turn, not the
+    # horizon: everything before it is still on its way up even when the Sun
+    # is under the horizon, which is exactly the stage that wants a sunrise
+    # on the line.
+    rising = transit is None or when_utc < transit
+
+    # The two ends of the day the line is awake for. Before astronomical
+    # dawn it says nothing about the Sun: the night is simply the night, and
+    # a sunrise five hours off is not what somebody standing under a dark
+    # sky is reading for.
+    if rising:
+        if dawn is not None and when_utc < dawn:
+            return []
+    elif sun_alt <= CIVIL_ALT:
+        # The evening end keeps one block past civil dusk. From there to
+        # astronomical dusk the sky is emptying of light and filling with
+        # stars, but the count is still four or five and falling short of
+        # what is actually coming -- so the line says when they will all be
+        # out, and hands over to the count at full dark. Without it there
+        # was an hour and a half with neither: no time to wait for and no
+        # number to read.
+        if dark and when_utc < dark:
+            return [(1, f"darkest {_hm(dark, off)}", DAY_BLOCK_W["dark"])]
+        return []
+
+    out = []
+    # Only while it is still ahead, and only once the sky is light enough
+    # for it to be worth planning around.
+    if rise and when_utc < rise:
+        out.append(_mark("\N{UPWARDS ARROW}", rise, "rise"))
+    # Between astronomical and civil dawn the sunrise is the whole story.
+    # The rest of the day is a day that has not started.
+    if rising and sun_alt <= CIVIL_ALT:
+        return out
+    if transit and when_utc < transit:
+        out.append(_mark("^", transit, "high"))
+    # Where the light is and what it is doing to the ground, which the
+    # chart's own header used to be the only place to find. Both are about
+    # the Sun being up, so neither outlives it.
+    if sun_az is not None and sun_alt > 0:
+        shadow = _shadow_block(sun_alt, sun_az)
+        if shadow:
+            out.append((4, shadow, DAY_BLOCK_W["shadow"]))
+    if bands:
+        golden = _golden_block(bands, off, when_utc)
+        if golden:
+            out.append((3, golden, DAY_BLOCK_W["golden"]))
+    if ev.get("polar_day"):
+        out.append((1, "the Sun does not set today", 0))
+        return out
+    if sset and when_utc < sset:
+        out.append(_mark("\N{DOWNWARDS ARROW}", sset, "set", sun=True))
+    # "darkest", not "dark": the time is astronomical dusk, a fact about
+    # where the Sun is rather than about whether you can see anything. In
+    # central London the sky never gets astronomically dark at all, because
+    # the light dome sets a floor the Sun going further down does nothing
+    # about. "Darkest" is true at both ends without knowing the Bortle.
+    if not first:
+        out.append((1, "never fully dark", DAY_BLOCK_W["dark"]))
+        return out
+    if when_utc < first:
+        out.append((1, f"stars {_hm(first, off)}", DAY_BLOCK_W["stars"]))
+    out.append((1, f"darkest {_hm(dark, off)}" if dark else "no full dark",
+                DAY_BLOCK_W["dark"]))
+    return out
+
+
+def _sun_head_block(alt, az):
+    """`☀ 55° up SSW` above the horizon, `☀ 3° down WNW` under it.
+
+    The Moon's block says only "down" -- the Moon being under the horizon is
+    the whole fact and its depth changes nothing -- but the Sun's depth is
+    exactly what the reader is waiting on between sunset and full dark, so
+    it gets a number.
+
+    "down", the same word the Moon uses, rather than "below" or a minus
+    sign. Two words for one idea is one too many on a line this tight, and
+    `-3° up` is a contradiction the eye has to unpick before it can read a
+    sign that is easy to lose in a row of numbers. Up or down, then how far,
+    then which way.
+
+    Rounding is applied before the direction is chosen, so a Sun at -0.4
+    comes out as `0° up` rather than `-0° down`."""
+    deg = round(alt)
+    if deg >= 0:
+        return f"\N{BLACK SUN WITH RAYS} {where_up(deg, az)}"
+    return (f"\N{BLACK SUN WITH RAYS} {-deg}\N{DEGREE SIGN} down "
+            f"{compass(az)}")
+
+
+def _sky_summary(st, lat, width, n_stars=0, note="", pad=False,
+                 day_blocks=()):
     """Trimmed to `width`, brightest-last. It sits above the chart, so a
     summary longer than the chart is one that decides how wide the page is
     -- which is exactly the job the prose used to do from below, and the
     reason the narrow rungs were 86ch for a 60-column chart. The Moon comes
     first and survives every trim; the star list is the first thing to go,
-    then the planets, since both are in full in the chart itself."""
+    then the planets, since both are in full in the chart itself.
+
+    day_blocks are whatever _head_day_blocks says the Sun's own day is still
+    owed at this moment -- a sunrise before dawn, tonight's two times after
+    sunset. They sit after the planets, so the line reads as what is up,
+    then what is coming.
+
+    How much of the night tail is carried is decided here, from the Sun's
+    own altitude, because every block in it is an answer about a dark sky
+    and the sky is only dark for part of the night."""
     mo, su = st["moon"], st["sun"]
+    # "down", not "below the horizon". Seventeen characters spent on the one
+    # block that has nothing to report, on a line where everything else is
+    # competing for room -- and it pairs with the "up SSW" the rest of the
+    # line uses, so the two read as one system rather than as a phrase and
+    # a sentence.
     # Space after the glyph, always: the phase mark and the number are two
     # facts, and run together they read as one broken word.
-    where = (f"{mo['alt']:.0f}°{compass(mo['az'])}" if mo["alt"] > 0
-             else "below the horizon")
+    where = where_up(mo["alt"], mo["az"]) if mo["alt"] > 0 else "down"
     pl = sorted((b for b in st["up"]
                  if b["name"] not in ("Sun", "Moon") and b["mag"] < 6.0),
                 key=lambda b: b["mag"])
     alt = su["alt"]
     dark = ("daylight" if alt > 0 else "civil twilight" if alt > -6 else
             "nautical twilight" if alt > -12 else
-            "astro twilight" if alt > -18 else "full dark")
+            "astro twilight" if alt > ASTRO_ALT else "full dark")
+    # The two thresholds the whole line is staged around. Above CIVIL_ALT
+    # the Sun is what the sky is doing and the line is about the Sun; below
+    # ASTRO_ALT the sky is finally dark and the answers about darkness are
+    # worth printing. Between them it is neither, and says so.
+    civil = alt > CIVIL_ALT
+    full_dark = alt <= ASTRO_ALT
     # (drop-order, text). Rendered in list order, but trimmed worst-first,
     # so a busy planet night loses the least useful block rather than
     # whichever happens to sit at the end. The Moon never goes: it decides
     # how much of the rest is worth looking for.
-    parts = [(0, f"{moon_glyph(mo['age'], lat)} {mo['illum'] * 100:.0f}% {where}",
-              SUMMARY_W["moon"]),
-             (2, ", ".join(f"{p['name']} {p['alt']:.0f}°{compass(p['az'])}"
-                           for p in pl) if pl else "no planets",
-              SUMMARY_W["planets"]),
-             (1, dark, SUMMARY_W["dark"]),
-             # The star count outranks the Bortle note. It used to be the
-             # other way round, on the argument that the count is a number
-             # about the catalogue while the note is a fact about the sky you
-             # are under. True, and beside the point: the count is how much is
-             # up *right now* and it moves all evening, where the note is the
-             # same sentence every night from the same place. The one that
-             # changes is the one worth the characters.
-             (4, note, SUMMARY_W["note"]),
-             (3, f"{len(st['visible'])} stars", SUMMARY_W["stars"])]
+    #
+    # The Sun comes first, and it is here at all because the line used to
+    # delete it the instant it set. A day headline carried the Sun's
+    # position and a night headline carried no Sun at all, so at sunset
+    # every block on the line was replaced at once -- one frame of an
+    # animation, at the exact moment somebody is watching. It holds its
+    # place through civil twilight at either end, and hands over at
+    # CIVIL_ALT, the same threshold the page already calls "stars".
+    parts = []
+    if civil:
+        parts.append((0, _sun_head_block(alt, su["az"]), SUMMARY_W["sun"]))
+    # While the Sun is on the line the Moon and the planets only appear if
+    # they are actually there. On a dark night "down" and "no planets" are
+    # worth saying -- they answer what somebody came outside to ask -- but
+    # beside a Sun that is the whole reason the sky looks like that, they
+    # are two blocks reporting nothing.
+    if mo["alt"] > 0 or not civil:
+        parts.append((0, f"{moon_glyph(mo['age'], lat)} "
+                         f"{mo['illum'] * 100:.0f}% {where}", SUMMARY_W["moon"]))
+    if pl or not civil:
+        parts.append((2, ", ".join(f"{p['name']} {where_up(p['alt'], p['az'])}"
+                                   for p in pl) if pl else "no planets",
+                      SUMMARY_W["planets"]))
+    parts += list(day_blocks)
+    # Not while the Sun is on the line: between civil dawn and sunrise, or
+    # sunset and civil dusk, "civil twilight" is a fact about where the Sun
+    # is, said next to the Sun.
+    if not civil:
+        parts.append((1, dark, SUMMARY_W["dark"]))
+    if full_dark:
+        # The star count outranks the Bortle note. It used to be the other
+        # way round, on the argument that the count is a number about the
+        # catalogue while the note is a fact about the sky you are under.
+        # True, and beside the point: the count is how much is up *right
+        # now* and it moves all evening, where the note is the same sentence
+        # every night from the same place. The one that changes is the one
+        # worth the characters.
+        parts += [(4, note, SUMMARY_W["note"]),
+                  (3, f"{len(st['visible'])} stars", SUMMARY_W["stars"])]
     # n_stars defaults to none: the bright stars are labelled on the chart a
     # few rows below this line, which is the one place they cannot be
     # misread as a list of somewhere else.
@@ -4400,8 +4716,8 @@ def _sky_summary(st, lat, width, n_stars=0, note="", pad=False):
     # a few rows down. It shared 4 with the note until the note moved there,
     # and two blocks on the same rank leave the trim picking between them by
     # list position, which is not a decision anybody wrote down.
-    if bright:
-        parts.append((5, ", ".join(f"{s['n']} {a:.0f}°{compass(z)}"
+    if bright and full_dark:
+        parts.append((5, ", ".join(f"{s['n']} {where_up(a, z)}"
                                    for s, a, z in bright), 0))
     parts = [pt for pt in parts if pt[1]]
 
@@ -4675,10 +4991,29 @@ def _compose_sky(r):
         room = int(_effective_width(r) * CHART_FONT_PX / DAY_HEAD_PX)
         spare = room - len(_head_prefix(r)) - 3
         spare -= len(mode) + 3 if mode else 0
-        # pad=True: this is the browser's line, and it sits in a box of its
-        # own where holding each block in place is worth the characters.
+        # The Sun's day, staged. This view runs whenever the Sun is under
+        # the horizon, which includes both civil twilights -- the half hour
+        # either side of the horizon when the thing worth saying is when the
+        # Sun goes or comes, not how many stars are out.
+        day_blocks = _head_day_blocks(sun_events_cached(_day0(r), p.lat, p.lon), p,
+                                      p.offset(r.when_utc), r.when_utc,
+                                      st["sun"]["alt"])
+        # Unpadded. Holding each block open at its widest possible content
+        # was worth the characters while the line was a fixed set of blocks
+        # whose numbers moved -- it stopped the Moon climbing from 9 to 10
+        # degrees shunting everything after it. It is not worth them now:
+        # blocks arrive and leave at every boundary of the day, so what
+        # follows them moves regardless, and the padding only shows up as a
+        # hole. "◑ 39% down" in a slot sized for "◑ 47% 15° up SSW" left
+        # seven spaces in the middle of the line; "full dark" in one sized
+        # for "nautical twilight" left eight more.
+        #
+        # It would not line up even if it did hold: the directions are set
+        # smaller than the rest of the line (see dim_directions), so a
+        # column counted in characters is not a column on screen.
         summary = _sky_summary(st, p.lat, max(20, spare),
-                               note=sky_note(p.lat, p.lon), pad=True)
+                               note=sky_note(p.lat, p.lon),
+                               day_blocks=day_blocks)
     head = _horizon_head(r, mode, summary=summary)
     # Two colours in the browser, one in a terminal. They arrive as two
     # spans, which is what lets CSS bold the first -- see the day head, same
@@ -4687,6 +5022,9 @@ def _compose_sky(r):
     head_painted = (paint(_head_prefix(r), C.HEAD, c)
                     + paint(head[len(_head_prefix(r)):], C.LABEL, c)
                     if r.panel and summary else paint(head, C.HEAD, c))
+    # The Sun is on this line through twilight now, and it is the one glyph
+    # here that means something by its colour.
+    head_painted = paint_sun_glyph(head_painted, st["sun"]["alt"], C.LABEL, c)
     # Panel mode still wraps wide -- prose sits in its own full-width block
     # below the chart+zenith row (see the side_panel branch below), not
     # squeezed into the zenith's ~30-column-wide column, so there's no
@@ -5307,69 +5645,37 @@ def _compose_day(r):
         # turning points, and what will be up once it is dark. The two
         # sentences below said this in 96 and 76 characters, wrapping to
         # four rows between them.
-        # In the order the day happens, which is the order somebody reads
-        # a line like this: the Sun comes up over there, it is here now, it
-        # gets that high, it goes down over there, then the stars, then the
-        # dark. Grouped by kind instead -- times together, angles together --
-        # it read as a table that had lost its headings.
+        # In the order the day happens, which is the order somebody reads a
+        # line like this: it is here now, it gets that high, it goes down
+        # over there, then the stars, then the dark. Grouped by kind instead
+        # -- times together, angles together -- it read as a table that had
+        # lost its headings.
         #
-        # The bearings earn their place. "Sunrise 06:11" tells you when to
-        # set an alarm; "sunrise 06:11 64 deg ENE" tells you which window to
-        # stand at, and it is the one fact on this line you cannot work out
-        # for yourself from the others.
-        rise_az = (sky.sun_altaz(ev["sunrise"], p.lat, p.lon)[1]
-                   if ev.get("sunrise") else None)
-        set_az = (sky.sun_altaz(ev["sunset"], p.lat, p.lon)[1]
-                  if ev.get("sunset") else None)
-
-        def _bearing(az):
-            return f" {az:.0f}\N{DEGREE SIGN}{compass(az)}" if az is not None else ""
-
+        # Which of those blocks is on the line is _head_day_blocks' job, and
+        # the same call serves the night view: a block is carried while what
+        # it names is still ahead and goes once it has passed, so sunrise is
+        # not still on the line at teatime and sunset is not on it at dawn.
+        # That is what makes the two views one line rather than two -- see
+        # the docstring there.
+        #
         # Priorities are what gets dropped first on a narrow window, highest
         # first. Where the Sun is *now* is the one thing the page is about,
-        # so it never goes. A bearing rides with its own time rather than
-        # being separable: half of that fact is worse than none of it.
-        now_part = (0, f"\N{BLACK SUN WITH RAYS} {sa:.0f}\N{DEGREE SIGN}{compass(sz)}")
-        parts = []
-        if not ev["polar_day"]:
-            parts.append((2, f"\N{UPWARDS ARROW}{_hm(ev.get('sunrise'), off)}"
-                             f"{_bearing(rise_az)}"))
-        high = None
-        if ev.get("max_alt") is not None and ev.get("transit"):
-            high = (3, f"high {ev['max_alt']:.0f}\N{DEGREE SIGN} at "
-                       f"{_hm(ev.get('transit'), off)}")
-        # Before the Sun's high point the current position belongs in front
-        # of it and after it behind, so the line stays in time order all day
-        # rather than only in the morning.
-        after_high = bool(ev.get("transit")) and r.when_utc >= ev["transit"]
-        if high and after_high:
-            parts.append(high)
-            parts.append(now_part)
-        else:
-            parts.append(now_part)
-            if high:
-                parts.append(high)
-        if ev["polar_day"]:
-            parts.append((1, "the Sun does not set today"))
-        else:
-            parts.append((2, f"\N{DOWNWARDS ARROW}{_hm(ev.get('sunset'), off)}"
-                             f"{_bearing(set_az)}"))
-            # dark is astronomical dusk or nothing, so a night with first
-            # stars but no full darkness has to say so rather than print the
-            # "--" _hm() gives a missing time.
-            #
-            # "darkest", not "dark". The time is astronomical dusk, which is
-            # a fact about where the Sun is and not about whether you can
-            # see anything: in central London the sky never gets
-            # astronomically dark at all, because the light dome sets a floor
-            # the Sun going further down does nothing about. "Darkest" is
-            # true at both ends without needing to know the Bortle.
-            if first:
-                parts.append((1, f"stars {_hm(first, off)}"))
-                parts.append((1, f"darkest {_hm(dark, off)}" if dark
-                                 else "no full dark"))
-            else:
-                parts.append((1, "never fully dark"))
+        # so it never goes, and it leads the line straight after the moment
+        # rather than sitting in time order between sunrise and sunset: it
+        # is the one block that has to survive the crossing into night, and
+        # a block that moves as the Sun sets is a block the eye has to find
+        # again.
+        parts = [(0, _sun_head_block(sa, sz))]
+        # The Moon, but only when it is actually up. By day it is the one
+        # other thing genuinely worth looking at -- and on the afternoons it
+        # is under the horizon, "below the horizon" would spend
+        # twenty-four characters saying there is nothing to see.
+        mo_a, mo_z = altaz(mo["ra"], mo["dec"], p.lat, lst)
+        if mo_a > 0:
+            parts.append((2, f"{moon_glyph(mo['age'], p.lat)} "
+                             f"{mo['illum'] * 100:.0f}% {where_up(mo_a, mo_z)}"))
+        parts += [(rank, text) for rank, text, _w
+                  in _head_day_blocks(ev, p, off, r.when_utc, sa, sz, bands)]
         # No "tonight: Venus" here any more. The panel beside the chart
         # cycles the planets that are up, one at a time and drawn, which is
         # both more use and more room than a comma-separated tail on a line
@@ -5394,7 +5700,9 @@ def _compose_day(r):
         # it here simply loses it -- which is why the day chart had none in a
         # browser while a terminal got one inline.
         zenith = st.get("zenith_lines") or []
-        out = (["", paint(prefix, C.HEAD, c) + paint(f" · {rest}", C.LABEL, c),
+        out = (["", paint_sun_glyph(paint(prefix, C.HEAD, c)
+                                    + paint(f" · {rest}", C.LABEL, c),
+                                    sa, C.LABEL, c),
                 "", art]
                + ([ZENITH_SLOT] + zenith if zenith else [])
                + [PROSE_SLOT])
@@ -6416,6 +6724,54 @@ def _art_block(lines, caption, url, cls="dt-art", rows=DAY_ART_ROWS):
 _LEAD_SPACE = re.compile(r'^ *((?:<span[^>]*>)?) *')
 
 
+# Which way to look, in the two shapes the headline has for it: hung off one
+# of the Sun's three moments (rise, peak, set), or hung off a height on
+# either line -- the Moon's, a planet's, a named star's, the Sun's own.
+#
+# Both are anchored to what owns them, a time or a number of degrees, rather
+# than matched loose. A bare run of NSEW letters appears inside ordinary
+# words ("SSE" does not, but "S" and "E" do), and a rule that matched those
+# would set a letter of somebody's prose in a different size.
+_HEAD_BEARING = re.compile(r'([↑↓^]\d{2}:\d{2}) ([NSEW]{1,3})\b')
+_HEAD_WHERE = re.compile(r'(\d+°) (up|down) ([NSEW]{1,3})\b')
+# The Moon with nothing to report. Same treatment as the "up SSW" it stands
+# in for -- it answers the same question, so it should not be the one thing
+# on the line set louder than the rest.
+_HEAD_DOWN = re.compile(r'(\d+%) (down)\b')
+# The glyph that labels one of the Sun's own moments, as opposed to the one
+# that opens the block saying where the Sun is now -- that one is followed
+# by a space and a number, and keeps its full size and its own colour.
+_HEAD_SUNMARK = re.compile(r'☀(?=[↑↓^]\d{2}:\d{2})')
+# Which way your shadow falls. Same shape as the rest: the number is the
+# fact, the letters are the direction.
+_HEAD_SHADOW = re.compile(r'(shadows [^ ]+) ([NSEW]{1,3})\b')
+
+
+def dim_directions(head_html):
+    """Set every "which way to look" on the line smaller and greyer than the
+    fact it belongs to.
+
+    The fact you act on is the time or the height: when to set an alarm, how
+    far up to look. The direction is the detail that says which window to
+    stand at. Same line, two weights, so the line can be read at a glance
+    for the first and still carries the second.
+
+    Browser only, and after the line is HTML, for the reason pin_near gives:
+    every width decision is made on the text, and the text is what a
+    terminal and a PNG still get. A smaller font does break the monospace
+    grid the rest of the line sits on, which is the trade -- it is spent
+    only on these tails, never on a number that has to line up with the
+    block above or below it.
+    """
+    if not head_html:
+        return head_html
+    out = _HEAD_BEARING.sub(r'\1 <span class="dir">\2</span>', head_html)
+    out = _HEAD_WHERE.sub(r'\1 <span class="dir">\2 \3</span>', out)
+    out = _HEAD_DOWN.sub(r'\1 <span class="dir">\2</span>', out)
+    out = _HEAD_SHADOW.sub(r'\1 <span class="dir">\2</span>', out)
+    return _HEAD_SUNMARK.sub('<span class="dir">☀</span>', out)
+
+
 def pin_near(head_html, near):
     """Swap the "near X" hint for a map pin carrying it as a tooltip.
 
@@ -6452,7 +6808,7 @@ def pin_near(head_html, near):
     return head_html.replace(words, " " + pin)
 
 
-def lift_chart_head(rungs):
+def lift_chart_head(rungs, near=None):
     """Take the summary line out of the drawing, into a ladder of its own.
 
     Returns (head_html, rungs) with the line gone from every rung.
@@ -6486,8 +6842,23 @@ def lift_chart_head(rungs):
     if not any(heads):
         return "", rungs
     spans = "".join(f'<span class="dh">{h}</span>' for h in heads)
+    # An empty box beside the ladder for the animation to write into. The
+    # ladder cannot be reused: its twelve rungs are shown and hidden by
+    # container queries on :nth-child, so a single replacement line would be
+    # displayed at one width and hidden at every other. The live box is one
+    # element with no query on it, and html.anim-on swaps which of the two
+    # is on screen -- so the headline goes on saying where and when through
+    # an animation instead of sitting frozen at the moment the page loaded.
+    #
+    # data-near carries the "near X" hint to the script, which has to make
+    # the same swap for a pin that pin_near makes here (see skymapPinNear).
+    # Handed over rather than parsed out of the line: this is the server's
+    # own r.place.near, already escaped, and finding where the name ends by
+    # looking at the text would be a guess.
+    nr = f' data-near="{html.escape(near)}"' if near else ""
     return (f'<header id="day-head" class="day-box" aria-label="where and when">'
-            f'<div id="day-head-ladder">{spans}</div></header>'), rest
+            f'<div id="day-head-ladder">{spans}</div>'
+            f'<div id="day-head-live" aria-live="off"{nr}></div></header>'), rest
 
 
 def chart_page(head_html, chart_html, drawer_html=""):
@@ -6993,6 +7364,49 @@ def _sun_color(alt):
     return _SUN_GRADIENT[round(t * (len(_SUN_GRADIENT) - 1))]
 
 
+# Below the horizon, where _SUN_GRADIENT has nothing left to say: blue at
+# the horizon, desaturating to grey by CIVIL_ALT. It is the blue hour
+# and then the end of it, which is what the sky over your head actually
+# does, and it lands the block on a grey that is already the line's own
+# colour just as the block is about to go.
+_SUN_DOWN_GRADIENT = ["\033[38;5;75m", "\033[38;5;68m", "\033[38;5;67m",
+                      "\033[38;5;103m", "\033[38;5;244m"]   # blue -> grey
+
+
+def _sun_head_color(alt):
+    """The headline glyph's colour: the chart's own reddening ramp while the
+    Sun is up, the blue hour fading to grey once it is down.
+
+    Shares _sun_color above the horizon on purpose -- the marker on the
+    chart and the glyph on the line are the same Sun, and two ramps that
+    drift apart would put a yellow glyph over a red marker."""
+    if alt >= 0:
+        return _sun_color(alt)
+    t = max(0.0, min(1.0, alt / CIVIL_ALT))          # 0 -> 0, -6 -> 1
+    return _SUN_DOWN_GRADIENT[round(t * (len(_SUN_DOWN_GRADIENT) - 1))]
+
+
+def paint_sun_glyph(painted, alt, restore, c):
+    """Colour the ☀ on an already-painted headline, and hand the line back
+    to the colour it was in.
+
+    After painting rather than inside the composer, for the reason pin_near
+    gives: every width decision on this line is made on the text, and an
+    escape sequence in the middle of it would be counted as characters by
+    the trim. `restore` is the run's own colour, not C.OFF -- a reset here
+    would strip the rest of the line back to the terminal's default."""
+    glyph = "\N{BLACK SUN WITH RAYS}"
+    if not c or glyph not in painted:
+        return painted
+    # Only the block that says where the Sun is *now*, which is the one the
+    # colour is about. The sunset block carries the same glyph as a label
+    # (`☀↓20:30`), and colouring that one by the current altitude would say
+    # something untrue about a time hours away -- so this anchors on the
+    # space and digit that only the position block has.
+    return re.sub(glyph + r"(?= \d)",
+                  _sun_head_color(alt) + glyph + restore, painted, count=1)
+
+
 def compose_frame(r, dusk_lead_minutes=0, dawn_lag_minutes=0):
     """Header + chart only, no prose/footer/ISS/zenith inset -- for animation
     frames, which are on screen for a fraction of a second and can't be read
@@ -7088,6 +7502,13 @@ def compose_frame(r, dusk_lead_minutes=0, dawn_lag_minutes=0):
                              # in the browser refetches a single frame with
                              # it on, and that needs somewhere to land.
                              dso_limit=DSO_LIMIT if r.dso else None,
+                             # Labels as links, on request only. A frame is
+                             # normally plain text: every label an anchor,
+                             # 144 times a run, is markup nobody can click
+                             # while it is moving. The page asks for it on
+                             # the frame it has paused on, which is the only
+                             # frame anybody can reach -- see r.links.
+                             link=_chart_link(r) if r.links else None,
                              # An animation is the one place the band is
                              # worth the most: it appears as the sky darkens
                              # and goes again at dawn, which is exactly the
@@ -7106,7 +7527,28 @@ def compose_frame(r, dusk_lead_minutes=0, dawn_lag_minutes=0):
     else:                  mode = ""
 
     head = _export_head(r, st, mode)
-    body = paint(head, C.HEAD, c) + "\n\n" + art
+    # The frame's own header. The glyph tracks the real Sun either way, so
+    # the colour crosses the horizon over the length of the animation.
+    #
+    # Where it goes depends on who is watching. A terminal and a GIF have
+    # nowhere else to put it, so it stays two rows above the drawing, which
+    # is what it has always done. The page has a headline box of its own and
+    # a still line already sitting in it -- so the frame hands its header
+    # over separately and the box shows this one instead, rather than the
+    # page carrying two headers that disagree about the time.
+    #
+    # Two colour runs on the page, one in a terminal: the place and the
+    # moment arrive as their own span, which is the only way CSS can bold
+    # part of a line that reaches the browser as pre-rendered ANSI. Same
+    # trade the still page makes, for the same reason.
+    if r.panel:
+        pre = _head_prefix(r)
+        painted = paint(pre, C.HEAD, c) + paint(head[len(pre):], C.LABEL, c)
+        body = (paint_sun_glyph(painted, sun_alt, C.LABEL, c)
+                + HEAD_SLOT + art)
+    else:
+        body = (paint_sun_glyph(paint(head, C.HEAD, c), sun_alt, C.HEAD, c)
+                + "\n\n" + art)
     # The inset travels with the frame rather than being dropped.
     #
     # side_panel takes it out of `art` and hands it back through st, which is
@@ -7234,11 +7676,44 @@ def _export_head(r, st, mode):
             fixed[key] = dict(real, **have, alt=alt, az=az)
     if fixed:
         st = dict(st, **fixed)
-    # Untrimmed (10_000): the browser trims per rung because nine of them
-    # share one page width, but a picture has no rung and should carry what
-    # the widest view carries.
-    summary = _sky_summary(st, r.place.lat, 10_000,
-                           note=sky_note(r.place.lat, r.place.lon))
+    # The same staging the page's own line uses, so a frame's header and the
+    # headline above it are one sentence rather than two that agree by
+    # accident. It matters most here: a frame is one moment of an animation
+    # running through a whole day, and the blocks arriving and leaving one
+    # at a time is the thing being animated.
+    #
+    # The day view is composed elsewhere, so this only ever sees a Sun under
+    # the horizon -- but _head_day_blocks is written from the events and the
+    # altitude rather than from which composer called it, so it answers for
+    # a frame at noon as readily as one at midnight.
+    p = r.place
+    st_alt, st_az = st["sun"]["alt"], st["sun"].get("az")
+    day0 = _day0(r)
+    ev = sun_events_cached(day0, p.lat, p.lon)
+    # The golden window costs a second pass over the day, so it is only
+    # asked for while the Sun is up -- which is also the only time the
+    # block it feeds can appear.
+    bands = sky.sun_bands(day0, p.lat, p.lon, ev) if st_alt > 0 else None
+    day_blocks = _head_day_blocks(ev, p, p.offset(r.when_utc), r.when_utc,
+                                  st_alt, st_az, bands)
+    # A picture is untrimmed (10_000): the browser trims per rung because
+    # twelve of them share one page width, but a picture has no rung and
+    # should carry what the widest view carries.
+    #
+    # A browser frame does have a width, and it is the headline box's rather
+    # than the chart's -- the same sum the still page does, so the line a
+    # frame writes into that box is trimmed exactly like the line it
+    # replaces. Untrimmed it overran the box on any window narrower than the
+    # widest rung, which is most of them.
+    if r.panel:
+        room = int(_effective_width(r) * CHART_FONT_PX / DAY_HEAD_PX)
+        width = max(20, room - len(_head_prefix(r)) - 3 -
+                    (len(mode) + 3 if mode else 0))
+    else:
+        width = 10_000
+    summary = _sky_summary(st, p.lat, width,
+                           note=sky_note(p.lat, p.lon),
+                           day_blocks=day_blocks)
     return _horizon_head(r, mode, summary=summary)
 
 
@@ -8485,6 +8960,26 @@ document.documentElement.classList.add('js');
     something to hold on to -- there is no other way to bold part of a line
     that reaches the page as pre-rendered ANSI. */
  #day-head .dh>span:first-child{{font-weight:700}}
+ /* The animation's own copy of the line. Same type as the ladder's rungs,
+    and the two swap places on html.anim-on so only ever one is on screen.
+    Its own element rather than a thirteenth rung because the rungs are
+    chosen by container queries on :nth-child -- a replacement line living
+    among them would be shown at one width and hidden at all the others. */
+ /* One line, never two, and its height is fixed rather than derived from
+    what is in it. The rungs wrap (pre-wrap) because a long place name can
+    push one over and a still page can afford to grow a row. A frame cannot:
+    its line changes ninety-six times in fourteen seconds, and a line that
+    wraps on some of them and not others moves the chart underneath it every
+    time it does. The chart is the tallest thing on the page, so that is a
+    full relayout per frame -- which is what an animation cannot pay for.
+    The server already trims this line to the box, so there is nothing to
+    wrap in the normal case, and overflow:hidden is the guard for the rest. */
+ #day-head-live{{display:none;white-space:pre;overflow:hidden;
+                 height:1.3em;line-height:1.3;
+                 color:#e6ebf2;font-size:{DAY_HEAD_PX}px}}
+ #day-head-live>span:first-child{{font-weight:700}}
+ html.anim-on #day-head-ladder{{display:none}}
+ html.anim-on #day-head-live{{display:block}}
  /* The "near X" hint, as a pin. It is the only thing identifying a bare
     pair of coordinates so it can never be dropped, and spelled out it is
     32 characters ahead of anything about the sky. The words are still
@@ -8497,6 +8992,9 @@ document.documentElement.classList.add('js');
     a picture, and a colour glyph here would be the only one on the site. */
  .pin{{cursor:help;opacity:.75;font-variant-emoji:text}}
  .pin:hover,.pin:focus{{opacity:1;outline:none}}
+ /* Which way to look -- see dim_directions. It sits inside the headline's
+    own colour span, so the colour has to be set here to beat it. */
+ .dir{{font-size:.82em;color:#9a9a9a}}
  /* The drawing in the panel. Its own <pre> for the same reason the object
     pages give theirs one: the line-height is what makes a character cell
     twice as tall as it is wide (art.CELL), and a planet set at any other
@@ -8748,6 +9246,34 @@ function xtermHex(n){{
 function escapeHtml(s){{
   return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 }}
+// The browser half of api._anchor_markers. A chart is painted one cell at a
+// time, so by the time a label is a string it is a row of separate colour
+// spans with nothing left to match on -- sky.py puts these markers down
+// while the row is being assembled and the label's extent is still known,
+// and this is where they become anchors.
+//
+// It has to exist twice for the same reason skymapDimDirections does: a
+// still chart is converted to HTML by Python and a frame by this, so
+// anything Python does on the way out has to be done here too. Without it
+// the markers arrived as literal text and a paused frame printed its own
+// hrefs across the sky.
+//
+// After escaping, so a label's own characters can never be read as markup,
+// and the anchor goes outside the colour spans so a linked label is
+// character-for-character what it was.
+function anchorMarkers(s){{
+  var parts=s.split('\\x11'),out=parts[0];
+  for(var i=1;i<parts.length;i++){{
+    var chunk=parts[i],a=chunk.indexOf('\\x12');
+    if(a<0){{out+=chunk;continue;}}
+    var href=chunk.slice(0,a),rest=chunk.slice(a+1),b=rest.indexOf('\\x13');
+    if(b<0){{out+=rest;continue;}}
+    out+='<a class="sky-link" href="'+href+'">'+rest.slice(0,b)+'</a>'+
+         rest.slice(b+1);
+  }}
+  return out;
+}}
+
 function ansiToHtml(text){{
   var re=/\\x1b\\[(?:38;5;(\\d+)|0)m/g;
   var out='',pos=0,open=false,m;
@@ -8759,14 +9285,76 @@ function ansiToHtml(text){{
   }}
   out+=escapeHtml(text.slice(pos));
   if(open)out+='</span>';
-  return out;
+  return anchorMarkers(out);
 }}
 // Playback runs off a buffer rather than painting each frame as it lands.
 // That is what space and the arrow keys need: frames keep arriving while
 // paused, and once the stream has finished the whole night sits in memory
 // (96 frames of ~7 KB) to step through or replay without asking the server
-// for it again. The tick runs at the same interval the server streams at,
-// handed over on the button as data-frame-ms so the two cannot drift.
+// for it again. The tick's interval is handed over on the button as
+// data-frame-ms so nothing here has to guess at it, and it is deliberately
+// a little longer than the stream's own: playing slower than the frames
+// arrive is what keeps the buffer ahead, so a frame is always ready when
+// the tick comes and the browser is never waiting on the network to draw.
+// The browser half of api.dim_directions. A frame arrives as ANSI and is
+// turned into HTML here, so the server never sees the markup this works on
+// and cannot add the spans itself.
+//
+// The patterns are the same four, deliberately: if one changes, change it
+// in both places or the headline will look different while an animation is
+// running than it does either side of one. Anchored the same way too --
+// every match hangs off the fact it belongs to (a time, a height, a
+// percentage, a shadow) so none of them can reach a stray compass letter in
+// a place name.
+function skymapDimDirections(h){{
+  return h
+    .replace(/([↑↓^]\\d{{2}}:\\d{{2}}) ([NSEW]{{1,3}})\\b/g,
+             '$1 <span class="dir">$2</span>')
+    .replace(/(\\d+°) (up|down) ([NSEW]{{1,3}})\\b/g,
+             '$1 <span class="dir">$2 $3</span>')
+    .replace(/(\\d+%) (down)\\b/g,'$1 <span class="dir">$2</span>')
+    .replace(/(shadows [^ ]+) ([NSEW]{{1,3}})\\b/g,
+             '$1 <span class="dir">$2</span>')
+    .replace(/☀(?=[↑↓^]\\d{{2}}:\\d{{2}})/g,'<span class="dir">☀</span>');
+}}
+
+// One frame, split on its two markers and turned into the three pieces the
+// page shows: the headline, the chart, and the zenith inset. Done once per
+// frame and remembered, because the ANSI-to-HTML pass is the expensive part
+// of showing one and a replay or a step backwards would otherwise pay for
+// it again.
+// The browser half of api.pin_near. The still page swaps "· near Lausanne,
+// Vaud, Switzerland" for a pin carrying the words in its tooltip, because
+// the hint is the longest thing on the line that can never be dropped -- it
+// is the only thing identifying a bare pair of coordinates -- and spelled
+// out it is 32 characters spent before the line has said anything about the
+// sky. A frame's line is built the same way and has to be swapped the same
+// way, or the hint would spring back into words the moment an animation
+// started.
+//
+// The place name comes off the box rather than out of the line: it is the
+// server's own r.place.near, already escaped, and matching it as text would
+// mean guessing where the name ends.
+function skymapPinNear(h){{
+  var live=document.getElementById('day-head-live');
+  var near=live&&live.getAttribute('data-near');
+  if(!near)return h;
+  var words=' \\u00b7 near '+near;
+  if(h.indexOf(words)<0)return h;
+  return h.replace(words,' <span class="pin" tabindex="0" role="img" '+
+                   'aria-label="near '+near+'" title="near '+near+'">\\u2691</span>');
+}}
+
+function skymapAnimCook(raw){{
+  var parts=raw.split({ZENITH_SLOT_JS});
+  var body=parts[0],head='';
+  var cut=body.indexOf({HEAD_SLOT_JS});
+  if(cut>=0){{head=body.slice(0,cut);body=body.slice(cut+{HEAD_SLOT_JS}.length);}}
+  return {{head:head?skymapPinNear(skymapDimDirections(ansiToHtml(head))):'',
+          body:ansiToHtml(body),
+          zen:parts.length>1?ansiToHtml(parts[1]):''}};
+}}
+
 function skymapAnimShow(i){{
   var A=window.skymapAnim;
   if(!A||!A.frames.length)return;
@@ -8776,26 +9364,38 @@ function skymapAnimShow(i){{
   // stacking it underneath -- so it arrives as a second piece rather than as
   // more rows. Without this the inset sat frozen at the moment the page was
   // built while the chart ran through the whole night under it.
-  var parts=A.frames[A.at].split({ZENITH_SLOT_JS});
-  A.pre.innerHTML=ansiToHtml(parts[0]);
-  var zen=document.getElementById('chart-zenith');
-  if(zen&&parts.length>1)zen.innerHTML=ansiToHtml(parts[1]);
+  // Converted once and kept. A frame is about 37KB of markup and 800-odd
+  // spans, and the ANSI-to-HTML pass over it is repeated work the moment
+  // anybody steps back a frame, replays, or lets a 24-hour run loop -- and
+  // it is the most expensive thing in this function. The cache is per
+  // stream and dies with it.
+  var cooked=A.cooked[A.at];
+  if(!cooked)cooked=A.cooked[A.at]=skymapAnimCook(A.frames[A.at]);
+  // The header goes to the headline box rather than into the drawing. The
+  // frame carries it ahead of a marker of its own (compose_frame, browser
+  // frames only) so the page can put it where the still page keeps its
+  // line. It is the part of the page an animation is actually about: the
+  // moment moves, the Sun crosses the horizon, blocks arrive and leave.
+  if(cooked.head&&A.live)A.live.innerHTML=cooked.head;
+  A.pre.innerHTML=cooked.body;
+  if(A.zen&&cooked.zen)A.zen.innerHTML=cooked.zen;
   // Entering theatre mode happens here, on the first frame to actually
   // reach the page, and not back when the button was pressed.
   //
-  // A frame is two rows taller than the still chart -- it carries its own
-  // header and the blank line under it -- and it arrives a fetch later,
-  // about 250ms. Done at the press, the summary box collapsed immediately
-  // and the chart jumped up 61px, then the frame landed and pushed it back
-  // down 25. Two movements a quarter second apart, which on the night page
-  // is the whole of what entering an animation looks like. The day page had
-  // the same 429 -> 451 -> 641 stagger and got away with it only because
-  // its zoom was animating over the top.
+  // A frame used to be two rows taller than the still chart -- it carried
+  // its own header and the blank line under it -- and it arrives a fetch
+  // later, about 250ms. Done at the press, the summary box collapsed
+  // immediately and the chart jumped up 61px, then the frame landed and
+  // pushed it back down 25. Two movements a quarter second apart, which on
+  // the night page is the whole of what entering an animation looks like.
+  // The day page had the same 429 -> 451 -> 641 stagger and got away with
+  // it only because its zoom was animating over the top.
   //
-  // Both changes now land in one task, so the browser lays out once. The
-  // zoom is better off here too: it measures the pre to work out how much
-  // it can grow, and the pre now holds the frame it is going to show rather
-  // than the still it is replacing.
+  // The two rows are gone now: a browser frame hands its header to the
+  // headline box instead of drawing it, so the frame and the still it
+  // replaces are exactly the same height. The rest still holds -- both
+  // changes land in one task, so the browser lays out once, and the zoom
+  // measures a pre that already holds the frame it is about to show.
   if(!A.entered){{
     A.entered=true;
     document.documentElement.classList.add('anim-on');
@@ -8812,8 +9412,14 @@ function skymapAnimShow(i){{
 // refetch; this is the same answer put on the anchor.
 function skymapAnimSyncPng(){{
   var A=window.skymapAnim;
-  var link=document.querySelector('.share-row a[href*="horizon.png"]');
-  if(!A||!link)return;
+  if(!A)return;
+  // Looked up once per stream, not once per frame. This runs on every one
+  // of ninety-six frames and the element it wants never changes; a document
+  // query in that loop is work done ninety-five times for nothing.
+  if(A.pngLink===undefined)
+    A.pngLink=document.querySelector('.share-row a[href*="horizon.png"]');
+  var link=A.pngLink;
+  if(!link)return;
   var t=skymapAnimFrameTime(A.at);
   if(!t)return;
   if(!link.dataset.baseHref)link.dataset.baseHref=link.getAttribute('href');
@@ -9076,7 +9682,54 @@ function skymapAnimPlay(on){{
   if(!A)return;
   A.playing=on;
   A.btn.textContent=on?'⏸ pause':(skymapAnimAtEnd(A)?'▶ replay':'▶ resume');
-  if(on)skymapAnimTick();else clearTimeout(A.timer);
+  if(on)skymapAnimTick();else{{clearTimeout(A.timer);skymapAnimLinks();}}
+}}
+
+// The paused frame's labels, as links to the object pages. Asked for on
+// pause and never during playback: the still chart has had them all along,
+// but a running animation replaces the whole chart six times a second and
+// an anchor in a frame nobody can click is markup for its own sake -- 144
+// frames of it.
+//
+// The same shape the deep-sky key uses: ask the stream for one frame at
+// this moment, take the first whole one, cancel the rest. Kept once fetched
+// (A.linked), so pausing on the same frame twice costs one request. The
+// plain frame stays in A.plain for the same reason it does there.
+function skymapAnimLinks(){{
+  var A=window.skymapAnim;
+  if(!A||!A.frames.length||A.loadingLinks)return;
+  var at=A.at;
+  if(A.linked[at])return;
+  var t=skymapAnimFrameTime(at);
+  var live=A.url;
+  if(!t||!live)return;
+  var url=live.replace(/([?&])t=[^&]*/,'$1t='+encodeURIComponent(t))
+              .replace(/([?&])animate=[^&]*/,'$1animate=1')+'&links=1'+
+              (A.dsoOn[at]?'&dso=1':'');
+  A.loadingLinks=true;
+  fetch(url).then(function(resp){{
+    var reader=resp.body.getReader(),dec=new TextDecoder(),buf='';
+    function pump(){{
+      return reader.read().then(function(res){{
+        buf+=res.value?dec.decode(res.value,{{stream:true}}):'';
+        var parts=buf.split('\\x1b[2J\\x1b[H');
+        if(parts.length>2&&parts[1].trim()){{reader.cancel();return parts[1];}}
+        if(res.done)return parts.length>1&&parts[1].trim()?parts[1]:null;
+        return pump();
+      }});
+    }}
+    return pump();
+  }}).then(function(frame){{
+    A.loadingLinks=false;
+    // Only if it is still the frame on screen and still paused. The reply
+    // can land after somebody has stepped on or pressed play again, and
+    // swapping a frame in underneath them would be a visible jump.
+    if(!frame||A.playing||A.at!==at)return;
+    A.linked[at]=true;
+    A.frames[at]=frame;
+    delete A.cooked[at];
+    skymapAnimShow(at);
+  }}).catch(function(){{A.loadingLinks=false;}});
 }}
 function skymapAnimTick(){{
   var A=window.skymapAnim;
@@ -9122,6 +9775,10 @@ function skymapAnimDeepSky(done){{
   // plain frame back, and a third press costs no request at all.
   if(A.dsoOn[at]){{
     A.frames[at]=A.plain[at];
+    // The cooked copy is keyed by index and this index now holds different
+    // text, so it has to go with it -- otherwise pressing d showed the
+    // frame that was cached rather than the one just swapped in.
+    delete A.cooked[at];
     A.dsoOn[at]=false;
     skymapAnimShow(at);
     if(done)done(true,false);
@@ -9130,13 +9787,14 @@ function skymapAnimDeepSky(done){{
   if(A.dsoFrames[at]!==undefined){{
     A.plain[at]=A.frames[at];
     A.frames[at]=A.dsoFrames[at];
+    delete A.cooked[at];
     A.dsoOn[at]=true;
     skymapAnimShow(at);
     if(done)done(true,true);
     return;
   }}
   var t=skymapAnimFrameTime(at);
-  var live=A.btn.getAttribute('data-live-url');
+  var live=A.url;
   if(!t||!live)return;
   var url=live.replace(/([?&])t=[^&]*/,'$1t='+encodeURIComponent(t))
               .replace(/([?&])animate=[^&]*/,'$1animate=1')+'&dso=1';
@@ -9165,6 +9823,7 @@ function skymapAnimDeepSky(done){{
     A.dsoFrames[at]=frame;
     A.dsoOn[at]=true;
     A.frames[at]=frame;
+    delete A.cooked[at];
     if(A.at===at)skymapAnimShow(at);
     if(done)done(true,true);
   }}).catch(function(){{
@@ -9210,11 +9869,24 @@ function skymapAnimate(btn){{
   // URL, so data-cols is absent there and this leaves the URL alone.
   var cols=pre&&pre.getAttribute('data-cols');
   if(cols&&!/[?&]w=/.test(liveUrl))liveUrl+='&w='+cols;
-  A=window.skymapAnim={{frames:[],at:-1,playing:true,done:false,timer:null,
-                       entered:false,
+  // cooked: converted frames, keyed by index (see skymapAnimCook). live and
+  // zen: the two boxes a frame writes into besides the chart, resolved once
+  // here rather than looked up on every frame.
+  //
+  // url: this URL, width and all, and not the button's data-live-url. The
+  // width is worked out here from whichever ladder rung CSS chose and was
+  // only ever added to the local copy -- so anything that later re-read the
+  // attribute asked for a frame at the default width and got a chart half
+  // the size of the one it was replacing. Both refetches (deep sky, and the
+  // links on a paused frame) read this instead.
+  A=window.skymapAnim={{frames:[],cooked:{{}},at:-1,playing:true,done:false,
+                       timer:null,entered:false,url:liveUrl,
+                       live:document.getElementById('day-head-live'),
+                       zen:document.getElementById('chart-zenith'),
                        btn:btn,pre:pre,base:pre.innerHTML,loadingDso:false,
+                       loadingLinks:false,linked:{{}},
                        plain:{{}},dsoFrames:{{}},dsoOn:{{}},
-                       ms:parseInt(btn.getAttribute('data-frame-ms'),10)||150,
+                       ms:parseInt(btn.getAttribute('data-frame-ms'),10)||250,
                        stepMin:parseInt(btn.getAttribute('data-step-min'),10)||15}};
   // Enabled throughout now: while the stream runs this button is the pause
   // control, so greying it out would take the mouse-only way to pause with
@@ -10113,6 +10785,11 @@ PAGE = PAGE.replace("/*CMDBAR_JS*/", CMDBAR_JS)
 # among them and raise. Done once at import, so every gap on the page comes
 # from the one constant without costing a lookup per render.
 PAGE = PAGE.replace("{BOX_GAP}", str(BOX_GAP))
+# The animated headline is set at the same size as the ladder's rungs, which
+# _ladder_rules writes from the same constant. Substituted here rather than
+# left as a format key: the page is .format()ed per request with a fixed set
+# of keys, and an unknown one is a 500 rather than a wrong pixel.
+PAGE = PAGE.replace("{DAY_HEAD_PX}", str(DAY_HEAD_PX))
 PAGE = PAGE.replace("{ANIM_WIDE_MS}", str(ANIM_WIDE_MS))
 # The room the fixed shortcut bar needs, plus the page's one gap under it, so
 # the last box ends the same distance above the bar as any two boxes sit
@@ -10126,6 +10803,7 @@ PAGE = PAGE.replace("{KBD_BAR}", str(KBD_BAR_H))
 # control characters, which is the whole point -- writing them into the script
 # raw would put unprintables in the page source.
 PAGE = PAGE.replace("{ZENITH_SLOT_JS}", json.dumps(ZENITH_SLOT))
+PAGE = PAGE.replace("{HEAD_SLOT_JS}", json.dumps(HEAD_SLOT))
 
 
 # Only shown on an actual chart page (server.py passes "" everywhere else) --
@@ -10481,7 +11159,7 @@ SPHERE_PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
     The 3D scene is recoloured object by object in JS instead (paintScene
     below), not with a CSS filter over the canvas -- a filter is one line
     but costs a full-screen composite every frame on exactly the hardware
-    least able to spare it. */
+    least able to spare it.
     Everything painted straight onto the sky is :not(.daytime) below. Red
     mode dulls the daytime dome but doesn't get rid of it, and red text on
     that broad red field is unreadable at any weight -- worse with the
@@ -12182,6 +12860,23 @@ function animate() {{
 animate();
 </script>
 </body></html>"""
+
+
+# The comments come out of the CSS and the script here, once, at import --
+# not out of this file, which keeps every one of them. See minify.py for why
+# it is a tokeniser and not a regular expression.
+#
+# Last thing in the module on purpose. Everything that assembles these
+# strings has already run: the ladder rules, the command bar's CSS and
+# script, and the slot markers are all baked into PAGE by now, so one pass
+# over it covers all four. Run any earlier and whatever was spliced in
+# afterwards would keep its comments.
+#
+# Safe to run before .format(): only comment text is removed, and a format
+# field inside a comment was never going to be read.
+PAGE = minify.strip_page(PAGE)
+SPHERE_PAGE = minify.strip_page(SPHERE_PAGE)
+OBJECT_CSS = minify.strip_page(OBJECT_CSS)
 
 
 def _controls_inner(explore, animate_btn, quadrant_btn, sphere_btn, extra):
