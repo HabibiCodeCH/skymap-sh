@@ -1177,7 +1177,8 @@ def test_the_static_facts_wrap_rather_than_scroll(client):
     # The portrait is the one exception and has to be: it is a drawing made
     # of characters, so reflowing it would destroy it. Everything that is
     # text still has to wrap, which is the thing this guards.
-    facts_half = re.sub(r'<div class="obj-art-frame">.*?</div>', "", aside, flags=re.S)
+    facts_half = re.sub(r'<div class="art-frame obj-art-frame">.*?</div>', "",
+                        aside, flags=re.S)
     assert "<pre" not in facts_half, "the static facts must not be preformatted"
     assert aside.count("<pre") <= 1, "only the portrait may be preformatted"
     rows = re.findall(r"<dt>([^<]+)</dt><dd>(.*?)</dd>", aside)

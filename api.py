@@ -3004,21 +3004,13 @@ OBJECT_CSS = """
   gap:0 30px;align-items:start;margin-top:2px}
 .obj-static{border-right:1px solid #1c2027;padding-right:24px}
 .obj-static pre,.obj-live pre{overflow-x:auto}
-/* The portrait. line-height is the load-bearing number here: the drawing is
-   built for a cell exactly twice as tall as it is wide (art.CELL), monospace
-   glyphs run about 0.6em, so 1.2 gives that ratio and anything else turns
-   every planet into an ellipse. overflow is hidden rather than scrolled --
-   the art is sized to fit this column, and a scrollbar under it would be a
-   sign something is wrong rather than something to use. */
-.obj-art{font-size:11px;line-height:1.2;margin:0;overflow:hidden;
-  font-variant-ligatures:none;-webkit-font-smoothing:none}
-/* A frame, so the portrait reads as a plate rather than as loose characters
-   that happened to land above the text. Flex-centred both ways: the drawing
-   is a fixed 39x15 box whatever the object, so centring it here means every
-   object page puts its picture in exactly the same place and the lede below
-   starts on the same line. */
-.obj-art-frame{display:flex;align-items:center;justify-content:center;
-  border:1px solid #1c2027;border-radius:8px;background:#070a0e;
+/* The portrait is an .art-plate in an .art-frame (in PAGE, shared with the
+   modal's frames): the cell ratio, the refusal to wrap and the centring are
+   all there. This is only how big it is here. */
+.obj-art{font-size:11px}
+/* And this is only the plate it sits on, so the portrait reads as a picture
+   rather than as loose characters that happened to land above the text. */
+.obj-art-frame{border:1px solid #1c2027;border-radius:8px;background:#070a0e;
   padding:16px 10px;margin:.1rem 0 1.15rem;
   /* ROWS lines at 11px on a 1.2 line-height, so the plate is the same size
      for every object even before its drawing loads or if one ever comes
@@ -3340,10 +3332,8 @@ def object_html(r, canonical, text, data, place=None, base_url="",
         # (see art.CELL), and text set at any other line-height would squash
         # every circle back into an ellipse.
         picture = data.get("art") or []
-        art_html = (f'<div class="obj-art-frame">'
-                    f'<pre class="obj-art" aria-hidden="true">'
-                    f'{ansi_to_html(chr(10).join(picture))}</pre></div>'
-                    if picture else "")
+        art_html = (art_plate(picture, frame_cls="obj-art-frame",
+                              plate_cls="obj-art") if picture else "")
         static_html = (art_html
                        + (f'<p class="obj-lede">{html.escape(intro_txt)}</p>'
                           if intro_txt else "")
@@ -6282,23 +6272,44 @@ DAY_PLANET_SCALE = 0.86
 DAY_ART_ROWS = 17
 
 
-def _drop_visible(line, n):
-    """The line with its first n *visible* characters gone, colours intact.
+def _slice_visible(line, a, b):
+    """Visible columns a..b of a line, colours intact.
 
-    Counted in visible characters rather than in string positions because a
-    row of art is a run of escape sequences with characters between them,
-    and slicing the string would cut one in half and paint the rest of the
-    modal orange."""
+    Counted in visible characters rather than in string positions, because a
+    row of art is a run of escape sequences with characters between them and
+    slicing the string would cut one in half and paint the rest of the page
+    orange."""
     out, seen, i = [], 0, 0
     while i < len(line):
         m = ANSI.match(line, i)
         if m:
             out.append(m.group(0)); i = m.end(); continue
-        if seen >= n:
+        if a <= seen < b:
             out.append(line[i])
         seen += 1
         i += 1
     return "".join(out)
+
+
+def art_plate(lines, frame_cls="", plate_cls="", style=""):
+    """A drawing centred in a plate. Everywhere characters become a picture.
+
+    The object pages had this first and the modal frames grew their own copy
+    of it, which is two places to get art.CELL wrong. One component now: the
+    frame centres the block both ways, the plate pins the line height the
+    drawing is built for and refuses to wrap, and each caller adds only what
+    is different about its own -- a border and a minimum height on an object
+    page, a type size in frame-widths in the modal.
+
+    Centring the block and never the line. With white-space:pre each line is
+    its own line box, so text-align:center would centre every line by its own
+    width and shear the drawing apart down the middle.
+    """
+    frame = f"art-frame {frame_cls}".strip()
+    plate = f"art-plate {plate_cls}".strip()
+    return (f'<div class="{frame}">'
+            f'<pre class="{plate}"{style} aria-hidden="true">'
+            f'{ansi_to_html(chr(10).join(lines))}</pre></div>')
 
 
 # How tall a drawing is allowed to be, as a fraction of the frame it sits in.
@@ -6311,6 +6322,18 @@ ART_HEIGHT_FRAC = 0.74
 # A monospace "0" in this stack measures 0.602em. The extra is what keeps a
 # rounding error from clipping the last column of Saturn's rings.
 ART_ADVANCE_EM = 0.612
+# Braille is not in any font we bundle, so the browser falls back to one that
+# has it and those cells come out wider -- 10.938px against 9.633 when this
+# was measured for the quadrant grid, which is 1.135 times. A shower is drawn
+# in braille and its widest row was running four pixels out of the frame,
+# because counting characters counted every cell as the narrow kind.
+BRAILLE_ADVANCE_EM = ART_ADVANCE_EM * 1.135
+
+
+def _art_em_width(line):
+    """How wide a row of art is, in em, counting braille as the wider cell."""
+    return sum(BRAILLE_ADVANCE_EM if "\u2800" <= c <= "\u28ff"
+               else ART_ADVANCE_EM for c in line)
 
 
 def _art_block(lines, caption, url, cls="dt-art", rows=DAY_ART_ROWS):
@@ -6347,25 +6370,26 @@ def _art_block(lines, caption, url, cls="dt-art", rows=DAY_ART_ROWS):
         left = min(len(l) - len(l.lstrip(" ")) for l in inked)
         right = canvas - max(len(l.rstrip(" ")) for l in inked)
         cut = max(0, min(left, right))
-        if cut:
-            body = [_drop_visible(l, cut) for l in body]
-        cols = max((len(strip_ansi(l).rstrip()) for l in body), default=0)
+        # Trailing spaces are invisible but not free: they widen the <pre>
+        # past its own ink, and .art-frame centres the <pre>. A shower whose
+        # rows ended in a dozen spaces sat that far left of the middle.
+        body = [_slice_visible(l, cut, len(strip_ansi(l).rstrip()) or cut)
+                for l in body]
+        cols = max((_art_em_width(strip_ansi(l)) for l in body), default=0)
     if body and rows and len(body) < rows:
         pad = rows - len(body)
         body = [""] * (pad // 2) + body + [""] * (pad - pad // 2)
     size = ""
-    if cols and rows:
-        wide = 100.0 / (cols * ART_ADVANCE_EM)
-        tall = ART_HEIGHT_FRAC * 100.0 / (rows * 1.2)
+    if cols and body:
+        # cols is already in em (see _art_em_width), not in characters.
+        wide = 100.0 / cols
+        tall = ART_HEIGHT_FRAC * 100.0 / (len(body) * 1.2)
         size = f' style="font-size:min({wide:.3f}cqw,{tall:.3f}cqw)"'
-    # The drawing goes in a box of its own that takes the slack, so it can
-    # be centred in what is left over the caption. Without it the caption's
+    # art-fill is the modifier: it takes the slack over the caption, so the
+    # drawing has something to be centred in. Without it the caption's
     # margin-top:auto swallowed every spare pixel and the picture sat pinned
-    # to the ceiling of its frame with a hand's width of black under it.
-    # The wrapper and not the <pre>: flex on a <pre> makes a flex item of
-    # every colour span inside it and stacks them down the page.
-    pre = (f'<div class="art-fill"><pre class="{cls}"{size} aria-hidden="true">'
-           f'{ansi_to_html(chr(10).join(body))}</pre></div>')
+    # to the ceiling of its frame.
+    pre = art_plate(body, frame_cls="art-fill", plate_cls=cls, style=size)
     cap = f'<span class="dt-cap">{html.escape(caption)}</span>'
     if not url:
         return f'<div class="dt-art-box">{pre}{cap}</div>'
@@ -6547,11 +6571,14 @@ def _body_tile(r, name, scale):
     return _art_block(lines, name, url, cls="mf-art", rows=MODAL_TILE_ROWS)
 
 
-# The two frames at the top of the modal are a fixed shape: whatever is in
-# them, the box is the same height, so opening the modal on a quiet night
-# does not give a different-shaped page from opening it on the night of an
-# eclipse.
-MODAL_ART_ROWS = 14
+# No padding to a fixed row count. It was 14, to hold the frames' height
+# steady whatever went in them -- but they are grid siblings and already
+# stretch to each other, so the row count was buying nothing and costing the
+# thing it looked like it was helping. The blank rows go inside the <pre>,
+# and the <pre> is what gets centred, so a drawing 13 rows deep in a 14-row
+# box sat half a row high and its bottom row ran into the caption. Trimmed to
+# its own ink and centred as itself, it has the same space above as below.
+MODAL_ART_ROWS = 0
 # The cells draw the *same* art as the big frame and set it smaller, rather
 # than asking planet_art for a smaller drawing. A scaled-down disc is not a
 # smaller picture of Saturn, it is a picture of fewer characters: the rings
@@ -8529,27 +8556,48 @@ document.documentElement.classList.add('js');
  .mf-frame>.dt-art-box{{display:flex;flex-direction:column;flex:1 1 auto;
                         min-height:0;margin-bottom:0;
                         text-decoration:none;color:inherit}}
- /* Takes the slack and centres the drawing in it. The caption then sits on
-    the floor because there is nothing left to push it off. */
- .art-fill{{display:flex;flex:1 1 auto;min-height:0;
-            align-items:center;justify-content:center}}
- /* Never display:flex on the <pre>. Its contents are the colour spans
+ /* One plate, wherever characters are a picture: the object pages, the
+    eclipse pages and the modal's frames. art.CELL lives in one rule instead
+    of three, which is the point of it -- a drawing is built for a cell
+    exactly twice as tall as it is wide, monospace glyphs run about 0.6em, so
+    1.2em is that ratio and anything else turns every planet into an ellipse.
+
+    The frame centres the block, never the line. With white-space:pre each
+    line is its own line box, so text-align:center centres every line by its
+    own width and shears the drawing apart down the middle. And never
+    display:flex on the <pre>: its contents are the colour spans ansi_to_html
+    emits, so flex makes a flex item of each and stacks them down the page --
+    fifteen lines of shower came out 859px tall instead of 155.
+
+    Callers add only what differs: a border and a floor height on an object
+    page (.obj-art-frame), a size in frame-widths in the modal (.mf-art). */
+ .art-frame{{display:flex;align-items:center;justify-content:center;
+             min-width:0}}
+ .art-plate{{margin:0;line-height:1.2em;white-space:pre;overflow:hidden;
+             font-variant-ligatures:none;-webkit-font-smoothing:none}}
+ /* The modal's own modifier: takes the slack over the caption, so the
+    drawing has something to be centred in and the caption keeps the floor. */
+ .art-fill{{flex:1 1 auto;min-height:0}}
+ /* Same recipe as .obj-art on the object pages, and for the same reason:
+    the wrapper centres the block and the <pre> is left alone.
+
+    No text-align. With white-space:pre every line is its own line box, so
+    text-align:center centres each line by *its own* width -- which is fine
+    for a symmetric disc and wrong for everything else, and left the drawing
+    reading as if it had been shoved against the left margin. .art-fill
+    centres it as one block, the way .obj-art-frame does.
+
+    Never display:flex on the <pre> either. Its contents are the colour spans
     ansi_to_html emits, so flex makes every one of them a flex item and
     stacks them down the page: fifteen lines of shower came out 859px tall
-    instead of 155. The centring belongs on the box around it. */
- /* 1.2em, not 1.15. A monospace "0" is 0.6em wide and art.py draws every
-    disc for a cell art.CELL = 2.0 times as tall as it is wide, so the line
-    height has to be 2 x 0.6em or the circles come out as ellipses. Measured
-    at 1.15 the cell was 1.91:1 -- a 5% squash, which is nothing as a number
-    and unmissable on a planet. */
- /* Exactly as wide as the frame. The art is art.COLS = 45 characters and a
-    monospace "0" is a shade over 0.6em, so 45 x 0.612 = 27.5 frame-widths
-    per em: divide the frame by that and the drawing lands edge to edge with
-    a hair to spare. Measured rather than assumed -- Chromium's advance for
-    this stack is 0.602em, and the extra is what keeps a rounding error from
-    clipping Saturn's outer ring. */
- .mf-art{{margin:0;font-size:calc(100cqw / 27.5);line-height:1.2em;
-          white-space:pre;overflow:hidden;text-align:center;display:block}}
+    instead of 155. */
+ /* Only the size; the rest of what makes a drawing a drawing is .art-plate.
+    A fallback in frame-widths for anything that reaches here without a size
+    of its own: the art is at most art.COLS = 45 characters and a monospace
+    "0" is a shade over 0.6em, so 45 x 0.612 = 27.5 frame-widths per em.
+    _art_block overrides it per drawing, from the columns that drawing
+    actually uses. */
+ .mf-art{{font-size:calc(100cqw / 27.5)}}
  /* min-height:0 undoes the two lines .dt-cap reserves. That reservation was
     for the deck, whose caption changed every seven seconds and would have
     changed the box's height with it; these frames take their height from the
@@ -8581,7 +8629,7 @@ document.documentElement.classList.add('js');
  /* No size of its own any more: .mf-art is in frame-widths and a cell is a
     frame, so it fits itself. It was 5.5px, which was right for one modal
     width and wrong the moment that changed. */
- .mf-cell .mf-art{{overflow:visible;align-self:center}}
+ .mf-cell .mf-art{{overflow:visible}}
  /* Centred under a centred drawing. The big frame's caption is bottom-left
     because it is a sentence about an event; these are one word naming the
     picture above them. */

@@ -2099,8 +2099,15 @@ class TheModalFramesAreDrawnRound(unittest.TestCase):
         target of 2.0 -- a 5% squash, invisible as a number and obvious on
         Saturn. One rule, on .mf-art: a quad cell is a frame like any other
         and takes the same drawing at the same shape."""
-        self.assertIn("line-height:1.2em", self._rule(" .mf-art"))
+        # One rule for every drawing on the site, shared with the object
+        # pages: .art-plate. The modal's own rule carries nothing but a size.
+        self.assertIn("line-height:1.2em", self._rule(" .art-plate"))
+        self.assertNotIn("line-height", self._rule(" .mf-art"))
         self.assertNotIn("line-height", self._rule(" .mf-cell .mf-art"))
+        # And the object pages take it from the same place rather than
+        # keeping a second copy that can drift.
+        self.assertNotIn("line-height", api.OBJECT_CSS.split(".obj-art{")[1]
+                         .split("}")[0])
 
     def test_the_type_is_sized_from_the_frame_and_not_from_a_number(self):
         """cqw, so one rule fits the big frame and a quad cell alike. The
@@ -2155,16 +2162,40 @@ class TheModalFramesAreDrawnRound(unittest.TestCase):
         # deletion, so anything else that ever uses .dt-cap keeps what it had.
         self.assertIn("min-height:2.7em", api.PAGE)
 
+    def test_nothing_is_padded_out_to_a_row_count(self):
+        """The blank rows go inside the <pre>, and the <pre> is what gets
+        centred -- so padding a 13-row drawing out to 14 sat it half a row
+        high and ran its bottom row into the caption. The frames keep their
+        matching height from the grid they are in, not from the row count."""
+        self.assertEqual(api.MODAL_ART_ROWS, 0)
+        canvas = ["", "  ####  ", "  ####  ", ""]
+        rows = self._art_rows(api._art_block(canvas, "x", "", cls="mf-art",
+                                             rows=api.MODAL_ART_ROWS))
+        self.assertEqual(len(rows), 2)
+
+    def test_the_height_cap_counts_the_rows_there_actually_are(self):
+        """Two drawings of different depths both fill their frame, rather
+        than a short one being held down to the space a tall one needs."""
+        short = api._art_block(["  ####  ", "  ####  "], "x", "",
+                               cls="mf-art", rows=0)
+        tall = api._art_block(["  ####  "] * 8, "x", "", cls="mf-art", rows=0)
+        get = lambda b: float(re.search(r"min\([\d.]+cqw,([\d.]+)cqw\)",
+                                        b).group(1))
+        self.assertGreater(get(short), get(tall))
+
     def test_the_drawing_is_centred_in_what_is_left(self):
         """Its own growing box, so the caption's margin-top:auto cannot take
         the slack and pin the picture to the ceiling."""
-        rule = self._rule(" .art-fill")
-        self.assertIn("flex:1 1 auto", rule)
-        self.assertIn("align-items:center", rule)
-        self.assertIn("justify-content:center", rule)
+        # The centring is the shared frame's; .art-fill only adds the growing.
+        frame = self._rule(" .art-frame")
+        self.assertIn("align-items:center", frame)
+        self.assertIn("justify-content:center", frame)
+        self.assertIn("flex:1 1 auto", self._rule(" .art-fill"))
         # Never on the <pre> itself: ansi_to_html fills it with colour spans
         # and flex would make a row of every one of them.
-        self.assertNotIn("flex", self._rule(" .mf-art"))
+        self.assertNotIn("flex", self._rule(" .art-plate"))
+        # And never text-align, which centres each line by its own width.
+        self.assertNotIn("text-align", self._rule(" .art-plate"))
 
     def test_the_caption_sits_on_the_floor_of_the_frame(self):
         """margin-top:auto puts it there, and .dt-art-box's own 12px bottom
