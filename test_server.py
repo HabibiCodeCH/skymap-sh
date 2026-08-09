@@ -277,10 +277,22 @@ class AnimateBrowserVsTerminal(unittest.TestCase):
     def test_space_pauses_and_the_arrows_step_while_animating(self):
         body = self.client.get("/Ibiza?animate=24", headers=BROWSER).text
         self.assertIn("e.key==='ArrowLeft'||e.key==='ArrowRight'", body)
-        self.assertIn("skymapAnimStep(e.key==='ArrowLeft'?-1:1)", body)
-        # Gated on there being an animation, so space and the arrows keep
+        # skymapStepFrame, not skymapAnimStep: an arrow now means the same
+        # thing whether or not something is playing, and inside a running
+        # stream it still steps through the buffer.
+        self.assertIn("skymapStepFrame(e.key==='ArrowLeft'?-1:1)", body)
+        # Space stays gated on there being an animation, so it keeps
         # scrolling the page everywhere else.
         self.assertIn("window.skymapAnim&&window.skymapAnim.frames.length", body)
+
+    def test_the_arrows_work_before_anything_is_playing(self):
+        """And go backwards, which a stream cannot: it only ever runs
+        forward from the page's own moment. Bound where there is an animate
+        button, so arrows keep scrolling every other view."""
+        body = self.client.get("/Ibiza?animate=24", headers=BROWSER).text
+        self.assertIn("function skymapStepFrame(", body)
+        self.assertIn("function skymapScrubTo(", body)
+        self.assertIn("skymapScrub.off", body)
 
     def test_a_frame_can_carry_deep_sky_at_all(self):
         # compose_frame never passed dso_limit, so an animation asked for

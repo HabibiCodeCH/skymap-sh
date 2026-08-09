@@ -9658,6 +9658,18 @@ function skymapAnimZoom(on){{
     pre.style.fontSize=(base*k)+'px';
   }});
 }}
+function skymapScrubRestore(){{
+  // The stepped chart, put back. Its own baseline, because stepping can
+  // happen with no animation ever having started and A.base only exists
+  // once one has.
+  var S=window.skymapScrub;
+  S.off=0;
+  if(S.base===null)return;
+  var pre=window.skymapChartPre();
+  if(pre)pre.innerHTML=S.base;
+  S.base=null;
+}}
+
 function skymapAnimRestore(){{
   // Put the chart back the way it was found. The last frame is 24 hours
   // past the moment the page is actually about, so leaving it up ends the
@@ -9672,10 +9684,14 @@ function skymapAnimRestore(){{
   // off again.
   document.documentElement.classList.remove('anim-on');
   skymapAnimZoom(false);
-  var A=window.skymapAnim;
-  if(!A||A.base===null)return;
-  A.pre.innerHTML=A.base;
   if(window.skymapSetHint)window.skymapSetHint(null);
+  var A=window.skymapAnim;
+  // A stepped chart with no animation behind it has its own baseline, and
+  // it is the only one there is on that path -- an arrow can be the first
+  // thing anybody presses.
+  if(!A||A.base===null){{skymapScrubRestore();return;}}
+  A.pre.innerHTML=A.base;
+  skymapScrubRestore();
 }}
 function skymapAnimPlay(on){{
   var A=window.skymapAnim;
@@ -9707,19 +9723,7 @@ function skymapAnimLinks(){{
               .replace(/([?&])animate=[^&]*/,'$1animate=1')+'&links=1'+
               (A.dsoOn[at]?'&dso=1':'');
   A.loadingLinks=true;
-  fetch(url).then(function(resp){{
-    var reader=resp.body.getReader(),dec=new TextDecoder(),buf='';
-    function pump(){{
-      return reader.read().then(function(res){{
-        buf+=res.value?dec.decode(res.value,{{stream:true}}):'';
-        var parts=buf.split('\\x1b[2J\\x1b[H');
-        if(parts.length>2&&parts[1].trim()){{reader.cancel();return parts[1];}}
-        if(res.done)return parts.length>1&&parts[1].trim()?parts[1]:null;
-        return pump();
-      }});
-    }}
-    return pump();
-  }}).then(function(frame){{
+  skymapFetchFrame(url).then(function(frame){{
     A.loadingLinks=false;
     // Only if it is still the frame on screen and still paused. The reply
     // can land after somebody has stepped on or pressed play again, and
@@ -9748,17 +9752,62 @@ function skymapAnimTick(){{
 // arithmetic here is pure wall clock. (A place crossing a DST boundary
 // mid-animation would be shifted by the reader's own rules rather than its
 // own, an hour out for one frame of a 24-hour run.)
-function skymapAnimFrameTime(i){{
-  var A=window.skymapAnim;
-  var qs=(A.btn.getAttribute('data-live-url')||'').split('?')[1]||'';
+// The moment `i` steps from the page's own, as the local wall clock the
+// server wants. Works with or without a running animation: the base moment
+// and the step are both on the animate button, which is there from the
+// moment the page loads. That is what lets an arrow work on arrival.
+function skymapFrameTime(i){{
+  var btn=document.getElementById('animate-btn');
+  if(!btn)return null;
+  var qs=(btn.getAttribute('data-live-url')||'').split('?')[1]||'';
   var t=new URLSearchParams(qs).get('t');
   if(!t)return null;
   var d=new Date(t);
   if(isNaN(d.getTime()))return null;
-  d.setMinutes(d.getMinutes()+i*A.stepMin);
+  var step=parseInt(btn.getAttribute('data-step-min'),10)||10;
+  d.setMinutes(d.getMinutes()+i*step);
   function p(n){{return (n<10?'0':'')+n;}}
   return d.getFullYear()+'-'+p(d.getMonth()+1)+'-'+p(d.getDate())+
          'T'+p(d.getHours())+':'+p(d.getMinutes());
+}}
+function skymapAnimFrameTime(i){{return skymapFrameTime(i);}}
+
+// One frame out of a stream, and then stop reading. Three callers want
+// exactly this -- deep sky on the paused frame, its labels as links, and
+// stepping to a moment the buffer does not hold -- and they each had their
+// own copy of the pump. A one-hour request is the smallest the server will
+// take, so it would keep sending; cancelling as soon as the first frame is
+// whole means it renders one or two rather than the six that hour is.
+function skymapFetchFrame(url){{
+  return fetch(url).then(function(resp){{
+    var reader=resp.body.getReader(),dec=new TextDecoder(),buf='';
+    function pump(){{
+      return reader.read().then(function(res){{
+        buf+=res.value?dec.decode(res.value,{{stream:true}}):'';
+        var parts=buf.split('\\x1b[2J\\x1b[H');
+        if(parts.length>2&&parts[1].trim()){{reader.cancel();return parts[1];}}
+        if(res.done)return parts.length>1&&parts[1].trim()?parts[1]:null;
+        return pump();
+      }});
+    }}
+    return pump();
+  }});
+}}
+
+// The URL for one frame at `t`, at the width CSS actually chose. The width
+// is not in data-live-url -- the ladder picks it and only this element
+// knows which rung won -- so anything asking for a frame has to add it or
+// get a chart two thirds the size of the one on screen.
+function skymapFrameUrl(t,extra){{
+  var btn=document.getElementById('animate-btn');
+  if(!btn||!t)return null;
+  var url=btn.getAttribute('data-live-url');
+  if(!url)return null;
+  var pre=window.skymapChartPre();
+  var cols=pre&&pre.getAttribute('data-cols');
+  if(cols&&!/[?&]w=/.test(url))url+='&w='+cols;
+  return url.replace(/([?&])t=[^&]*/,'$1t='+encodeURIComponent(t))
+            .replace(/([?&])animate=[^&]*/,'$1animate=1')+(extra||'');
 }}
 // Deep sky for the frame on screen. One frame, not the whole run: "d" here
 // means "show me more of what I am looking at", and the run is 96 frames of
@@ -9799,21 +9848,7 @@ function skymapAnimDeepSky(done){{
   var url=live.replace(/([?&])t=[^&]*/,'$1t='+encodeURIComponent(t))
               .replace(/([?&])animate=[^&]*/,'$1animate=1')+'&dso=1';
   A.loadingDso=true;
-  fetch(url).then(function(resp){{
-    var reader=resp.body.getReader(),dec=new TextDecoder(),buf='';
-    function pump(){{
-      return reader.read().then(function(res){{
-        buf+=res.value?dec.decode(res.value,{{stream:true}}):'';
-        var parts=buf.split('\\x1b[2J\\x1b[H');
-        // Frame one is whole once the next separator lands (or the stream
-        // ends). Everything after it is thrown away unread.
-        if(parts.length>2&&parts[1].trim()){{reader.cancel();return parts[1];}}
-        if(res.done)return parts.length>1&&parts[1].trim()?parts[1]:null;
-        return pump();
-      }});
-    }}
-    return pump();
-  }}).then(function(frame){{
+  skymapFetchFrame(url).then(function(frame){{
     A.loadingDso=false;
     if(!frame)return;
     // Both kept: the stream's own frame to go back to, the deep-sky one to
@@ -9839,6 +9874,68 @@ function skymapAnimStep(d){{
   if(!A||!A.frames.length)return;
   if(A.playing)skymapAnimPlay(false);
   skymapAnimShow(A.at+d);
+}}
+
+// Stepping by time rather than through a buffer, which is what an arrow
+// has to mean in the two places the buffer cannot answer: before an
+// animation has been started at all, and earlier than the moment it starts
+// from. A stream only ever runs forward from the page's own moment, so
+// without this the left arrow had nothing behind it and both arrows did
+// nothing until somebody had pressed space.
+//
+// One request per press, for one frame. The alternative -- starting a
+// whole day's stream because somebody pressed an arrow -- is 144 frames of
+// server work to show one.
+window.skymapScrub={{off:0,busy:false,base:null}};
+
+function skymapScrubTo(off){{
+  var S=window.skymapScrub;
+  if(S.busy)return;
+  var url=skymapFrameUrl(skymapFrameTime(off),'&links=1');
+  if(!url)return;
+  var pre=window.skymapChartPre();
+  if(!pre)return;
+  // The chart as it was found, kept once, so Escape has something to put
+  // back. Taken before the first frame lands rather than after, or the
+  // baseline would be a frame.
+  if(S.base===null)S.base=pre.innerHTML;
+  S.busy=true;
+  skymapFetchFrame(url).then(function(frame){{
+    S.busy=false;
+    if(!frame)return;
+    S.off=off;
+    var cooked=skymapAnimCook(frame);
+    // anim-on is what swaps the headline ladder for the live line, so it
+    // has to be on here too -- otherwise the chart steps and the headline
+    // above it stays at the page's own moment, which is the disagreement
+    // this whole rework was about.
+    document.documentElement.classList.add('anim-on');
+    var live=document.getElementById('day-head-live');
+    if(live&&cooked.head)live.innerHTML=cooked.head;
+    pre.innerHTML=cooked.body;
+    var zen=document.getElementById('chart-zenith');
+    if(zen&&cooked.zen)zen.innerHTML=cooked.zen;
+    // skymapSetHint and not flashHint: the latter is local to the keyboard
+    // handler's own closure and calling it from out here throws.
+    if(window.skymapSetHint)
+      window.skymapSetHint(skymapFrameTime(off).replace('T',' ')+
+                           '  ·  [←][→] step  ·  [space] play  ·  [esc] back');
+  }}).catch(function(){{S.busy=false;}});
+}}
+
+// One arrow, whichever state the page is in. Inside a running stream the
+// buffer already holds what is ahead and stepping through it costs
+// nothing; everything else -- no stream yet, or a step back past its first
+// frame -- is a moment the buffer does not have, and gets asked for.
+function skymapStepFrame(d){{
+  var A=window.skymapAnim;
+  if(A&&A.frames.length&&A.at+d>=0){{
+    skymapAnimStep(d);
+    window.skymapScrub.off=A.at;
+    return true;
+  }}
+  skymapScrubTo(window.skymapScrub.off+d);
+  return false;
 }}
 function skymapAnimate(btn){{
   // Live preview plays right in the chart itself from the same streaming
@@ -10234,10 +10331,11 @@ function skymapRenderGif(btn){{
       }}
       if(e.key==='ArrowLeft'||e.key==='ArrowRight'){{
         e.preventDefault();
-        skymapAnimStep(e.key==='ArrowLeft'?-1:1);
-        var A=window.skymapAnim;
-        flashHint('frame '+(A.at+1)+'/'+A.frames.length+
-                  (A.done?'':', still loading'));
+        if(skymapStepFrame(e.key==='ArrowLeft'?-1:1)){{
+          var A=window.skymapAnim;
+          flashHint('frame '+(A.at+1)+'/'+A.frames.length+
+                    (A.done?'':', still loading'));
+        }}
         return;
       }}
       // d normally navigates to the quadrant+dso view, which would take the
@@ -10252,6 +10350,22 @@ function skymapRenderGif(btn){{
                        (A.at+1)+'/'+A.frames.length
                      :'Deep sky failed for this frame');
         }});
+        return;
+      }}
+    }}
+    // Arrows with no animation running. They used to do nothing until
+    // somebody had pressed space, which made the one obvious way to look at
+    // a different moment invisible -- and even then a stream only runs
+    // forward from the page's own moment, so the left arrow had nothing
+    // behind it at all. Both directions ask for a single frame now; see
+    // skymapStepFrame.
+    //
+    // Bound only where there is an animate button, so arrows keep scrolling
+    // the page on every view that has no frames to step through.
+    if(e.key==='ArrowLeft'||e.key==='ArrowRight'){{
+      if(document.getElementById('animate-btn')){{
+        e.preventDefault();
+        skymapStepFrame(e.key==='ArrowLeft'?-1:1);
         return;
       }}
     }}

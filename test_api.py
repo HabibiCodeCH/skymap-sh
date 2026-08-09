@@ -51,12 +51,16 @@ def _grab_fn(src, name):
     raise AssertionError(f"unbalanced: {name}")
 
 
-def _run_page_js(names, entry, arg):
+def _run_page_js(names, entry, arg, setup=""):
     """Call `entry(arg)` in node with `names` lifted out of the page script.
 
     The argument goes through a file: it is a rendered chart frame, full of
     escape sequences and layout markers, and putting that on a command line
-    or through a shell would prove nothing about what a browser does."""
+    or through a shell would prove nothing about what a browser does.
+
+    `setup` is JavaScript run first, for the handful of functions that reach
+    for the document -- a stub is enough, and it keeps the test about what
+    the function computes rather than about a browser."""
     defs = "\n".join(_grab_fn(_page_script(), n) for n in names)
     with tempfile.TemporaryDirectory() as tmp:
         arg_path = os.path.join(tmp, "arg.txt")
@@ -64,12 +68,26 @@ def _run_page_js(names, entry, arg):
             fh.write(arg)
         run_path = os.path.join(tmp, "run.js")
         with open(run_path, "w") as fh:
-            fh.write(f"{defs}\nconst fs=require('fs');\n"
-                     f"process.stdout.write({entry}("
-                     f"fs.readFileSync({json.dumps(arg_path)},'utf8')));\n")
+            fh.write(f"{setup}\n{defs}\nconst fs=require('fs');\n"
+                     f"process.stdout.write(String({entry}("
+                     f"fs.readFileSync({json.dumps(arg_path)},'utf8'))));\n")
         got = subprocess.run(["node", run_path], capture_output=True, text=True)
         assert got.returncode == 0, got.stderr[:600]
         return got.stdout
+
+
+# A page with an animate button and a chart that has picked a ladder rung.
+# Enough for the stepping helpers, which read the moment, the step and the
+# width off exactly those two elements.
+_STEP_DOM = """
+var _btn={attrs:{"data-live-url":"/Zurich?animate=24&t=2026-08-19T21:20&ui=1",
+                 "data-step-min":"10"},
+          getAttribute:function(k){return this.attrs[k];}};
+var document={getElementById:function(id){
+  return id==='animate-btn'?_btn:null;}};
+var window={skymapChartPre:function(){
+  return {getAttribute:function(k){return k==='data-cols'?'300':null;}};}};
+"""
 
 
 class Aliases(unittest.TestCase):
@@ -3040,6 +3058,55 @@ class OnlyThePausedFrameGetsItsLabelsAsLinks(unittest.TestCase):
         for marker in (sky.LINK_START, sky.LINK_SEP, sky.LINK_END):
             self.assertNotIn(marker, got)
         self.assertNotIn("&#x1", got)      # nor escaped into an entity
+
+
+class TheArrowsStepBeforeAnythingIsPlaying(unittest.TestCase):
+    """They used to do nothing until somebody had pressed space, which made
+    the one obvious way to look at another moment invisible. And even then a
+    stream only runs forward from the page's own moment, so the left arrow
+    had nothing behind it at any point."""
+
+    def test_the_handler_is_not_behind_the_animation_guard(self):
+        """The transport block only binds while there are frames, so the
+        arrow fallback has to sit after it -- inside, it would never run on
+        arrival, which is the whole case this is for."""
+        src = _page_script()
+        guard = src.index("window.skymapAnim&&window.skymapAnim.frames.length")
+        calls = [m.start() for m in re.finditer(r"skymapStepFrame\(", src)]
+        self.assertTrue([c for c in calls if c > guard],
+                        "no arrow handler after the animation guard")
+
+    def test_stepping_prefers_the_buffer_and_falls_back_to_a_request(self):
+        """Inside a running stream the frames ahead are already in memory;
+        only the past, and the state before one has been started, has to be
+        asked for."""
+        body = _grab_fn(_page_script(), "skymapStepFrame")
+        self.assertIn("A.at+d>=0", body)
+        self.assertIn("skymapAnimStep(d)", body)
+        self.assertIn("skymapScrubTo", body)
+
+    @unittest.skipUnless(_have_node(), "node not available")
+    def test_a_step_back_asks_for_an_earlier_moment(self):
+        """The whole point of the change, and the half a stream cannot do."""
+        got = _run_page_js(["skymapFrameTime"], "skymapFrameTime",
+                           "-1", setup=_STEP_DOM)
+        self.assertEqual(got.strip(), "2026-08-19T21:10")
+        got = _run_page_js(["skymapFrameTime"], "skymapFrameTime",
+                           "3", setup=_STEP_DOM)
+        self.assertEqual(got.strip(), "2026-08-19T21:50")
+
+    @unittest.skipUnless(_have_node(), "node not available")
+    def test_a_stepped_frame_is_asked_for_at_the_width_on_screen(self):
+        """Same trap the refetches fell into: the width is not in
+        data-live-url, it is on whichever ladder rung CSS picked."""
+        js = ("function go(off){return skymapFrameUrl("
+              "skymapFrameTime(Number(off)),'&links=1');}")
+        got = _run_page_js(["skymapFrameTime", "skymapFrameUrl"], "go", "-3",
+                           setup=_STEP_DOM + js)
+        self.assertIn("w=300", got)
+        self.assertIn("animate=1", got)
+        self.assertIn("links=1", got)
+        self.assertIn("t=2026-08-19T20%3A50", got)
 
 
 class TheDarkAnswersWaitUntilItIsDark(unittest.TestCase):
