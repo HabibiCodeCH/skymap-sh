@@ -167,14 +167,14 @@ class AnimateBrowserVsTerminal(unittest.TestCase):
         self.assertNotIn("#day-head{max-height:0", body)
         self.assertIn("pre.style.fontSize=(base*k)+'px'", body)
 
-    def test_the_boxes_collapse_over_the_same_time_as_the_chart_grows(self):
-        """One movement, not several things happening at once."""
+    def test_nothing_beside_the_chart_collapses_any_more(self):
+        """There is one page shape now and one box on it. The two-column day
+        layout that used to give the chart its room is gone, so the chart
+        grows into the window rather than into space three other boxes were
+        folding away to hand back."""
         body = self.client.get("/Ibiza?animate=24", headers=BROWSER).text
-        self.assertEqual(body.count(f"{api.ANIM_WIDE_MS}ms ease"),
-                         body.count(f"{api.ANIM_WIDE_MS}ms ease"))
-        # A box whose height is auto cannot animate to zero; there has to be
-        # a number to start from.
-        self.assertIn("#day-head,#day-next-up{max-height:520px}", body)
+        for gone in ("#day-next-up", "#day-side", "#day-split", "#day-main"):
+            self.assertNotIn(gone, body, gone)
 
     def test_the_animating_rung_is_pinned_on(self):
         """The frames are written into one <pre>, and the ladder picks which

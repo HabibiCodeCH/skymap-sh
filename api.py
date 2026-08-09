@@ -4100,21 +4100,6 @@ def chart_ladder_css():
         # read as one movement -- the chart growing into room the other
         # boxes are giving up -- rather than as several things happening at
         # once.
-        # Opacity only. These used to animate max-height, padding and
-        # margin over the same 320ms as the chart, which meant three boxes
-        # re-laying out the page on every frame of it -- and the chart's
-        # FLIP measures the final layout, so a box still shrinking under it
-        # would be measured against a page that had not finished moving.
-        # They go at once and fade as they do; the movement a reader
-        # actually watches is the chart.
-        f" #day-head,#day-next-up{{transition:opacity {ANIM_WIDE_MS // 2}ms ease}}",
-        # A max-height to transition *from*: a box whose height is auto
-        # cannot animate to zero, because there is no number to start at.
-        # Larger than either box ever gets, so it never crops anything.
-        " #day-head,#day-next-up{max-height:520px}",
-
-        f" #day-side{{transition:opacity {ANIM_WIDE_MS // 2}ms ease}}",
-
         # The headline stays up through an animation.
         #
         # It used to fold away (html.anim-on #day-head), because the frame
@@ -4136,7 +4121,6 @@ def chart_ladder_css():
         " html.anim-wide #chart-ladder .chart-pre{display:none}",
         " html.anim-wide #chart-ladder .anim-rung{display:block}",
         " @media (prefers-reduced-motion:reduce){"
-        "#day-head,#day-next-up,#day-side,"
         "#chart-ladder .chart-pre{transition:none}}",
         # Top right, over the panorama's highest rows. That corner holds
         # 55-70 degrees of altitude, the emptiest band of the chart on most
@@ -4179,42 +4163,6 @@ def chart_ladder_css():
 def _horizon_height(r):
     return round(_effective_width(r) / HORIZON_COLS_PER_ROW)
 
-
-# The Sun's arc carries about a dozen facts -- rise, set, transit, the golden
-# and blue bands, where the Sun is right now -- and spends the star chart's
-# full height saying them. In a terminal that costs nothing: the reader takes
-# it in one screenful either way. In a browser it is the entire fold, and what
-# sat under it was 640px of black. That is the page 73% of arrivals land on.
-#
-# Half the rows. render_linear takes `height` as a row count over the same
-# alt_lo..alt_hi slice (see sky.py, "more (or fewer) rows of resolution across
-# it"), so this is vertical resolution and not a crop: every degree label, both
-# ends of the arc and both twilight bands land on the same altitudes they did.
-# The arc is a smooth curve and reads fine at half the samples; 40% was tried
-# and starts to look like a staircase.
-#
-# Browser only. r.panel is the width ladder and nothing else, and it is part of
-# server._cache_key, so a terminal can neither be served this nor share an
-# entry with it -- `curl skymap.sh/Zurich` stays byte-for-byte what it was.
-#
-# 0.7 and not the 0.5 this was first set to, because the two shrinks compound.
-# The tonight panel takes a column, #chart-ladder re-measures against what is
-# left and picks a narrower rung on its own, and _horizon_height is derived
-# from that rung -- so the chart is already shorter before this multiplies it.
-# On a 1440px window 0.5 came out at 19 rows for 70 degrees of sky and the
-# arc read as a flat hump. 0.7 gives 26, and 400-odd pixels against the 615
-# this started at.
-# The two shrinks compound: the panel takes a column, so the ladder drops a
-# rung, and _horizon_height derives from that rung.
-#
-# 0.72 lands near 37 rows, which fills a ~1100px window down to the shortcut
-# bar with the panel beside it. It is the one number on this page that
-# cannot be got right for everybody: the server has no idea how tall the
-# window is, and the chart is text at a fixed size rather than something
-# that can flex. Taller windows get room to spare, and a 800px laptop
-# scrolls a little. Erring toward the bigger chart on the page 73% of
-# arrivals land on is the better side to be wrong on.
-DAY_PANEL_HEIGHT_FRAC = 0.72
 
 
 def _day_height(r):
@@ -5883,7 +5831,7 @@ def _event_tail(e):
 
     Its own function because two lists render it: the full one at
     /{place}/events (through _event_line below) and the short one on the day
-    page (day_next_up_html). Written once so the two cannot end up disagreeing
+    modal (_drawer_rows). Written once so the two cannot end up disagreeing
     about whether a shower says its rate or a conjunction says its altitude.
     """
     tail = []
@@ -6087,22 +6035,6 @@ def events_html(r, days=EVENTS_WINDOW_DAYS):
 
 
 # ------------------------------------------------------------- the day page
-# What goes in the room _day_height frees up. All browser-only: the summary
-# line in a box of its own, the arc beside a panel for the night it is
-# counting down to, and a short list of what is coming up here.
-#
-# Almost none of this computes anything new. The panel reads the day view's
-# own JSON payload -- the same dict served at ?format=json -- the list goes
-# through the same _events_for/_event_date/_event_url that /{place}/events
-# does, and the drawings come out of art.py and eclipse.py exactly as the
-# object and eclipse pages get them. A number can therefore be wrong here
-# only by being wrong everywhere.
-
-# Five rows. Enough that a quiet fortnight still shows something worth the
-# space, few enough that the list stays a taste of /events rather than a
-# duplicate of it -- the "everything coming up" link under it is the point.
-DAY_NEXT_UP_ROWS = 5
-
 # How far ahead a solar eclipse claims the top of the panel. A week is long
 # enough to travel for one, which is the only decision this page can help
 # with, and short enough that the box is absent almost all the time -- which
@@ -6262,12 +6194,6 @@ def _brightest_star_tonight(r, when_local):
     return best
 
 
-# How many drawings the panel will cycle through. Six is more than most
-# nights can fill and fewer than a reader will sit through -- and every one
-# past the first costs only the drawing, since the ranking and the payload
-# they come from were computed anyway.
-DAY_PANEL_SLIDES = 6
-
 # How much of the deck's frame a planet is allowed to fill. Every drawing in
 # the deck sits in the same DAY_ART_ROWS-tall box, and a planet drawn at full
 # size touches all four sides of it while a meteor shower next to it leaves a
@@ -6276,157 +6202,6 @@ DAY_PANEL_SLIDES = 6
 # the others have. On its own object page a planet still gets the full box --
 # there it is the subject, not one card in a deck.
 DAY_PLANET_SCALE = 0.86
-
-# The deck's own behaviour, inline right after it. Its own script rather
-# than a slice of PAGE's shared one for the same reason coming_up_card_html
-# carries its own: it belongs to a box that only exists on one view, and it
-# runs the moment it is parsed rather than waiting for the rest of the page.
-#
-# stopPropagation on the key handler matters. Space is the page's animate
-# key, and without it a space press while the chevron has focus would cycle
-# the deck *and* start a 24-hour animation.
-DECK_TURN_MS = 7000
-
-DAY_DECK_JS = (
-    "<script>(function(){"
-    "var d=document.getElementById('dt-deck'),c=document.getElementById('dt-cycle');"
-    "if(!d||!c)return;"
-    "var s=d.querySelectorAll('.dt-slide'),at=0,t=null,held=false;"
-    "var bar=document.getElementById('dt-progress');"
-    "var fill=bar&&bar.firstChild;"
-    # Restarting the bar is its own function because two things need it, and
-    # the second one is the point: every slide change resets it.
-    #
-    # The bar was a CSS animation looping `infinite` beside a setInterval of
-    # the same length -- two clocks started together and left to run. They
-    # drift, because setInterval is not exact and a throttled tab makes it
-    # much worse, so after a while the bar was filling against one slide and
-    # emptying against the next. Reset on the turn, it cannot: the bar
-    # always starts when the slide it belongs to starts.
-    "function restart(){if(!bar)return;bar.hidden=false;"
-    "fill.style.animation='none';void fill.offsetWidth;"
-    "fill.style.animation='';fill.style.animationPlayState='running';}"
-    "function show(i){at=(i+s.length)%s.length;"
-    "for(var j=0;j<s.length;j++)s[j].hidden=(j!==at);"
-    "c.textContent=(at+1)+'/'+s.length+' \\u203a';"
-    # Only while it is turning itself. After a click the reader is steering,
-    # take() has hidden the bar, and a bar refilling under a slide nobody is
-    # counting down would be a countdown to nothing.
-    "if(t)restart();}"
-    # Turns itself over so a reader who never touches it still sees the
-    # whole deck. Stopped for good on the first click or key: at that point
-    # they are steering, and a slide moving under a pointer that just chose
-    # it is the thing every carousel gets wrong.
-    "function stop(){if(t){clearInterval(t);t=null;}"
-    "if(fill)fill.style.animationPlayState='paused';}"
-    # The bar is restarted rather than resumed. It and the timer have to
-    # agree about how much of the slide is left, and the only moment they
-    # certainly do is at zero.
-    "function go(){stop();if(held)return;restart();"
-    "t=setInterval(function(){show(at+1);},"
-    f"{DECK_TURN_MS});}}"
-    # Held while the pointer is over it or focus is inside it: reading a
-    # caption is exactly when it must not move.
-    "d.addEventListener('mouseenter',function(){held=true;stop();});"
-    "d.addEventListener('mouseleave',function(){held=false;go();});"
-    "function take(){held=true;stop();if(bar)bar.hidden=true;}"
-    "c.addEventListener('click',function(e){e.preventDefault();take();show(at+1);});"
-    "c.addEventListener('keydown',function(e){"
-    "if(e.key==='Enter'||e.key===' '||e.key==='Spacebar'){"
-    "e.preventDefault();e.stopPropagation();take();show(at+1);}});"
-    # Nothing moves on its own for anybody who has asked for that.
-    "if(!(window.matchMedia&&window.matchMedia('(prefers-reduced-motion:reduce)').matches))go();"
-    "})();</script>")
-
-
-def day_panel_slides(r, data):
-    """Everything worth drawing tonight, most interesting first.
-
-    [(lines, caption, url), ...]. Three sources, in the order somebody
-    standing outside would care about them. Events first, ranked by the same
-    ev_mod.next_events the coming-up strip uses -- a shower outranks a
-    conjunction outranks a quarter Moon, and that ordering lives in one
-    place. Then the planets that will be up, because "Saturn is out tonight"
-    is a reason to go and look on a night with no events at all. Then the
-    brightest star, because there is always one and a panel with a
-    picture-shaped hole in it looks broken.
-
-    More events are asked for than will fit, because the ranking does not
-    know which of them can be drawn: a new Moon and an equinox both come
-    back with nothing, and the deck should fall through to the next real
-    thing rather than to the planets.
-
-    Everything here is about tonight. Events are filtered to the night being
-    viewed rather than shown out of the next fortnight -- the fortnight is
-    what the upcoming-events list under the arc is for, and running both put
-    the same rows on the page twice under headings that disagreed.
-    """
-    p = r.place
-    out, seen = [], set()
-
-    def add(lines, caption, url):
-        if lines and caption not in seen:
-            seen.add(caption)
-            out.append((lines, caption, url))
-
-    for e in ev_mod.next_events(p.lat, p.lon, r.tz, now_utc=r.when_utc,
-                                within_days=DAY_PANEL_DAYS,
-                                n=DAY_PANEL_SLIDES * 2):
-        if len(out) >= DAY_PANEL_SLIDES:
-            break
-        # Tonight, and only tonight. Compared as nights rather than dates:
-        # a conjunction at 02:11 belongs to the evening before it, which is
-        # the evening somebody would go outside for it, and _event_date
-        # already resolves a viewing window down to that evening.
-        if _night_of(_event_date(e)) != _night_of(r.when_local):
-            continue
-        # An eclipse the box above is already showing does not get a second
-        # slot down here. The condition is the box's own, not "no eclipses
-        # ever": one eight days out is past the box's reach and is then the
-        # most interesting thing the deck has.
-        if (e["kind"] == "eclipse"
-                and 0 <= _days_until(e["when_local"], r.when_local)
-                <= DAY_ECLIPSE_LEAD_DAYS):
-            continue
-        # A shower merely running is dated "tonight" by construction, and the
-        # page says what tonight is three times already -- so it gets its
-        # name and its phase and no date. Everything else keeps the date,
-        # which for a peak is the whole point of the caption.
-        cap = _event_headline(e, r)
-        if e["kind"] != "meteor_shower" or e.get("at_peak", True):
-            cap += f" · {_event_date(e):%a %d %b}"
-        add(_event_art(e, r), cap, _event_url(e, r))
-
-    stamp = data.get("first_stars") or ""
-    when = f"?t={stamp[:16]}" if stamp else ""
-    for name in data.get("visible_tonight") or []:
-        if len(out) >= DAY_PANEL_SLIDES:
-            break
-        if art.has_art(name):
-            add(art.planet_art(name, illuminated=art.STYLE_ILLUMINATED,
-                               scale=DAY_PLANET_SCALE),
-                f"{name}, up tonight",
-                f"/{quote(p.slug)}/{quote(name)}{when}")
-
-    if stamp and len(out) < DAY_PANEL_SLIDES:
-        try:
-            first_local = dt.datetime.fromisoformat(stamp)
-        except ValueError:
-            return out
-        star = _brightest_star_tonight(r, first_local)
-        if star:
-            sp = objects.star_info(star["hr"]).get("sp")
-            add(art.star_art_for(sp) if sp else [],
-                f"{star['n']}, up tonight",
-                f"/{quote(p.slug)}/{quote(star['n'])}{when}")
-    return out
-
-
-def day_panel_art(r, data):
-    """The one drawing the panel opens on, or None. The top of the deck."""
-    slides = day_panel_slides(r, data)
-    return slides[0] if slides else None
-
 
 # Every drawing in the panel is set in a box this many rows tall, whatever
 # it actually draws. The drawings do not agree on height and cannot be made
@@ -6468,220 +6243,6 @@ def _art_block(lines, caption, url, cls="dt-art", rows=DAY_ART_ROWS):
     return (f'<a class="dt-art-box" href="{html.escape(url)}">{pre}{cap}</a>')
 
 
-def day_eclipse_html(r):
-    """The box above TONIGHT in the week before an eclipse visible here.
-
-    Solar and lunar both. Solar earns the top of the page on its own merits
-    -- it is the one thing on this list that happens in daylight, so it is
-    the one a reader of *this* page could walk outside and watch without
-    waiting for dark. Lunar is here because the box is worth its space and a
-    solar eclipse alone put it on screen about twice a year: with both, it
-    turns up often enough to be a thing readers know to look for.
-
-    Returns "" the rest of the time, which is still most of the year.
-    """
-    for e in _events_for(r, days=DAY_ECLIPSE_LEAD_DAYS + 1, visible_only=True):
-        if e["kind"] != "eclipse":
-            continue
-        days = _days_until(e["when_local"], r.when_local)
-        if days < 0 or days > DAY_ECLIPSE_LEAD_DAYS:
-            continue
-        key = _event_date(e).strftime("%Y-%m-%d")
-        url = (f"/{quote(r.place.slug)}/eclipse/{key}"
-               if eclipse_page.by_key(key) else _event_url(e, r))
-        # The Moon in the Earth's shadow, or the Sun with a bite out of it.
-        # The solar one is drawn for here, because the whole content of a
-        # partial eclipse is how much of the Sun this place loses; the lunar
-        # one looks the same from everywhere it is up at all, which is why
-        # it takes no coordinates.
-        lines = (eclipse_map.moon_art(key)
-                 if "lunar" in (e.get("eclipse_type") or "")
-                 else eclipse_map.disc_art(key, r.place.lat, r.place.lon))
-        # "in 5 days" answers whether to care; the date and time answer what
-        # to do about it, and an eclipse is the one event where being an hour
-        # out means seeing nothing.
-        #
-        # The clock comes off eclipse_page.facts, which solves the local
-        # circumstances, and not off the event's own when_local. That field
-        # is the *global* greatest-eclipse instant shifted by the timezone
-        # offset, which is a local-looking rendering of somebody else's
-        # moment: it read 19:47 for Zurich on 12 Aug 2026 against a real
-        # local maximum of 20:17. Half an hour, on the one kind of event
-        # where half an hour is the difference between seeing it and not.
-        when = e.get("best_local") or e["when_local"]
-        f = _eclipse_facts(e, r)
-        title = (f"{_countdown(days)} · on {when:%d %b} at "
-                 f"{(f or {}).get('maximum') or format(when, '%H:%M')}")
-        tail = ", ".join(_event_tail(e))
-        cap = f"{_event_headline(e, r)}{' · ' + tail if tail else ''}"
-        body = (_art_block(lines, cap, url) if lines else
-                f'<a class="dt-art-box" href="{html.escape(url)}">'
-                f'<span class="dt-cap">{html.escape(cap)}</span></a>')
-        return (f'<aside id="day-eclipse" class="day-box" aria-label="eclipse">'
-                f'<h2 class="box-head">{html.escape(title)}</h2>'
-                f'{body}</aside>')
-    return ""
-
-
-def day_tonight_html(r, data):
-    """The panel beside the Sun's arc: what the night it counts down to holds.
-
-    A drawing of the best thing coming, then the five numbers that decide
-    whether tonight is worth going out for, then the link that takes you
-    there. Returns "" for anything that is not a day view, which is what
-    lets the caller stay a single line rather than repeating the day/night
-    test.
-    """
-    if data.get("view") != "day":
-        return ""
-    slug = r.place.slug
-    ev = data.get("events") or {}
-    first = _iso_hm(data.get("first_stars"))
-    # Only what the summary line above does not already say. That line
-    # carries the place, the clock, where the Sun is now and how high it
-    # gets, when it rises and sets, when the stars come out, when it gets
-    # properly dark, and which planets are up -- so everything that used to
-    # be in this grid was the same fact printed twice, eighteen inches
-    # apart, on a page whose whole problem is that it does not fit on a
-    # screen.
-    #
-    # What is left is the Moon, which is the one thing that decides whether
-    # any of the rest is worth acting on and the one thing the line has no
-    # room for.
-    rows = []
-    mo = data.get("moon") or {}
-    if mo.get("phase"):
-        # "· 45%" rather than the prose's ", 45% lit": in a row already
-        # labelled "moon", next to a phase name, there is nothing else a
-        # percentage could be -- and the word was one character more than the
-        # column has, so "first quarter, 45% lit" wrapped "lit" onto its own
-        # line at Longyearbyen.
-        rows.append(("moon", f"{mo['phase']} · {mo.get('illum', 0):.0f}%"))
-
-    cells = "".join(f'<div class="dt-k">{html.escape(k)}</div>'
-                    f'<div class="dt-v">{html.escape(str(v))}</div>'
-                    for k, v in rows)
-    # No button. Every drawing in the deck above is already a link into the
-    # night -- the Perseids, the eclipse, whichever planet is up -- and each
-    # of them lands on the thing it is a picture of, at the moment it is
-    # worth looking at. A general "show me tonight's sky" underneath was a
-    # fourth way to say the same thing, and the least specific of the four.
-    cta = ""
-    # The deck. Every slide is in the markup and all but the first are
-    # hidden, so somebody with no JS gets the top of the deck rather than an
-    # empty box -- the same trade coming_up_card_html makes, and for the same
-    # reason: cycling is client-only state, having something to cycle is not.
-    slides = day_panel_slides(r, data)
-    deck = "".join(f'<div class="dt-slide"{"" if i == 0 else " hidden"}>'
-                   f'{_art_block(*s)}</div>'
-                   for i, s in enumerate(slides))
-    cycle = bar = ""
-    if len(slides) > 1:
-        cycle = (f'<span class="dt-cycle" id="dt-cycle" role="button" '
-                 f'tabindex="0" aria-label="Next">1/{len(slides)} &rsaquo;</span>')
-        # Hidden until the script turns the deck on, so a reader with no JS
-        # is not shown a progress bar for a thing that will never progress.
-        bar = ('<div class="dt-progress" id="dt-progress" aria-hidden="true"'
-               ' hidden><i></i></div>')
-    return (f'<aside id="day-tonight" class="day-box" aria-label="tonight">'
-            f'<h2 class="box-head">tonight{cycle}</h2>'
-            f'<div id="dt-deck">{deck}</div>'
-            f'<div class="dt-grid">{cells}</div>{bar}{cta}</aside>'
-            + (DAY_DECK_JS if len(slides) > 1 else ""))
-
-
-# How many things have to land on one night before it is worth calling it
-# out. Two: on a list where most rows are the only thing happening that
-# week, a second one on the same date is already the difference between
-# "there is a thing on Wednesday" and "Wednesday is the night to go out".
-SUPER_DAY_MIN = 2
-
-
-def _super_days(events):
-    """The dates carrying more than one event, as a set of dates.
-
-    Counted over the whole window rather than over the rows on screen. 12 Aug
-    2026 carries four -- a Moon-Mercury pairing, a partial eclipse, a new
-    Moon and the Perseid maximum -- and a five-row list that happened to show
-    two of them would otherwise call it an ordinary Wednesday.
-
-    Dated by _event_date, which files an event under the evening you go
-    outside rather than the instant it peaks. That is the whole point here:
-    the Perseid maximum is 02:10 on the 13th and belongs to the night of the
-    12th, which is what makes the 12th the night with four things on it.
-    """
-    seen = {}
-    for e in events:
-        d = _event_date(e).date()
-        seen[d] = seen.get(d, 0) + 1
-    return {d for d, n in seen.items() if n >= SUPER_DAY_MIN}
-
-
-def day_next_up_html(r, n=DAY_NEXT_UP_ROWS):
-    """The next few events here, as clickable rows under the arc.
-
-    visible_only: the long list at /{place}/events has room to say "happening,
-    but not from here" and the reasons why, and does. Five rows do not, and a
-    row you cannot act on is worse than one fewer row.
-    """
-    window = _events_for(r, days=EVENTS_WINDOW_DAYS, visible_only=True)
-    evs = window[:n]
-    if not evs:
-        return ""
-    # Nights carrying more than one thing, from the whole window rather than
-    # from the rows on screen -- see _super_days.
-    super_days = _super_days(window)
-    rows, marked = [], set()
-    for e in evs:
-        d = _event_date(e).date()
-        big = d in super_days
-        # The count once, on the first row of the run. Repeated on all four
-        # it would read as four separate claims about the same night.
-        badge = ""
-        if big and d not in marked:
-            marked.add(d)
-            count = sum(1 for x in window if _event_date(x).date() == d)
-            badge = f'<span class="nu-count">{count} things in one night</span>'
-        rows.append(
-            f'<a class="nu-row{" nu-super" if big else ""}" '
-            f'href="{html.escape(_event_url(e, r))}">'
-            f'<span class="nu-when">{html.escape(f"{_event_date(e):%a %d %b}")}</span>'
-            f'<span class="nu-glyph">{html.escape(e.get("glyph", "·"))}</span>'
-            f'<span class="nu-what">{html.escape(e["headline"])}{badge}</span>'
-            f'<span class="nu-where">{html.escape(", ".join(_event_tail(e)))}</span>'
-            f'</a>')
-    # Anything running tonight goes above the dated rows, in its own group
-    # and outside the count. A shower is not a date -- the Perseids run from
-    # 17 July to 24 August -- and giving it one of the five rows put "on
-    # tonight" in front of "on the 12th" and pushed the Perseids' own peak
-    # off the page. Above them it costs nothing and answers the question the
-    # dated rows cannot: is there anything out there right now.
-    now_rows = []
-    for e in _running_now(r):
-        now_rows.append(
-            f'<a class="nu-row nu-now" href="{html.escape(_event_url(e, r))}">'
-            f'<span class="nu-when">on now</span>'
-            f'<span class="nu-glyph">{html.escape(e.get("glyph", "·"))}</span>'
-            f'<span class="nu-what">{html.escape(e["headline"])}</span>'
-            f'<span class="nu-where">{html.escape(", ".join(_event_tail(e)))}</span>'
-            f'</a>')
-    rows = now_rows + rows
-    more = f"/{quote(r.place.slug)}/events"
-    # The place is in the title because the list is of the place. Every row
-    # is filtered on whether the thing actually clears the horizon here and
-    # carries an altitude and a compass point for here -- the Geminids are
-    # in a Zurich list and absent from a Ushuaia one -- and "next up" gave
-    # no hint that any of that had happened. A reader who has just typed a
-    # city in should be told the answer is about that city.
-    head = f"upcoming astronomical events in {r.place.name}"
-    # Boxed like the two above it. Three pieces of furniture on one page,
-    # two of them framed and one floating, read as an accident.
-    return (f'<section id="day-next-up" class="day-box" aria-label="coming up">'
-            f'<h2 class="box-head">{html.escape(head)}</h2>{"".join(rows)}'
-            f'<a class="nu-more" href="{html.escape(more)}">'
-            f'everything coming up &rarr;</a></section>')
-
-
 # The summary line's own left margin, as it arrives from _compose_day: two
 # spaces, matching the indent every prose line in the composed text carries.
 # In a box of its own that is wrong twice over -- the spaces are set at the
@@ -6700,19 +6261,6 @@ def day_next_up_html(r, n=DAY_NEXT_UP_ROWS):
 # composed line was painted before or after it was indented -- so both are
 # taken, and the span itself is kept.
 _LEAD_SPACE = re.compile(r'^ *((?:<span[^>]*>)?) *')
-
-
-def day_side_html(r, data):
-    """The whole column beside the arc, as one grid child.
-
-    Two boxes when an eclipse is coming and one the rest of the time. They
-    are wrapped rather than handed to the grid separately because a grid
-    places every child in a track of its own: unwrapped, the eclipse box
-    would take the column and push tonight's into a third one under the
-    chart.
-    """
-    inner = day_eclipse_html(r) + day_tonight_html(r, data)
-    return f'<div id="day-side">{inner}</div>' if inner else ""
 
 
 def lift_chart_head(rungs):
@@ -6982,38 +6530,6 @@ def sky_pill_html(r, data):
              f'<button type="button" class="modal-close" id="on-close" '
              f'aria-label="Close">✕</button></div>{body}</div></div>')
     return pill, modal
-
-
-def day_layout(head_html, chart_html, panel_html, list_html):
-    """Arc and panel side by side, the list full width beneath.
-
-    #chart-ladder is a container-type:inline-size query container, so it sizes
-    itself from its parent and not from its contents. Dropping it into a grid
-    column narrower than the window is therefore the whole of the work: the
-    breakpoints re-measure against the column and the ladder picks a narrower
-    rung on its own. No second ladder, no breakpoint that has to know a panel
-    exists.
-
-    Every piece is optional and degrades by disappearing -- a polar-day place
-    has no "first stars" to count down to, and a quiet three months has no
-    events -- so with none of them, this returns the chart as it arrived.
-    """
-    if panel_html:
-        # The list goes inside the left column rather than under the whole
-        # grid. The panel beside the arc is taller than the arc is, so with
-        # the list below both there was a hand's width of black under the
-        # chart and the list started below the fold. Stacked under the chart
-        # it fills exactly that gap, and the two columns come out close to
-        # the same height.
-        chart_html = (f'<div id="day-split">'
-                      f'<div id="day-main">'
-                      f'<section id="day-chart" class="day-box" '
-                      f'aria-label="the sky above you now">'
-                      f'<h2 class="box-head">the sky above you now</h2>'
-                      f'{chart_html}</section>{list_html}</div>'
-                      f'{panel_html}</div>')
-        return head_html + chart_html
-    return head_html + chart_html + list_html
 
 
 def _compose_events(r, next_only=False, days=EVENTS_WINDOW_DAYS):
@@ -8728,13 +8244,6 @@ document.documentElement.classList.add('js');
     plus 12px of padding either side. At the old 280px the last two columns
     of every planet were clipped off. The longest fact row -- "sun highest"
     against "last quarter · 36%" -- fits inside that with room to spare. */
- /* One gap, everywhere. The boxes had four different distances between them
-    -- 18 across, 14 down the side column, 14 under the head, 4 under the
-    split -- which on a page made entirely of identical frames reads as
-    sloppiness rather than as rhythm. */
- #day-split{{display:grid;grid-template-columns:minmax(0,1fr) 300px;
-            gap:{BOX_GAP}px;align-items:start;margin:0}}
- #day-main{{display:flex;flex-direction:column;gap:{BOX_GAP}px;min-width:0}}
  /* Every piece of the day page is the same object: a titled box. Where you
     are, the sky above you now, what tonight holds, what is coming up. The
     frame is what says they are four readings of one thing rather than a
@@ -8756,30 +8265,13 @@ document.documentElement.classList.add('js');
     stars out and left the zenith inset -- which sits on rgba(4,6,10,.82) --
     looking like a darker patch stuck on top. Day and night alike, because
     the Sun's arc is drawn on the same sky. */
- #day-chart,#night-chart{{min-width:0;background:#04060a}}
- /* After dark the chart stops being a box on the page and becomes the page.
-    The border and the padding were the only things making it look like a
-    card -- the background is already the page's own -- and between them
-    they cost 47px of height: 24 of padding, 2 of border, and 21 for a title
-    naming a box that is no longer there.
-
-    That 47 is the whole problem. The server picks the chart's rows from its
-    width alone (_horizon_height) with no idea how tall the window is, so a
-    wide-but-short window got a wide rung and a wide rung is a tall chart:
-    1440x800 and 1470x800 both overflowed by 48px, and 1280x720 by 43.
-    Handing the room back fits every size from 1024x768 to 2560x1440.
-
-    Left padding stays, and takes the vanished border's pixel with it, so
-    the chart's first column sits exactly where it did and still lines up
-    with the headline box above. The width the other three sides give back
-    is free: it is nowhere near a rung's breakpoint at any size tried, so
-    nothing gets wider, and therefore nothing gets taller.
-
-    Night only. The day page keeps its box, because there it is one card
-    among several beside the tonight panel, and a borderless one would be
-    the odd one out. */
+ #night-chart{{min-width:0;background:#04060a}}
+ /* The chart keeps its frame -- it was borderless for a while, to buy back
+    the 47px the border, the padding and the title cost on a page whose rows
+    are chosen from its width with no idea how tall the window is -- but not
+    its title. The headline directly above already says where and when, and
+    "the sky above you now" over it said it a second time in smaller grey. */
  #night-chart>.box-head{{display:none}}
- #day-side{{display:flex;flex-direction:column;gap:{BOX_GAP}px;font-size:12.5px}}
  /* Full width above the split: it is the one line that describes the whole
     page, and rationing it to the chart column was what put it inside the
     drawing in the first place. */
@@ -8794,12 +8286,6 @@ document.documentElement.classList.add('js');
     something to hold on to -- there is no other way to bold part of a line
     that reaches the page as pre-rendered ANSI. */
  #day-head .dh>span:first-child{{font-weight:700}}
- /* One column under ~900px, panel first: on a narrow window the numbers are
-    worth more than the drawing, and the drawing is the thing that scrolls. */
- @media (max-width:900px){{
-   #day-split{{grid-template-columns:minmax(0,1fr)}}
-   #day-side{{order:-1}}
- }}
  /* The drawing in the panel. Its own <pre> for the same reason the object
     pages give theirs one: the line-height is what makes a character cell
     twice as tall as it is wide (art.CELL), and a planet set at any other
@@ -8808,21 +8294,6 @@ document.documentElement.classList.add('js');
          overflow:hidden}}
  .dt-art-box{{display:block;margin:0 0 12px;text-decoration:none;
              color:inherit}}
- /* The drawing is the last thing in the eclipse box, so its bottom margin
-    is not a gap between two things -- it is a second helping of padding,
-    and the box ended up with more room under the caption than above the
-    title. */
- #day-eclipse .dt-art-box{{margin-bottom:0}}
- /* How long is left on this slide. Bottom right, small, and only there
-    while the deck is turning itself over -- once a reader takes the
-    chevron it stops moving and the bar has nothing to say. */
- .dt-progress{{width:44px;height:2px;margin:2px 0 0 auto;border-radius:2px;
-              background:#21262d;overflow:hidden}}
- .dt-progress>i{{display:block;height:100%;width:100%;background:#6e7681;
-                transform-origin:left center;
-                animation:dt-fill {DECK_TURN_MS}ms linear infinite}}
- @keyframes dt-fill{{from{{transform:scaleX(0)}}to{{transform:scaleX(1)}}}}
- @media (prefers-reduced-motion:reduce){{.dt-progress{{display:none}}}}
  a.dt-art-box:hover .dt-cap{{color:#c9d1d9;text-decoration:underline}}
  /* Two lines, always. The drawings are already padded to a fixed 17 rows
     (DAY_ART_ROWS), so the caption was the only thing left that could change
@@ -8833,15 +8304,6 @@ document.documentElement.classList.add('js');
  .dt-cap{{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;
          overflow:hidden;margin-top:6px;min-height:2.7em;
          font-size:11.5px;line-height:1.35;color:#8b949e}}
- /* The deck's chevron, in the box's own title bar rather than under the
-    drawing: the caption below changes with every slide, and a control that
-    moves with it reads as part of the caption instead of as the thing that
-    changed it. */
- #day-tonight>.box-head{{display:flex;align-items:baseline;
-                        justify-content:space-between;gap:10px}}
- .dt-cycle{{cursor:pointer;color:#8b949e;letter-spacing:normal;
-           text-transform:none;font-size:11px;user-select:none}}
- .dt-cycle:hover,.dt-cycle:focus{{color:#c9d1d9;outline:none}}
  .box-head{{margin:0 0 8px;font-size:11px;font-weight:normal;
            letter-spacing:.08em;text-transform:uppercase;color:#6e7681}}
  /* One left edge for the box titles and the altitude axis under them.
@@ -8854,32 +8316,8 @@ document.documentElement.classList.add('js');
     a title is 11px against the chart's 10px -- 1ch would be a different
     distance in each. The chart is CHART_FONT_PX and a monospace "0" is
     0.6em, so its gutter is 6px, and that is what the title needs. */
- #day-chart>.box-head,#night-chart>.box-head,#day-head>.box-head,
+ #night-chart>.box-head,#day-head>.box-head,
  #day-head .dh{{padding-left:6px}}
- /* The list's own title against the dates under it. .nu-row is padded 6px so
-    its hover state has somewhere to sit, so the title needs the same or the
-    dates start six pixels to the right of the word above them. */
- #day-next-up>.box-head{{padding-left:6px}}
- /* auto/1fr rather than a fixed label column: "first stars" and "sun highest"
-    are near enough the same length that a hardcoded width is either too tight
-    for one language or wasteful in every other. */
- .dt-grid{{display:grid;grid-template-columns:auto 1fr;gap:3px 10px;
-          align-items:baseline}}
- .dt-k{{color:#6e7681}}
- .dt-v{{color:#c9d1d9}}
- .dt-cta{{display:block;margin-top:11px;padding:6px 8px;text-align:center;
-         border:1px solid #ffd700;border-radius:4px;color:#ffd700;
-         text-decoration:none;font-size:12px}}
- .dt-cta:hover{{background:#ffd700;color:#04060a}}
- /* Capped rather than full-bleed: the row's last column is right-aligned by
-    the grid, so on a 1440px window "8° ENE" ended up at the far edge of the
-    screen with 900px of nothing between it and the headline it belongs to. */
- /* No margin of its own: it is a flex child of #day-main now, and the
-    column's gap is the spacing. A margin here would double it. No max-width
-    either -- the column it sits in already sets the width, where before it
-    was full-bleed under the whole grid and a 1440px window put "8° ENE" a
-    thousand pixels from the headline it belongs to. */
- #day-next-up{{margin:0}}
  /* Grid on the row, not on the section, so the columns line up across rows
     while each row stays one <a> -- the whole row is the click target, which
     a grid of loose spans could not give without a link per cell. */
@@ -8892,15 +8330,6 @@ document.documentElement.classList.add('js');
          border-left:2px solid transparent;border-radius:4px;
          text-decoration:none;font-size:12.5px;color:#c9d1d9}}
  .nu-row:hover{{background:#0d1117}}
- /* A night carrying more than one thing. The rows are already next to each
-    other and already say the same date, so the job is not to state it again
-    but to make the run read as one night: an accent down the left of the
-    group, the date in that colour, and the count said once at the top of
-    the run. 12 Aug 2026 is four -- a Moon-Mercury pairing, a partial
-    eclipse, a new Moon and the Perseid maximum -- and it deserves to look
-    different from a Tuesday with a quarter Moon on it. */
- .nu-row.nu-super{{border-left-color:#ff87ff;
-                  background:rgba(255,135,255,.045)}}
 /* What is on. A chip beside the search bar, opening a modal.
    Nothing is docked to the window: the chart is the page, and anything
    sitting at the bottom edge has to have room reserved for it, which comes
@@ -8990,15 +8419,6 @@ document.documentElement.classList.add('js');
  .dw-head:first-child{{margin-top:0}}
  .dw-art{{display:block;text-decoration:none;color:inherit;margin:0 0 .4rem}}
  @media (prefers-reduced-motion:reduce){{.dw-caret{{transition:none}}}}
- .nu-row.nu-super .nu-when{{color:#ff87ff}}
- /* On now, above the dated rows. Green rather than the dates' grey, because
-    it is the one line in the box that is about this minute rather than about
-    a plan -- and a rule under the last of them, so the group reads as a
-    group instead of as a row whose date failed to render. */
- .nu-row.nu-now .nu-when{{color:#7ee787}}
- .nu-row.nu-now:last-of-type{{border-bottom:1px solid #21262d}}
- .nu-count{{margin-left:10px;font-size:11px;color:#ff87ff;
-           letter-spacing:.04em;white-space:nowrap}}
  .nu-when{{color:#6e7681}}
  /* Centred in its own column. The glyphs are different widths -- a filled
     disc, a ring, a meteor, a four-pointed star -- so left-aligned they sat
@@ -9227,11 +8647,10 @@ var SKYMAP_FIT_MIN = 0.8, SKYMAP_FIT_MAX = 2.2;
 function skymapFitChart(){{
   var root=document.documentElement;
   var ladder=document.getElementById('chart-ladder');
-  // The column the chart lives in: the left half of the day page, or the
-  // whole of the night one. Both are measured the same way -- where does
-  // this column currently end, and how much room is left under it.
-  var main=document.getElementById('day-main')||
-           document.getElementById('night-chart');
+  // The column the chart lives in. One page shape now, day and night alike:
+  // where does the chart's own box currently end, and how much room is left
+  // under it.
+  var main=document.getElementById('night-chart');
   // Day page only, and never while theatre mode owns the chart.
   //
   // The test is the class, not window.skymapAnim. That object outlives the
@@ -10424,7 +9843,6 @@ PAGE = PAGE.replace("/*CMDBAR_JS*/", CMDBAR_JS)
 # among them and raise. Done once at import, so every gap on the page comes
 # from the one constant without costing a lookup per render.
 PAGE = PAGE.replace("{BOX_GAP}", str(BOX_GAP))
-PAGE = PAGE.replace("{DECK_TURN_MS}", str(DECK_TURN_MS))
 PAGE = PAGE.replace("{ANIM_WIDE_MS}", str(ANIM_WIDE_MS))
 # The room the fixed shortcut bar needs, plus the page's one gap under it, so
 # the last box ends the same distance above the bar as any two boxes sit
