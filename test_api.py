@@ -2079,6 +2079,45 @@ class TheDayChartIsTheSameHeightAsTheNight(unittest.TestCase):
 
 
 
+class TheModalFramesAreDrawnRound(unittest.TestCase):
+    """A disc is drawn for a character cell art.CELL times as tall as it is
+    wide. Get the line height wrong and every planet is an ellipse."""
+
+    def _rule(self, sel):
+        m = re.search(re.escape(sel) + r"\{\{([^}]*)\}\}", api.PAGE)
+        self.assertIsNotNone(m, sel)
+        return m.group(1)
+
+    def test_the_line_height_matches_the_cell_the_art_is_drawn_for(self):
+        """0.6em per character across, art.CELL cells tall for one across, so
+        1.2em down. It was 1.15, which measured 1.91:1 in Chromium against a
+        target of 2.0 -- a 5% squash, invisible as a number and obvious on
+        Saturn."""
+        for sel in (" .mf-art", " .mf-cell .mf-art"):
+            self.assertIn("line-height:1.2em", self._rule(sel), sel)
+
+    def test_the_caption_sits_on_the_floor_of_the_frame(self):
+        """margin-top:auto puts it there, and .dt-art-box's own 12px bottom
+        margin -- left over from the stack it used to live in -- lifted it
+        back off. Measured 23px of gap where the frame's padding is 10."""
+        rule = self._rule(" .mf-frame>.dt-art-box")
+        self.assertIn("margin-bottom:0", rule)
+        self.assertIn("margin-top:auto", self._rule(" .mf-frame .dt-cap"))
+
+
+class TheZenithLabelsCanBeClicked(unittest.TestCase):
+    """They were anchors already. The box they float in took the mouse."""
+
+    def test_the_inset_lets_its_own_links_be_reached(self):
+        """#chart-zenith is pointer-events:none on purpose -- it sits over the
+        panorama's top rows and would swallow clicks meant for the labels
+        under it -- but that applies to its children too, so the names in it
+        were links no cursor could reach."""
+        css = "".join(api.chart_ladder_css())
+        self.assertIn("#chart-zenith a{pointer-events:auto}", css)
+        self.assertIn("pointer-events:none", css)
+
+
 class TheEventTailIsWrittenOnce(unittest.TestCase):
     """Both lists render "where to look and when". Sharing _event_tail is
     what stops them ending up disagreeing about whether a shower says its

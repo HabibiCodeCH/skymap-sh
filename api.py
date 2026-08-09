@@ -4130,6 +4130,13 @@ def chart_ladder_css():
         # Sits on the sky, so it needs its own floor under it or the stars
         # it covers read as part of the drawing.
         "background:rgba(4,6,10,.82);padding:2px 6px;border-radius:4px}",
+        # pointer-events back on for the names under the disc. The box itself
+        # keeps none of it -- it floats over the top rows of the panorama and
+        # would otherwise swallow clicks meant for the labels underneath --
+        # but the labels in it are links, and a link the mouse cannot reach
+        # is not one. This is why they looked unlinked: the markup was right
+        # the whole time and the cursor never changed over it.
+        " #chart-zenith a{pointer-events:auto}",
         " html.no-inset #chart-zenith{display:none}",
         # The prose keeps the chart's font but not its width: pinned above
         # the shortcut bar, where it stays put while the chart above it
@@ -8372,14 +8379,23 @@ document.documentElement.classList.add('js');
     Centred art over a bottom-left caption: the picture is the subject and
     wants the middle, the caption is a label and labels start at the left
     margin like every other line of text on the site. */
+ /* margin-bottom:0 undoes the 12px .dt-art-box carries for the stack it
+    used to live in. Here it is the only thing in the frame, and 12px under
+    the caption is 12px the caption is not sitting on the floor -- which is
+    the whole of what "bottom left" means. */
  .mf-frame>.dt-art-box{{display:flex;flex-direction:column;flex:1 1 auto;
-                        justify-content:center;min-height:0;
+                        justify-content:center;min-height:0;margin-bottom:0;
                         text-decoration:none;color:inherit}}
  /* Never display:flex on the <pre>. Its contents are the colour spans
     ansi_to_html emits, so flex makes every one of them a flex item and
     stacks them down the page: fifteen lines of shower came out 859px tall
     instead of 155. The centring belongs on the box around it. */
- .mf-art{{margin:0;font-size:9px;line-height:1.15;white-space:pre;
+ /* 1.2em, not 1.15. A monospace "0" is 0.6em wide and art.py draws every
+    disc for a cell art.CELL = 2.0 times as tall as it is wide, so the line
+    height has to be 2 x 0.6em or the circles come out as ellipses. Measured
+    at 1.15 the cell was 1.91:1 -- a 5% squash, which is nothing as a number
+    and unmissable on a planet. */
+ .mf-art{{margin:0;font-size:9px;line-height:1.2em;white-space:pre;
           overflow:hidden;text-align:center;display:block}}
  .mf-frame .dt-cap{{margin-top:auto;padding-top:8px;text-align:left;
                     align-self:stretch;font-size:12px;line-height:1.3;
@@ -8403,10 +8419,10 @@ document.documentElement.classList.add('js');
     off evenly and the disc lands in the middle. */
  .mf-cell{{padding:4px;overflow:hidden}}
  /* 5.5px because that is what the arithmetic allows, not a taste: the art
-    is 13 inked rows and the cell has about 79px for it, so 79/13/1.1. The
+    is 13 inked rows and the cell has about 79px for it, so 79/13/1.2. The
     width is not the constraint -- 29 columns want 7px -- so height decides,
     and the canvas's blank margins clip away either side. */
- .mf-cell .mf-art{{font-size:5.5px;line-height:1.1;overflow:visible;
+ .mf-cell .mf-art{{font-size:5.5px;line-height:1.2em;overflow:visible;
                    align-self:center}}
  /* Centred under a centred drawing. The big frame's caption is bottom-left
     because it is a sentence about an event; these are one word naming the
