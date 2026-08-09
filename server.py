@@ -2306,6 +2306,7 @@ def _respond(request: Req, place: str | None):
             # its own, so head=False either way. The object pages lift theirs
             # into the lede instead and never ask for it.
             head_html, rungs = api.lift_chart_head(rungs)
+            head_html = api.pin_near(head_html, r.place.near)
             chart_html = api.chart_layout(rungs, zenith, prose, head=False)
             on_pill, on_modal = api.sky_pill_html(r, res.data)
             header = api.header_html(f"{r.place.name}/", pill=on_pill)

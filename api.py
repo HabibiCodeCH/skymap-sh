@@ -6416,6 +6416,42 @@ def _art_block(lines, caption, url, cls="dt-art", rows=DAY_ART_ROWS):
 _LEAD_SPACE = re.compile(r'^ *((?:<span[^>]*>)?) *')
 
 
+def pin_near(head_html, near):
+    """Swap the "near X" hint for a map pin carrying it as a tooltip.
+
+    Browser only, and after the line is HTML rather than before, on purpose.
+    The hint is the longest thing on the line that can never be dropped --
+    it is the only thing identifying a bare pair of coordinates, so a trim
+    is not allowed to take it -- and "near Lausanne, Vaud, Switzerland" is
+    32 characters spent before the headline has said anything about the sky.
+
+    Doing it here rather than in _head_prefix keeps the arithmetic honest:
+    every width decision on this line is made on the text, and the text is
+    what a terminal and a PNG still get. Only the page trades the words for
+    a pin, and only the page has somewhere to put them back.
+
+    The prefix is painted as one colour run, so the hint is a contiguous
+    stretch of one span and a plain replace cannot land in the middle of
+    markup. A <span> inside a <span> is fine; nothing has to be reopened.
+
+    U+2691 and not the map-pin emoji. The emoji is a text character too, but
+    it is rendered from the system's colour-emoji font -- so it arrived in
+    colour, as the only picture on a page made of characters, and at an
+    advance that is not the monospace cell. This one is in the site's own
+    font, measures exactly one cell, and takes the line's colour like every
+    other glyph on it.
+    """
+    if not near or not head_html:
+        return head_html
+    words = f" \u00b7 near {html.escape(near)}"
+    if words not in head_html:
+        return head_html
+    pin = (f'<span class="pin" tabindex="0" role="img" '
+           f'aria-label="near {html.escape(near)}" '
+           f'title="near {html.escape(near)}">\u2691</span>')
+    return head_html.replace(words, " " + pin)
+
+
 def lift_chart_head(rungs):
     """Take the summary line out of the drawing, into a ladder of its own.
 
@@ -8449,6 +8485,18 @@ document.documentElement.classList.add('js');
     something to hold on to -- there is no other way to bold part of a line
     that reaches the page as pre-rendered ANSI. */
  #day-head .dh>span:first-child{{font-weight:700}}
+ /* The "near X" hint, as a pin. It is the only thing identifying a bare
+    pair of coordinates so it can never be dropped, and spelled out it is
+    32 characters ahead of anything about the sky. The words are still
+    there, in the tooltip and in the accessible name -- and still on the
+    line itself in a terminal and in a PNG, neither of which has anywhere
+    to hover. tabindex so it is reachable without a mouse.
+
+    font-variant-emoji:text so a browser that has an emoji form of U+2691
+    does not reach for it: this is a character on a line of characters, not
+    a picture, and a colour glyph here would be the only one on the site. */
+ .pin{{cursor:help;opacity:.75;font-variant-emoji:text}}
+ .pin:hover,.pin:focus{{opacity:1;outline:none}}
  /* The drawing in the panel. Its own <pre> for the same reason the object
     pages give theirs one: the line-height is what makes a character cell
     twice as tall as it is wide (art.CELL), and a planet set at any other
