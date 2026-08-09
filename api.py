@@ -5449,6 +5449,13 @@ def _compose_day(r):
 
 # ---------------------------------------------------------------- what's coming up
 EVENT_COL = "\033[38;5;213m"    # orchid: not the sun's yellow, not the DSO green
+# What is running right now, as against what is on the calendar. The dated
+# rows are a plan; this is the sky as it is at this minute, which is a
+# different kind of claim and reads better as a different colour. Green
+# because that is already what live means on this site -- the pill uses it --
+# and far enough from the orchid that nobody has to compare two rows to tell
+# which group they are looking at.
+NOW_COL = "\033[38;5;120m"
 
 # How near an event has to be before it earns a line on a page that is
 # otherwise a star chart. Two weeks is long enough to plan a night out and
@@ -5964,7 +5971,7 @@ def _event_rows(r, days, colour_free=False):
     if running:
         rows.append(("mute", "  On now:", None))
         for e in running:
-            rows.append(("event", _event_line(e, r, when=""), _event_url(e, r)))
+            rows.append(("now", _event_line(e, r, when=""), _event_url(e, r)))
             note = e.get("moon_verdict") or e.get("note")
             if note:
                 for l in textwrap.wrap(note, 62):
@@ -6013,7 +6020,8 @@ def events_html(r, days=EVENTS_WINDOW_DAYS):
     The row is wrapped whole, padding included, so the columns stay lined up
     inside <pre> exactly as they do in a terminal.
     """
-    style = {"head": C.HEAD, "event": EVENT_COL, "mute": C.MUTE}
+    style = {"head": C.HEAD, "event": EVENT_COL, "now": NOW_COL,
+             "mute": C.MUTE}
     rows, _ = _event_rows(r, days)
     out = []
     for kind, text, url in rows:
@@ -6097,7 +6105,54 @@ def _countdown(days):
     return f"in {days} days"
 
 
-def _moon_art_for(illum, waning):
+def _event_moment_utc(e, r):
+    """When an event's drawing should be posed for, in UTC.
+
+    An event carries local wall clocks. A planet's axis barely moves in a
+    day, so this only has to be near enough -- but "near enough" is not the
+    same as "whatever moment the page was requested at", and an event a
+    fortnight out is a fortnight of drift."""
+    when = e.get("best_local") or e.get("when_local") or r.when_local
+    return when - dt.timedelta(hours=r.tz)
+
+
+def _pole_kw(name, when_utc):
+    """{pole_b, pole_pa} for a body at a moment, or {} if it has no axis on
+    file.
+
+    planet_art has taken these since it was written -- "pole_b and pole_pa
+    come from objects.pole_geometry" is in its own docstring -- and every
+    caller left them at the defaults, which are `pole_b=26, pole_pa=90`: a
+    planet tipped a quarter turn onto its side.
+
+    On a bare disc that costs nothing, which is why it went unnoticed. On
+    Saturn it is the whole picture. A ring lies in the equatorial plane, so
+    its long axis runs 90 degrees from the pole, and a pole at position
+    angle 90 puts the rings *vertical* -- Saturn came out as a ball inside
+    an upright hoop, which is not a thing anybody has ever seen through a
+    telescope.
+
+    With the real numbers each planet gets its own axis: Saturn's rings are
+    nearly edge-on in 2026 and lie flat, and Uranus -- tipped 98 degrees, so
+    we are looking almost straight down its pole -- gets the wide open ring
+    circle that is the whole reason its picture is worth drawing.
+    """
+    jd = sky.julian(when_utc)
+    if name == "Moon":
+        b = sky.moon(jd)
+    elif name == "Sun":
+        b = sky.sun(jd)
+    elif name in sky.PLANETS:
+        b = sky.planet(name, jd)
+    else:
+        return {}
+    g = objects.pole_geometry(name, b)
+    if g is None:
+        return {}
+    return {"pole_b": g[0], "pole_pa": g[1]}
+
+
+def _moon_art_for(illum, waning, when_utc):
     """The Moon at a given illumination, or [] for a new one.
 
     A new Moon drawn honestly is a black disc, which is a picture of nothing
@@ -6107,7 +6162,7 @@ def _moon_art_for(illum, waning):
     if illum is None or illum < 0.02:
         return []
     return art.planet_art("Moon", illuminated=illum, lit_from_left=waning,
-                          scale=DAY_PLANET_SCALE)
+                          scale=DAY_PLANET_SCALE, **_pole_kw("Moon", when_utc))
 
 
 def _eclipse_facts(e, r):
@@ -6168,11 +6223,13 @@ def _event_art(e, r):
         # illum is already a percentage in the event; art wants a fraction.
         # "Last quarter" is the waning one, which is which side is lit.
         return _moon_art_for((e.get("illum") or 0) / 100.0,
-                             "last" in e["name"].lower())
+                             "last" in e["name"].lower(),
+                             _event_moment_utc(e, r))
     target = _find_target_for(e)
     if target and art.has_art(target):
         return art.planet_art(target, illuminated=art.STYLE_ILLUMINATED,
-                              scale=DAY_PLANET_SCALE)
+                              scale=DAY_PLANET_SCALE,
+                              **_pole_kw(target, _event_moment_utc(e, r)))
     return []
 
 
@@ -6225,6 +6282,37 @@ DAY_PLANET_SCALE = 0.86
 DAY_ART_ROWS = 17
 
 
+def _drop_visible(line, n):
+    """The line with its first n *visible* characters gone, colours intact.
+
+    Counted in visible characters rather than in string positions because a
+    row of art is a run of escape sequences with characters between them,
+    and slicing the string would cut one in half and paint the rest of the
+    modal orange."""
+    out, seen, i = [], 0, 0
+    while i < len(line):
+        m = ANSI.match(line, i)
+        if m:
+            out.append(m.group(0)); i = m.end(); continue
+        if seen >= n:
+            out.append(line[i])
+        seen += 1
+        i += 1
+    return "".join(out)
+
+
+# How tall a drawing is allowed to be, as a fraction of the frame it sits in.
+# A 45-column canvas 14 rows deep comes out at 0.74 of its own width, which
+# is what every frame looked like before any of this, so nothing that was
+# already filling its box changes size. It is only the cap that stops a
+# narrow drawing -- Neptune is 19 columns of a 45-column canvas -- from
+# growing until it is taller than the modal.
+ART_HEIGHT_FRAC = 0.74
+# A monospace "0" in this stack measures 0.602em. The extra is what keeps a
+# rounding error from clipping the last column of Saturn's rings.
+ART_ADVANCE_EM = 0.612
+
+
 def _art_block(lines, caption, url, cls="dt-art", rows=DAY_ART_ROWS):
     """A drawing, its caption and the link they both sit inside.
 
@@ -6233,17 +6321,51 @@ def _art_block(lines, caption, url, cls="dt-art", rows=DAY_ART_ROWS):
     wherever the geometry puts it, so trimming is what stops five dead rows
     sitting between a picture and its caption, and padding is what stops the
     box changing height from one town to the next.
+
+    Blank *columns* come off too, and only symmetrically. art.py draws every
+    body on the same 45-column canvas, so a bare planet is about twenty
+    columns of picture with thirteen of margin either side -- and since the
+    type is sized to fit the canvas rather than the drawing, Neptune came out
+    less than half the size its frame could hold. Taking the same number off
+    each side is what keeps the disc in the middle while the box closes in
+    around it.
+
+    The type size goes on the element, because only here is the drawing's own
+    width known. It is in cqw -- hundredths of the frame -- so the art fits
+    whatever the frame turns out to be, and the second term is the height cap
+    that stops a narrow drawing growing past ART_HEIGHT_FRAC of its box.
     """
     body = list(lines)
     while body and not strip_ansi(body[0]).strip():
         body.pop(0)
     while body and not strip_ansi(body[-1]).strip():
         body.pop()
+    inked = [strip_ansi(l) for l in body if strip_ansi(l).strip()]
+    cols = 0
+    if inked:
+        canvas = max(len(l) for l in inked)
+        left = min(len(l) - len(l.lstrip(" ")) for l in inked)
+        right = canvas - max(len(l.rstrip(" ")) for l in inked)
+        cut = max(0, min(left, right))
+        if cut:
+            body = [_drop_visible(l, cut) for l in body]
+        cols = max((len(strip_ansi(l).rstrip()) for l in body), default=0)
     if body and rows and len(body) < rows:
         pad = rows - len(body)
         body = [""] * (pad // 2) + body + [""] * (pad - pad // 2)
-    pre = (f'<pre class="{cls}" aria-hidden="true">'
-           f'{ansi_to_html(chr(10).join(body))}</pre>')
+    size = ""
+    if cols and rows:
+        wide = 100.0 / (cols * ART_ADVANCE_EM)
+        tall = ART_HEIGHT_FRAC * 100.0 / (rows * 1.2)
+        size = f' style="font-size:min({wide:.3f}cqw,{tall:.3f}cqw)"'
+    # The drawing goes in a box of its own that takes the slack, so it can
+    # be centred in what is left over the caption. Without it the caption's
+    # margin-top:auto swallowed every spare pixel and the picture sat pinned
+    # to the ceiling of its frame with a hand's width of black under it.
+    # The wrapper and not the <pre>: flex on a <pre> makes a flex item of
+    # every colour span inside it and stacks them down the page.
+    pre = (f'<div class="art-fill"><pre class="{cls}"{size} aria-hidden="true">'
+           f'{ansi_to_html(chr(10).join(body))}</pre></div>')
     cap = f'<span class="dt-cap">{html.escape(caption)}</span>'
     if not url:
         return f'<div class="dt-art-box">{pre}{cap}</div>'
@@ -6374,8 +6496,12 @@ def _drawer_rows(evs, r):
     out = []
     for e in evs:
         when = "" if not e.get("at_peak", True) else f"{_event_date(e):%a %d %b}"
+        # No date means it is running now rather than happening on a day, and
+        # the row says so in green -- the same distinction the terminal list
+        # draws with NOW_COL.
+        cls = "nu-row" if when else "nu-row nu-now"
         out.append(
-            f'<a class="nu-row" href="{html.escape(_event_url(e, r))}">'
+            f'<a class="{cls}" href="{html.escape(_event_url(e, r))}">'
             f'<span class="nu-when">{html.escape(when or "on now")}</span>'
             f'<span class="nu-glyph">{html.escape(e.get("glyph", "·"))}</span>'
             f'<span class="nu-what">{html.escape(e["headline"])}</span>'
@@ -6414,7 +6540,8 @@ def _frame(inner):
 
 
 def _body_tile(r, name, scale):
-    lines = art.planet_art(name, illuminated=art.STYLE_ILLUMINATED, scale=scale)
+    lines = art.planet_art(name, illuminated=art.STYLE_ILLUMINATED, scale=scale,
+                           **_pole_kw(name, r.when_utc))
     when = _chart_link_when(r)
     url = f"/{quote(r.place.slug)}/{quote(name)}{when}"
     return _art_block(lines, name, url, cls="mf-art", rows=MODAL_TILE_ROWS)
@@ -6472,7 +6599,8 @@ def _modal_frames(r, data):
         # empty night that is the answer to "is it worth going out".
         frames.append(_frame(_art_block(
             art.planet_art(up[0], illuminated=art.STYLE_ILLUMINATED,
-                           scale=DAY_PLANET_SCALE),
+                           scale=DAY_PLANET_SCALE,
+                           **_pole_kw(up[0], r.when_utc)),
             f"{up[0]}, up tonight",
             f"/{quote(r.place.slug)}/{quote(up[0])}{_chart_link_when(r)}",
             cls="mf-art", rows=MODAL_ART_ROWS)))
@@ -6556,7 +6684,8 @@ def _compose_events(r, next_only=False, days=EVENTS_WINDOW_DAYS):
                       dict(place=p.name, next=line))
 
     rows, every = _event_rows(r, days)
-    style = {"head": C.HEAD, "event": EVENT_COL, "mute": C.MUTE}
+    style = {"head": C.HEAD, "event": EVENT_COL, "now": NOW_COL,
+             "mute": C.MUTE}
     out = ["" if kind == "blank" else paint(text, style[kind], c)
            for kind, text, _url in rows]
     out += ["", _footer(p, c), ""]
@@ -8337,6 +8466,10 @@ document.documentElement.classList.add('js');
          border-left:2px solid transparent;border-radius:4px;
          text-decoration:none;font-size:12.5px;color:#c9d1d9}}
  .nu-row:hover{{background:#0d1117}}
+ /* On now, against the dated rows around it. Green because it is the one
+    line in the box that is about this minute rather than about a plan -- the
+    same reason the terminal list paints it NOW_COL. */
+ .nu-row.nu-now .nu-when,.nu-row.nu-now .nu-what{{color:#7ee787}}
 /* What is on. A chip beside the search bar, opening a modal.
    Nothing is docked to the window: the chart is the page, and anything
    sitting at the bottom edge has to have room reserved for it, which comes
@@ -8356,7 +8489,13 @@ document.documentElement.classList.add('js');
          align-items:flex-start;justify-content:center;
          padding:64px 16px 16px;background:rgba(4,6,10,.72)}}
  .modal[hidden]{{display:none}}
- .modal-card{{position:relative;width:100%;max-width:560px;
+ /* Wide enough for the drawings. The frames sit two across, so the art gets
+    a bit under half of this, and the art is art.COLS = 45 characters wide
+    whatever it is showing -- at 560 that worked out at 8.6px a character,
+    which is a Saturn you have to lean in to read. Width was always the
+    binding constraint here and never height: the frames had room to spare
+    underneath at every size tried. */
+ .modal-card{{position:relative;width:100%;max-width:860px;
               background:#0d1117;border:1px solid #30363d;border-radius:8px;
               padding:16px 18px 18px;max-height:calc(100vh - 96px);
               overflow-y:auto}}
@@ -8372,9 +8511,13 @@ document.documentElement.classList.add('js');
     the reader has to re-read every time. */
  .mf-row{{display:grid;grid-template-columns:1fr 1fr;gap:10px;
           margin:.2rem 0 .9rem}}
+ /* A query container, so the drawing inside can be sized from the frame
+    rather than from a number typed here. One rule then fits the art to the
+    big frame and to a quad cell alike, and neither can drift out of the
+    other's reach when the modal changes width. */
  .mf-frame{{border:1px solid #30363d;border-radius:6px;padding:10px;
             background:#04060a;min-width:0;display:flex;
-            flex-direction:column}}
+            flex-direction:column;container-type:inline-size}}
  /* The drawing takes the room, the caption sits on the floor of the frame.
     Centred art over a bottom-left caption: the picture is the subject and
     wants the middle, the caption is a label and labels start at the left
@@ -8384,8 +8527,12 @@ document.documentElement.classList.add('js');
     the caption is 12px the caption is not sitting on the floor -- which is
     the whole of what "bottom left" means. */
  .mf-frame>.dt-art-box{{display:flex;flex-direction:column;flex:1 1 auto;
-                        justify-content:center;min-height:0;margin-bottom:0;
+                        min-height:0;margin-bottom:0;
                         text-decoration:none;color:inherit}}
+ /* Takes the slack and centres the drawing in it. The caption then sits on
+    the floor because there is nothing left to push it off. */
+ .art-fill{{display:flex;flex:1 1 auto;min-height:0;
+            align-items:center;justify-content:center}}
  /* Never display:flex on the <pre>. Its contents are the colour spans
     ansi_to_html emits, so flex makes every one of them a flex item and
     stacks them down the page: fifteen lines of shower came out 859px tall
@@ -8395,8 +8542,14 @@ document.documentElement.classList.add('js');
     height has to be 2 x 0.6em or the circles come out as ellipses. Measured
     at 1.15 the cell was 1.91:1 -- a 5% squash, which is nothing as a number
     and unmissable on a planet. */
- .mf-art{{margin:0;font-size:9px;line-height:1.2em;white-space:pre;
-          overflow:hidden;text-align:center;display:block}}
+ /* Exactly as wide as the frame. The art is art.COLS = 45 characters and a
+    monospace "0" is a shade over 0.6em, so 45 x 0.612 = 27.5 frame-widths
+    per em: divide the frame by that and the drawing lands edge to edge with
+    a hair to spare. Measured rather than assumed -- Chromium's advance for
+    this stack is 0.602em, and the extra is what keeps a rounding error from
+    clipping Saturn's outer ring. */
+ .mf-art{{margin:0;font-size:calc(100cqw / 27.5);line-height:1.2em;
+          white-space:pre;overflow:hidden;text-align:center;display:block}}
  .mf-frame .dt-cap{{margin-top:auto;padding-top:8px;text-align:left;
                     align-self:stretch;font-size:12px;line-height:1.3;
                     color:#c9d1d9}}
@@ -8418,12 +8571,10 @@ document.documentElement.classList.add('js');
     centred as a whole block and clipped by the cell, the empty margins come
     off evenly and the disc lands in the middle. */
  .mf-cell{{padding:4px;overflow:hidden}}
- /* 5.5px because that is what the arithmetic allows, not a taste: the art
-    is 13 inked rows and the cell has about 79px for it, so 79/13/1.2. The
-    width is not the constraint -- 29 columns want 7px -- so height decides,
-    and the canvas's blank margins clip away either side. */
- .mf-cell .mf-art{{font-size:5.5px;line-height:1.2em;overflow:visible;
-                   align-self:center}}
+ /* No size of its own any more: .mf-art is in frame-widths and a cell is a
+    frame, so it fits itself. It was 5.5px, which was right for one modal
+    width and wrong the moment that changed. */
+ .mf-cell .mf-art{{overflow:visible;align-self:center}}
  /* Centred under a centred drawing. The big frame's caption is bottom-left
     because it is a sentence about an event; these are one word naming the
     picture above them. */

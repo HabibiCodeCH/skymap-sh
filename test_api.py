@@ -2083,6 +2083,11 @@ class TheModalFramesAreDrawnRound(unittest.TestCase):
     """A disc is drawn for a character cell art.CELL times as tall as it is
     wide. Get the line height wrong and every planet is an ellipse."""
 
+    def _art_rows(self, block):
+        """The drawing's own lines, out of the block's HTML."""
+        pre = re.search(r"<pre[^>]*>(.*?)</pre>", block, re.S).group(1)
+        return [l for l in re.sub(r"<[^>]+>", "", pre).split("\n") if l.strip()]
+
     def _rule(self, sel):
         m = re.search(re.escape(sel) + r"\{\{([^}]*)\}\}", api.PAGE)
         self.assertIsNotNone(m, sel)
@@ -2092,9 +2097,50 @@ class TheModalFramesAreDrawnRound(unittest.TestCase):
         """0.6em per character across, art.CELL cells tall for one across, so
         1.2em down. It was 1.15, which measured 1.91:1 in Chromium against a
         target of 2.0 -- a 5% squash, invisible as a number and obvious on
-        Saturn."""
-        for sel in (" .mf-art", " .mf-cell .mf-art"):
-            self.assertIn("line-height:1.2em", self._rule(sel), sel)
+        Saturn. One rule, on .mf-art: a quad cell is a frame like any other
+        and takes the same drawing at the same shape."""
+        self.assertIn("line-height:1.2em", self._rule(" .mf-art"))
+        self.assertNotIn("line-height", self._rule(" .mf-cell .mf-art"))
+
+    def test_the_type_is_sized_from_the_frame_and_not_from_a_number(self):
+        """cqw, so one rule fits the big frame and a quad cell alike. The
+        drawing's own column count goes on the element, because only there is
+        it known -- and the second term caps the height, so a narrow drawing
+        like Neptune grows to fill its box rather than past it."""
+        r = api.Request(place="Zurich", when=dt.datetime(2026, 8, 24, 23, 0),
+                        width=300, panel=True)
+        lines = art.planet_art("Neptune", illuminated=art.STYLE_ILLUMINATED,
+                               **api._pole_kw("Neptune", r.when_utc))
+        block = api._art_block(lines, "Neptune", "/x", cls="mf-art",
+                               rows=api.MODAL_ART_ROWS)
+        m = re.search(r"font-size:min\(([\d.]+)cqw,([\d.]+)cqw\)", block)
+        self.assertIsNotNone(m, block[:200])
+        wide, tall = float(m.group(1)), float(m.group(2))
+        # Neptune is a bare disc on a 45-column canvas, so the blank margins
+        # come off and width stops being what limits it.
+        self.assertGreater(wide, tall)
+        self.assertIn("container-type:inline-size", self._rule(" .mf-frame"))
+
+    def test_the_blank_margins_come_off_evenly_or_not_at_all(self):
+        """Trimmed by the smaller of the two margins, so a drawing that is
+        not centred on its canvas keeps whatever offset it had. Take the
+        blanks off each side independently and a disc slides sideways."""
+        # 8 blank columns on the narrowest left margin, 4 on the right.
+        canvas = ["          ####      ",
+                  "        ########    ",
+                  "          ####      "]
+        rows = self._art_rows(api._art_block(canvas, "x", "", cls="mf-art",
+                                             rows=3))
+        self.assertEqual(len(rows), 3)
+        # 4 came off each side -- the smaller margin -- not 8 and 4.
+        self.assertEqual([len(l) - len(l.lstrip(" ")) for l in rows], [6, 4, 6])
+
+    def test_a_drawing_that_fills_its_canvas_loses_nothing(self):
+        """Saturn's rings run the full width, so there is no margin to take
+        and the trim has to leave it exactly as it arrived."""
+        canvas = ["==########==", "############", "==########=="]
+        self.assertEqual(self._art_rows(
+            api._art_block(canvas, "x", "", cls="mf-art", rows=3)), canvas)
 
     def test_the_caption_sits_on_the_floor_of_the_frame(self):
         """margin-top:auto puts it there, and .dt-art-box's own 12px bottom
