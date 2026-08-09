@@ -4115,31 +4115,18 @@ def chart_ladder_css():
 
         f" #day-side{{transition:opacity {ANIM_WIDE_MS // 2}ms ease}}",
 
-        # The collapsed state. The side column goes to a zero-width track
-        # rather than display:none, because a track can be animated to and
-        # display cannot.
-        # The summary box folds away for the duration, on both pages.
+        # The headline stays up through an animation.
         #
-        # anim-on, not anim-wide: anim-wide means "the chart was zoomed",
-        # which skymapAnimZoom only does when there is room to gain (its k
-        # has to clear 1.05). The night chart already fills its box, so it
-        # never zooms -- and the box sat there through the whole animation
-        # showing the moment the page was loaded for, frozen at 02:00 while
-        # the chart ran through the next 24 hours, with the frame's own
-        # header underneath it saying something else. Two headers
-        # disagreeing, and the taller page ran the chart under the shortcut
-        # bar. The day page had none of this because it does zoom, so it
-        # collapsed the box on the way.
+        # It used to fold away (html.anim-on #day-head), because the frame
+        # brings a header of its own and the box beside it was frozen at the
+        # moment the page was built -- two headers disagreeing about the
+        # time. But the headline is where and when you are, and an animation
+        # is exactly when "when" is changing: taking it off screen at that
+        # moment removes the one line the movement is about.
         #
-        # Whether the chart grew is the wrong question to hang this on. The
-        # right one is whether an animation is playing, which is what
-        # anim-on says and what skymapAnimate sets unconditionally.
-        " html.anim-on #day-head,html.anim-wide #day-next-up{max-height:0;"
-        "opacity:0;margin:0;padding-top:0;padding-bottom:0;border-width:0;"
-        "overflow:hidden}",
-        " html.anim-wide #day-split{grid-template-columns:minmax(0,1fr) 0px;"
-        "gap:0}",
-        " html.anim-wide #day-side{opacity:0;overflow:hidden}",
+        # It is not wired to the frames yet, so it still reads the page's own
+        # moment while the chart runs. That is the next piece of work, not a
+        # reason to hide it.
         # The rung the animation is writing into, pinned on whatever the
         # ladder would pick for the width it now has. Placed after the
         # @container rules on purpose: same specificity, so source order
@@ -4231,10 +4218,16 @@ DAY_PANEL_HEIGHT_FRAC = 0.72
 
 
 def _day_height(r):
-    """Rows for the Sun's arc: the full panorama height in a terminal, half
-    of it in a browser, where the room is worth more than the resolution."""
-    h = _horizon_height(r)
-    return max(12, round(h * DAY_PANEL_HEIGHT_FRAC)) if r.panel else h
+    """Rows for the Sun's arc. The same as the night chart's, now.
+
+    It used to be 72% of them in a browser, because the arc shared its row
+    with a panel of tonight and a list of events and the room was worth more
+    than the resolution. Both of those live in the drawer now and the chart
+    has the page to itself, so the reason is gone -- and a day chart drawn
+    shorter than the night one is the two views disagreeing about their own
+    axis again, which is the thing this layout exists to stop.
+    """
+    return _horizon_height(r)
 
 
 def _png_export_height(r):
@@ -6760,20 +6753,235 @@ def lift_chart_head(rungs):
             f'<div id="day-head-ladder">{spans}</div></header>'), rest
 
 
-def night_layout(head_html, chart_html):
-    """The star chart, framed like the day page and given the whole width.
+def chart_page(head_html, chart_html, drawer_html=""):
+    """The whole page: a line saying where and when, then the chart.
 
-    Two boxes and nothing else. After dark there is no arc counting down to
-    anything, no "tonight" to preview and no daylight to fill -- the chart
-    *is* the page, and what it wants is room. So it gets the same summary
-    line in the same frame above it, and everything under that frame is
-    chart.
+    Day and night alike. The day page used to be a different shape -- the
+    Sun's arc in a narrow column with a panel of tonight beside it and a list
+    of events beneath -- and the chart paid for all of it in width and rows.
+    Now that both views share one axis and one set of pieces, there is no
+    reason for two layouts, and the chart is the thing worth the room.
+
+    Everything the panel and the list carried moves into the drawer, which
+    slides up over the chart rather than displacing it: the chart is sized to
+    the window, so anything that reflows it rescales it.
     """
     return (head_html
             + f'<section id="night-chart" class="day-box" '
               f'aria-label="the sky above you now">'
               f'<h2 class="box-head">the sky above you now</h2>{chart_html}'
-              f'</section>')
+              f'</section>' + drawer_html)
+
+
+# Kept under its old name for the object pages, which call it directly.
+night_layout = chart_page
+
+
+def _drawer_split(r):
+    """(today, tonight) -- the two lists the drawer shows and counts.
+
+    Today is what happens while the Sun is still up: in practice a solar
+    eclipse, which is the one thing on the list somebody could walk outside
+    and watch this afternoon. Tonight is the rest -- what is running now, and
+    what this coming night holds.
+
+    Split because the page is about that split, and because "2 today, 3
+    tonight" answers a different question from "5 things": the first number
+    is about the next few hours and the second is about whether to set an
+    alarm.
+    """
+    tonight_night = _night_of(r.when_local)
+    today, tonight = [], []
+    for e in _events_for(r, days=EVENTS_WINDOW_DAYS, visible_only=True):
+        night = _night_of(_event_date(e))
+        if night != tonight_night:
+            continue
+        # Daylight events are today's; everything else belongs to the night.
+        when = e.get("best_local") or e["when_local"]
+        (today if is_daytime(r.at(when - dt.timedelta(hours=r.tz)))
+         else tonight).append(e)
+    tonight = _running_now(r) + tonight
+    return today, tonight
+
+
+def drawer_badge(today, tonight):
+    """The closed drawer's one line. Empty when there is nothing at all, so
+    a quiet night gets a quiet page rather than a "0 tonight"."""
+    bits = []
+    if today:
+        bits.append(f"{len(today)} today")
+    if tonight:
+        bits.append(f"{len(tonight)} tonight")
+    return ", ".join(bits)
+
+
+def _drawer_rows(evs, r):
+    out = []
+    for e in evs:
+        when = "" if not e.get("at_peak", True) else f"{_event_date(e):%a %d %b}"
+        out.append(
+            f'<a class="nu-row" href="{html.escape(_event_url(e, r))}">'
+            f'<span class="nu-when">{html.escape(when or "on now")}</span>'
+            f'<span class="nu-glyph">{html.escape(e.get("glyph", "·"))}</span>'
+            f'<span class="nu-what">{html.escape(e["headline"])}</span>'
+            f'<span class="nu-where">{html.escape(", ".join(_event_tail(e)))}</span>'
+            f'</a>')
+    return "".join(out)
+
+
+# How much of a find each body is, rarest first. Not brightness: Venus is the
+# brightest thing up and also the one nobody needs telling about, where
+# Mercury is the planet people go years without ever catching. Uranus and
+# Neptune need optics, so they sit behind the naked-eye ones a reader could
+# actually walk outside and find.
+BODY_RARITY = ("Mercury", "Mars", "Saturn", "Jupiter", "Uranus", "Neptune",
+               "Venus", "Moon")
+
+
+def _bodies_up(data):
+    """The bodies up tonight, most worth a trip first.
+
+    Two sources because the two views carry different payloads: the day page
+    knows what *will* be up (visible_tonight, computed for first dark) and
+    the night page knows what *is* (bodies, the ones actually above the
+    horizon now). Reading only the first meant the night page found nothing
+    and the modal came out empty on exactly the quiet nights this is for.
+    """
+    up = list(data.get("visible_tonight") or
+              [b["name"] for b in (data.get("bodies") or []) if b.get("name")])
+    up = [n for n in up if art.has_art(n)]
+    return sorted(up, key=lambda n: (BODY_RARITY.index(n)
+                                     if n in BODY_RARITY else 99))
+
+
+def _frame(inner):
+    return f'<div class="mf-frame">{inner}</div>'
+
+
+def _body_tile(r, name, scale):
+    lines = art.planet_art(name, illuminated=art.STYLE_ILLUMINATED, scale=scale)
+    when = _chart_link_when(r)
+    url = f"/{quote(r.place.slug)}/{quote(name)}{when}"
+    return _art_block(lines, name, url, cls="mf-art", rows=MODAL_TILE_ROWS)
+
+
+# The two frames at the top of the modal are a fixed shape: whatever is in
+# them, the box is the same height, so opening the modal on a quiet night
+# does not give a different-shaped page from opening it on the night of an
+# eclipse.
+MODAL_ART_ROWS = 14
+# The cells draw the *same* art as the big frame and set it smaller, rather
+# than asking planet_art for a smaller drawing. A scaled-down disc is not a
+# smaller picture of Saturn, it is a picture of fewer characters: the rings
+# go first, and what is left is a blob that could be any planet. Same
+# characters, smaller type, and the shape survives -- which is the whole
+# reason these are drawings and not names.
+MODAL_TILE_SCALE = DAY_PLANET_SCALE
+MODAL_TILE_ROWS = MODAL_ART_ROWS
+
+
+def _modal_frames(r, data):
+    """The two bordered frames at the top of the modal.
+
+    Always two, and always in this order:
+
+      eclipse today   -> the eclipse, then the best thing tonight
+      no eclipse      -> the best thing tonight, then the second best
+      only one event  -> that event, then a grid of what is up
+      nothing at all  -> the rarest body up, large, then a grid of four more
+
+    An eclipse takes the first frame whatever else is on, because it is the
+    one thing on the list that happens in daylight and the one a reader could
+    walk outside and watch this afternoon.
+    """
+    today, tonight = _drawer_split(r)
+    ecl = next((e for e in today if e["kind"] == "eclipse"), None)
+    rest = [e for e in today + tonight if e is not ecl]
+    rest.sort(key=lambda e: -ev_mod._interest(e))
+    picks = ([ecl] if ecl else []) + rest
+
+    frames = []
+    for e in picks:
+        if len(frames) == 2:
+            break
+        lines = _event_art(e, r)
+        if not lines:
+            continue
+        frames.append(_frame(_art_block(lines, _event_headline(e, r),
+                                        _event_url(e, r), cls="mf-art",
+                                        rows=MODAL_ART_ROWS)))
+
+    up = _bodies_up(data)
+    if not frames and up:
+        # Nothing on at all. The rarest thing up gets the big frame -- on an
+        # empty night that is the answer to "is it worth going out".
+        frames.append(_frame(_art_block(
+            art.planet_art(up[0], illuminated=art.STYLE_ILLUMINATED,
+                           scale=DAY_PLANET_SCALE),
+            f"{up[0]}, up tonight",
+            f"/{quote(r.place.slug)}/{quote(up[0])}{_chart_link_when(r)}",
+            cls="mf-art", rows=MODAL_ART_ROWS)))
+        up = up[1:]
+    if len(frames) == 1 and up:
+        # Four small frames rather than four drawings loose in one big one.
+        # Loose, each tile sat in a fifth of the box it was given and the
+        # rest was dead space; a frame each gives every body the same border
+        # the events get and fills the same footprint.
+        tiles = "".join(f'<div class="mf-frame mf-cell">'
+                        f'{_body_tile(r, n, MODAL_TILE_SCALE)}</div>'
+                        for n in up[:4])
+        frames.append(f'<div class="mf-quad">{tiles}</div>')
+    return "".join(frames)
+
+
+def sky_pill_html(r, data):
+    """(pill, modal) -- what is on, as a chip beside the search bar.
+
+    It lived under the chart first, as a drawer docked above the shortcut
+    bar. That was still competing with the chart for the one thing the chart
+    needs, which is height: room had to be reserved for its closed tab, and
+    the reserved room came off the drawing. Beside the bar it costs nothing,
+    and the chart is the only thing on the page.
+
+    One drawing, not a carousel. The deck cycled six of them on a timer,
+    which is a lot of movement beside a chart that is itself the point, and
+    every drawing in it was already a link to a page carrying the same
+    picture bigger.
+
+    Both halves are empty on a quiet night. A pill reading "0 tonight" is a
+    notification about nothing.
+    """
+    today, tonight = _drawer_split(r)
+    badge = drawer_badge(today, tonight)
+    frames = _modal_frames(r, data)
+    if not badge and not frames:
+        return "", ""
+    # Nothing on is not nothing to say. "Events: 0" is a notification about
+    # an absence; a quiet night is a fact about the sky, and the frames
+    # behind it still answer "is it worth going out" with whatever is up.
+    label = f"Events: {badge}" if badge else "A lovely night"
+    body = f'<div class="mf-row">{frames}</div>' if frames else ""
+    if today:
+        body += f'<h3 class="dw-head">today</h3>{_drawer_rows(today, r)}'
+    if tonight:
+        body += f'<h3 class="dw-head">tonight</h3>{_drawer_rows(tonight, r)}'
+    body += (f'<a class="nu-more" href="/{quote(r.place.slug)}/events">'
+             f'everything coming up &rarr;</a>')
+    # Labelled, not just counted. "2 today, 1 tonight" beside a search bar
+    # is a number without a noun -- two of what?
+    pill = (f'<button type="button" class="barpill" id="on-pill" '
+            f'aria-expanded="false" aria-controls="on-modal">'
+            f'{html.escape(label)}</button>')
+    # A title, so the close button has a row of its own to sit at the end of
+    # rather than floating over the first frame's top corner.
+    modal = (f'<div id="on-modal" class="modal" hidden>'
+             f'<div class="modal-card" role="dialog" aria-modal="true" '
+             f'aria-labelledby="on-title">'
+             f'<div class="modal-bar">'
+             f'<h2 class="modal-title" id="on-title">Events today and tonight</h2>'
+             f'<button type="button" class="modal-close" id="on-close" '
+             f'aria-label="Close">✕</button></div>{body}</div></div>')
+    return pill, modal
 
 
 def day_layout(head_html, chart_html, panel_html, list_html):
@@ -7252,12 +7460,12 @@ def _find_chart_only(r):
                      line_limit=_fade_mag_limit(sun_alt),
                      bodies=_fade_visible_bodies(sun_alt, jd_shown) | {"Sun", "Moon"})
     sp = extra["span"]
-    # inset=False like every other branch of compose_chart_only. render_linear
-    # defaults it on, and this one call site never said otherwise, so the
-    # shared PNG for a ?find= view carried a zenith inset under the horizon
-    # that no other PNG has -- the one thing the export is meant to leave out.
+    # The inset is on here as everywhere. It used to be off across the whole
+    # export, on the reasoning that a PNG is "just the chart" -- but the cap
+    # of sky above the panorama is part of the chart, and leaving it out gave
+    # the shared picture less than the page it was shared from.
     art, _st = render_linear(shown_utc, p.lat, p.lon, color=c, show_lines=r.lines,
-                             tle=r.tle, target=tgt, inset=False, **extra)
+                             tle=r.tle, target=tgt, **extra)
     shown_local = shown_utc + dt.timedelta(hours=p.offset(shown_utc))
     where = f"{int(sp)}° window" if zoomed else "full panorama"
     head = (f"  {p.name}   {shown_local:%d %b %Y %H:%M}   "
@@ -7320,10 +7528,16 @@ def _export_head(r, st, mode):
 
 
 def compose_chart_only(r):
-    """Just the horizon chart itself -- no header, prose, footer, or zenith
-    inset -- for the PNG export. Same day/night and facing logic as
+    """Just the horizon chart itself -- no header, prose or footer -- for the
+    PNG and GIF exports. Same day/night and facing logic as
     _compose_sky/_compose_day, minus everything that isn't the chart, so the
-    PNG matches whatever the static view above it is actually showing."""
+    export matches whatever the static view above it is actually showing.
+
+    The zenith inset is part of the chart and is drawn here too. It was off
+    across the whole export on the reasoning that a PNG is "just the chart",
+    which left the shared picture showing less sky than the page it came
+    from -- and made this the one view of the four with a different idea of
+    where the chart stops."""
     p, c = r.place, r.color
     if r.find:
         found = _find_chart_only(r)
@@ -7350,7 +7564,7 @@ def compose_chart_only(r):
         art, _st = render_linear(r.when_utc, p.lat, p.lon, color=c, show_lines=False,
                                  mag_limit=_fade_mag_limit(sa_now), alt_lo=0.0, alt_hi=alt_hi,
                                  overlay=(arc, SUN_COL, "SUN", (sa_now, sz_now)),
-                                 bodies=show, inset=False, width=_png_export_width(r),
+                                 bodies=show, width=_png_export_width(r),
                                  height=_png_export_height(r))
         head = _horizon_head(r, _sun_path_mode(r))
         return paint(head, C.HEAD, c) + "\n\n" + art
@@ -7371,7 +7585,7 @@ def compose_chart_only(r):
                             # silently drop the Moon glyph the main view kept.
                             bodies=_fade_visible_bodies(sun_alt, jd) | {"Sun", "Moon"},
                             dso_limit=DSO_LIMIT if r.dso else None, quadrant=r.quadrant,
-                            quadrants=r.quadrant_requested, inset=False,
+                            quadrants=r.quadrant_requested,
                             # The PNG is the shareable artefact, so it is the
                             # last place the band should be missing -- and it
                             # is a separate render from _compose_sky's, which
@@ -8150,7 +8364,7 @@ SEARCH_HELP = (
     'catalog</a></div>')
 
 
-def header_html(value=""):
+def header_html(value="", pill=""):
     """The command bar + nav, identical on every page -- one function so the
     nav can never drift or reorder between routes the way six separate
     PAGE.format() call sites each re-deciding it independently did. "home"
@@ -8218,6 +8432,11 @@ def header_html(value=""):
             f'<ul class="bar-dropdown" id="bar-dropdown" role="listbox" hidden></ul>'
             f'{SEARCH_HELP}'
             f'</div>'
+            # What is on, beside the bar rather than under the chart. It
+            # opens a modal: the chart is the page now, and anything docked
+            # to the bottom of the window is competing with it for the one
+            # thing it needs, which is height.
+            f'{pill}'
             f'<p class="t nav-row"><span>'
             f'<a href="/">home</a> · '
             # Bare /events, not /{place}/events: the nav is the same on every
@@ -8559,7 +8778,6 @@ document.documentElement.classList.add('js');
     Night only. The day page keeps its box, because there it is one card
     among several beside the tonight panel, and a borderless one would be
     the odd one out. */
- #night-chart{{border:0;border-radius:0;padding:0 0 0 13px}}
  #night-chart>.box-head{{display:none}}
  #day-side{{display:flex;flex-direction:column;gap:{BOX_GAP}px;font-size:12.5px}}
  /* Full width above the split: it is the one line that describes the whole
@@ -8683,6 +8901,95 @@ document.documentElement.classList.add('js');
     different from a Tuesday with a quarter Moon on it. */
  .nu-row.nu-super{{border-left-color:#ff87ff;
                   background:rgba(255,135,255,.045)}}
+/* What is on. A chip beside the search bar, opening a modal.
+   Nothing is docked to the window: the chart is the page, and anything
+   sitting at the bottom edge has to have room reserved for it, which comes
+   straight off the drawing. */
+/* Styled in full rather than leaning on .barpill: those rules are scoped to
+   .cmdbar .barpill and this sits outside the form, so it inherited none of
+   them and came out as the browser's default grey button. Border and text
+   the same colour on the page's own black -- it is a notification, and the
+   colour is the whole of the signal. */
+ #on-pill{{margin-left:10px;flex:0 0 auto;background:#04060a;
+           border:1px solid #7ee787;color:#7ee787;border-radius:4px;
+           padding:4px 8px;font:inherit;font-size:12px;cursor:pointer;
+           white-space:nowrap;line-height:1.2}}
+ #on-pill:hover,#on-pill[aria-expanded="true"]{{border-color:#9ef2ab;
+                                                color:#9ef2ab}}
+ .modal{{position:fixed;inset:0;z-index:60;display:flex;
+         align-items:flex-start;justify-content:center;
+         padding:64px 16px 16px;background:rgba(4,6,10,.72)}}
+ .modal[hidden]{{display:none}}
+ .modal-card{{position:relative;width:100%;max-width:560px;
+              background:#0d1117;border:1px solid #30363d;border-radius:8px;
+              padding:16px 18px 18px;max-height:calc(100vh - 96px);
+              overflow-y:auto}}
+ .modal-bar{{display:flex;align-items:baseline;justify-content:space-between;
+             gap:12px;margin:0 0 .7rem}}
+ .modal-title{{margin:0;font-size:11px;font-weight:normal;letter-spacing:.08em;
+               text-transform:uppercase;color:#6e7681}}
+ .modal-close{{background:none;border:0;color:#6e7681;font:inherit;
+               font-size:14px;cursor:pointer;padding:0 2px;line-height:1}}
+ .modal-close:hover{{color:#c9d1d9}}
+ /* Two frames, always two, always the same height. A modal that is a
+    different shape on a quiet night than on the night of an eclipse is one
+    the reader has to re-read every time. */
+ .mf-row{{display:grid;grid-template-columns:1fr 1fr;gap:10px;
+          margin:.2rem 0 .9rem}}
+ .mf-frame{{border:1px solid #30363d;border-radius:6px;padding:10px;
+            background:#04060a;min-width:0;display:flex;
+            flex-direction:column}}
+ /* The drawing takes the room, the caption sits on the floor of the frame.
+    Centred art over a bottom-left caption: the picture is the subject and
+    wants the middle, the caption is a label and labels start at the left
+    margin like every other line of text on the site. */
+ .mf-frame>.dt-art-box{{display:flex;flex-direction:column;flex:1 1 auto;
+                        justify-content:center;min-height:0;
+                        text-decoration:none;color:inherit}}
+ /* Never display:flex on the <pre>. Its contents are the colour spans
+    ansi_to_html emits, so flex makes every one of them a flex item and
+    stacks them down the page: fifteen lines of shower came out 859px tall
+    instead of 155. The centring belongs on the box around it. */
+ .mf-art{{margin:0;font-size:9px;line-height:1.15;white-space:pre;
+          overflow:hidden;text-align:center;display:block}}
+ .mf-frame .dt-cap{{margin-top:auto;padding-top:8px;text-align:left;
+                    align-self:stretch;font-size:12px;line-height:1.3;
+                    color:#c9d1d9}}
+ /* Four bodies as four small frames, not four drawings loose in one big
+    one. No border on the quad itself -- it is a 2x2 of the normal frame
+    scaled down, occupying the footprint one frame would have had, and an
+    outer border round them would be a fifth box nobody asked for. Same gap
+    as .mf-row so the two halves line up. */
+ /* Two rows always, not auto: with only two bodies up, auto rows gave each
+    cell the full height of the frame beside it and put a tiny disc in the
+    middle of a tall empty box. Pinned, a cell is half a frame whether there
+    are two of them or four. */
+ .mf-quad{{display:grid;grid-template-columns:1fr 1fr;
+           grid-template-rows:1fr 1fr;gap:10px;min-width:0}}
+ /* The cell clips, not the drawing. planet_art returns a 45-column canvas
+    with the disc centred in it and _art_block trims blank rows but never
+    columns, so the <pre> is always wider than a cell. Clipped by the <pre>
+    itself it lost its right-hand side and the disc sat off to one side;
+    centred as a whole block and clipped by the cell, the empty margins come
+    off evenly and the disc lands in the middle. */
+ .mf-cell{{padding:4px;overflow:hidden}}
+ /* 5.5px because that is what the arithmetic allows, not a taste: the art
+    is 13 inked rows and the cell has about 79px for it, so 79/13/1.1. The
+    width is not the constraint -- 29 columns want 7px -- so height decides,
+    and the canvas's blank margins clip away either side. */
+ .mf-cell .mf-art{{font-size:5.5px;line-height:1.1;overflow:visible;
+                   align-self:center}}
+ /* Centred under a centred drawing. The big frame's caption is bottom-left
+    because it is a sentence about an event; these are one word naming the
+    picture above them. */
+ .mf-cell .dt-cap{{padding-top:4px;font-size:10px;color:#8b949e;
+                   text-align:center}}
+ @media (max-width:520px){{.mf-row{{grid-template-columns:1fr}}}}
+ .dw-head{{margin:.6rem 0 .3rem;font-size:11px;font-weight:normal;
+           letter-spacing:.08em;text-transform:uppercase;color:#6e7681}}
+ .dw-head:first-child{{margin-top:0}}
+ .dw-art{{display:block;text-decoration:none;color:inherit;margin:0 0 .4rem}}
+ @media (prefers-reduced-motion:reduce){{.dw-caret{{transition:none}}}}
  .nu-row.nu-super .nu-when{{color:#ff87ff}}
  /* On now, above the dated rows. Green rather than the dates' grey, because
     it is the one line in the box that is about this minute rather than about
@@ -9342,6 +9649,32 @@ function skymapRenderGif(btn){{
 //   requestAnimationFrame(function(){{requestAnimationFrame(skymapFitChart);}});
 //   window.addEventListener('resize', skymapFitLater);
 //   window.addEventListener('orientationchange', skymapFitLater);
+
+// The "what is on" pill and its modal. Open and shut, and nothing else --
+// the modal is fixed over everything, so opening it moves no layout and
+// there is none to restore.
+(function(){{
+  var pill=document.getElementById('on-pill'),m=document.getElementById('on-modal');
+  if(!pill||!m)return;
+  function set(on){{
+    m.hidden=!on;
+    pill.setAttribute('aria-expanded',on?'true':'false');
+    if(on){{var c=document.getElementById('on-close');if(c)c.focus();}}
+    else pill.focus();
+  }}
+  pill.addEventListener('click',function(){{set(m.hidden);}});
+  var close=document.getElementById('on-close');
+  if(close)close.addEventListener('click',function(){{set(false);}});
+  // The backdrop, but only the backdrop: a click that started inside the
+  // card and ended outside it is a drag, not a dismissal.
+  m.addEventListener('click',function(e){{if(e.target===m)set(false);}});
+  document.addEventListener('keydown',function(e){{
+    if(e.key!=='Escape'||m.hidden)return;
+    // Not while an animation owns the page -- that Escape is for leaving it.
+    if(document.documentElement.classList.contains('anim-on'))return;
+    e.stopPropagation();set(false);
+  }});
+}})();
 /*CMDBAR_JS*/
 (function(){{
   // Drawer (SPEC-command-bar.md #9) -- present on every page (see
@@ -10099,6 +10432,7 @@ PAGE = PAGE.replace("{ANIM_WIDE_MS}", str(ANIM_WIDE_MS))
 # same reason applies: leaving it for .format() would look it up among the
 # per-request arguments and raise.
 PAGE = PAGE.replace("{BOTTOM_PAD}", str(KBD_BAR_H + BOX_GAP))
+PAGE = PAGE.replace("{KBD_BAR}", str(KBD_BAR_H))
 # The zenith marker as a JS string literal, so the animation splits a frame on
 # exactly the bytes compose_frame joined it with. json.dumps escapes the
 # control characters, which is the whole point -- writing them into the script

@@ -578,7 +578,7 @@ def iss_track(tle_path, when_utc, lat, lon, minutes=110, step=0.5):
 
 
 def _zenith_inset(items, alt_max, color, indent, IW=21, IH=11, lat=0.0,
-                  target=None):
+                  target=None, link=None):
     """Small all-sky disc for the cap the panorama cannot honestly show.
     North up and east left, as the full disc has it -- turned half a circle
     south of the equator, so north sits at the bottom and south at the top.
@@ -671,8 +671,16 @@ def _zenith_inset(items, alt_max, color, indent, IW=21, IH=11, lat=0.0,
     # be overhead: "Andromeda Galaxy" made the whole box wider than the
     # panorama it floats on and shoved the disc left to make room. Under it,
     # the inset is IW wide whatever it is showing, and nothing moves.
+    # Linked like the labels on the panorama. The inset names the same
+    # things -- a planet, a bright star, a radiant -- and a reader who has
+    # learnt that a name on the chart opens its page does not expect the
+    # rule to stop at the top of the sky.
     for nm, col in named:
-        lines.append(" " * indent + paint("  " + nm, col, color))
+        href = link(nm) if link else None
+        body = paint("  " + nm, col, color)
+        if href:
+            body = LINK_START + href + LINK_SEP + body + LINK_END
+        lines.append(" " * indent + body)
     if target_label:
         # No glyph beside the label. The mark is already on the disc above
         # and the label carries the same colour, which is the legend.
@@ -2089,7 +2097,7 @@ def render_linear(when_utc, lat, lon, W=176, H=22, color=True, show_lines=True,
     if facing is None and quad_applied is None and inset and alt_hi < 88:
         zenith_lines = _zenith_inset(inset_items, alt_hi, color,
                                      0 if side_panel else LM, lat=lat,
-                                     target=target)
+                                     target=target, link=link)
         if not side_panel:
             out.append("")
             out.extend(zenith_lines)

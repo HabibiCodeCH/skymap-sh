@@ -579,7 +579,10 @@ def test_the_chart_pages_no_longer_carry_the_strip(client):
     # And what it used to say now has a box of its own on the day page.
     day = client.get("/Zurich?t=2026-08-11T10:00", headers=BROWSER).text
     assert "Perseids" in day
-    assert 'id="day-next-up"' in day
+    # The list moved into the modal behind the header pill; what matters
+    # here is that the strip is not on the chart page, not where the events
+    # ended up.
+    assert 'id="on-modal"' in day
 
 
 def test_chart_page_renders_nothing_on_a_quiet_night(client):

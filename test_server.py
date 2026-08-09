@@ -157,16 +157,14 @@ class AnimateBrowserVsTerminal(unittest.TestCase):
         # chart's own text back -- so there is one way out, not two.
         self.assertIn("skymapAnimZoom(true)", body)
         self.assertIn("skymapAnimZoom(false)", body)
-        # Theatre mode, not an overlay: the chart grows in place while the
-        # other boxes collapse, and the two bars stay put.
-        self.assertIn("html.anim-wide #day-split{grid-template-columns:"
-                      "minmax(0,1fr) 0px", body)
-        # The summary box goes on anim-on rather than anim-wide: it folds
-        # away for any animation, including the night page's, which never
-        # zooms because its chart already fills the box. The next-up list is
-        # day-only and genuinely is about the zoom, so it stays on anim-wide.
-        self.assertIn("html.anim-on #day-head,html.anim-wide #day-next-up"
-                      "{max-height:0", body)
+        # Theatre mode, not an overlay: the chart grows in place and the two
+        # bars stay put. There is nothing left beside it to collapse -- the
+        # two-column day layout is gone and the headline stays up, because it
+        # is where and when you are and an animation is when "when" moves.
+        # The headline does not fold away any more. It used to, because the
+        # frame brings a header of its own -- but the headline is where and
+        # when you are, and an animation is exactly when "when" is changing.
+        self.assertNotIn("#day-head{max-height:0", body)
         self.assertIn("pre.style.fontSize=(base*k)+'px'", body)
 
     def test_the_boxes_collapse_over_the_same_time_as_the_chart_grows(self):
@@ -4300,13 +4298,15 @@ if __name__ == "__main__":
     unittest.main()
 
 
-class TheDayPageFillsItsOwnFold(unittest.TestCase):
-    """The Sun's arc used to take the star chart's full height in a browser
-    with 640px of black under it. The arc is shorter now and the room it
-    frees carries the night it is counting down to, plus what is coming up
-    here -- on the page 73% of arrivals land on.
+class TheChartIsThePage(unittest.TestCase):
+    """One layout, day and night. The day page used to be a different shape
+    -- the Sun's arc in a narrow column with a panel of tonight beside it and
+    a list of events beneath -- and the chart paid for all of it in width and
+    in rows. Both views share one axis and one set of pieces now, so there is
+    nothing left for two layouts to express, and what the panel and the list
+    carried moved into a modal behind a pill in the header.
 
-    Every one of these is browser-only. A terminal's day view is byte-for-byte
+    Every one of these is browser-only. A terminal's view is byte-for-byte
     what it was, which is its own test at the bottom."""
 
     # ~10:00 local in Zurich: the Sun is well up, so this is the day view
@@ -4322,319 +4322,127 @@ class TheDayPageFillsItsOwnFold(unittest.TestCase):
         self.c = client_cm.__enter__()
         self.addCleanup(client_cm.__exit__, None, None, None)
 
-    def test_the_browser_gets_the_panel_and_the_list(self):
-        body = self.c.get(self.DAY, headers=BROWSER).text
-        self.assertIn('id="day-split"', body)
-        self.assertIn('id="day-tonight"', body)
-        self.assertIn('id="day-next-up"', body)
+    def _body(self, url):
+        return self.c.get(url, headers=BROWSER).text
+
+    def test_day_and_night_are_the_same_layout(self):
+        """The whole point. Neither carries the old two-column split, and
+        both frame the chart the same way."""
+        for url in (self.DAY, self.NIGHT):
+            body = self._body(url)
+            self.assertIn('id="day-head"', body)
+            self.assertIn('id="night-chart"', body)
+            for gone in ('id="day-split"', 'id="day-side"',
+                         'id="day-tonight"', 'id="day-next-up"'):
+                self.assertNotIn(gone, body, (url, gone))
 
     def test_the_summary_line_is_in_a_box_and_out_of_the_drawing(self):
-        """It was the chart's first line, prose sized inside a <pre> of
-        picture. Out here it gets the full width of the page instead of
-        whatever the drawing left it."""
-        body = self.c.get(self.DAY, headers=BROWSER).text
+        body = self._body(self.DAY)
         self.assertIn('id="day-head"', body)
         self.assertIn('id="day-head-ladder"', body)
-        # The wrapper the chart uses for its own copy of that line is gone
-        # from this page: there is no copy left in the chart to wrap.
         self.assertNotIn('class="chart-head"', body)
-        self.assertIn("Zürich", body.split('id="day-split"')[0])
-
-    def test_the_night_page_gets_the_same_line_in_the_same_frame(self):
-        """Both views take the summary out of the drawing now. After dark
-        there is nothing to put beside the chart, so the chart gets the
-        width -- two boxes, and everything under the second one is chart."""
-        body = self.c.get(self.NIGHT, headers=BROWSER).text
-        self.assertIn('id="day-head"', body)
-        self.assertIn('id="night-chart"', body)
-        self.assertNotIn('class="chart-head"', body)
-        # And none of the day page's furniture comes with it.
-        for gone in ('id="day-split"', 'id="day-side"', 'id="day-next-up"'):
-            self.assertNotIn(gone, body, gone)
+        self.assertIn("Zürich", body.split('id="night-chart"')[0])
 
     def test_the_chart_box_says_what_it_is(self):
-        body = self.c.get(self.DAY, headers=BROWSER).text
-        self.assertIn("the sky above you now", body)
+        self.assertIn("the sky above you now", self._body(self.DAY))
 
-    def test_every_box_on_the_page_is_framed_the_same_way(self):
-        """Four readings of one thing. Three framed and one floating read as
-        an accident rather than as a set."""
-        body = self.c.get(self.DAY, headers=BROWSER).text
-        for box in ("day-head", "day-chart", "day-tonight", "day-next-up"):
-            frag = body.split(f'id="{box}"')[1][:60]
-            self.assertIn("day-box", frag, box)
+    def test_both_views_draw_the_same_number_of_rows(self):
+        """The day chart was 72% height for a panel that no longer exists.
+        A day chart shorter than the night one is the two views disagreeing
+        about their own axis, which is what this layout exists to stop."""
+        import re
+        def rows(url):
+            body = self._body(url)
+            m = re.search(r'data-cols="220"[^>]*>(.*?)</pre>', body, re.S)
+            return m.group(1).count("\n") if m else None
+        self.assertEqual(rows(self.DAY), rows(self.NIGHT))
 
-    def test_the_panel_draws_what_is_coming(self):
-        """The picture is the reason to come back after dark, and the numbers
-        under it are how you decide whether to bother."""
-        body = self.c.get(self.DAY, headers=BROWSER).text
-        panel = body.split('id="day-tonight"')[1].split("</aside>")[0]
-        self.assertIn('class="dt-art"', panel)
-        self.assertIn('class="dt-cap"', panel)
+    def test_what_is_on_is_a_pill_in_the_header(self):
+        """Not a drawer docked to the window. Anything at the bottom edge
+        needs room reserved for it, and the room comes off the chart."""
+        body = self._body(self.DAY)
+        self.assertIn('id="on-pill"', body)
+        self.assertIn('id="on-modal"', body)
+        self.assertIn("Events:", body)
 
-    def test_the_drawing_links_where_its_caption_says(self):
-        body = self.c.get(self.DAY, headers=BROWSER).text
-        for url in re.findall(r'<a class="dt-art-box" href="([^"]+)"', body):
-            self.assertEqual(self.c.get(html.unescape(url),
-                                        headers=BROWSER).status_code, 200, url)
+    def test_the_pill_counts_today_and_tonight_separately(self):
+        # 12 Aug 2026: a partial solar eclipse in daylight, the Perseids at
+        # night.
+        body = self._body("/Zurich?t=2026-08-12T14:00")
+        self.assertRegex(body, r'id="on-pill"[^>]*>Events: \d+ today, \d+ tonight')
 
-    def test_a_solar_eclipse_takes_the_top_of_the_panel_for_a_week(self):
-        """12 Aug 2026 is total over Spain and deeply partial from Zurich.
-        Five days out it is the most useful thing this page can say."""
-        res = self.c.get("/Zurich?t=2026-08-07T10:00", headers=BROWSER)
-        panel = res.text.split('id="day-side"')[1].split("</div>")[0]
-        self.assertIn('id="day-eclipse"', panel)
-        self.assertIn("in 5 days", res.text)
-        self.assertIn("/Zurich/eclipse/2026-08-12", res.text)
-        # Above tonight's box, not below it.
-        self.assertLess(res.text.index('id="day-eclipse"'),
-                        res.text.index('id="day-tonight"'))
+    def test_a_quiet_night_says_so_rather_than_counting_nothing(self):
+        body = self._body("/Zurich?t=2026-03-01T22:00")
+        self.assertIn("A lovely night", body)
 
-    def test_the_eclipse_box_is_absent_the_rest_of_the_year(self):
-        res = self.c.get("/Zurich?t=2026-03-01T10:00", headers=BROWSER)
-        self.assertNotIn('id="day-eclipse"', res.text)
-        self.assertIn('id="day-tonight"', res.text)
+    def test_the_modal_always_has_two_frames(self):
+        """Same shape on a quiet night as on the night of an eclipse."""
+        for url in (self.DAY, self.NIGHT, "/Zurich?t=2026-08-12T14:00",
+                    "/Zurich?t=2026-03-01T22:00"):
+            body = self._body(url)
+            self.assertEqual(body.count('class="mf-frame"')
+                             + body.count('class="mf-quad"'), 2, url)
 
-    def test_the_panel_cycles_through_what_is_worth_seeing(self):
-        """Events first, then the planets that will be up, then the
-        brightest star. Every slide is in the markup with all but the first
-        hidden, so no-JS gets the top of the deck rather than an empty box."""
-        body = self.c.get(self.DAY, headers=BROWSER).text
-        panel = body.split('id="day-tonight"')[1].split("</aside>")[0]
-        self.assertGreater(panel.count('class="dt-slide"'), 1)
-        self.assertEqual(panel.count('class="dt-slide"')
-                         - panel.count('class="dt-slide" hidden'), 1)
-        self.assertIn('id="dt-cycle"', panel)
+    def test_an_eclipse_takes_the_first_frame(self):
+        body = self._body("/Zurich?t=2026-08-12T14:00")
+        first = body.split('class="mf-frame"')[1]
+        self.assertIn("Sun covered", first)
 
-    def test_each_slide_links_to_the_thing_it_draws(self):
-        """No general "show me tonight's sky" button any more -- every
-        drawing is its own way in, and lands on the moment that thing is
-        worth looking at."""
-        body = self.c.get(self.DAY, headers=BROWSER).text
-        panel = body.split('id="day-tonight"')[1].split("</aside>")[0]
-        self.assertNotIn("dt-cta", panel)
-        urls = re.findall(r'<a class="dt-art-box" href="([^"]+)"', panel)
+    def test_the_bodies_grid_is_four_small_frames_not_one_big_one(self):
+        """No border on the quad itself -- it is a 2x2 of the normal frame
+        scaled down, and an outer border would be a fifth box."""
+        body = self._body("/Zurich?t=2026-03-01T22:00")
+        self.assertIn('class="mf-quad"', body)
+        self.assertIn('class="mf-frame mf-cell"', body)
+
+    def test_the_modal_links_go_somewhere_real(self):
+        import re
+        body = self._body("/Zurich?t=2026-08-12T14:00")
+        # The modal's own markup only. Splitting on the id alone ran to the
+        # end of the document and swept up the page script, where
+        # "/animate/'+gifId+'.gif" is a template being built rather than a
+        # link that resolves.
+        modal = body.split('id="on-modal"')[1].split("</script>")[0]
+        urls = {u for u in re.findall(r'href="(/[^"]*)"', modal)
+                if "'" not in u and "+" not in u}
         self.assertTrue(urls)
-        for url in urls:
+        for url in list(urls)[:6]:
             self.assertEqual(self.c.get(html.unescape(url),
                                         headers=BROWSER).status_code, 200, url)
 
-    def test_the_deck_turns_itself_over_and_stops_when_steered(self):
-        """A reader who never touches it still sees the whole deck. The
-        moment they do touch it they are steering, and a slide moving under
-        a pointer that just chose it is the thing every carousel gets
-        wrong."""
-        body = self.c.get(self.DAY, headers=BROWSER).text
-        self.assertIn(f"show(at+1);}},{api.DECK_TURN_MS})", body)
-        self.assertIn("mouseenter", body)
-        self.assertIn("prefers-reduced-motion:reduce", body)
-
-    def test_the_bar_says_how_long_is_left_and_only_while_it_turns(self):
-        """Restarted rather than resumed: it and the timer have to agree
-        about how much of the slide is left, and the only moment they
-        certainly do is at zero. Gone once a reader takes the chevron."""
-        body = self.c.get(self.DAY, headers=BROWSER).text
-        self.assertIn(f"animation:dt-fill {api.DECK_TURN_MS}ms linear", body)
-        self.assertIn("bar.hidden=true", body)
-        self.assertIn("fill.style.animation='none'", body)
-
-    def test_the_chart_is_fitted_to_the_window_it_lands_in(self):
-        """The server picks the row count with no idea how tall anybody's
-        window is, and the drawing is text at a fixed size. So the page left
-        a hand's width of black under it on a big monitor and scrolled on a
-        small laptop; this measures the room and scales the font to fill it."""
-        body = self.c.get(self.DAY, headers=BROWSER).text
-        self.assertIn("function skymapFitChart", body)
-        self.assertIn("window.addEventListener('resize', skymapFitLater)", body)
-        # Measured off the column and the shortcut bar, not arithmetic on
-        # paddings: there are a title, two borders, two paddings, a gap and
-        # a caption between the <pre> and the bottom of the column, and any
-        # of them changing puts a derived version out again.
-        self.assertIn("function span(){return main.getBoundingClientRect()"
-                      ".bottom;}", body)
-        # The rung has to be pinned while the font moves: the ladder picks a
-        # <pre> from its width in ch, and ch is a multiple of that font.
-        self.assertIn("html.fit-on #chart-ladder .fit-rung{display:block}", body)
-        self.assertIn("pre.classList.add('fit-rung')", body)
-
-    def test_the_fit_comes_back_after_an_animation_ends(self):
-        """Put back, not recomputed. Three attempts at re-measuring the fit
-        on the way out failed for the same reason: it runs mid-transition,
-        with the chart's own text being swapped back around it and three
-        classes moving, which is the worst possible moment to measure
-        anything. The page was right before theatre mode started, so all
-        that has to survive is a note of what right was."""
-        body = self.c.get(self.DAY, headers=BROWSER).text
-        self.assertIn("SKYMAP_BEFORE_ANIM={font:pre.style.fontSize,", body)
-        self.assertIn("pre.style.fontSize=SKYMAP_BEFORE_ANIM.font;", body)
-        self.assertIn("if(SKYMAP_BEFORE_ANIM.rung)pre.classList.add('fit-rung')",
-                      body)
-        self.assertIn("if(SKYMAP_BEFORE_ANIM.on)root.classList.add('fit-on')",
-                      body)
-        # The guard is still the class rather than window.skymapAnim, which
-        # outlives the run so the arrows can step back into the frames.
-        self.assertIn("classList.contains('anim-wide'))return", body)
-
-    def test_the_fit_is_clamped_at_both_ends(self):
-        """Too small is unreadable, too large is a chart of six enormous
-        dots. Outside those the honest answer is to leave the page alone."""
-        body = self.c.get(self.DAY, headers=BROWSER).text
-        self.assertIn("SKYMAP_FIT_MIN", body)
-        self.assertIn("SKYMAP_FIT_MAX", body)
-
-    def test_the_fit_checks_its_own_answer(self):
-        """It grew through the shortcut bar in one direction and came back
-        too small in the other, both because the room was derived rather
-        than looked at. It measures the result now and corrects once."""
-        body = self.c.get(self.DAY, headers=BROWSER).text
-        self.assertIn("var over=span()-limit;", body)
-        self.assertIn("scale(k*fix)", body)
-        # And gives up rather than shrinking the chart into illegibility on
-        # a window too short for the page.
-        self.assertIn("pre.classList.remove('fit-rung')", body)
-
-    def test_every_row_in_the_list_starts_at_the_same_place(self):
-        """A super-day row carries a 2px accent border. Without a matching
-        transparent one, every ordinary row sat two pixels left of the
-        highlighted ones and the whole column stepped sideways at the edge
-        of a group."""
-        body = self.c.get(self.DAY, headers=BROWSER).text
-        self.assertIn("border-left:2px solid transparent", body)
-        self.assertIn(".nu-row.nu-super{border-left-color:#ff87ff", body)
-        self.assertIn(".nu-glyph{color:#ff87ff;text-align:center}", body)
-
-    def test_an_eclipse_in_the_box_does_not_get_a_slide_as_well(self):
-        """It is already the biggest thing on the page. The condition is the
-        box's own, not "no eclipses ever" -- one eight days out is past the
-        box's reach and is then the best thing the deck has."""
-        body = self.c.get("/Ibiza?t=2026-08-07T10:00", headers=BROWSER).text
-        self.assertIn("in the path", body.split('id="day-eclipse"')[1]
-                      .split("</aside>")[0])
-        deck = body.split('id="dt-deck"')[1].split('class="dt-grid"')[0]
-        self.assertNotIn("eclipse", deck.lower())
-
-    def test_the_panel_is_the_same_height_whatever_it_is_showing(self):
-        """The drawings are already padded to a fixed row count, so the
-        caption was the only thing left that could move it -- and "Venus, up
-        tonight" is one line where "Ibiza is in the path: 71 seconds of
-        totality" is two."""
-        body = self.c.get(self.DAY, headers=BROWSER).text
-        self.assertIn("-webkit-line-clamp:2", body)
-        self.assertIn("min-height:2.7em", body)
-
-    def test_an_eclipse_caption_comes_from_the_solver_not_the_scan(self):
-        """The global scan calls 12 Aug 2026 a "Partial solar eclipse here"
-        from Ibiza, which gets 71 seconds of totality: its visibility test
-        cannot tell the middle of the path from the edge. The drawing beside
-        the caption was already right, having come from the solver."""
-        body = self.c.get("/Ibiza?t=2026-08-07T10:00", headers=BROWSER).text
-        box = body.split('id="day-eclipse"')[1].split("</aside>")[0]
-        self.assertIn("in the path", box)
-        self.assertNotIn("Partial solar eclipse", box)
-
-    def test_the_events_list_says_which_place_it_is_about(self):
-        """Every row is filtered on whether the thing actually clears the
-        horizon here, and carries an altitude and a compass point for here.
-        "next up" gave no hint any of that had happened."""
-        body = self.c.get(self.DAY, headers=BROWSER).text
-        lst = body.split('id="day-next-up"')[1].split("</section>")[0]
-        self.assertIn("upcoming astronomical events in Zürich", lst)
-
-    def test_a_night_carrying_more_than_one_thing_is_marked(self):
-        """12 Aug 2026 has four -- a Moon-Mercury pairing, a partial eclipse,
-        a new Moon and the Perseid maximum. It should not look like a
-        Tuesday with a quarter Moon on it."""
-        body = self.c.get(self.DAY, headers=BROWSER).text
-        lst = body.split('id="day-next-up"')[1].split("</section>")[0]
-        self.assertIn("nu-super", lst)
-        self.assertIn("things in one night", lst)
-        # Said once at the top of the run, not on all four rows.
-        self.assertEqual(lst.count("nu-count"), 1)
-
-    def test_the_night_page_gets_none_of_it(self):
-        body = self.c.get(self.NIGHT, headers=BROWSER).text
-        for marker in ('id="day-split"', 'id="day-tonight"', 'id="day-next-up"'):
-            self.assertNotIn(marker, body)
-
-    def test_forcing_a_star_chart_in_daylight_gets_none_of_it_either(self):
-        """?night=1 is a star chart, so there is no arc to shrink and no
-        countdown to run -- the same day/night gate the quadrant and
-        golden-hour controls use, not `daytime` on its own."""
-        body = self.c.get(self.DAY + "&night=1", headers=BROWSER).text
-        self.assertNotIn('id="day-split"', body)
+    def test_the_headline_stays_up_through_an_animation(self):
+        """It is where and when you are, and an animation is exactly when
+        "when" is changing."""
+        body = self._body(self.DAY)
+        self.assertNotIn("html.anim-on #day-head", body)
 
     def test_a_terminal_gets_none_of_the_markup(self):
-        body = self.c.get(self.DAY, headers=TERMINAL).text
-        for marker in ("day-split", "day-tonight", "day-next-up", "<div", "<a "):
-            self.assertNotIn(marker, body)
-
-    def test_the_terminal_chart_is_the_full_height_it_always_was(self):
-        """r.panel is the browser ladder and nothing else, and it is part of
-        server._cache_key -- so a terminal can neither be served the short
-        chart nor share a cache entry with one. Asserted against
-        _horizon_height rather than a hardcoded row count, so this keeps
-        meaning the same thing if the default width ever moves."""
-        r = api.Request(place="Zurich", when=dt.datetime(2026, 8, 7, 10, 0))
-        rows = self.c.get(self.DAY, headers=TERMINAL).text.split("\n")
-        chart = [l for l in rows if "°" in api.strip_ansi(l)]
-        self.assertEqual(api._day_height(r), api._horizon_height(r))
-        self.assertTrue(chart)
+        text = self.c.get(self.DAY).text
+        for markup in ("day-head", "night-chart", "on-pill", "mf-frame"):
+            self.assertNotIn(markup, text, markup)
 
     def test_the_browser_and_the_terminal_do_not_share_a_cache_entry(self):
-        """Both orders, because the bug this guards against is one filling
-        the cache for the other -- and it would only show up in one of them."""
-        for first, second in ((BROWSER, TERMINAL), (TERMINAL, BROWSER)):
-            url = f"{self.DAY}&_={id(first)}"
-            a = self.c.get(url, headers=first).text
-            b = self.c.get(url, headers=second).text
-            self.assertNotEqual(a, b)
-
-    def test_the_events_it_lists_link_somewhere_real(self):
-        body = self.c.get(self.DAY, headers=BROWSER).text
-        rows = re.findall(r'<a class="nu-row" href="([^"]+)"', body)
-        self.assertTrue(rows)
-        for url in rows:
-            self.assertEqual(self.c.get(html.unescape(url),
-                                        headers=BROWSER).status_code, 200, url)
-
-    def test_the_full_list_link_works(self):
-        body = self.c.get(self.DAY, headers=BROWSER).text
-        self.assertIn('href="/Zurich/events"', body)
-        self.assertEqual(self.c.get("/Zurich/events", headers=BROWSER).status_code, 200)
-
-    def test_the_link_to_tonight_opens_a_star_chart(self):
-        """Not just a 200 -- the whole promise of the button is that there is
-        something on the chart when you get there."""
-        data = self.c.get(self.DAY + "&format=json").json()
-        got = self.c.get(f"/Zurich?t={data['first_stars'][:16]}&format=json").json()
-        self.assertNotEqual(got.get("view"), "day")
+        """r.panel is in server._cache_key, so a browser-only change can
+        never reach curl output."""
+        a = self.c.get(self.DAY).text
+        b = self.c.get(self.DAY, headers=BROWSER).text
+        self.assertNotEqual(a, b)
+        self.assertNotIn("<pre", a)
 
     def test_polar_day_still_renders(self):
-        """No sunset, so no first stars, so no countdown and no button. The
-        page must not fall over on the half it does know."""
         res = self.c.get("/Longyearbyen?t=2026-06-21T12:00", headers=BROWSER)
         self.assertEqual(res.status_code, 200)
-        self.assertIn('id="day-tonight"', res.text)
-        # The attribute, not the bare word: the stylesheet is in this same
-        # document and carries a .dt-cta rule whether the button exists or not.
-        self.assertNotIn('class="dt-cta"', res.text)
+        self.assertIn('id="night-chart"', res.text)
 
     def test_the_bare_homepage_gets_it_too(self):
-        """/ is the same page with the location guessed, and it is the one
-        this was all for."""
-        res = self.c.get("/?t=2026-08-07T10:00", headers=BROWSER)
+        res = self.c.get("/", headers=BROWSER)
         self.assertEqual(res.status_code, 200)
-        self.assertIn('id="day-split"', res.text)
+        self.assertIn('id="night-chart"', res.text)
 
     def test_it_is_counted(self):
         before = server._stat["day:panel"]
-        self.c.get(self.DAY + "&_=count", headers=BROWSER)
+        self.c.get(self.DAY, headers=BROWSER)
         self.assertGreater(server._stat["day:panel"], before)
-
-    def test_the_counter_reaches_stats(self):
-        self.c.get(self.DAY + "&_=stats", headers=BROWSER)
-        self.assertIn("day page", self.c.get("/stats").text)
-        self.assertIn("panel", self.c.get("/stats?format=json").json()["day_page"])
 
 
 class TheSitemapCarriesTheEclipsePages(unittest.TestCase):

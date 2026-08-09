@@ -2295,22 +2295,23 @@ def _respond(request: Req, place: str | None):
             #
             # res.data, not a recomputation -- that is the day view's own JSON
             # payload, already built by _compose_day for ?format=json.
-            day_page = not r.night and daytime
-            # Both views take the summary line out of the drawing and into a
-            # box of its own, so head=False either way. The object pages
-            # lift theirs into the lede instead and never ask for it.
+            # One layout, day and night. The day page used to be a different
+            # shape -- the Sun's arc in a narrow column with a panel of
+            # tonight beside it and a list of events beneath -- and the chart
+            # paid for all of it in width and in rows. Both views share one
+            # axis and one set of pieces now, so there is nothing left for
+            # two layouts to express.
+            #
+            # Both take the summary line out of the drawing and into a box of
+            # its own, so head=False either way. The object pages lift theirs
+            # into the lede instead and never ask for it.
             head_html, rungs = api.lift_chart_head(rungs)
             chart_html = api.chart_layout(rungs, zenith, prose, head=False)
-            if day_page:
-                chart_html = api.day_layout(
-                    head_html, chart_html,
-                    api.day_side_html(r, res.data),
-                    api.day_next_up_html(r))
+            on_pill, on_modal = api.sky_pill_html(r, res.data)
+            header = api.header_html(f"{r.place.name}/", pill=on_pill)
+            chart_html = api.chart_page(head_html, chart_html, on_modal)
+            if not r.night and daytime:
                 _stat["day:panel"] += 1
-            else:
-                # After dark there is nothing to put beside the chart, so
-                # the chart gets the width.
-                chart_html = api.night_layout(head_html, chart_html)
         else:
             chart_html = api.chart_pre(_rendered(html_text))
         # A place named in the URL gets its own card; the bare domain keeps

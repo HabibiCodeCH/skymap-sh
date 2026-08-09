@@ -1083,21 +1083,24 @@ class FindOnThePngExport(unittest.TestCase):
         self.assertIn("ANDROMEDA GALAXY", page.text.upper())
         self.assertIn("ANDROMEDA GALAXY", png_art.upper())
 
-    def test_the_png_is_the_horizon_view_and_nothing_under_it(self):
-        # Every other branch of compose_chart_only passes inset=False; this
-        # one relied on render_linear's default, which is on. A shared find
-        # PNG came out with a zenith inset stacked under the horizon that no
-        # other PNG has.
+    def test_the_png_is_the_horizon_view_and_its_zenith(self):
+        # The inset is part of the chart and every export carries it: the
+        # cap of sky above the panorama is sky, and leaving it out gave the
+        # shared picture less than the page it was shared from. What the
+        # export still leaves out is everything that is not the drawing --
+        # the prose, the footer, the share line.
         when = dt.datetime(2026, 7, 30, 22, 0)
         for find in ("M31", "Vega", "Jupiter"):
             art = api.compose_chart_only(api.Request(place="Zurich", when=when,
                                                      find=find, color=False))
-            self.assertNotIn("zenith", art, find)
-        # and the plain export it is meant to match still has none either
+            self.assertIn("zenith", art, find)
+            self.assertNotIn("Share as a PNG", art, find)
+        # and the plain export it is meant to match agrees
         plain = api.compose_chart_only(api.Request(place="Zurich", when=when,
                                                    color=False))
-        self.assertNotIn("zenith", plain)
-        # while the page both of them come from keeps its inset
+        self.assertIn("zenith", plain)
+        # and so does the page both of them come from -- one flag, on
+        # everywhere, so no view has its own idea of where the chart stops
         page = api.compose(api.Request(place="Zurich", when=when, find="M31",
                                        color=False))
         self.assertIn("zenith", page.text)
@@ -1469,12 +1472,18 @@ class ImageExportsAreWiderThanATerminal(unittest.TestCase):
 
     WHEN = dt.datetime(2026, 8, 5, 3, 0)
 
-    def png_size(self, **kw):
+    def png_size(self, chart_only=False, **kw):
+        """chart_only cuts the zenith inset off before measuring: it is a
+        fixed 21x11 block riding under every export, so it does not scale
+        with the width and only the panorama's own aspect is meaningful."""
         import io
         from PIL import Image
         import gif
         r = api.Request(place="-24.63,-70.40", when=self.WHEN, color=True, **kw)
-        return Image.open(io.BytesIO(gif.frame_to_png(api.compose_chart_only(r)))).size
+        text = api.compose_chart_only(r)
+        if chart_only:
+            text = text.split("zenith ")[0]
+        return Image.open(io.BytesIO(gif.frame_to_png(text))).size
 
     def test_the_export_is_wider_than_the_terminal_default(self):
         self.assertEqual(api.PNG_WIDTH, 140)
@@ -1487,9 +1496,22 @@ class ImageExportsAreWiderThanATerminal(unittest.TestCase):
     def test_height_follows_width_so_the_aspect_holds(self):
         # Widening without this gave a letterbox: 140 columns of chart in
         # the row count of a 110-column one.
-        w1, h1 = self.png_size()
-        w2, h2 = self.png_size(width=200)
-        self.assertAlmostEqual(w1 / h1, w2 / h2, delta=0.08)
+        #
+        # Measured on the panorama alone. The zenith inset is a fixed 21x11
+        # block that rides under every export now, and a fixed block does
+        # not scale with the width, so the whole image's ratio drifts by
+        # design -- the thing this guards is the chart, which is the part
+        # that letterboxed.
+        #
+        # delta is loose on purpose. The aspect can only ever be approximate:
+        # the two-line header is the same height at every width, and the row
+        # count is round(width / HORIZON_COLS_PER_ROW), so both a constant
+        # and a rounding sit inside the ratio. What this guards is
+        # letterboxing -- 140 columns in a 110-column row count, which is a
+        # factor, not five percent.
+        w1, h1 = self.png_size(chart_only=True)
+        w2, h2 = self.png_size(width=200, chart_only=True)
+        self.assertAlmostEqual(w1 / h1, w2 / h2, delta=0.15)
 
     def test_an_explicit_width_still_wins(self):
         self.assertGreater(self.png_size(width=200)[0], self.png_size()[0])
@@ -2011,14 +2033,13 @@ class OnePictureHeader(unittest.TestCase):
                 self.assertEqual(st[k], v, k)
 
 
-class TheDayChartIsShorterInABrowser(unittest.TestCase):
-    """The Sun's arc used to take the star chart's full height in a browser
-    and leave 640px of black under it -- on the page 73% of arrivals land on.
-
-    It is half-ish that now, but only through the width ladder: r.panel is
-    the browser path and nothing else, and it is part of server._cache_key,
-    so `curl skymap.sh/Zurich` cannot be served the short one or share a
-    cache entry with it."""
+class TheDayChartIsTheSameHeightAsTheNight(unittest.TestCase):
+    """The Sun's arc was 72% of the star chart's height in a browser, to
+    leave room for a panel of tonight beside it and a list of events under
+    it. Both of those live in the modal now and the chart has the page to
+    itself, so the reason is gone -- and a day chart drawn shorter than the
+    night one is the two views disagreeing about their own axis, which is
+    the thing this layout exists to stop."""
 
     NOON = dt.datetime(2026, 8, 7, 12, 0)
 
@@ -2026,9 +2047,9 @@ class TheDayChartIsShorterInABrowser(unittest.TestCase):
         r = api.Request(place="Zurich", when=self.NOON)
         self.assertEqual(api._day_height(r), api._horizon_height(r))
 
-    def test_a_browser_gets_fewer_rows(self):
+    def test_a_browser_gets_the_same_rows(self):
         r = api.Request(place="Zurich", when=self.NOON, width=300, panel=True)
-        self.assertLess(api._day_height(r), api._horizon_height(r))
+        self.assertEqual(api._day_height(r), api._horizon_height(r))
 
     def test_the_short_chart_really_is_shorter(self):
         """Not just the number -- the drawing itself."""
@@ -2484,17 +2505,15 @@ class TheSummaryLineGetsItsOwnBox(unittest.TestCase):
         joined = "".join(api.chart_ladder_css())
         self.assertIn("#chart-ladder{container-type:inline-size", joined)
 
-    def test_the_summary_box_folds_away_for_any_animation(self):
-        """Keyed on anim-on -- an animation is playing -- and not on
-        anim-wide, which only says the chart found room to grow into.
-
-        The night chart already fills its box, so skymapAnimZoom's k never
-        clears 1.05 and anim-wide is never set there. The box stayed up
-        through the whole animation showing the moment the page loaded for,
-        while the frame's own header underneath it said something else."""
+    def test_the_summary_box_stays_up_through_an_animation(self):
+        """It used to fold away, because the frame brings a header of its
+        own and the box beside it was frozen at the moment the page was
+        built. But the headline is where and when you are, and an animation
+        is exactly when "when" is changing: taking it off screen at that
+        moment removes the one line the movement is about."""
         css = "".join(api.chart_ladder_css())
-        self.assertIn("html.anim-on #day-head", css)
-        self.assertNotIn("html.anim-wide #day-head", css)
+        self.assertNotIn("#day-head{max-height:0", css)
+        self.assertNotIn("html.anim-on #day-head", css)
 
     def test_the_page_reserves_room_for_the_fixed_shortcut_bar(self):
         """.kbd-hint is position:fixed, so it is out of the flow and nothing
@@ -2507,31 +2526,26 @@ class TheSummaryLineGetsItsOwnBox(unittest.TestCase):
         # an unsubstituted {BOTTOM_PAD} would raise KeyError on every page.
         self.assertNotIn("{BOTTOM_PAD}", api.PAGE)
 
-    def test_after_dark_the_chart_is_the_page_not_a_box_on_it(self):
-        """The border and padding were the only things making it a card --
-        the background is already the page's own -- and between them they
-        cost 47px of height on a page whose rows are chosen from its width
-        with no idea how tall the window is. 1440x800 overflowed by 48."""
-        # Doubled braces: PAGE is the pre-.format() template.
-        self.assertIn("#night-chart{{border:0;border-radius:0;"
-                      "padding:0 0 0 13px}}", api.PAGE)
+    def test_the_chart_keeps_the_frame_every_other_box_has(self):
+        """It was borderless for a while, to buy back the 47px of chrome on
+        a page whose rows are chosen from its width with no idea how tall
+        the window is. The frame is worth more than the pixels: it is the
+        one box on the page now, and an unframed one read as a drawing that
+        had escaped the layout."""
+        self.assertNotIn("#night-chart{{border:0", api.PAGE)
+        # The title still goes: the headline above already says where and
+        # when, and "the sky above you now" over it said it twice.
         self.assertIn("#night-chart>.box-head{{display:none}}", api.PAGE)
 
-    def test_the_left_edge_does_not_move(self):
-        """13px of padding where there were 12 of padding and 1 of border, so
-        the chart's first column sits exactly where it did and still lines up
-        with the headline box above it. Derived from .day-box rather than
-        asserted flat, so changing the card's own padding cannot silently
-        knock the chart a pixel out of line with the box above it."""
-        night = re.search(r"#night-chart\{\{border:0;border-radius:0;"
-                          r"padding:0 0 0 (\d+)px\}\}", api.PAGE)
-        self.assertIsNotNone(night)
+    def test_the_chart_box_is_framed_like_every_other(self):
+        """No override of its own any more, so it cannot drift from the rest
+        of the page: it takes .day-box's border and padding like the headline
+        above it, and the two line up because they are the same rule."""
         box = re.search(r"\.day-box\{\{background:#0d1117;"
                         r"border:(\d+)px solid[^}]*?padding:(\d+)px", api.PAGE,
                         re.S)
         self.assertIsNotNone(box)
-        self.assertEqual(int(night.group(1)),
-                         int(box.group(2)) + int(box.group(1)))
+        self.assertIn("day-box", api.chart_page("", "", ""))
 
     def test_the_day_chart_keeps_its_box(self):
         """One card among several beside the tonight panel; a borderless one
