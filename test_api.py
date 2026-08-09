@@ -2142,6 +2142,30 @@ class TheModalFramesAreDrawnRound(unittest.TestCase):
         self.assertEqual(self._art_rows(
             api._art_block(canvas, "x", "", cls="mf-art", rows=3)), canvas)
 
+    def test_the_caption_box_is_the_size_of_its_own_text(self):
+        """.dt-cap reserves two lines, because the deck it was written for
+        turned its caption over every seven seconds and a one-line slide
+        beside a two-line one changed the box's height. These frames take
+        their height from the grid, so the reservation bought nothing and
+        left a line and a half of empty box under every caption -- the text
+        was on the floor of its box and the box was not on the floor of the
+        frame."""
+        self.assertIn("min-height:0", self._rule(" .mf-frame .dt-cap"))
+        # The base rule still reserves them -- this is an override, not a
+        # deletion, so anything else that ever uses .dt-cap keeps what it had.
+        self.assertIn("min-height:2.7em", api.PAGE)
+
+    def test_the_drawing_is_centred_in_what_is_left(self):
+        """Its own growing box, so the caption's margin-top:auto cannot take
+        the slack and pin the picture to the ceiling."""
+        rule = self._rule(" .art-fill")
+        self.assertIn("flex:1 1 auto", rule)
+        self.assertIn("align-items:center", rule)
+        self.assertIn("justify-content:center", rule)
+        # Never on the <pre> itself: ansi_to_html fills it with colour spans
+        # and flex would make a row of every one of them.
+        self.assertNotIn("flex", self._rule(" .mf-art"))
+
     def test_the_caption_sits_on_the_floor_of_the_frame(self):
         """margin-top:auto puts it there, and .dt-art-box's own 12px bottom
         margin -- left over from the stack it used to live in -- lifted it

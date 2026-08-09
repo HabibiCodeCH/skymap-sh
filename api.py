@@ -8431,12 +8431,12 @@ document.documentElement.classList.add('js');
  .dt-art-box{{display:block;margin:0 0 12px;text-decoration:none;
              color:inherit}}
  a.dt-art-box:hover .dt-cap{{color:#c9d1d9;text-decoration:underline}}
- /* Two lines, always. The drawings are already padded to a fixed 17 rows
-    (DAY_ART_ROWS), so the caption was the only thing left that could change
-    the box's height -- and it does: "Venus, up tonight" is one line and
-    "Ibiza is in the path: 71 seconds of totality" is two, so the panel
-    jumped every time the deck turned over. Clamped rather than merely
-    reserved, so a third line cannot appear either. */
+ /* Clamped at two lines. "Venus, up tonight" is one and "Ibiza is in the
+    path: 71 seconds of totality" is two, and a third would push a drawing
+    out of its box. The two lines are only *reserved* where a caption can
+    change under a box that has to keep its height -- the modal's frames
+    take theirs from the grid instead and turn the reservation off, see
+    .mf-frame .dt-cap. */
  .dt-cap{{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;
          overflow:hidden;margin-top:6px;min-height:2.7em;
          font-size:11.5px;line-height:1.35;color:#8b949e}}
@@ -8550,9 +8550,16 @@ document.documentElement.classList.add('js');
     clipping Saturn's outer ring. */
  .mf-art{{margin:0;font-size:calc(100cqw / 27.5);line-height:1.2em;
           white-space:pre;overflow:hidden;text-align:center;display:block}}
+ /* min-height:0 undoes the two lines .dt-cap reserves. That reservation was
+    for the deck, whose caption changed every seven seconds and would have
+    changed the box's height with it; these frames take their height from the
+    grid instead, so the two lines bought nothing and cost a line of dead
+    space under every caption -- the text sat at the top of a box a line and a
+    half taller than itself, which is what "not at the bottom" was. Hugging
+    its text, it sits on the floor and the drawing gets the room back. */
  .mf-frame .dt-cap{{margin-top:auto;padding-top:8px;text-align:left;
                     align-self:stretch;font-size:12px;line-height:1.3;
-                    color:#c9d1d9}}
+                    min-height:0;color:#c9d1d9}}
  /* Four bodies as four small frames, not four drawings loose in one big
     one. No border on the quad itself -- it is a 2x2 of the normal frame
     scaled down, occupying the footprint one frame would have had, and an
