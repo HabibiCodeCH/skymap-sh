@@ -12133,7 +12133,12 @@ SPHERE_PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
  #enable{{background:#238636;border:0;color:#fff;padding:14px 22px;border-radius:8px;
          font:inherit;font-size:15px;cursor:pointer}}
  #enable:hover{{background:#2ea043}}
- #status{{color:#8b949e;font-size:12.5px;max-width:340px;line-height:1.5;margin:0}}
+ /* pre-line, because the tally underneath the place name is one line per
+    kind of thing and the counts have to sit under each other to be read as
+    a list rather than as a sentence. */
+ #status{{color:#8b949e;font-size:12.5px;max-width:340px;line-height:1.5;margin:0;
+          white-space:pre-line}}
+ #status b{{color:#c9d1d9;font-weight:normal}}
  #place-form{{display:flex;gap:6px}}
  #place-form[hidden]{{display:none}}
  #place-input{{background:#0d1117;border:1px solid #30363d;color:#c9d1d9;
@@ -12456,6 +12461,21 @@ import {{ CSS2DRenderer, CSS2DObject }} from "/vendor/three/CSS2DRenderer.js";
 
 var PLACE = "{place_slug}";
 var statusEl = document.getElementById('status');
+
+// The welcome screen's tally, held apart so each line can arrive when its own
+// answer does. The sky lands in one response and the aircraft in another a
+// moment later, and the plane line has to appear in its place in the list
+// rather than tacked onto the end of whatever was already written.
+var welcomeLines = {{place: '', planets: '', stars: '', planes: '', dark: ''}};
+
+function paintWelcome() {{
+  if (!statusEl) return;
+  var out = [];
+  ['place', 'planets', 'stars', 'planes', 'dark'].forEach(function(k) {{
+    if (welcomeLines[k]) out.push(welcomeLines[k]);
+  }});
+  statusEl.textContent = out.join('\\n');
+}}
 var overlay = document.getElementById('overlay');
 var enableBtn = document.getElementById('enable');
 var modeLabel = document.getElementById('mode-label');
@@ -13530,16 +13550,31 @@ fetch('/' + PLACE + '/sphere.json' + window.location.search).then(function(r) {{
   // means above the horizon, so it's counted separately here rather than
   // just using the raw total, which would overstate what's actually visible.
   var starsUp = data.stars.filter(function(s) {{ return s.alt > 0; }}).length;
+  // Planets only: the Sun and the Moon ride in `bodies` too, and neither is
+  // a planet. The Sun in particular would make "3 planets up" read as a
+  // mistake to anyone who looked out of the window at midday.
+  var planetsUp = data.bodies.filter(function(b) {{
+    return b.alt > 0 && b.name !== 'Sun' && b.name !== 'Moon';
+  }}).length;
+  welcomeLines.place = data.place;
+  // The glyphs are the ones the site already draws these things with --
+  // a diamond for a planet, a dot for a star -- rather than a second
+  // vocabulary invented for the welcome screen.
+  welcomeLines.planets = '\\u25c6 ' + planetsUp +
+    (planetsUp === 1 ? ' planet up' : ' planets up');
+  welcomeLines.stars = '\\u2022 ' + starsUp +
+    (starsUp === 1 ? ' star up' : ' stars up');
   if (data.sun_alt > 0) {{
-    var when = data.hours_to_dark == null ? "the sky won't get fully dark today"
-      : 'darkest sky in about ' + (data.hours_to_dark < 1
+    // Daytime: the star count is a truth about the sky, not about what you
+    // can see, and saying it plainly would be a promise the Sun breaks.
+    welcomeLines.stars += ' (or would be, without the Sun in the way)';
+    welcomeLines.dark = data.hours_to_dark == null
+      ? "The sky won't get fully dark today."
+      : 'Darkest sky in about ' + (data.hours_to_dark < 1
           ? Math.round(data.hours_to_dark * 60) + ' min'
-          : (Math.round(data.hours_to_dark * 10) / 10) + 'h');
-    statusEl.textContent = data.place + ': ' + starsUp + ' stars visible (or would ' +
-      'be, without the Sun in the way), ' + when + '. Look around you.';
-  }} else {{
-    statusEl.textContent = data.place + ': ' + starsUp + ' stars up. Look around you.';
+          : (Math.round(data.hours_to_dark * 10) / 10) + 'h') + '.';
   }}
+  paintWelcome();
   countPlanesForWelcome();
 }}).catch(function(err) {{
   statusEl.textContent = "Couldn't load the sky (" + err.message + "), tap to retry.";
@@ -13932,10 +13967,10 @@ function countPlanesForWelcome() {{
     .then(function(r) {{ return r.json(); }})
     .then(function(data) {{
       var n = (data.planes || []).length;
-      // "aircraft" is its own plural, so one line covers 1 and 11.
-      if (n && statusEl) {{
-        statusEl.textContent += ' \\u2708 ' + n + ' aircraft overhead.';
-      }}
+      if (!n) return;
+      welcomeLines.planes = '\\u2708 ' + n +
+        (n === 1 ? ' plane overhead' : ' planes overhead');
+      paintWelcome();
     }})
     .catch(function() {{}});
 }}
