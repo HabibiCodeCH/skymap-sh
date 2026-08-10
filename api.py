@@ -12507,10 +12507,31 @@ function addLabel(text, pos, cls, priority) {{
   // avoids a layout-forcing getBoundingClientRect() read on every label,
   // every frame, just to find out how wide its own text box is.
   var fontPx = cls === 'con-label' ? 12 : 11;
-  var entry = {{obj: obj, inner: inner, cls: cls, priority: priority || 3,
-               w: text.length * fontPx * 0.62 + 16, h: fontPx + 8}};
+  var entry = {{obj: obj, inner: inner, cls: cls, priority: priority || 3}};
+  sizeLabel(entry, text, fontPx);
   LABELS.push(entry);
   return entry;
+}}
+
+function sizeLabel(entry, text, fontPx) {{
+  // Measured off the widest line and the number of lines, not off the raw
+  // string. Plane labels wrap the route onto a second line, and counting the
+  // whole string as one line made their collision box about twice as wide as
+  // the label and half as tall -- so they shoved every neighbour aside and
+  // got shoved back, which is what made them look unanchored.
+  var lines = String(text).split('\\n');
+  var widest = 0;
+  for (var i = 0; i < lines.length; i++) {{
+    if (lines[i].length > widest) widest = lines[i].length;
+  }}
+  entry.fontPx = fontPx;
+  entry.w = widest * fontPx * 0.62 + 16;
+  entry.h = fontPx + 8 + (lines.length - 1) * fontPx * 1.25;
+}}
+
+function setLabelText(entry, text) {{
+  entry.inner.textContent = text;
+  sizeLabel(entry, text, entry.fontPx);
 }}
 
 function removeLabel(entry) {{
@@ -12548,16 +12569,27 @@ function declutterLabels() {{
     var sx = (_projected.x * 0.5 + 0.5) * window.innerWidth;
     var sy = (1 - (_projected.y * 0.5 + 0.5)) * window.innerHeight;
     var cands = candidateOffsets(L.w, L.h);
-    var chosen = cands[0], bestOverlap = Infinity;
-    for (var i = 0; i < cands.length; i++) {{
-      var box = {{x: sx + cands[i][0], y: sy + cands[i][1], w: L.w, h: L.h}};
+    // Whichever slot this label used last frame is tried first and kept if it
+    // is still clear. Without that memory the search restarts from slot 0
+    // every frame, so a label sitting right on the edge of an overlap flips
+    // between two slots as the view drifts -- it reads as the label letting
+    // go of its object and snapping back, sixty times a second.
+    var order = [], start = (L.slot != null && L.slot < cands.length) ? L.slot : 0;
+    order.push(start);
+    for (var i = 0; i < cands.length; i++) {{ if (i !== start) order.push(i); }}
+    var chosenIdx = start, bestOverlap = Infinity;
+    for (var k = 0; k < order.length; k++) {{
+      var ci = order[k];
+      var box = {{x: sx + cands[ci][0], y: sy + cands[ci][1], w: L.w, h: L.h}};
       var overlap = 0;
       for (var j = 0; j < placed.length && overlap === 0; j++) {{
         overlap += boxOverlap(box, placed[j]);
       }}
-      if (overlap < bestOverlap) {{ bestOverlap = overlap; chosen = cands[i]; }}
+      if (overlap < bestOverlap) {{ bestOverlap = overlap; chosenIdx = ci; }}
       if (overlap === 0) break;
     }}
+    L.slot = chosenIdx;
+    var chosen = cands[chosenIdx];
     placed.push({{x: sx + chosen[0], y: sy + chosen[1], w: L.w, h: L.h}});
     L.inner.style.transform = 'translate(' + chosen[0] + 'px,' + chosen[1] + 'px)';
   }});
@@ -13686,6 +13718,7 @@ document.getElementById('labels-toggle').addEventListener('click', function() {{
   labelsOn = !labelsOn;
   this.classList.toggle('on', labelsOn);
   updateLabelVisibility();
+  relabelPlanes();
 }});
 
 // Pinch and wheel move the camera, not the page. The page used to be the
@@ -13867,6 +13900,27 @@ function clearPlanes() {{
   planeLabels = [];
 }}
 
+function planeText(name, route) {{
+  if (!route) return name;
+  // Codes while the celestial labels are on, because the sky is already full
+  // of text and three letters is all there is room for. With them off the
+  // sphere is nearly empty, so spend the room on the airport's real name.
+  var ends = labelsOn ? route.codes : route.names;
+  // "likely", every time, and never dropped to save room. ADS-B does not
+  // broadcast a destination -- the aircraft sends a callsign and the route
+  // is a separate lookup fused on afterwards, which is wrong often enough
+  // to matter for charters, ferry legs and anything general aviation.
+  // Somebody standing outside looking up cannot check it, so the hedge is
+  // the only thing standing between a good feature and a confident lie.
+  return name + '\\nlikely ' + ends[0] + ' \\u2192 ' + ends[1];
+}}
+
+function relabelPlanes() {{
+  planeLabels.forEach(function(L) {{
+    setLabelText(L, planeText(L.plane, L.route));
+  }});
+}}
+
 function drawPlanes(data) {{
   clearPlanes();
   var list = data.planes || [];
@@ -13876,15 +13930,10 @@ function drawPlanes(data) {{
              ? toVec(p.elev_next, p.az_next) : null;
     planeObjs.push(planeIcon(centre, next));
     var name = p.callsign || p.type || 'aircraft';
-    // "likely", every time, and never dropped to save room. ADS-B does not
-    // broadcast a destination -- the aircraft sends a callsign and the route
-    // is a separate lookup fused on afterwards, which is wrong often enough
-    // to matter for charters, ferry legs and anything general aviation.
-    // Somebody standing outside looking up cannot check it, so the hedge is
-    // the only thing standing between a good feature and a confident lie.
-    var text = name;
-    if (p.route) text += '\\nlikely ' + p.route[0] + ' \\u2192 ' + p.route[1];
-    planeLabels.push(addLabel(text, centre, 'plane-label', 2));
+    var entry = addLabel(planeText(name, p.route), centre, 'plane-label', 2);
+    entry.plane = name;
+    entry.route = p.route;
+    planeLabels.push(entry);
   }});
   updateLabelVisibility();
   if (data.error) {{

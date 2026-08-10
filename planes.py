@@ -259,30 +259,41 @@ def convert(ac, lat, lon):
     }
 
 
+def _ends(airport):
+    """(short, long) for one end of a route, or (None, None).
+
+    Two forms because the sphere shows a different one depending on how busy
+    it is: with the celestial labels on there is no room for more than three
+    letters, and with them off there is room for the airport's actual name.
+
+    IATA first for the short form -- military fields and small strips often
+    carry only the four-letter ICAO, so that is the fallback, and the town is
+    the last resort. Each form falls back to the other rather than to nothing,
+    so an airport with a name but no code still gets shown.
+    """
+    short = airport.get("iata_code") or airport.get("icao_code")
+    long = airport.get("name") or airport.get("municipality")
+    return short or long, long or short
+
+
 def route_confident(fr):
-    """A route worth showing, as (origin, destination), or None.
+    """A route worth showing, as {"codes": [...], "names": [...]}, or None.
 
     Anything short of both ends named is dropped rather than half-rendered.
     "likely LHR to somewhere" is not an answer, and a route whose two ends are
     the same airport is a lookup that has gone wrong rather than a flight that
     goes nowhere.
-
-    IATA first, because three letters fit under a callsign on a sphere where
-    the label is competing with the sky behind it. Not every airfield has one
-    -- military and small strips often carry only the four-letter ICAO -- so
-    that is the fallback, and the town name is the last resort rather than the
-    first choice it used to be.
     """
     try:
         o = fr["origin"]
         d = fr["destination"]
     except (KeyError, TypeError):
         return None
-    a = o.get("iata_code") or o.get("icao_code") or o.get("municipality")
-    b = d.get("iata_code") or d.get("icao_code") or d.get("municipality")
+    a, a_long = _ends(o)
+    b, b_long = _ends(d)
     if not a or not b or a == b:
         return None
-    return a, b
+    return {"codes": [a, b], "names": [a_long, b_long]}
 
 
 def route_for(callsign):
@@ -330,7 +341,7 @@ def enrich(planes):
     with ThreadPoolExecutor(max_workers=ROUTE_WORKERS) as pool:
         for p, found in zip(want, pool.map(lambda x: route_for(x["callsign"]),
                                            want)):
-            p["route"] = list(found) if found else None
+            p["route"] = found or None
     return planes
 
 

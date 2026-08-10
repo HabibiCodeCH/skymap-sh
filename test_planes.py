@@ -267,21 +267,28 @@ class ARouteIsAnInferenceAndIsTreatedAsOne(ClearCaches):
 
     def test_a_complete_route_is_accepted(self):
         fr = self.route_payload("London", "Split")["response"]["flightroute"]
-        self.assertEqual(planes.route_confident(fr), ("London", "Split"))
+        self.assertEqual(planes.route_confident(fr),
+                         {"codes": ["London", "Split"],
+                          "names": ["London", "Split"]})
 
     def test_half_a_route_is_no_route(self):
         for bad in (("London", None), (None, "Split"), (None, None)):
             fr = self.route_payload(*bad)["response"]["flightroute"]
             self.assertIsNone(planes.route_confident(fr))
 
-    def test_three_letter_codes_win_over_the_town_name(self):
-        """The label sits under a callsign on a sphere. LHR fits there and
-        'London' competes with the sky for the room."""
+    def test_both_the_short_and_the_long_form_are_carried(self):
+        """The sphere picks between them: codes while the celestial labels
+        are on and there is no room, names when they are off and there is."""
         fr = {"origin": {"iata_code": "LHR", "icao_code": "EGLL",
-                         "municipality": "London"},
+                         "municipality": "London",
+                         "name": "London Heathrow Airport"},
               "destination": {"iata_code": "SPU", "icao_code": "LDSP",
-                              "municipality": "Split"}}
-        self.assertEqual(planes.route_confident(fr), ("LHR", "SPU"))
+                              "municipality": "Split",
+                              "name": "Split Airport"}}
+        self.assertEqual(planes.route_confident(fr),
+                         {"codes": ["LHR", "SPU"],
+                          "names": ["London Heathrow Airport",
+                                    "Split Airport"]})
 
     def test_an_airfield_with_no_iata_code_falls_back_to_icao(self):
         """Military fields and small strips often carry only the four-letter
@@ -289,7 +296,18 @@ class ARouteIsAnInferenceAndIsTreatedAsOne(ClearCaches):
         the whole flight from being dropped over one missing field."""
         fr = {"origin": {"icao_code": "LFPB", "municipality": "Paris"},
               "destination": {"iata_code": "SPU"}}
-        self.assertEqual(planes.route_confident(fr), ("LFPB", "SPU"))
+        r = planes.route_confident(fr)
+        self.assertEqual(r["codes"], ["LFPB", "SPU"])
+
+    def test_an_end_missing_one_form_borrows_the_other(self):
+        """A code with no name shows the code twice rather than showing
+        nothing when the labels go off, which would look like the route
+        had been lost."""
+        fr = {"origin": {"iata_code": "LHR", "name": "London Heathrow"},
+              "destination": {"iata_code": "SPU"}}
+        self.assertEqual(planes.route_confident(fr),
+                         {"codes": ["LHR", "SPU"],
+                          "names": ["London Heathrow", "SPU"]})
 
     def test_a_flight_from_a_place_to_itself_is_a_failed_lookup(self):
         fr = self.route_payload("Geneva", "Geneva")["response"]["flightroute"]
@@ -323,7 +341,8 @@ class ARouteIsAnInferenceAndIsTreatedAsOne(ClearCaches):
         planes._get = fake_upstream(self.route_payload("London", "Split"))
         out = planes.enrich([{"callsign": "BAW530", "route": None},
                              {"callsign": None, "route": None}])
-        self.assertEqual(out[0]["route"], ["London", "Split"])
+        self.assertEqual(out[0]["route"], {"codes": ["London", "Split"],
+                                           "names": ["London", "Split"]})
         self.assertIsNone(out[1]["route"])
 
     def test_position_and_route_cache_statistics_stay_apart(self):
