@@ -4898,3 +4898,73 @@ class TheCrossingArmsAcrossTheSite(unittest.TestCase):
         self.assertIn('data-url="/Paris/crossing.json"', self.page("/Paris"))
         self.assertIn('data-url="/Paris/crossing.json"',
                       self.page("/Paris/venus"))
+
+
+class TheWelcomeRoute(unittest.TestCase):
+    """/{place}/welcome.json -- the eclipse to greet somebody with today."""
+
+    DAY = "?t=2026-08-12T09:00"
+
+    def setUp(self):
+        cm = TestClient(server.app)
+        self.client = cm.__enter__()
+        self.addCleanup(cm.__exit__, None, None, None)
+        for k in ("welcome", "welcome_none", "welcome:total",
+                  "welcome:partial"):
+            server._stat[k] = 0
+
+    def test_it_serves_the_drawing_on_the_day(self):
+        r = self.client.get(f"/Zurich/welcome.json{self.DAY}")
+        self.assertEqual(r.status_code, 200)
+        d = r.json()
+        self.assertEqual(d["key"], "2026-08-12")
+        self.assertEqual(d["kind"], "partial")
+        self.assertTrue(d["frames"])
+        self.assertEqual(len(d["frames"]), len(d["labels"]))
+        self.assertIn("Enjoy the eclipse today", d["frames"][0])
+
+    def test_nothing_on_any_other_day(self):
+        d = self.client.get("/Zurich/welcome.json?t=2026-08-10T09:00").json()
+        self.assertIsNone(d["welcome"])
+
+    def test_nothing_where_no_eclipse_reaches(self):
+        d = self.client.get(f"/Vienna/welcome.json{self.DAY}").json()
+        self.assertIsNone(d["welcome"])
+
+    def test_an_unknown_place_is_a_404(self):
+        r = self.client.get(f"/Nowhereville/welcome.json{self.DAY}")
+        self.assertEqual(r.status_code, 404)
+
+    def test_the_counters_are_kept(self):
+        self.client.get(f"/Zurich/welcome.json{self.DAY}")
+        self.client.get(f"/Madrid/welcome.json{self.DAY}")
+        self.client.get(f"/Vienna/welcome.json{self.DAY}")
+        self.assertEqual(server._stat["welcome"], 2)
+        self.assertEqual(server._stat["welcome:partial"], 1)
+        self.assertEqual(server._stat["welcome:total"], 1)
+        self.assertEqual(server._stat["welcome_none"], 1)
+
+    def test_the_counters_reach_both_stats_views(self):
+        self.client.get(f"/Zurich/welcome.json{self.DAY}")
+        text = self.client.get("/stats", headers=TERMINAL).text
+        self.assertIn("welcome", text)
+        data = self.client.get("/stats?format=json").json()
+        self.assertIn("welcome", data)
+        self.assertEqual(data["welcome"], 1)
+
+    def test_a_page_about_a_place_arms_it_on_the_day(self):
+        was = api.CROSSING_ARM_H
+        api.CROSSING_ARM_H = 24.0
+        self.addCleanup(setattr, api, "CROSSING_ARM_H", was)
+        # The marker is emitted from the request's own moment, so a pinned
+        # ?t= page cannot be used to check it -- pinned pages arm nothing,
+        # on purpose. The unit tests cover the day; this checks the wiring.
+        html_page = self.client.get("/Zurich", headers=BROWSER).text
+        self.assertIn("skymap.welcome.next", html_page)
+        self.assertIn("function skymapTakeover", html_page)
+
+    def test_a_pinned_page_arms_neither_takeover(self):
+        page = self.client.get("/Zurich?t=2026-08-12T09:00",
+                               headers=BROWSER).text
+        self.assertNotIn('id="welcome-arm"', page)
+        self.assertNotIn('id="crossing-arm"', page)

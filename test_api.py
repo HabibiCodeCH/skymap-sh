@@ -3710,3 +3710,113 @@ class TheSunCanSetEclipsed(unittest.TestCase):
         (mex, mey), (mnx, mny) = api._sky_basis(18.0, 20.0, 47.4, 18.0)
         self.assertAlmostEqual(abs(mny), 1.0, places=2)
         self.assertLess(abs(mnx), 0.02)
+
+
+class TheEclipseWelcome(unittest.TestCase):
+    """On the day an eclipse crosses a place, the site opens with it drawn.
+
+    Nothing new is drawn -- eclipse.disc_frames has made these since the
+    eclipse pages were built. What is tested here is the judgement around
+    them: who gets greeted, who is left alone, and what the line under the
+    picture says.
+    """
+    DAY = dt.datetime(2026, 8, 12, 9, 0)      # Wednesday morning, UT
+
+    def place(self, name):
+        p = api.lookup_place(name)
+        self.assertIsNotNone(p, name)
+        return p
+
+    def test_it_greets_the_places_that_see_one(self):
+        for name in ("Zurich", "Madrid", "London", "Reykjavik", "Lisbon"):
+            self.assertIsNotNone(api.welcome_eclipse(self.place(name),
+                                                     self.DAY), name)
+
+    def test_it_leaves_everyone_else_alone(self):
+        # Nothing at all east of Berlin on this one, and the feature has to
+        # be silent there rather than apologetic.
+        for name in ("Vienna", "Rome", "Athens", "Istanbul"):
+            self.assertIsNone(api.welcome_eclipse(self.place(name), self.DAY),
+                              name)
+
+    def test_a_sliver_is_not_worth_a_takeover(self):
+        # New York sees 10% of the Sun covered, which is not visible to the
+        # naked eye. Taking over somebody's screen for it oversells it.
+        ny = self.place("New York")
+        self.assertIsNone(api.welcome_eclipse(ny, self.DAY))
+        self.assertGreater(api.WELCOME_FLOOR, 0.10)
+
+    def test_only_on_the_day(self):
+        z = self.place("Zurich")
+        self.assertIsNotNone(api.welcome_eclipse(z, self.DAY))
+        for when in (dt.datetime(2026, 8, 10, 9, 0),
+                     dt.datetime(2026, 8, 14, 9, 0),
+                     dt.datetime(2026, 3, 1, 9, 0)):
+            self.assertIsNone(api.welcome_eclipse(z, when), when)
+
+    def test_the_caption_says_when_and_which_way(self):
+        # The two things the picture cannot say. Maximum, not first contact:
+        # it is the moment worth being outside for.
+        self.assertEqual(api.welcome_caption(self.place("Zurich"),
+                                             "2026-08-12", "partial"),
+                         "Enjoy the eclipse today, 20:17 WNW")
+        self.assertEqual(api.welcome_caption(self.place("Madrid"),
+                                             "2026-08-12", "total"),
+                         "Enjoy totality today, 20:32 WNW")
+
+    def test_the_caption_carries_no_degree_sign(self):
+        # Every degree in this app is a height, so a bearing never has one.
+        for name in ("Zurich", "Madrid", "Reykjavik", "London"):
+            cap = api.welcome_caption(self.place(name), "2026-08-12", "total")
+            self.assertNotIn("\N{DEGREE SIGN}", cap, name)
+
+    def test_the_caption_sits_under_the_drawing(self):
+        frames, _labels = api.welcome_frames(self.place("Zurich"),
+                                             "2026-08-12", "partial")
+        rows = re.sub(r"<[^>]*>", "", frames[0]).splitlines()
+        self.assertIn("Enjoy the eclipse today", rows[-1])
+        # A blank row between, so it reads as a caption under a picture
+        # rather than as another row of the picture.
+        self.assertEqual(rows[-2].strip(), "")
+
+    def test_every_frame_carries_it(self):
+        frames, _l = api.welcome_frames(self.place("Madrid"), "2026-08-12",
+                                        "total")
+        for i, f in enumerate(frames):
+            self.assertIn("Enjoy totality today", f, i)
+
+    def test_nothing_to_draw_is_not_a_crash(self):
+        self.assertIsNone(api.welcome_frames(self.place("Vienna"),
+                                             "2026-08-12", "partial"))
+
+    def test_the_eclipse_pages_did_not_get_the_caption(self):
+        # welcome_frames adds it, disc_frames does not -- the eclipse page
+        # already carries the times in a row of its own, and a second copy
+        # inside the drawing would be the same fact twice.
+        import eclipse
+        p = self.place("Zurich")
+        frames, _l = eclipse.disc_frames("2026-08-12", p.lat, p.lon, tz=2)
+        self.assertTrue(frames)
+        self.assertNotIn("Enjoy", "".join("".join(f) for f in frames))
+
+    def test_the_marker_arms_only_where_it_should(self):
+        z = self.place("Zurich")
+        self.assertIn('id="welcome-arm"', api.welcome_arm_html(z, self.DAY))
+        self.assertEqual(api.welcome_arm_html(z, self.DAY, pinned=True), "")
+        self.assertEqual(api.welcome_arm_html(None), "")
+        self.assertEqual(
+            api.welcome_arm_html(self.place("Vienna"), self.DAY), "")
+
+    def test_both_takeovers_are_armed_together(self):
+        # One call, so a page cannot end up arming one and not the other.
+        armed = api._arms(self.place("Zurich"), self.DAY)
+        self.assertIn('id="welcome-arm"', armed)
+
+    def test_there_is_one_stage_and_two_callers(self):
+        # The extraction is the point: two copies of a play loop is the
+        # shape that put anchors across the sky and left the eclipse
+        # drawings uncentred.
+        self.assertEqual(api.PAGE.count("function skymapTakeover"), 1)
+        self.assertEqual(api.PAGE.count("skymapTakeover("), 3)  # def + 2 uses
+        # And a guard so the two cannot stack on the same evening.
+        self.assertIn("SKYMAP_STAGE", api.PAGE)

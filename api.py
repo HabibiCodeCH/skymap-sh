@@ -3413,8 +3413,8 @@ def object_html(r, canonical, text, data, place=None, base_url="",
         # /Venus read "Zurich" -- the bar named the reader's location on a
         # page that was not about their location at all.
         header=header_html(f"{place}/{canonical}" if place else canonical,
-                           crossing=crossing_arm_html(lookup_place(place)
-                                                      if place else None)),
+                           crossing=_arms(lookup_place(place)
+                                          if place else None)),
         controls=controls_html(EXPLORE),
         wide_class=" w-wide", coming_up_card="",
         # The event picker is the eclipse page's picker, so it gets that
@@ -3542,8 +3542,8 @@ def eclipse_html(r, f, key, entry, map_rows, legend, disc=None,
         title=html.escape(eclipse_title(f)),
         head_extra=head,
         header=header_html(f"{place}/eclipse" if place else "eclipse",
-                           crossing=crossing_arm_html(lookup_place(place)
-                                                      if place else None)),
+                           crossing=_arms(lookup_place(place)
+                                          if place else None)),
         controls=controls_html(EXPLORE),
         wide_class=" w-wide", coming_up_card="",
         kbd_urls="{}", shortcuts_hint="", body=body)
@@ -4584,6 +4584,135 @@ def crossing_arm_html(place, now_utc=None, pinned=False):
             f'data-end="{end:.0f}" '
             f'data-url="/{quote(place.slug)}/crossing.json" '
             f'data-key="{html.escape(key, quote=True)}"></div>')
+
+
+# --- the welcome ------------------------------------------------------------
+# An eclipse is the one thing on this site that is the reason somebody came,
+# so on the day it happens the page opens with it drawn rather than
+# described. Nothing new is drawn: eclipse.disc_frames has produced these
+# for the eclipse pages since they were built.
+
+# Below this the drawing would oversell it. New York sees 10% of the Sun
+# covered on 12 August, which is not visible to the naked eye and not a
+# thing to take over somebody's screen for.
+WELCOME_FLOOR = 0.25
+
+
+def welcome_eclipse(place, now_utc=None):
+    """The eclipse to greet somebody with today, or None.
+
+    Today at that place, and only if enough of the Sun goes to be worth
+    saying so. Returns the key and the local window; the frames come from
+    welcome_frames, so deciding whether to greet costs no drawing.
+    """
+    if place is None:
+        return None
+    now = now_utc or dt.datetime.utcnow()
+    off = place.offset(now)
+    local_day = (now + dt.timedelta(hours=off)).date()
+    for key in _eclipse_keys_near(local_day):
+        try:
+            c = besselian.local(key, place.lat, place.lon)
+        except KeyError:
+            continue
+        if c.get("kind") in (None, "none"):
+            continue
+        if (c.get("obscuration") or 0) < WELCOME_FLOOR:
+            continue
+        first, last = c.get("first"), c.get("last")
+        if first is None or last is None:
+            continue
+        # The eclipse's own day in UT, carried across rather than wrapped:
+        # the hours are decimal UT on that date and a place far enough east
+        # keeps a different local date.
+        day0 = dt.datetime.strptime(key, "%Y-%m-%d")
+        return dict(key=key,
+                    starts=day0 + dt.timedelta(hours=first, minutes=off * 60),
+                    ends=day0 + dt.timedelta(hours=last, minutes=off * 60),
+                    obscuration=c.get("obscuration") or 0.0,
+                    kind=c.get("kind"))
+    return None
+
+
+# The line under the drawing. The picture says what happens; this says the
+# two things it cannot -- when to look, and which way. An escape, not a
+# palette number: sky.paint takes the sequence itself, and handing it 252
+# printed "252" on the front of the caption.
+WELCOME_C = "\033[38;5;252m"
+
+
+def welcome_caption(place, key, kind):
+    """"Enjoy the eclipse today, 20:17 WNW" -- maximum, and where to face.
+
+    Maximum rather than first contact: it is the moment worth being outside
+    for, and the one people set an alarm by. The bearing is a compass point
+    and nothing else, because a degree sign in this app always means a
+    height.
+    """
+    c = besselian.local(key, place.lat, place.lon)
+    peak = c.get("maximum")
+    if peak is None:
+        return ""
+    day0 = dt.datetime.strptime(key, "%Y-%m-%d")
+    at = day0 + dt.timedelta(hours=peak)
+    off = place.offset(at)
+    _alt, az = sky.sun_altaz(at, place.lat, place.lon)
+    what = "totality" if kind == "total" else "the eclipse"
+    return (f"Enjoy {what} today, "
+            f"{(at + dt.timedelta(hours=off)):%H:%M} {sky.compass(az)}")
+
+
+def welcome_frames(place, key, kind=""):
+    """(frames, labels) for the welcome, or None where there is nothing.
+
+    disc_frames drops the frames where the Sun is below the horizon, so an
+    eclipse that runs on past sunset simply stops being drawn at the horizon
+    -- which is where the crossing animation picks it up. Nothing coordinates
+    that; both just tell the truth about the same sky.
+
+    The caption is added here and not in disc_frames, which the eclipse
+    pages share: those already carry the times in a row of their own, and a
+    second copy inside the drawing would be the same fact twice.
+    """
+    off = place.offset(dt.datetime.strptime(key, "%Y-%m-%d"))
+    frames, labels = eclipse_map.disc_frames(key, place.lat, place.lon,
+                                             tz=off)
+    if not frames:
+        return None
+    caption = welcome_caption(place, key, kind)
+    if caption:
+        width = max((len(strip_ansi(row)) for row in frames[0]), default=45)
+        pad = " " * max(0, (width - len(caption)) // 2)
+        line = paint(pad + caption, WELCOME_C, True)
+        # A blank row between, so the words are a caption under a picture
+        # rather than another row of the picture.
+        frames = [list(f) + ["", line] for f in frames]
+    return [ansi_to_html(chr(10).join(f)) for f in frames], labels
+
+
+def _arms(place, now_utc=None, pinned=False):
+    """Both markers, for the pages that build their own header. One call so
+    a page cannot end up arming one takeover and not the other."""
+    return (welcome_arm_html(place, now_utc, pinned)
+            + crossing_arm_html(place, now_utc, pinned))
+
+
+def welcome_arm_html(place, now_utc=None, pinned=False):
+    """The marker the welcome arms from, or "".
+
+    Same shape and the same two reasons as crossing_arm_html: a few bytes on
+    a page that names a place, nothing at all on a pinned one, and never an
+    IP-guessed place baked into a page a shared cache could hand to somebody
+    else.
+    """
+    if pinned or place is None:
+        return ""
+    got = welcome_eclipse(place, now_utc)
+    if got is None:
+        return ""
+    return (f'<div id="welcome-arm" hidden data-key="{got["key"]}" '
+            f'data-url="/{quote(place.slug)}/welcome.json" '
+            f'data-place="{html.escape(place.slug, quote=True)}"></div>')
 
 
 def _sky_basis(ra_h, dec_d, lat, lst_h, eps=1e-3):
@@ -9038,8 +9167,9 @@ def header_html(value="", pill="", crossing=""):
     The command bar and the nav row share one flex row (.header-row) so the
     nav sits inline with it instead of wrapping to a line of its own.
 
-    `crossing` is the hidden marker that arms the sunset/sunrise takeover
-    (crossing_arm_html), and it rides here for one reason: this function is
+    `crossing` is the hidden markers that arm the takeovers -- the
+    sunset/sunrise crossing and the eclipse welcome -- and they ride here
+    for one reason: this function is
     the only thing every page on the site already calls. PAGE.format() has
     twelve call sites and giving it a new key would mean teaching all twelve
     -- the same reason _object_page_template exists rather than a second
@@ -10662,6 +10792,116 @@ function skymapRenderGif(btn){{
   }});
 }})();
 
+// The full-screen stage. Two things use it -- the sunset crossing below and
+// the eclipse welcome -- so it is written once. Two copies of a play loop is
+// exactly the shape that put anchors across the sky and left the eclipse
+// drawings jammed against the left of their frames for weeks.
+//
+// Everything it is handed is already drawn: frames of HTML and a clock
+// string each. It owns the reveal, the loop, the hold on the last frame,
+// closing itself, and every way out.
+var SKYMAP_STAGE = null;
+
+function skymapTakeover(frames,labels,opts){{
+  // One at a time. On 12 August the eclipse runs over Zurich from 19:24 to
+  // 21:08 and the Sun sets inside it at 20:39, so both of these are due the
+  // same evening and could otherwise stack.
+  if(SKYMAP_STAGE||!frames||!frames.length)return null;
+  opts=opts||{{}};
+  var ms=opts.ms||170,hold=opts.hold||2500;
+  var stage=document.createElement('div');
+  stage.id='crossing-stage';
+  stage.innerHTML='<div class="cx-frame"><pre class="cx-art"></pre>'+
+                  '<span class="cx-clock"></span></div>'+
+                  '<button type="button" class="cx-close" '+
+                  'aria-label="close">&times;</button>';
+  document.body.appendChild(stage);
+  SKYMAP_STAGE=stage;
+  var art=stage.querySelector('.cx-art'),
+      clock=stage.querySelector('.cx-clock'),
+      shut=stage.querySelector('.cx-close');
+  var i=0,step=null,wait=null;
+  function show(){{
+    art.innerHTML=frames[i];
+    if(clock)clock.textContent=labels&&labels[i]?labels[i]:'';
+  }}
+  function close(){{
+    if(step){{clearInterval(step);step=null;}}
+    if(wait){{clearTimeout(wait);wait=null;}}
+    stage.classList.remove('on');
+    // Not on transitionend: with reduced motion there is no transition to
+    // end, and a stage that cannot be dismissed is the worst thing any of
+    // this could leave behind.
+    setTimeout(function(){{
+      if(stage.parentNode)stage.parentNode.removeChild(stage);
+    }},700);
+    document.removeEventListener('keydown',onKey);
+    if(SKYMAP_STAGE===stage)SKYMAP_STAGE=null;
+    if(opts.onclose)opts.onclose();
+  }}
+  function onKey(e){{if(e.key==='Escape')close();}}
+  show();
+  // A frame on the far side of the reveal, or the transition has no
+  // starting opacity to move from and it snaps straight to black.
+  requestAnimationFrame(function(){{stage.classList.add('on');}});
+  step=setInterval(function(){{
+    if(i>=frames.length-1){{
+      clearInterval(step);step=null;
+      wait=setTimeout(close,hold);
+      return;
+    }}
+    i++;show();
+  }},ms);
+  shut.addEventListener('click',close);
+  stage.addEventListener('click',function(e){{if(e.target===stage)close();}});
+  document.addEventListener('keydown',onKey);
+  return close;
+}}
+
+// The welcome. On the day an eclipse crosses this place, the site opens with
+// it drawn instead of described -- it is the one thing here that is the
+// reason somebody came.
+//
+// On arrival rather than at a particular minute, because the eclipse is
+// hours long and somebody landing at breakfast should still be told what
+// happens tonight. The clock in the corner carries the real local times, so
+// it reads as "here is today" and not as "this is now".
+//
+// Once per tab, in sessionStorage rather than localStorage: nothing about
+// anybody is kept past the tab closing. It stops the takeover repeating as
+// somebody clicks around the site, which is the annoyance worth preventing,
+// and somebody who comes back later deliberately gets to see it again.
+(function(){{
+  var STORE='skymap.welcome.next';
+  var el=document.getElementById('welcome-arm'),rec=null;
+  if(el){{
+    rec={{key:el.getAttribute('data-key'),url:el.getAttribute('data-url')}};
+    try{{sessionStorage.setItem(STORE,JSON.stringify(rec));}}catch(e){{}}
+  }}else{{
+    try{{rec=JSON.parse(sessionStorage.getItem(STORE)||'null');}}catch(e){{}}
+  }}
+  if(!rec||!rec.key||!rec.url)return;
+  var seen='skymap.welcome.'+rec.key;
+  try{{if(sessionStorage.getItem(seen))return;}}catch(e){{}}
+  if(window.matchMedia&&
+     window.matchMedia('(prefers-reduced-motion: reduce)').matches)return;
+  // Let the page paint first. A black screen arriving in the same frame as
+  // the page reads as a fault rather than as a greeting.
+  setTimeout(function(){{
+    if(document.hidden||SKYMAP_STAGE)return;
+    fetch(rec.url,{{headers:{{'accept':'application/json'}}}})
+      .then(function(r){{return r.ok?r.json():null;}})
+      .then(function(d){{
+        if(!d||!d.frames||!d.frames.length)return;
+        if(document.hidden||SKYMAP_STAGE)return;
+        try{{sessionStorage.setItem(seen,'1');}}catch(e){{}}
+        skymapTakeover(d.frames,d.labels,
+                       {{ms:d.frame_ms,hold:d.hold_ms}});
+      }})
+      .catch(function(){{}});
+  }},900);
+}})();
+
 // The crossing: the minute the answer to "is it day or night" changes.
 //
 // Nobody asks for this. It fires because the Sun did, so every rule here is
@@ -10741,46 +10981,8 @@ function skymapRenderGif(btn){{
     playing=true;
     done();
     try{{localStorage.setItem(key,'1');}}catch(e){{}}
-    var stage=document.createElement('div');
-    stage.id='crossing-stage';
-    stage.innerHTML='<div class="cx-frame"><pre class="cx-art"></pre>'+
-                    '<span class="cx-clock"></span></div>'+
-                    '<button type="button" class="cx-close" '+
-                    'aria-label="close">&times;</button>';
-    document.body.appendChild(stage);
-    var art=stage.querySelector('.cx-art'),
-        clock=stage.querySelector('.cx-clock'),
-        shut=stage.querySelector('.cx-close');
-    var i=0,step=null,hold=null;
-    function show(){{art.innerHTML=data.frames[i];clock.textContent=data.labels[i];}}
-    function close(){{
-      if(step){{clearInterval(step);step=null;}}
-      if(hold){{clearTimeout(hold);hold=null;}}
-      stage.classList.remove('on');
-      // Not on transitionend: with reduced motion there is no transition to
-      // end, and a stage that cannot be dismissed is the worst thing this
-      // could leave behind.
-      setTimeout(function(){{
-        if(stage.parentNode)stage.parentNode.removeChild(stage);
-      }},700);
-      document.removeEventListener('keydown',onKey);
-    }}
-    function onKey(e){{if(e.key==='Escape')close();}}
-    show();
-    // A frame on the far side of the reveal, or the transition has no
-    // starting opacity to move from and it snaps straight to black.
-    requestAnimationFrame(function(){{stage.classList.add('on');}});
-    step=setInterval(function(){{
-      if(i>=data.frames.length-1){{
-        clearInterval(step);step=null;
-        hold=setTimeout(close,data.hold_ms||2500);
-        return;
-      }}
-      i++;show();
-    }},data.frame_ms||170);
-    shut.addEventListener('click',close);
-    stage.addEventListener('click',function(e){{if(e.target===stage)close();}});
-    document.addEventListener('keydown',onKey);
+    skymapTakeover(data.frames,data.labels,
+                   {{ms:data.frame_ms,hold:data.hold_ms}});
   }}
 
   function tick(){{

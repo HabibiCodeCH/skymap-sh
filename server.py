@@ -1280,6 +1280,16 @@ def stats_text(n=50, map_slot=False):
         L.append(f"  {'gif':12} {_stat['gif']:>8,}{rej}")
         L.append(f"  {'png':12} {_stat['png']:>8,}")
         L.append("")
+    if _stat["welcome"] or _stat["welcome_none"]:
+        L.append("welcome")
+        L.append(f"  {'shown':12} {_stat['welcome']:>8,}")
+        for kind in ("total", "annular", "partial"):
+            if _stat[f"welcome:{kind}"]:
+                L.append(f"  {kind:12} {_stat[f'welcome:{kind}']:>8,}")
+        # Most of the map sees no eclipse most days. Counted so that
+        # "nothing to greet anyone with" cannot read as "it is broken".
+        L.append(f"  {'none to show':12} {_stat['welcome_none']:>8,}")
+        L.append("")
     if _stat["crossing"] or _stat["crossing_none"]:
         # Split by direction, because they are two different questions. A
         # sunset is watched by somebody who had the page open anyway; a
@@ -1437,6 +1447,7 @@ def stats_json(n=50):
         night=_stat["night"], day=_stat["day"], iss=_stat["iss"],
         animate=_stat["animate"], animate_rejected=_stat["animate_rejected"],
         gif=_stat["gif"], gif_rejected=_stat["gif_rejected"], png=_stat["png"],
+        welcome=_stat["welcome"], welcome_none=_stat["welcome_none"],
         crossing=_stat["crossing"], crossing_set=_stat["crossing_set"],
         crossing_rise=_stat["crossing_rise"],
         crossing_none=_stat["crossing_none"],
@@ -2000,6 +2011,10 @@ def _cached(r):
 # playback stalls waiting on the network. A frame costs about 12ms to build,
 # so 90ms of sleep hands one over every ~102ms against 130ms of playback --
 # ahead, with room for a slow frame. There is a test on that inequality.
+# The welcome plays a touch slower than the crossing. It has 17-25 frames
+# against 44 and covers two hours rather than three minutes, so the same
+# 170ms would be over before it registered.
+WELCOME_FRAME_MS = 260
 ANIMATE_STEP_MIN = 10              # simulated minutes per frame (6/hour)
 ANIMATE_PLAY_MS = 130              # how long the page holds each frame
 ANIMATE_FRAME_DELAY = 0.09         # seconds between frames on the wire
@@ -2380,8 +2395,9 @@ def _respond(request: Req, place: str | None):
         # Armed once for the page, used by whichever header branch runs. A
         # pinned ?t= page arms nothing: it is not that minute and never
         # becomes it.
-        crossing = api.crossing_arm_html(r.place,
-                                         pinned=q.get("t") is not None)
+        pinned = q.get("t") is not None
+        crossing = (api.welcome_arm_html(r.place, r.when_utc, pinned=pinned)
+                    + api.crossing_arm_html(r.place, pinned=pinned))
         explore = api.EXPLORE_DATETIME
         # Shown for everyone -- CSS (.mobile-only, a pointer:coarse media
         # query) decides who actually sees it, since there's no reliable
@@ -3146,6 +3162,42 @@ def crossing_json(request: Req, place: str):
     age = max(60, min(6 * 3600, int(left)))
     return JSONResponse(data, headers={
         "Cache-Control": f"public, max-age={age // 4}, s-maxage={age}"})
+
+
+@app.get("/{place}/welcome.json")
+def welcome_json(request: Req, place: str):
+    """The eclipse to greet somebody with today, drawn.
+
+    Separate from the eclipse page's own frames, which are inlined there
+    because that page is entirely about the eclipse. This is for every other
+    page, where it is a greeting rather than the subject, and it is fetched
+    only on the day and only when there is enough eclipse to be worth it.
+    """
+    if api.lookup_place(place) is None:
+        return JSONResponse({"error": "unknown_place"}, status_code=404)
+    r = _build(request, place)
+    got = api.welcome_eclipse(r.place, r.when_utc)
+    if got is None:
+        # Not an error: most of the map sees no eclipse most days, and half
+        # of Europe sees none of this one.
+        _stat["welcome_none"] += 1
+        return JSONResponse({"welcome": None},
+                            headers={"Cache-Control": "public, max-age=3600"})
+    made = api.welcome_frames(r.place, got["key"], got["kind"])
+    if made is None:
+        _stat["welcome_none"] += 1
+        return JSONResponse({"welcome": None},
+                            headers={"Cache-Control": "public, max-age=3600"})
+    frames, labels = made
+    _stat["welcome"] += 1
+    _stat[f"welcome:{got['kind']}"] += 1
+    return JSONResponse(dict(
+        key=got["key"], frames=frames, labels=labels,
+        kind=got["kind"], obscuration=round(got["obscuration"], 4),
+        starts_local=got["starts"].strftime("%Y-%m-%dT%H:%M:%S"),
+        ends_local=got["ends"].strftime("%Y-%m-%dT%H:%M:%S"),
+        frame_ms=WELCOME_FRAME_MS, hold_ms=api.CROSSING_HOLD_MS,
+    ), headers={"Cache-Control": "public, max-age=1800"})
 
 
 @app.get("/{place}/sphere.json")
