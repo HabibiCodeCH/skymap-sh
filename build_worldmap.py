@@ -22,10 +22,17 @@ Latitude is clipped to 83N..56S. The poles are ice and empty ocean, so cutting
 them lets the same number of rows cover the inhabited world at better
 resolution -- and Antarctica sends no requests.
 
+Two grids, same polygons. A terminal is stuck with its own font, so the
+coarse grid is as fine as a shell can draw. A browser is not: the page can
+set the map's own font size, so the fine grid fits nearly three times the
+columns into the same number of pixels.
+
 Output:
 
-  {"width": 296, "height": 80, "lat_top": 83.0, "lat_bot": -56.0,
-   "rows": ["   ##   ...", ...]}    # one string per row, '#' is land
+  {"width": 216, "height": 55, "lat_top": 83.0, "lat_bot": -56.0,
+   "rows": ["   ##   ...", ...],          # one string per row, '#' is land
+   "fine_width": 340, "fine_height": 100,
+   "fine_rows": [...]}
 """
 import json
 import sys
@@ -42,6 +49,15 @@ SRC, OUT = "countries.geo.json", "worldmap.json"
 # the body pads with. Wider than that and the map -- the widest thing on the
 # page by a long way -- starts pulling a scrollbar under everything else.
 WIDTH, HEIGHT = 216, 55
+# The browser's grid. Chosen to land in exactly the same box: 340 columns of
+# 7px monospace is 216 columns of 11px to within a pixel (216*11/340 = 6.99),
+# and 100 rows at line-height 1.05 is 55 rows at 1.22 to within three. So the
+# map keeps its shape and its footprint and only gets sharper -- the whole
+# reason for a second grid rather than a wider one.
+# Not finer than this: the request bins /stats colours the map from are
+# rounded to whole degrees, and 360/340 is already about a degree a column.
+# More columns past that would sharpen the coastline and nothing else.
+FINE_WIDTH, FINE_HEIGHT = 340, 100
 LAT_TOP, LAT_BOT = 83.0, -56.0
 LAND, SEA = "#", " "
 
@@ -88,30 +104,44 @@ def is_land(lon, lat, polys):
     return False
 
 
+def mask(width, height, polys):
+    """The land/sea grid at one resolution, plus its land-dot count."""
+    rows, dots = [], 0
+    span = LAT_TOP - LAT_BOT
+    for r in range(height):
+        lat = LAT_TOP - (r + 0.5) * span / height
+        row = []
+        for c in range(width):
+            # Sample cell centres, not corners: a corner on a coastline is
+            # ambiguous and makes the shoreline jitter by a dot.
+            lon = -180 + (c + 0.5) * 360 / width
+            land = is_land(lon, lat, polys)
+            dots += land
+            row.append(LAND if land else SEA)
+        rows.append("".join(row))
+    return rows, dots
+
+
 def main():
     try:
         polys = load_polygons(SRC)
     except OSError:
         print(f"missing {SRC} -- see the docstring for the curl line")
         return 1
-    rows, dots = [], 0
-    span = LAT_TOP - LAT_BOT
-    for r in range(HEIGHT):
-        lat = LAT_TOP - (r + 0.5) * span / HEIGHT
-        row = []
-        for c in range(WIDTH):
-            # Sample cell centres, not corners: a corner on a coastline is
-            # ambiguous and makes the shoreline jitter by a dot.
-            lon = -180 + (c + 0.5) * 360 / WIDTH
-            land = is_land(lon, lat, polys)
-            dots += land
-            row.append(LAND if land else SEA)
-        rows.append("".join(row))
+    # Both grids are sampled independently rather than one downsampled from
+    # the other: a coarse cell holding any fine land at all would fatten
+    # every coastline and weld the islands back together, which is the same
+    # failure the cities-based mask had.
+    rows, dots = mask(WIDTH, HEIGHT, polys)
+    fine_rows, fine_dots = mask(FINE_WIDTH, FINE_HEIGHT, polys)
     with open(OUT, "w") as f:
         json.dump(dict(width=WIDTH, height=HEIGHT, lat_top=LAT_TOP,
-                       lat_bot=LAT_BOT, rows=rows), f)
-    print(f"{OUT}: {WIDTH}x{HEIGHT}, {dots:,} land dots "
-          f"({100 * dots / (WIDTH * HEIGHT):.0f}%) from {len(polys)} polygons")
+                       lat_bot=LAT_BOT, rows=rows,
+                       fine_width=FINE_WIDTH, fine_height=FINE_HEIGHT,
+                       fine_rows=fine_rows), f)
+    for w, h, n in ((WIDTH, HEIGHT, dots), (FINE_WIDTH, FINE_HEIGHT, fine_dots)):
+        print(f"{OUT}: {w}x{h}, {n:,} land dots "
+              f"({100 * n / (w * h):.0f}%) from {len(polys)} polygons")
     return 0
 
 

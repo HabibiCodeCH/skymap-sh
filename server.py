@@ -854,24 +854,45 @@ MAP_FLASH_DOT = "•"
 # could stand in for size (●, ◉) are double-width in enough terminals to
 # break the map's alignment where it matters most.
 MAP_SIZES = (1.0, 1.15, 1.35, 1.55, 1.75, 1.95, 2.2)
+# The browser draws the map at its own size rather than the page's 11px, which
+# is what pays for the finer grid: 340 columns at 7px is the same 1,426 pixels
+# 216 columns at 11px was, and 100 rows at 1.05 is the same height 55 rows at
+# 1.22 was. Same box on the page, nearly three times the columns in it.
+# These two numbers and build_worldmap.py's FINE_WIDTH/FINE_HEIGHT are one
+# decision in two places: change one and the map changes shape or starts
+# pulling a scrollbar.
+MAP_FONT_PX = 7
+MAP_LINE_HEIGHT = 1.05
 _worldmap = None
 
 
-def _load_worldmap():
+def _load_worldmap(fine=False):
     """(rows, width, height, lat_top, lat_bot), or None if the mask is
     missing. Missing is survivable -- the map is the one part of /stats that
     needs a generated file, and the page is more useful without it than
-    500-ing over it."""
+    500-ing over it.
+
+    fine picks the browser's denser grid. A terminal is stuck with whatever
+    font the shell is set to, so the coarse grid is as sharp as curl can get;
+    the page can shrink its own text and take the finer one."""
     global _worldmap
     if _worldmap is None:
         try:
             with open(WORLDMAP_FILE) as f:
                 d = json.load(f)
-            _worldmap = (d["rows"], d["width"], d["height"],
-                         d["lat_top"], d["lat_bot"])
+            coarse = (d["rows"], d["width"], d["height"],
+                      d["lat_top"], d["lat_bot"])
+            # A mask built before the fine grid existed still draws a map --
+            # both readers just get the coarse one. Worth the two lines: the
+            # JSON is generated, and a deploy that ships the code ahead of it
+            # would otherwise lose the map entirely rather than sharpen it.
+            _worldmap = {False: coarse, True: coarse}
+            if "fine_rows" in d:
+                _worldmap[True] = (d["fine_rows"], d["fine_width"],
+                                   d["fine_height"], d["lat_top"], d["lat_bot"])
         except (OSError, json.JSONDecodeError, KeyError):
             _worldmap = ()
-    return _worldmap or None
+    return _worldmap[bool(fine)] if _worldmap else None
 
 
 def _map_cell(lat, lon, w, h, lat_top, lat_bot):
@@ -933,7 +954,7 @@ def _world_map():
     return out
 
 
-_heat_cache = (0.0, None, None)
+_heat_cache = {}            # (width, height) -> (at, heat, busiest)
 HEAT_TTL = 2.0              # seconds
 
 
@@ -941,14 +962,17 @@ def _cached_heat(w, h, lat_top, lat_bot):
     """_map_heat walks every 1-degree bin and parses its key, which is a few
     milliseconds once _geo_hits is large. /stats/live is polled every few
     seconds per open tab, so without this every tab pays that separately.
-    A couple of seconds stale is invisible on a map of running totals."""
-    global _heat_cache
-    at, heat, top = _heat_cache
+    A couple of seconds stale is invisible on a map of running totals.
+
+    Keyed by grid size, because there are two: the same request lands in a
+    different cell on the terminal's map than on the browser's, and one
+    shared entry would hand whichever asked second the other's coordinates."""
+    at, heat, top = _heat_cache.get((w, h), (0.0, None, None))
     now = time.time()
     if heat is None or now - at > HEAT_TTL:
         heat = _map_heat(w, h, lat_top, lat_bot)
         top = max(heat.values()) if heat else 0
-        _heat_cache = (now, heat, top)
+        _heat_cache[(w, h)] = (now, heat, top)
     return heat, top
 
 
@@ -986,32 +1010,41 @@ def _map_shader(w, h, lat_top, lat_bot):
 
 
 def _map_html():
-    """The map with one addressable span per land dot.
+    """The map with one addressable element per land dot, on the fine grid.
 
     The text version emits one escape code per run of same-coloured dots,
     which is the right trade there. The browser needs the opposite: a dot
     cannot be flashed on its own unless it is its own element.
 
-    Colour goes on a class rather than an inline style. There are only seven
-    possible colours and thousands of dots, so repeating the hex on each one
-    costs about 20 bytes a dot for nothing. The classes are defined once in
-    stats_live_html() from the same MAP_RAMP."""
-    loaded = _load_worldmap()
+    Which means the markup is ten thousand copies of the same tag, so what
+    each copy costs is the whole budget. Colour and size ride on one class,
+    defined once in stats_live_html() from the same MAP_RAMP -- and the class
+    is left off entirely for the resting level, which is nearly every dot on
+    the map. What is left is an id, because a dot has to be findable, and the
+    tag itself, because a dot has to be an element. At that point the fine
+    grid costs less markup than the coarse one did before the diet.
+
+    The wrapper is what makes the fine grid fit: it carries the map's own
+    font size and line height (see MAP_FONT_PX), so the 340 columns land in
+    the same box the 216 did. inline-block rather than block -- the map sits
+    inside a <pre>, and a block would turn the newlines on either side of it
+    into an extra blank line each."""
+    loaded = _load_worldmap(fine=True)
     if not loaded:
         return ""
     rows, w, h, lat_top, lat_bot = loaded
     shade, heat = _map_shader(w, h, lat_top, lat_bot)
-    out = []
+    out = ['<span class=wmap>']
     for r, row in enumerate(rows):
         for c, ch in enumerate(row):
             if ch == " " and (r, c) not in heat:
                 out.append(" ")
                 continue
             i = shade(r, c)
-            out.append(f'<i class="d h{i} s{i}" id="d{r}_{c}">'
-                       f'{MAP_DOT}</i>')
+            cls = f'class=h{i} ' if i else ""
+            out.append(f'<i {cls}id=d{r}_{c}>{MAP_DOT}</i>')
         out.append("\n")
-    return "".join(out).rstrip("\n")
+    return "".join(out).rstrip("\n") + "</span>"
 
 
 # Stands in for the map while stats_text() builds the page, so the HTML route
@@ -1677,9 +1710,11 @@ def stats_live_json(since=0.0):
     Returns map cells rather than coordinates: the browser has no projection
     and shouldn't need one, and a cell is what it has to address anyway. Each
     entry is [row, col, ramp index] -- the index is where the dot settles
-    after its flash, so the resting colour keeps up as totals grow."""
+    after its flash, so the resting colour keeps up as totals grow.
+
+    The fine grid, because the only caller is the page that drew it."""
     now = time.time()
-    loaded = _load_worldmap()
+    loaded = _load_worldmap(fine=True)
     flash = []
     if loaded:
         _rows, w, h, lat_top, lat_bot = loaded
@@ -2862,12 +2897,14 @@ def stats(request: Req):
             LEGEND_SLOT,
             f'<span id="live-legend">{html.escape(_map_legend())}</span>')
         controls = api.controls_html(api.EXPLORE, extra=api.stats_live_html(
-            [api._xterm_hex(n) for n in MAP_RAMP], MAP_SIZES, MAP_DOT, MAP_FLASH_DOT))
-        # w-wide, the same opt-out the chart page uses: the map is 216 columns
-        # and the default 1200px column is about 182, so /stats spent its whole
-        # life with a scrollbar under the widest thing on it. Per page, so
-        # nothing else moves -- prose pages keep the 1200px measure that makes
-        # them readable.
+            [api._xterm_hex(n) for n in MAP_RAMP], MAP_SIZES, MAP_DOT,
+            MAP_FLASH_DOT, MAP_FONT_PX, MAP_LINE_HEIGHT))
+        # w-wide, the same opt-out the chart page uses: the map is about
+        # 1,426 pixels across (340 columns at 7px, see MAP_FONT_PX) and the
+        # default 1200px column can't hold it, so /stats spent its whole life
+        # with a scrollbar under the widest thing on it. Per page, so nothing
+        # else moves -- prose pages keep the 1200px measure that makes them
+        # readable.
         page = api.PAGE.format(title="skymap.sh: stats", header=api.header_html("stats"),
                                canonical=api.canonical_url("/stats"),
                                controls=controls, wide_class=" w-wide",
