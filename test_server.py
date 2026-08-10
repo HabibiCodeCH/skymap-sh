@@ -825,6 +825,28 @@ class ClientMixAndFinds(unittest.TestCase):
         self.assertEqual(mix["mobile"], 1)
         self.assertEqual(mix["web"], 1)
 
+    def test_an_unknown_place_is_counted_as_a_request_not_only_as_a_404(self):
+        # The headline on /stats reads _stat and the charts read _hour_stat.
+        # A 404 that lands in one and not the other makes the two disagree
+        # by exactly the number of unknown places anyone ever asked for --
+        # which is what made the totals on the page drift apart.
+        before = server._stat["requests"], server._hour_stat["requests"]
+        r = self.client.get("/Zzzzzznowhere", headers=TERMINAL)
+        self.assertEqual(r.status_code, 404)
+        after = server._stat["requests"], server._hour_stat["requests"]
+        self.assertEqual((after[0] - before[0], after[1] - before[1]), (1, 1))
+        self.assertEqual(server._hour_stat["notfound"], 1)
+
+    def test_a_404_still_adds_up_across_the_client_buckets(self):
+        # "the four add up to the whole" is printed under the mix chart, so
+        # counting the 404 in requests without giving it a client would have
+        # broken the promise the page makes in words.
+        self.client.get("/Zzzzzznowhere", headers=TERMINAL)
+        self.client.get("/Zzzzzznowhere", headers=MOBILE)
+        mix = self._mix()
+        self.assertEqual(sum(mix.values()), server._hour_stat["requests"])
+        self.assertEqual((mix["cli"], mix["mobile"]), (1, 1))
+
     def test_a_phone_is_not_also_counted_as_web(self):
         # The whole reason the four can add up: html is the mode a phone
         # arrives as, so counting both would double it.
@@ -1022,10 +1044,17 @@ class HourlyLogLosesNothing(unittest.TestCase):
 
 class NotFoundsAreCountedSeparately(unittest.TestCase):
     """A request for a place that doesn't exist bypasses _tally, so it landed
-    in the header's total and in no chart, ever. It gets its own field rather
-    than being folded into `requests`: it is neither a cache hit nor a miss
-    and happens neither by day nor by night, so counting it as a request
-    would skew every ratio taken against one."""
+    in the header's total and in no chart, ever.
+
+    It is counted as a request now, in both books, because it is one: the
+    headline on /stats and the bars underneath it are meant to be the same
+    quantity, and leaving 404s out of one of them made the page disagree
+    with itself by exactly the number of unknown places anyone ever asked
+    for. `notfound` stays alongside, and that is what keeps the ratios
+    honest: it is neither a cache hit nor a miss and happens neither by day
+    nor by night, so hit% and the night share are taken over requests minus
+    notfound rather than over requests. Both properties at once, which is
+    what the old split was reaching for by giving up the first one."""
 
     def setUp(self):
         client_cm = TestClient(server.app)
@@ -1041,15 +1070,32 @@ class NotFoundsAreCountedSeparately(unittest.TestCase):
         server._hour_stat.update(self._hour_stat)
         server._hour_key = self._hour_key
 
-    def test_an_unknown_place_lands_in_notfound_not_in_requests(self):
+    def test_an_unknown_place_lands_in_notfound_and_in_requests(self):
         before = server._stat["requests"]
         resp = self.client.get("/Nowhereville", headers=TERMINAL)
         self.assertEqual(resp.status_code, 404)
         self.assertEqual(server._hour_stat["notfound"], 1)
-        self.assertEqual(server._hour_stat["requests"], 0)
-        # Still in the running total, which is what makes the two
-        # reconcilable: header requests == log requests + log notfounds.
+        # Both books, same number. This is the whole point: the headline
+        # total and the charts are now the same quantity.
+        self.assertEqual(server._hour_stat["requests"], 1)
         self.assertEqual(server._stat["requests"], before + 1)
+
+    def test_a_404_is_left_out_of_the_hit_rate_and_the_night_split(self):
+        # Counting it as a request must not make it count as a cache miss or
+        # as a daytime chart. An hour of nothing but unknown places has no
+        # hit rate to report at all, which is not the same as 0%.
+        entry = dict(requests=10, notfound=4, hit=3, miss=3, day=4, night=2)
+        self.assertEqual(server._answered(entry), 6)
+        self.assertEqual(server._ratio([[entry]], "hit"), [50.0])
+        # ...while the client mix still divides by every request, or its
+        # four shares would stop adding up to the whole.
+        mix = dict(entry, cli=10)
+        self.assertEqual(server._ratio([[mix]], "cli",
+                                       den=server._all_requests), [100.0])
+
+    def test_an_hour_of_only_404s_has_no_hit_rate(self):
+        entry = dict(requests=5, notfound=5, hit=0, miss=0, day=0, night=0)
+        self.assertEqual(server._ratio([[entry]], "hit"), [None])
 
     def test_a_404_advances_the_hour_before_counting_itself(self):
         # This path never goes through _tally, so nothing else here rolls the
@@ -1871,6 +1917,82 @@ class StatsPersistence(unittest.TestCase):
         self.assertEqual(server._finds["Venus"], 3)
         self.assertEqual(server._referrers["twitter.com"], 7)
         self.assertEqual(server.STARTED, 12345.0)
+
+    def test_two_requests_crossing_the_hour_only_close_it_once(self):
+        # Route handlers run in a threadpool, so more than one request can be
+        # inside _roll_hour at the same moment. The flush writes a 26 KB JSON
+        # and appends to a file, which is slow, and the old code only updated
+        # _hour_key after it -- so a second thread arriving mid-write also saw
+        # a boundary, flushed the same hour again, and rebound _hour_stat a
+        # second time, dropping everything the first thread's fresh Counter
+        # had collected. _stat is never rebound and kept those requests, which
+        # is how the headline on /stats drifted above the charts under it.
+        import threading
+        d = tempfile.mkdtemp()
+        for name, path in (("HOURLY_LOG", os.path.join(d, "h.jsonl")),
+                           ("STATS_STATE_FILE", os.path.join(d, "s.json"))):
+            self.addCleanup(setattr, server, name, getattr(server, name))
+            setattr(server, name, path)
+        real_flush = server._flush_hour
+        self.addCleanup(setattr, server, "_flush_hour", real_flush)
+        flushed = []
+        in_flush = threading.Event()
+
+        def slow_flush(key, hstat):
+            # Stand in for the disk write being slow enough for a second
+            # request to arrive during it. Widening a real window, not
+            # inventing one.
+            flushed.append(key)
+            in_flush.set()
+            time.sleep(0.15)
+            return real_flush(key, hstat)
+
+        server._flush_hour = slow_flush
+        self.addCleanup(setattr, server, "_hour_key", server._hour_key)
+        ending = (dt.datetime.utcnow() - dt.timedelta(hours=1)
+                  ).strftime("%Y-%m-%dT%H:00")
+        server._hour_key = ending
+        server._hour_stat.clear()
+        server._hour_stat.update({"requests": 5, "hit": 5})
+
+        first = threading.Thread(target=server._roll_hour)
+        first.start()
+        in_flush.wait(2)          # only start the second once the first is inside
+        second = threading.Thread(target=server._roll_hour)
+        second.start()
+        first.join(); second.join()
+
+        self.assertEqual(flushed, [ending], "the hour was closed more than once")
+        rows = [json.loads(l) for l in open(server.HOURLY_LOG) if l.strip()]
+        self.assertEqual([r["hour"] for r in rows], [ending])
+        self.assertEqual(rows[0]["requests"], 5)
+
+    def test_every_stats_counter_survives_a_restart(self):
+        # Named counters one at a time is how _eclipse_keys went missing:
+        # it was declared beside the others, read by /stats like the others,
+        # and simply never added to the save list, so which eclipses people
+        # looked at went back to zero on every deploy. This walks the module
+        # instead of a list somebody has to remember to extend, so the next
+        # counter that gets added is covered the day it is added.
+        skip = {"_hour_stat",     # the hour in progress, flushed to the log
+                "_geo_recent"}    # "what arrived seconds ago", meaningless later
+        counters = {name: c for name, c in vars(server).items()
+                    if isinstance(c, server.Counter) and name.startswith("_")
+                    and name not in skip}
+        self.assertIn("_eclipse_keys", counters)   # the one that was missing
+        saved = {name: c.copy() for name, c in counters.items()}
+        self.addCleanup(lambda: [(c.clear(), c.update(saved[n]))
+                                 for n, c in counters.items()])
+        for name, c in counters.items():
+            c.clear()
+            c.update({f"{name}-probe": 9})
+        server._save_stats_state()
+        for c in counters.values():
+            c.clear()
+        server._load_stats_state()
+        missing = sorted(name for name, c in counters.items()
+                         if c[f"{name}-probe"] != 9)
+        self.assertEqual(missing, [], f"not persisted across a restart: {missing}")
 
     def test_missing_state_file_is_a_silent_noop(self):
         # No file was ever saved -- startup must not crash just because this

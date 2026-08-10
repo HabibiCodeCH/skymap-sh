@@ -186,6 +186,7 @@ def _save_stats_state():
                           sphere_places=dict(_sphere_places),
                           events_places=dict(_events_places),
                           events_teased=dict(_events_teased),
+                          eclipse_keys=dict(_eclipse_keys),
                           referrers=dict(_referrers), geo=dict(_geo_hits)), f)
         os.replace(tmp, STATS_STATE_FILE)   # atomic -- a crash mid-write
     except OSError:                          # can't leave a corrupt file
@@ -217,6 +218,7 @@ def _load_stats_state():
                          (_sphere_places, "sphere_places"),
                          (_events_places, "events_places"),
                          (_events_teased, "events_teased"),
+                         (_eclipse_keys, "eclipse_keys"),
                          (_referrers, "referrers"), (_geo_hits, "geo")):
         counter.clear()
         counter.update(data.get(key, {}))
@@ -233,6 +235,10 @@ HOURLY_LOG = os.path.join(os.path.dirname(os.path.abspath(__file__)), "stats_hou
 HOURLY_MAX_QUERY_DAYS = 3650
 _hour_key = None
 _hour_stat = Counter()
+# Held only while the hour is being closed. See _roll_hour for why the
+# unlocked version lost requests out of the charts but not out of the
+# headline.
+_hour_lock = threading.Lock()
 
 # bsky_bot.py runs as its own process (a systemd unit, not a uvicorn worker),
 # so it can't share _stat directly -- it persists its own tallies to this file
@@ -290,13 +296,42 @@ def _flush_hour(hour_key, hstat):
 
 
 def _roll_hour():
+    """Close the hour that just ended, if one did.
+
+    Locked, and the counter is swapped *before* the flush rather than after.
+    Route handlers run in a threadpool, so several requests can be inside
+    this at once. Unlocked, and with _hour_key only updated after the write,
+    a second thread arriving during the flush also saw a boundary, also
+    flushed, and then rebound _hour_stat a second time -- throwing away
+    everything the first thread's fresh Counter had collected in between.
+    _stat is never rebound, so it kept those requests and the log did not:
+    the headline on /stats and the bars underneath it drifted apart by
+    roughly one request per hour boundary, and the same hour turned up in
+    the log twice.
+
+    The fast path stays lock-free. An hour is 3,600 seconds long and this
+    runs on every request, so the overwhelmingly common answer is "no, the
+    hour has not changed", and that answer needs no lock to be right."""
     global _hour_key, _hour_stat
     now_key = dt.datetime.utcnow().strftime("%Y-%m-%dT%H:00")
-    if _hour_key is None:
-        _hour_key = now_key
-    elif now_key != _hour_key:
-        _flush_hour(_hour_key, _hour_stat)
-        _hour_key, _hour_stat = now_key, Counter()
+    if now_key == _hour_key:
+        return
+    pending = None
+    with _hour_lock:
+        # Re-read under the lock. A thread that queued behind the one that
+        # did the roll would otherwise close the same hour all over again.
+        if _hour_key is None:
+            _hour_key = now_key
+        elif now_key != _hour_key:
+            pending = (_hour_key, _hour_stat)
+            # From here on requests land in the new hour's counter, and the
+            # one handed to _flush_hour below is nobody's but ours.
+            _hour_key, _hour_stat = now_key, Counter()
+    # Outside the lock. The swap above is a pointer move; the flush is a
+    # 26 KB JSON write and a file append, and no other request needs to wait
+    # behind that to be counted correctly.
+    if pending:
+        _flush_hour(*pending)
 
 
 def _read_hourly_history(days=7):
@@ -371,6 +406,20 @@ CLIENT_OF = {"text": "cli", "html": "web", "json": "json"}
 # inflated exactly the numbers anyone would look at /stats to learn: how
 # many people came, from where, and which objects they wanted.
 CLIENTS = ("cli", "web", "mobile", "json", "bot")
+
+
+def _client_of(mode, mobile, crawler):
+    """Which of CLIENTS a request belongs to.
+
+    Its own function because two paths have to agree on the answer: the
+    normal one through _tally, and the unknown-place 404, which never
+    reaches _tally but is still a request and still came from somebody. When
+    the 404 was counted without a client the four buckets stopped adding up
+    to the hour's requests, which is the one thing /stats promises about
+    them in writing."""
+    if crawler:
+        return "bot"
+    return "mobile" if mobile and mode == "html" else CLIENT_OF[mode]
 
 # notfound rides alongside requests rather than inside it. A request for a
 # place that doesn't exist isn't a cache hit or a miss and has no day or
@@ -597,12 +646,38 @@ def _hour_tick_every(per):
     return max(6, round(24 / per)) if per > 1 else 6
 
 
-def _ratio(groups, num, den="requests"):
+def _answered(e):
+    """Requests that actually produced a chart, so the only ones a hit rate
+    or a day/night split can be taken over.
+
+    An unknown place is a request -- it is counted as one, and it draws a
+    bar like any other -- but it is neither a cache hit nor a miss, and it
+    happens neither by day nor by night, because there is no place to say
+    when it is there. Left in the denominator it drags both ratios down by
+    the share of traffic asking for somewhere that doesn't exist.
+
+    .get because notfound is written to the log only in hours that had one
+    (see _flush_hour), so a row read straight off disk may not carry the
+    key at all. _dense_hours zero-fills it, but not every caller goes
+    through there."""
+    return e["requests"] - e.get("notfound", 0)
+
+
+def _all_requests(e):
+    return e["requests"]
+
+
+def _ratio(groups, num, den=_answered):
     """Per-group percentage, or None where the group has no denominator --
-    an hour with no requests has no hit rate, and that is not zero."""
+    an hour with no requests has no hit rate, and that is not zero.
+
+    `den` is a function of an entry rather than a field name because the
+    right denominator is not always a field: the two ratio lines want the
+    requests that could have had an answer, and the client mix wants every
+    request, 404s included, or its four shares stop adding up to the whole."""
     out = []
     for g in groups:
-        bottom = sum(e[den] for e in g)
+        bottom = sum(den(e) for e in g)
         out.append(100 * sum(e[num] for e in g) / bottom if bottom else None)
     return out
 
@@ -645,7 +720,13 @@ def _chart_block(entries, tick_for, unit, span, width=1, tick_every=None,
     hit = _ratio(groups, "hit")
     night = _ratio(groups, "night")
     now_hit = next((v for v in reversed(hit) if v is not None), None)
-    share = 100 * sum(e["night"] for e in entries) / total if total else None
+    # Over the same denominator as the bars above it, not over `total`.
+    # `total` counts every request in the window including the ones for
+    # places that don't exist, which have no sky and so belong to neither
+    # half of the split.
+    answered = sum(_answered(e) for e in entries)
+    share = (100 * sum(e["night"] for e in entries) / answered
+             if answered else None)
     # Same gutter as the chart rows above, so the series stack in one column
     # instead of each starting wherever its label ended.
     L += [""]
@@ -677,7 +758,8 @@ def _client_mix_block(entries, cols=CHART_COLS, width=1, legend=True):
     L = [""]
     for name in CLIENTS:
         share = 100 * sum(e[name] for e in entries) / recorded if recorded else None
-        L += _spark_pair(name, _ratio(groups, name), share, width)
+        L += _spark_pair(name, _ratio(groups, name, den=_all_requests),
+                         share, width)
     L += [""]
     if legend:
         L.append(f"{' ' * (CHART_PAD + 2)}share of requests by client")
@@ -1008,9 +1090,7 @@ def _tally(r, daytime, hit, mode, status, data, colour=True, referrer=None,
     # taken *out* of web rather than counted twice. Recorded per hour rather
     # than only all-time so /stats can chart the mix over the window -- the
     # all-time mode: counters can't say whether the CLI share is growing.
-    _hour_stat["bot" if crawler else
-               (CLIENT_OF[mode] if not (mobile and mode == "html")
-                else "mobile")] += 1
+    _hour_stat[_client_of(mode, mobile, crawler)] += 1
     if crawler:
         # Everything below this point answers a question about readers --
         # which places, which objects, where in the world, which referrer.
@@ -1180,8 +1260,16 @@ def stats_text(n=50, map_slot=False):
     mapped = _map_block([MAP_SLOT] if map_slot else None, slots=map_slot)
     if mapped:
         L += mapped + ["", ""]
+    # Over hit + miss, not over `req`. Plenty of things counted as requests
+    # never consult the cache at all -- an unknown place, a phone being sent
+    # to the sphere -- and dividing by all of them reported a hit rate lower
+    # than the one the cache actually achieved. The two numbers printed
+    # beside it are the whole denominator, which is the other reason: a
+    # percentage nobody can reproduce from the figures next to it reads as
+    # a typo.
+    looked_up = _stat["hit"] + _stat["miss"] or 1
     L.append(f"cache      {_stat['hit']:,} hit / {_stat['miss']:,} miss "
-             f"({100*_stat['hit']/req:.1f}% hit)")
+             f"({100*_stat['hit']/looked_up:.1f}% hit)")
     L.append(f"sky        {_stat['night']:,} night / {_stat['day']:,} day")
     L.append("")
     if _stat["animate"] or _stat["gif"] or _stat["png"]:
@@ -1508,7 +1596,10 @@ def stats_hourly_text(days=7, hours=None):
             if gap:
                 L.append(gap)
         prev = row["hour"]
-        req = row["requests"] or 1
+        # hit% over the requests that could have hit the cache, not over
+        # every request in the row: the 404 column beside it is exactly the
+        # difference, and those never went near the cache.
+        req = (row["requests"] - row.get("notfound", 0)) or 1
         hitpct = 100 * row["hit"] / req
         current = "  (in progress)" if row["hour"] == _hour_key and row is rows[-1] else ""
         # Blank rather than 0: most hours have none, and a column of zeroes
@@ -1537,7 +1628,11 @@ def stats_daily_text(days=CHART_DAYS):
         # room to just show the zeroes rather than collapse them. A day with
         # no requests gets `-` for hit%, not 0.0% -- there is no ratio to
         # take, same rule the sparklines use.
-        hit = (f"{100 * e['hit'] / e['requests']:.1f}%" if e["requests"] else "-")
+        # Same denominator as the hourly table: a day whose only traffic was
+        # requests for places that don't exist has no hit rate to report,
+        # and gets `-` rather than a 0.0% it never earned.
+        served = _answered(e)
+        hit = f"{100 * e['hit'] / served:.1f}%" if served else "-"
         nf = f"{e['notfound']:,}" if e["notfound"] else ""
         L.append(f"{e['date']:12} {e['requests']:>9,} "
                  f"{hit:>6} {e['day']:>7,} {e['night']:>7,} "
@@ -1700,11 +1795,17 @@ def _save_on_exit():
     # duplicate rows for the same hour precisely so this could happen -- the
     # next process flushes the rest of that hour when it rolls.
     global _hour_stat
-    _flush_hour(_hour_key, _hour_stat)   # saves the cumulative state too
-    # Cleared so a second shutdown can't write the same hour twice. One
-    # process only shuts down once; two TestClient context managers in one
-    # pytest run are two startups and two shutdowns.
-    _hour_stat = Counter()
+    # Same order as _roll_hour, and under the same lock: take the hour away
+    # first, then write it. A request still in flight while this runs then
+    # lands in the replacement counter rather than in the one being flushed,
+    # instead of being counted into a Counter that is about to be dropped.
+    with _hour_lock:
+        # Cleared so a second shutdown can't write the same hour twice. One
+        # process only shuts down once; two TestClient context managers in
+        # one pytest run are two startups and two shutdowns.
+        ending, ended = _hour_key, _hour_stat
+        _hour_stat = Counter()
+    _flush_hour(ending, ended)   # saves the cumulative state too
 
 
 def _wants(request: Req):
@@ -2086,6 +2187,17 @@ def _respond(request: Req, place: str | None):
         # quiet stretch lands in whatever hour the last real request was in.
         _roll_hour()
         _stat["requests"] += 1; _stat["status:404"] += 1; _stat[f"mode:{mode}"] += 1
+        # requests as well as notfound. A 404 is a request, and counting it
+        # in one book and not the other is what made the headline total on
+        # /stats disagree with the charts underneath it: every unknown place
+        # landed in _stat and in none of the bars, so the two numbers drifted
+        # apart by exactly the 404 count. notfound stays alongside it -- the
+        # hourly table has its own column for these, so they are still
+        # separable, they are just no longer missing from the total.
+        _hour_stat["requests"] += 1
+        _hour_stat[_client_of(mode, _is_mobile(request),
+                              _is_crawler((request.headers.get("user-agent")
+                                           or "").lower()))] += 1
         _hour_stat["notfound"] += 1
         msg = UNKNOWN.format(q=place[:60], did=did)
         if mode == "json":
