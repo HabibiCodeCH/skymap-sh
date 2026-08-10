@@ -741,11 +741,29 @@ SHARE_CSS = """
 
 def share_script():
     """Open, copy, close. <dialog> brings its own backdrop and its own
-    escape key, which is most of what a modal is."""
+    escape key, which is most of what a modal is.
+
+    The gate is <dialog> support and nothing else. It used to include
+    navigator.clipboard, and that quietly deleted the whole control on plain
+    http: the clipboard API exists only in a secure context, so the early
+    return fired and the button was never unhidden. This site serves http on
+    purpose -- `curl skymap.sh` is the entire point of it, and curl does not
+    follow a redirect without -L -- so http is not an edge case here, it is
+    half the traffic. Typing skymap.sh/eclipse got no button and typing
+    https://skymap.sh/eclipse got one, which is a strange enough symptom to
+    look like the feature had been deleted.
+
+    It was the wrong thing to gate on either way. What the panel is for is
+    showing both links and saying what each one does, and that needs no
+    clipboard at all. Only the copy buttons do, and where the API is missing
+    they fall back to selecting the URL and asking the browser to copy its
+    own selection -- deprecated, but it works in every browser over http,
+    which is exactly where it is needed.
+    """
     return ("<script>\n(function(){\n"
             "  var b=document.getElementById('ecl-share'),"
             "d=document.getElementById('ecl-share-box');\n"
-            "  if(!b||!d||!navigator.clipboard||!d.showModal)return;\n"
+            "  if(!b||!d||!d.showModal)return;\n"
             "  b.hidden=false;\n"
             "  b.addEventListener('click',function(){d.showModal();});\n"
             "  var x=document.getElementById('ecl-share-close');\n"
@@ -755,14 +773,39 @@ def share_script():
             # dialog itself rather than on a child is outside the panel.
             "  d.addEventListener('click',function(e){"
             "if(e.target===d)d.close();});\n"
+            # Select the URL and let the browser copy its own selection. If
+            # even that is refused the text is still selected, which is why
+            # the failed branch says so rather than nothing.
+            "  function pick(t){\n"
+            "    var s=window.getSelection(),r=document.createRange();\n"
+            "    r.selectNodeContents(t);s.removeAllRanges();s.addRange(r);\n"
+            "    var ok=false;\n"
+            "    try{ok=document.execCommand('copy');}catch(e){}\n"
+            "    return ok?Promise.resolve():Promise.reject();\n"
+            "  }\n"
+            # Missing is not the only way the clipboard fails. It is also
+            # there and refused -- permissions policy in an iframe, a browser
+            # that wants a fresher user gesture -- and that arrives as a
+            # rejected promise rather than an absent API. Both land on the
+            # same fallback, because from the reader's side they are the same
+            # thing: the copy button did nothing.
+            "  function copy(t){\n"
+            "    if(navigator.clipboard&&navigator.clipboard.writeText)\n"
+            "      return navigator.clipboard.writeText(t.textContent)"
+            ".catch(function(){return pick(t);});\n"
+            "    return pick(t);\n"
+            "  }\n"
             "  d.querySelectorAll('.ecl-copy').forEach(function(c){\n"
             "    c.addEventListener('click',function(){\n"
             "      var t=document.getElementById(c.dataset.for);\n"
             "      if(!t)return;\n"
-            "      navigator.clipboard.writeText(t.textContent).then(function(){\n"
+            "      copy(t).then(function(){\n"
             "        c.textContent='copied';c.classList.add('ecl-copied');\n"
             "        setTimeout(function(){c.textContent='copy';"
             "c.classList.remove('ecl-copied');},1800);\n"
+            "      },function(){\n"
+            "        c.textContent='selected';\n"
+            "        setTimeout(function(){c.textContent='copy';},2400);\n"
             "      });\n"
             "    });\n"
             "  });\n"

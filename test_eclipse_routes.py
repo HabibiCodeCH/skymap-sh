@@ -212,6 +212,39 @@ class ThePlaceIsCarriedAndNeverInvented(RouteTest):
         first = box.split("<code")[1].split(">")[1].split("<")[0]
         self.assertIn(f'<link rel="canonical" href="{first}">', got.text)
 
+    def test_the_share_button_does_not_need_a_secure_context(self):
+        """The regression this replaces: the script gated on
+        navigator.clipboard before unhiding the button, and that API exists
+        only in a secure context. Over plain http the early return fired and
+        the button was never revealed, so skymap.sh/eclipse had no share
+        control and https://skymap.sh/eclipse had one.
+
+        http is not an edge case on this site. `curl skymap.sh` is the whole
+        point of it and curl does not follow a redirect without -L, so http
+        has to keep serving real pages and anything that quietly needs TLS
+        breaks for half the traffic.
+
+        Checked on the rendered script rather than the source, because it is
+        the shipped gate that decides whether the button appears."""
+        page = self.client.get(f"/Ibiza/eclipse/{SOLAR}", headers=BROWSER).text
+        self.assertIn("if(!b||!d||!d.showModal)return;", page)
+        self.assertNotIn("!navigator.clipboard||", page)
+        # The button still ships hidden and is still revealed by script --
+        # that part was never the bug.
+        self.assertIn('id="ecl-share" hidden', page)
+        self.assertIn("b.hidden=false;", page)
+
+    def test_copy_falls_back_to_the_selection_without_a_clipboard(self):
+        """The copy buttons are the only part that ever needed the API. Where
+        it is missing they select the URL and ask the browser to copy its own
+        selection, which is deprecated and works over http, which is the only
+        place it is reached."""
+        got = self.client.get(f"/Ibiza/eclipse/{SOLAR}", headers=BROWSER)
+        self.assertIn("navigator.clipboard&&navigator.clipboard.writeText",
+                      got.text)
+        self.assertIn("document.execCommand('copy')", got.text)
+        self.assertIn("r.selectNodeContents(t)", got.text)
+
     def test_a_crawler_following_it_gets_the_card_that_names_nobody(self):
         """Which is what makes the bare link the right one to share: the
         person who opens it is bounced to their own city, and the unfurler
