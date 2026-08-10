@@ -12179,6 +12179,21 @@ SPHERE_PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
  #find-cancel{{background:#7a1f1f !important}}
  #find-msg{{position:fixed;left:0;right:0;top:38px;text-align:center;color:#ffd700;
            font-size:12px;padding:0 12px;pointer-events:none;z-index:1000;margin:0}}
+ /* Under #find-msg rather than sharing it: the find message is a running
+    commentary on one thing you asked to be pointed at, and this is a
+    standing statement about a whole layer. Both can be true at once.
+    It also carries the ODbL attribution, which has to be visible for as
+    long as the data is, so it cannot be a toast that fades. */
+ #planes-msg{{position:fixed;left:0;right:0;top:56px;text-align:center;
+             color:#8bb9d6;font-size:11px;padding:0 12px;pointer-events:none;
+             z-index:1000;margin:0}}
+ /* Not the star palette. An aircraft is the one thing on this sphere that
+    is not astronomical, and reading as a pale blue rather than a white or
+    an amber is what keeps somebody from taking one for a planet. */
+ .plane-label span{{color:#8bb9d6}}
+ body.daytime .plane-label span{{color:#14506e;text-shadow:none}}
+ body.night .plane-label span{{color:#a33224}}
+ body.night #planes-msg{{color:#8c2a20}}
  /* Mode switch: a vertical pair in the bottom-right corner, thumb-reachable
     on a phone held up in front of you. Two cells rather than one cycling
     button, so both modes are visible and neither is a surprise. The second
@@ -12385,6 +12400,7 @@ you're holding it; anywhere else, drag to look around.</p>
 </form>
 <button id="labels-toggle" class="toggle-btn on">Labels</button>
 <button id="dso-toggle" class="toggle-btn">Deep sky</button>
+<button id="planes-toggle" class="toggle-btn" title="Aircraft overhead right now">Planes</button>
 <button id="night-toggle" class="toggle-btn" title="Red light: keeps your night vision">Red</button>
 <form id="find-form" autocomplete="off">
 <input id="find-input" type="text" placeholder="Find (Venus, Vega...)">
@@ -12413,6 +12429,7 @@ you're holding it; anywhere else, drag to look around.</p>
        aria-label="Time of day">
 </div>
 <p id="find-msg"></p>
+<p id="planes-msg" hidden></p>
 <div id="find-arrow">&gt;&gt;&gt;</div>
 <p id="radiant-hud"><span id="radiant-hud-text" role="button" tabindex="0"></span><span id="radiant-hud-cycle" role="button" tabindex="0" hidden></span></p>
 <div id="find-reticle">
@@ -13223,7 +13240,8 @@ function updateLabelVisibility() {{
     // directly here would just get silently overwritten on the next
     // labelRenderer.render() call, which is why the toggle looked like it
     // did nothing.
-    L.obj.visible = labelsOn && (L.cls !== 'dso-label' || dsoOn);
+    L.obj.visible = labelsOn && (L.cls !== 'dso-label' || dsoOn)
+                             && (L.cls !== 'plane-label' || planesOn);
   }});
 }}
 
@@ -13759,6 +13777,158 @@ document.getElementById('dso-toggle').addEventListener('click', function() {{
   dsoGroupObjs.forEach(function(o) {{ o.visible = dsoOn; }});
   updateLabelVisibility();
 }});
+
+// ---- aircraft ----------------------------------------------------------
+// The one layer here that is not astronomy. Everything else on this sphere
+// is computed from an ephemeris and would be identical if the internet went
+// away; this is a live reading of what is actually in the air above you, and
+// it is stale in seconds rather than minutes.
+//
+// Which is the point. A daytime sky has the Sun, sometimes the Moon, and
+// nothing else worth turning your head for -- and it answers the same at
+// 10:00 as at 11:00, so there is no reason to look twice. Planes are the
+// only thing overhead in daylight that changes while you watch.
+//
+// Off by default and remembered, the same as Red: an upstream call on every
+// page load, for a layer most visits will not want, would be somebody else's
+// free service paying for our page views.
+var planesOn = false;
+try {{ planesOn = localStorage.getItem('skymap.planes') === '1'; }} catch (e) {{}}
+var PLANE_POLL_MS = 15000;      // matches the server's own tile cache TTL --
+                                // polling faster would only re-serve the
+                                // same fifteen-second-old fix
+var PLANE_COLOUR = 0x8bb9d6;
+var planeObjs = [], planeLabels = [], planeTimer = null, planeFetching = false;
+var planesMsg = document.getElementById('planes-msg');
+var planesBtn = document.getElementById('planes-toggle');
+
+function planeRing(centre) {{
+  // Small, and a ring rather than a filled dot: an aircraft is not a light
+  // in the sky the way everything else here is, and it should not compete
+  // with a star it happens to sit next to.
+  var pts = [], up = new THREE.Vector3(0, 1, 0);
+  var n = centre.clone().normalize();
+  var e1 = new THREE.Vector3().crossVectors(n, up);
+  if (e1.lengthSq() < 1e-6) e1 = new THREE.Vector3(1, 0, 0);
+  e1.normalize();
+  var e2 = new THREE.Vector3().crossVectors(n, e1).normalize();
+  var r = RADIUS * 0.022;
+  for (var i = 0; i <= 24; i++) {{
+    var t = i / 24 * Math.PI * 2;
+    pts.push(centre.clone().addScaledVector(e1, Math.cos(t) * r)
+                           .addScaledVector(e2, Math.sin(t) * r));
+  }}
+  var o = new THREE.LineLoop(new THREE.BufferGeometry().setFromPoints(pts),
+                             new THREE.LineBasicMaterial({{color: PLANE_COLOUR}}));
+  scene.add(o);
+  return o;
+}}
+
+function clearPlanes() {{
+  planeObjs.forEach(function(o) {{
+    scene.remove(o);
+    // Three.js does not free GPU buffers on remove(). At one poll every 15
+    // seconds this leaks a geometry and a material per aircraft per poll --
+    // invisible for a minute and a real problem on a phone left running.
+    if (o.geometry) o.geometry.dispose();
+    if (o.material) o.material.dispose();
+  }});
+  planeLabels.forEach(removeLabel);
+  planeObjs = [];
+  planeLabels = [];
+}}
+
+function drawPlanes(data) {{
+  clearPlanes();
+  var list = data.planes || [];
+  list.forEach(function(p) {{
+    var centre = toVec(p.elev, p.az);
+    planeObjs.push(planeRing(centre));
+    var name = p.callsign || p.type || 'aircraft';
+    // "likely", every time, and never dropped to save room. ADS-B does not
+    // broadcast a destination -- the aircraft sends a callsign and the route
+    // is a separate lookup fused on afterwards, which is wrong often enough
+    // to matter for charters, ferry legs and anything general aviation.
+    // Somebody standing outside looking up cannot check it, so the hedge is
+    // the only thing standing between a good feature and a confident lie.
+    var text = '\\u2708 ' + name;
+    if (p.route) text += ' \\u00b7 likely ' + p.route[0] + ' \\u2192 ' + p.route[1];
+    planeLabels.push(addLabel(text, centre, 'plane-label', 2));
+  }});
+  updateLabelVisibility();
+  if (data.error) {{
+    // An outage upstream, said plainly. The alternative -- an empty sky --
+    // is a different claim and would be a false one.
+    planesMsg.textContent = 'Aircraft data is unavailable right now.';
+  }} else if (!list.length) {{
+    // "Nothing overhead" and "nobody feeds the aggregator here" are
+    // different answers, and the reader is the only one who can tell them
+    // apart, so give them what they need to: coverage is dense over western
+    // Europe and North America and thin to absent over the oceans, central
+    // Asia and much of Africa. Silently showing an empty sky in an
+    // uncovered region reads as a bug nobody will ever report.
+    planesMsg.textContent = 'No aircraft above ' + data.floor +
+      '\\u00b0 within ' + data.radius_nm + ' nm. Coverage depends on ' +
+      'volunteer receivers and is thin in some parts of the world.';
+  }} else {{
+    planesMsg.textContent = list.length +
+      (list.length === 1 ? ' aircraft' : ' aircraft') + ' above ' +
+      data.floor + '\\u00b0 \\u00b7 ' + data.attribution;
+  }}
+  planesMsg.hidden = false;
+}}
+
+function pollPlanes() {{
+  // One in flight at a time. A slow upstream call plus a 15-second timer
+  // stacks requests otherwise, and each one is a fetch against a free
+  // service that has asked for nothing in return.
+  if (planeFetching || !planesOn) return;
+  planeFetching = true;
+  fetch('/' + PLACE + '/planes.json').then(function(r) {{ return r.json(); }})
+    .then(function(data) {{
+      planeFetching = false;
+      if (!planesOn) return;      // switched off while the call was open
+      drawPlanes(data);
+    }}).catch(function() {{
+      planeFetching = false;
+      if (planesOn) planesMsg.textContent = 'Aircraft data is unavailable right now.';
+    }});
+}}
+
+function setPlanes(on) {{
+  planesOn = on;
+  planesBtn.classList.toggle('on', on);
+  try {{ localStorage.setItem('skymap.planes', on ? '1' : '0'); }} catch (e) {{}}
+  if (planeTimer) {{ clearInterval(planeTimer); planeTimer = null; }}
+  if (!on) {{
+    clearPlanes();
+    planesMsg.hidden = true;
+    planesMsg.textContent = '';
+    return;
+  }}
+  planesMsg.hidden = false;
+  planesMsg.textContent = 'Looking for aircraft\\u2026';
+  pollPlanes();
+  planeTimer = setInterval(pollPlanes, PLANE_POLL_MS);
+}}
+
+planesBtn.addEventListener('click', function() {{ setPlanes(!planesOn); }});
+
+// A phone in a pocket with the tab still open would otherwise poll every
+// fifteen seconds all day. Nothing is being watched while the page is
+// hidden, so nothing should be fetched -- and coming back wants a fresh fix
+// immediately rather than up to fifteen seconds of a stale one.
+document.addEventListener('visibilitychange', function() {{
+  if (!planesOn) return;
+  if (document.hidden) {{
+    if (planeTimer) {{ clearInterval(planeTimer); planeTimer = null; }}
+  }} else if (!planeTimer) {{
+    pollPlanes();
+    planeTimer = setInterval(pollPlanes, PLANE_POLL_MS);
+  }}
+}});
+
+if (planesOn) setPlanes(true);
 
 // The arrow/crosshair guide. Resolved two ways: first against whatever's
 // already loaded (stars/deepsky/bodies/asterisms) -- which, in full-sphere

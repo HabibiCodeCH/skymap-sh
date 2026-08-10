@@ -17,7 +17,7 @@ from fastapi.responses import (PlainTextResponse, HTMLResponse, JSONResponse,
                                StreamingResponse, FileResponse, Response,
                                RedirectResponse)
 
-import api, art, besselian, card, gif, lunar, objects, sky, tle
+import api, art, besselian, card, gif, lunar, objects, planes, sky, tle
 
 app = FastAPI(title="skymap.sh", docs_url=None, redoc_url=None)
 
@@ -1542,6 +1542,42 @@ def stats_sphere_text(n=50):
                  f"(opened on a ?golden=1 link)")
         L.append(f"    {'switched':10} {_stat['sphere_golden_on']:>8,}  "
                  f"(tapped into it from the star view)")
+    if _stat["planes"]:
+        L.append("")
+        L.append(f"planes ({_stat['planes']:,} fetches, floor "
+                 f"{planes.FLOOR_DEG:.0f}°)")
+        # Aircraft per fetch is the number that says whether the floor is
+        # right. Below about one, the toggle mostly shows an empty sky and
+        # the floor is too high for wherever people actually are -- which is
+        # not a thing that can be judged from Geneva alone.
+        shown = _stat["planes_shown"]
+        served = max(_stat["planes"] - _stat["planes_error"], 1)
+        L.append(f"  {'shown':12} {shown:>8,}  "
+                 f"({shown / served:.1f} per fetch)")
+        # Route coverage decides whether the feature reads as "a plane" or as
+        # "BA530 to Split". Below about half, the inference framing is
+        # carrying more weight than it can.
+        if shown:
+            L.append(f"  {'routed':12} {_stat['planes_routed']:>8,}  "
+                     f"({100 * _stat['planes_routed'] / shown:.0f}% had a "
+                     f"route)")
+        # Empty and broken are different answers and are counted apart: a
+        # quiet sky over a covered city, against a city no volunteer feeds.
+        L.append(f"  {'empty':12} {_stat['planes_empty']:>8,}  "
+                 f"(nothing above the floor)")
+        L.append(f"  {'upstream err':12} {_stat['planes_error']:>8,}")
+        # Kept out of the site-wide hit rate on purpose, and split in two
+        # here for the same reason. A 15-second position entry is meant to
+        # miss and a 6-hour route entry is meant to hit; one blended number
+        # would describe neither of them.
+        for label, hit, miss in (("pos cache", planes.stats["pos_hit"],
+                                  planes.stats["pos_miss"]),
+                                 ("route cache", planes.stats["route_hit"],
+                                  planes.stats["route_miss"])):
+            total = hit + miss
+            if total:
+                L.append(f"  {label:12} {hit:>8,}  "
+                         f"({100 * hit / total:.0f}% of {total:,} hit)")
     sphere_os = sorted(k for k in _stat if k.startswith("sphere_os:"))
     if sphere_os:
         L.append("views by OS")
@@ -1561,6 +1597,13 @@ def stats_sphere_json(n=50):
         sphere_golden=_stat["sphere_golden"],
         sphere_golden_on=_stat["sphere_golden_on"],
         mobile_redirect=_stat["mobile_redirect"],
+        planes=dict(fetches=_stat["planes"], shown=_stat["planes_shown"],
+                    routed=_stat["planes_routed"],
+                    empty=_stat["planes_empty"], errors=_stat["planes_error"],
+                    floor=planes.FLOOR_DEG,
+                    # Never folded into the site-wide hit rate, and never
+                    # folded into each other. See stats_sphere_text.
+                    cache=dict(planes.stats)),
         by_os={k[10:]: v for k, v in _stat.items() if k.startswith("sphere_os:")},
         places_distinct=len(_sphere_places),
         top_places=dict(_sphere_places.most_common(n)),
@@ -3078,6 +3121,11 @@ def robots():
         "Disallow: /stats\n"
         "Disallow: /*/sphere\n"
         "Disallow: /*/sphere.json\n"
+        # Live aircraft, valid for about fifteen seconds and fetched only by
+        # the sphere's own toggle. A crawler indexing it would be indexing a
+        # moment, and every fetch is an upstream call against somebody else's
+        # free service on behalf of a reader who does not exist.
+        "Disallow: /*/planes.json\n"
         # The events *page* is real content and stays indexable; the two
         # feeds are the same facts in machine formats, so crawling them is
         # duplicate content on a budget better spent elsewhere. Readers
@@ -3251,6 +3299,52 @@ def welcome_json(request: Req, place: str):
         ends_local=got["ends"].strftime("%Y-%m-%dT%H:%M:%S"),
         frame_ms=WELCOME_FRAME_MS, hold_ms=api.CROSSING_HOLD_MS,
     ), headers={"Cache-Control": "public, max-age=1800"})
+
+
+@app.get("/{place}/planes.json")
+def planes_json(request: Req, place: str):
+    """Aircraft overhead right now, for the sphere's Planes toggle.
+
+    Deliberately outside _cached(). Everything else on this site is a
+    prediction and caches for minutes to hours -- the day view holds for
+    twenty (DAY_TTL) because the Sun does not do anything surprising in that
+    time. Planes do. Their own micro-cache lives in planes.py, keyed on the
+    tile rather than on the request, so the sharing that matters (two people
+    in the same city, one upstream call) still happens without this response
+    ever being served stale.
+
+    A plain def, not async: the upstream fetch and the route lookups block,
+    and Starlette runs a sync route in its threadpool, so the event loop --
+    and every open ?animate stream on it -- is untouched. An async def here
+    would stall all of them for the duration of somebody else's network call.
+
+    Always JSON whatever the UA, like sphere.json and crossing.json above.
+    """
+    if api.lookup_place(place) is None:
+        return JSONResponse({"error": "unknown_place"}, status_code=404)
+    r = _build(request, place)
+    _stat["planes"] += 1
+    found, err = planes.overhead(r.place.lat, r.place.lon)
+    if err:
+        _stat["planes_error"] += 1
+    elif not found:
+        # Counted apart from an error on purpose. An empty sky over Geneva
+        # means a quiet ten minutes; an empty sky over the mid-Atlantic means
+        # nobody is feeding the aggregator there, and only the ratio of these
+        # two counters over time can tell which places are which.
+        _stat["planes_empty"] += 1
+    else:
+        _stat["planes_shown"] += len(found)
+        _stat["planes_routed"] += sum(1 for p in found if p["route"])
+    return JSONResponse(
+        {"planes": found, "error": err,
+         "floor": planes.FLOOR_DEG, "radius_nm": planes.RADIUS_NM,
+         # ODbL 1.0 requires attribution wherever the data is shown, so it
+         # travels with the data rather than being left to each caller to
+         # remember. The page prints it; anything else reading this endpoint
+         # is handed the obligation along with the aircraft.
+         "attribution": planes.ATTRIBUTION},
+        headers={"Cache-Control": "no-store"})
 
 
 @app.get("/{place}/sphere.json")
