@@ -1315,11 +1315,28 @@ class FullDarkMeansAstronomicalDark(unittest.TestCase):
         # An afternoon moment: tonight's times only join the line once the
         # Sun is past its high point (see _head_day_blocks), and the
         # solstice noon this class uses elsewhere is before it.
+        #
+        # Given the room to say it. This is about the words the block uses,
+        # not about whether the block is on the line -- and the line is
+        # budgeted now (see DAY_HEAD_RANKS), so at the 110-column default
+        # the darkness block is dropped before the first-stars one and the
+        # sentence is legitimately absent. It used to survive there only
+        # because the day line was trimmed against the chart's column count
+        # while being set half again as wide, so every line overran its box.
         r = api.Request(place="London", when=dt.datetime(2026, 6, 21, 15, 0),
-                        color=False, panel=True)
+                        color=False, panel=True, width=140)
         text = api.compose(r).text
         self.assertIn("no full dark", text)
         self.assertNotIn("dark --", text)
+
+    def test_the_blank_time_never_appears_at_any_width(self):
+        """The half of the above that must hold whatever the budget does:
+        the block is allowed to be trimmed away, and never allowed to render
+        its missing time as "--"."""
+        for w in (80, 110, 140, 200, 300):
+            r = api.Request(place="London", when=dt.datetime(2026, 6, 21, 15, 0),
+                            color=False, panel=True, width=w)
+            self.assertNotIn("dark --", api.compose(r).text, w)
 
     def test_sphere_countdown_is_null_when_full_dark_never_comes(self):
         # The 3D page already had the right words for null; it just never
@@ -3397,6 +3414,97 @@ class TheHeaderNamesOnlyWhatTheChartCannotSay(unittest.TestCase):
                          api.strip_ansi(api.compose_chart_only(r)))
         body, _sun_alt = api.compose_frame(r)
         self.assertNotIn("horizon panorama", api.strip_ansi(body))
+
+
+class DayHeadlineFitsItsBoxTest(unittest.TestCase):
+    """The day headline is set at DAY_HEAD_PX in its own box while the chart
+    below it is drawn at CHART_FONT_PX, so a character up there is 1.65 of a
+    column down here. It was trimmed against the column count, which handed
+    it 65% more line than the box holds, and it wrapped onto a second row at
+    every window narrower than about 1500px -- pushing the chart down, on a
+    page whose whole layout is the chart sized to the window.
+
+    The night composer scales for this and always did. This is the day one.
+    """
+
+    WHEN = dt.datetime(2026, 8, 10, 11, 1)      # daylight: the day composer
+
+    def _head(self, width, place="Marseille"):
+        r = api.Request(place=place, when=self.WHEN, color=False, panel=True,
+                        width=width)
+        text = api.strip_ansi(api.compose(r).text)
+        return next((l for l in text.split("\n") if l.strip()), "").strip()
+
+    def _room(self, width):
+        return int(width * api.CHART_FONT_PX / api.DAY_HEAD_PX)
+
+    def test_every_rung_of_the_ladder_fits_its_own_budget(self):
+        """Every width the browser can actually pick, not a sample: the
+        ladder ships one rung per CHART_LADDER entry and CSS chooses by
+        container width, so a single rung over budget is a real window that
+        wraps."""
+        for _min_ch, cols, _panel in api.CHART_LADDER:
+            head = self._head(cols)
+            self.assertLessEqual(len(head), self._room(cols),
+                                 f"{cols} cols: {head!r}")
+
+    def test_the_budget_is_the_scaled_one_not_the_column_count(self):
+        """The bug in one assertion. At 160 columns the old budget allowed
+        160 characters and the box holds 96."""
+        cols = 160
+        self.assertLess(self._room(cols), cols)
+        self.assertLessEqual(len(self._head(cols)), self._room(cols))
+
+    def test_it_gives_up_blocks_in_the_agreed_order(self):
+        """Widening the window adds blocks back in the reverse of the drop
+        order, so this reads the ranking off the rendered line rather than
+        off the table it comes from."""
+        seen = []
+        for _min_ch, cols, _panel in api.CHART_LADDER:
+            for block in [b.strip() for b in self._head(cols).split(" · ")][2:]:
+                kind = block.split()[0]
+                if kind not in seen:
+                    seen.append(kind)
+        self.assertEqual(seen[0][0], "\N{BLACK SUN WITH RAYS}")
+        for a, b in (("stars", "darkest"), ("darkest", "^13:40"),
+                     ("^13:40", "golden"), ("golden", "shadows")):
+            self.assertLess(seen.index(a), seen.index(b),
+                            f"{a} should outlive {b}: {seen}")
+
+    def test_no_two_day_blocks_share_a_rank(self):
+        """A tie is decided by which block happens to be appended first,
+        which is the trim picking on list position rather than on a decision
+        anybody wrote down. Sunrise and sunset are the one shared number:
+        they are never both on the line."""
+        ranks = [v for k, v in api.DAY_HEAD_RANKS.items() if k != "set"]
+        self.assertEqual(len(ranks), len(set(ranks)), api.DAY_HEAD_RANKS)
+        self.assertEqual(api.DAY_HEAD_RANKS["rise"], api.DAY_HEAD_RANKS["set"])
+        self.assertEqual(api.DAY_HEAD_RANKS["sun"], 0)
+
+    def test_the_night_line_keeps_the_ranks_it_was_tuned_with(self):
+        """_head_day_blocks serves both lines and the two rank these blocks
+        differently on purpose -- by night the Moon never goes at all. The
+        default is the night's, so adding the day table changed nothing
+        there."""
+        self.assertEqual(api.NIGHT_HEAD_RANKS["moon"], 0)
+        self.assertNotEqual(api.DAY_HEAD_RANKS["moon"],
+                            api.NIGHT_HEAD_RANKS["moon"])
+        r = api.Request(place="Marseille", when=dt.datetime(2026, 8, 10, 2, 0),
+                        color=False, panel=True, width=200)
+        p = r.place
+        ev = api.sun_events_cached(api._day0(r), p.lat, p.lon)
+        off = p.offset(r.when_utc)
+        default = api._head_day_blocks(ev, p, off, r.when_utc, -20.0)
+        asked = api._head_day_blocks(ev, p, off, r.when_utc, -20.0,
+                                     ranks=api.NIGHT_HEAD_RANKS)
+        self.assertEqual(default, asked)
+
+    def test_the_static_headline_clips_rather_than_wrapping(self):
+        """Last line of defence, and the reason a future miscalculation is a
+        missing tail rather than a shoved page. #day-head-live has always
+        done this; the ladder's own rungs did not."""
+        self.assertIn("#day-head .dh{white-space:pre;overflow:hidden",
+                      api.PAGE.replace("{{", "{").replace("}}", "}"))
 
 
 

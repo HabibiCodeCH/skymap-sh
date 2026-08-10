@@ -4427,6 +4427,35 @@ ASTRO_ALT = -18.0
 DAY_BLOCK_W = {"rise": 13, "high": 10, "set": 13, "stars": 12, "dark": 15,
                "golden": 18, "shadow": 17}
 
+# What the day headline gives up first when it will not fit, highest first.
+#
+# A total order, with no two blocks sharing a number. They used to share:
+# the Moon sat on 2 with sunrise and sunset, and the high point on 3 with
+# golden, so which of a pair survived was decided by which happened to be
+# appended first. That is the trim "picking between them by list position,
+# which is not a decision anybody wrote down" -- the same objection the
+# night line's own ranks were once rewritten to answer.
+#
+# Reading up from the bottom: where the Sun is now is what the page is
+# about and never goes. Then the anchor of the day, then the two answers
+# about when it gets dark, in the order most people ask them. The Moon
+# outlives the high point because it is something to look at rather than
+# something to know. Shadows and golden go first: both are about the
+# quality of the light rather than about the shape of the day, and shadows
+# is also the longest block on the line.
+#
+# Day only. The night line ranks the same blocks differently and on purpose
+# -- there the Moon never goes at all, because it decides how much of the
+# rest is worth looking for -- so _head_day_blocks takes whichever table
+# its caller hands it rather than owning one.
+DAY_HEAD_RANKS = {"shadow": 7, "golden": 6, "high": 5, "moon": 4,
+                  "dark": 3, "stars": 2, "rise": 1, "set": 1, "sun": 0}
+
+# What _head_day_blocks has always returned, kept as the default so the
+# night line goes on getting exactly the ranks it was tuned with.
+NIGHT_HEAD_RANKS = {"shadow": 4, "golden": 3, "high": 3, "moon": 0,
+                    "dark": 1, "stars": 1, "rise": 2, "set": 2, "sun": 0}
+
 
 def _day0(r):
     """Local midnight of the day this request is about, as a UTC instant --
@@ -4503,10 +4532,17 @@ def _shadow_block(sun_alt, sun_az):
     return f"shadows {size} {compass((sun_az + 180) % 360)}"
 
 
-def _head_day_blocks(ev, p, off, when_utc, sun_alt, sun_az=None, bands=None):
+def _head_day_blocks(ev, p, off, when_utc, sun_alt, sun_az=None, bands=None,
+                     ranks=None):
     """The Sun's own day, staged: (rank, text, width) for whichever of
     sunrise, high point, sunset, first stars and darkest is worth carrying
     at this moment.
+
+    `ranks` is the drop-order table, keyed the same way DAY_BLOCK_W is. The
+    two lines this serves rank these blocks differently and deliberately, so
+    neither table lives here: the caller says which it wants and gets the
+    same blocks ordered its own way. Defaults to the night's, which is what
+    this function returned when it had only one caller.
 
     The rule is one line long: a block is on the headline while the thing it
     names is still ahead, and goes once it has passed. That is what lets the
@@ -4525,6 +4561,7 @@ def _head_day_blocks(ev, p, off, when_utc, sun_alt, sun_az=None, bands=None):
     event being present, so a polar day (no sunrise, no sunset) and a polar
     night (no transit above the horizon, no dusk) each come out with only
     the blocks that are true there rather than with "--:--"."""
+    rk = ranks or NIGHT_HEAD_RANKS
     rise, transit, sset = ev.get("sunrise"), ev.get("transit"), ev.get("sunset")
     first = ev.get("dusk_civil") or ev.get("dusk_nautical")
     dark = ev.get("dusk_astro")
@@ -4538,7 +4575,7 @@ def _head_day_blocks(ev, p, off, when_utc, sun_alt, sun_az=None, bands=None):
         labels the block rather than competing with the time."""
         az = sky.sun_altaz(t, p.lat, p.lon)[1]
         glyph = "\N{BLACK SUN WITH RAYS}" if sun else ""
-        return (2 if ch != "^" else 3,
+        return (rk[key],
                 f"{glyph}{ch}{_hm(t, off)} {compass(az)}",
                 DAY_BLOCK_W[key] + len(glyph))
 
@@ -4564,7 +4601,8 @@ def _head_day_blocks(ev, p, off, when_utc, sun_alt, sun_az=None, bands=None):
         # was an hour and a half with neither: no time to wait for and no
         # number to read.
         if dark and when_utc < dark:
-            return [(1, f"darkest {_hm(dark, off)}", DAY_BLOCK_W["dark"])]
+            return [(rk["dark"], f"darkest {_hm(dark, off)}",
+                     DAY_BLOCK_W["dark"])]
         return []
 
     out = []
@@ -4584,13 +4622,13 @@ def _head_day_blocks(ev, p, off, when_utc, sun_alt, sun_az=None, bands=None):
     if sun_az is not None and sun_alt > 0:
         shadow = _shadow_block(sun_alt, sun_az)
         if shadow:
-            out.append((4, shadow, DAY_BLOCK_W["shadow"]))
+            out.append((rk["shadow"], shadow, DAY_BLOCK_W["shadow"]))
     if bands:
         golden = _golden_block(bands, off, when_utc)
         if golden:
-            out.append((3, golden, DAY_BLOCK_W["golden"]))
+            out.append((rk["golden"], golden, DAY_BLOCK_W["golden"]))
     if ev.get("polar_day"):
-        out.append((1, "the Sun does not set today", 0))
+        out.append((rk["dark"], "the Sun does not set today", 0))
         return out
     if sset and when_utc < sset:
         out.append(_mark("\N{DOWNWARDS ARROW}", sset, "set", sun=True))
@@ -4600,11 +4638,12 @@ def _head_day_blocks(ev, p, off, when_utc, sun_alt, sun_az=None, bands=None):
     # the light dome sets a floor the Sun going further down does nothing
     # about. "Darkest" is true at both ends without knowing the Bortle.
     if not first:
-        out.append((1, "never fully dark", DAY_BLOCK_W["dark"]))
+        out.append((rk["dark"], "never fully dark", DAY_BLOCK_W["dark"]))
         return out
     if when_utc < first:
-        out.append((1, f"stars {_hm(first, off)}", DAY_BLOCK_W["stars"]))
-    out.append((1, f"darkest {_hm(dark, off)}" if dark else "no full dark",
+        out.append((rk["stars"], f"stars {_hm(first, off)}",
+                    DAY_BLOCK_W["stars"]))
+    out.append((rk["dark"], f"darkest {_hm(dark, off)}" if dark else "no full dark",
                 DAY_BLOCK_W["dark"]))
     return out
 
@@ -5674,25 +5713,41 @@ def _compose_day(r):
         # is the one block that has to survive the crossing into night, and
         # a block that moves as the Sun sets is a block the eye has to find
         # again.
-        parts = [(0, _sun_head_block(sa, sz))]
+        parts = [(DAY_HEAD_RANKS["sun"], _sun_head_block(sa, sz))]
         # The Moon, but only when it is actually up. By day it is the one
         # other thing genuinely worth looking at -- and on the afternoons it
         # is under the horizon, "below the horizon" would spend
         # twenty-four characters saying there is nothing to see.
         mo_a, mo_z = altaz(mo["ra"], mo["dec"], p.lat, lst)
         if mo_a > 0:
-            parts.append((2, f"{moon_glyph(mo['age'], p.lat)} "
-                             f"{mo['illum'] * 100:.0f}% {where_up(mo_a, mo_z)}"))
+            parts.append((DAY_HEAD_RANKS["moon"],
+                          f"{moon_glyph(mo['age'], p.lat)} "
+                          f"{mo['illum'] * 100:.0f}% {where_up(mo_a, mo_z)}"))
         parts += [(rank, text) for rank, text, _w
-                  in _head_day_blocks(ev, p, off, r.when_utc, sa, sz, bands)]
+                  in _head_day_blocks(ev, p, off, r.when_utc, sa, sz, bands,
+                                      ranks=DAY_HEAD_RANKS)]
         # No "tonight: Venus" here any more. The panel beside the chart
         # cycles the planets that are up, one at a time and drawn, which is
         # both more use and more room than a comma-separated tail on a line
         # that is already the longest thing on the page.
         prefix = _head_prefix(r)
+        # Budgeted against the size the line is actually set at, not against
+        # the chart's column count.
+        #
+        # This is what made the headline wrap at every window narrower than
+        # about 1500px. In the browser the line sits in its own box at
+        # DAY_HEAD_PX while the chart under it is drawn at CHART_FONT_PX, so
+        # a character up here is 1.65 of a column down there -- and trimming
+        # to the column count handed the line 65% more room than its box has.
+        # The night composer scales for exactly this reason and says so; this
+        # one was missed, which is why the bug showed by day and not by night.
+        #
+        # int() rather than round(): the budget is a ceiling, and a line one
+        # character over it is a line that wraps.
+        room = int(_effective_width(r) * CHART_FONT_PX / DAY_HEAD_PX)
         while len(parts) > 1 and (len(prefix) + 3 +
                                   len(" · ".join(x for _p, x in parts))
-                                  > _effective_width(r)):
+                                  > room):
             parts.remove(max(parts, key=lambda pt: pt[0]))
         # Two colours, not one, and they become two spans in the browser --
         # which is what lets CSS make the first of them bold. Where you are
@@ -9052,11 +9107,19 @@ document.documentElement.classList.add('js');
     page, and rationing it to the chart column was what put it inside the
     drawing in the first place. */
  #day-head{{margin:0 0 {BOX_GAP}px}}
- /* pre-wrap because the line is a rendered chart line: the dots between its
-    parts are real spaces and collapsing them would close the gaps up. Wrap
-    rather than scroll, because the box is picked to fit but a long place
-    name can still push one rung over. */
- #day-head .dh{{white-space:pre-wrap;line-height:1.3;color:#e6ebf2}}
+ /* pre, not pre-wrap: the dots between the parts are real spaces and
+    collapsing them would close the gaps up, but a line too long for its box
+    should be cut rather than folded onto a second row.
+
+    It wrapped before, and the second row pushed the chart down -- on a page
+    whose whole layout is the chart sized to the window, that is the one
+    thing a summary line must not do. The rung is chosen to fit, so reaching
+    this at all means the budget was wrong somewhere; clipping makes that a
+    missing tail rather than a shoved page, and matches #day-head-live, which
+    has always been pre with overflow hidden for the same reason. A long
+    place name is the case that still gets here. */
+ #day-head .dh{{white-space:pre;overflow:hidden;line-height:1.3;
+                color:#e6ebf2}}
  /* The place and the moment, in bold. _compose_day paints them in their own
     colour precisely so they arrive as their own span and this rule has
     something to hold on to -- there is no other way to bold part of a line
