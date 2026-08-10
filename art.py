@@ -2296,7 +2296,7 @@ def _cross_centred(text, row, colour):
             row[start + i] = (colour, ch)
 
 
-def sun_horizon_art(prog, lat, bearing="", sign="", color=True):
+def sun_horizon_art(prog, lat, bearing="", sign="", color=True, bite=None):
     """One frame of the crossing.
 
     prog runs 0 (the disc a clear diameter above the horizon) to 1 (gone,
@@ -2314,6 +2314,14 @@ def sun_horizon_art(prog, lat, bearing="", sign="", color=True):
     degree sign in this app always means a height, which is why the rise and
     set bearings gave theirs up -- 55 read as a bearing is ENE, so "55 SSW"
     with a degree sign in it looked like a bug rather than a shorthand.
+
+    `bite` is the Moon, when the Sun happens to be setting eclipsed:
+    (dx, dy, radius), all in units of the Sun's own radius, already turned
+    into this drawing's frame -- x to the right, y down. Passed in rather
+    than worked out here, because where the Moon appears against a Sun on
+    the horizon is a question about the observer's sky and art.py knows
+    nothing about observers. See api.crossing_bites, which is also where the
+    rotation out of celestial coordinates is done and checked.
     """
     y_h = CROSS_HORIZON_ROW - (CROSS_ROWS - 1) / 2.0
     tilt = math.radians(max(5.0, 90.0 - abs(lat)))
@@ -2346,8 +2354,22 @@ def sun_horizon_art(prog, lat, bearing="", sign="", color=True):
     # interrupts the horizon reads as standing in front of the world.
     clip = y_h - 0.5
 
-    def _inside(x, y):
-        return y <= clip and math.hypot(x - cx, y - cy) <= CROSS_SUN_R
+    if bite is None:
+        def _inside(x, y):
+            return y <= clip and math.hypot(x - cx, y - cy) <= CROSS_SUN_R
+    else:
+        # The Sun with the Moon taken out of it, which is the same shape
+        # eclipse.disc_art asks for -- the Moon is not drawn, it takes light
+        # away. A grey disc laid over the Sun would be a diagram of the
+        # geometry rather than a picture of the sky.
+        bx, by, br = bite
+        mx, my = cx + bx * CROSS_SUN_R, cy + by * CROSS_SUN_R
+        mr = br * CROSS_SUN_R
+
+        def _inside(x, y):
+            return (y <= clip
+                    and math.hypot(x - cx, y - cy) <= CROSS_SUN_R
+                    and math.hypot(x - mx, y - my) > mr)
 
     for row in range(CROSS_HORIZON_ROW):
         for col in range(CROSS_COLS):
@@ -2377,7 +2399,7 @@ CROSS_SIGN_RISE = "Have a good day"
 
 
 def sun_horizon_frames(first_local, last_local, lat, bearing="",
-                       rising=False, n=CROSS_FRAMES, color=True):
+                       rising=False, n=CROSS_FRAMES, color=True, bites=None):
     """The whole crossing, as (frames, labels).
 
     first_local and last_local are the real local clock times the crossing
@@ -2392,6 +2414,12 @@ def sun_horizon_frames(first_local, last_local, lat, bearing="",
     seven and a half seconds. That compression is the whole point of an
     animation, and the clock is what keeps it honest -- the same trade the
     eclipse frames make.
+
+    `bites` is one Moon per frame, or None. Per frame and not one for the
+    whole run, because the Moon keeps moving while the Sun goes down: on 12
+    August 2026 the Sun sets over Zurich 41% covered and still uncovering,
+    and a bite frozen at the first frame would sit still through the one
+    part of it anybody would notice.
     """
     frames, labels = [], []
     sign = CROSS_SIGN_RISE if rising else CROSS_SIGN_SET
@@ -2404,7 +2432,8 @@ def sun_horizon_frames(first_local, last_local, lat, bearing="",
                                       bearing=bearing,
                                       sign=sign if i >= n - CROSS_SIGN_HOLD
                                       else "",
-                                      color=color))
+                                      color=color,
+                                      bite=bites[i] if bites else None))
         labels.append((first_local + dt.timedelta(seconds=total * t))
                       .strftime("%H:%M"))
     return frames, labels

@@ -11,6 +11,7 @@ from urllib.parse import quote
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import art
+import besselian
 import eclipse as eclipse_map
 import minify
 import eclipse_page
@@ -4585,6 +4586,120 @@ def crossing_arm_html(place, now_utc=None, pinned=False):
             f'data-key="{html.escape(key, quote=True)}"></div>')
 
 
+def _sky_basis(ra_h, dec_d, lat, lst_h, eps=1e-3):
+    """How celestial east and north lie in the observer's sky, at a point.
+
+    Returns two (along-azimuth, altitude) pairs, in degrees per degree.
+
+    Measured off sky.altaz rather than derived from the parallactic angle.
+    The angle itself is three lines of trigonometry, but every one of its
+    sign conventions is a coin flip, and eclipse.disc_art says plainly why
+    that matters: a drawing that silently got the rotation wrong would be
+    worse than one that never tried. Stepping the real function east and
+    north and seeing where the answers land has no convention left in it.
+    """
+    alt0, az0 = sky.altaz(ra_h, dec_d, lat, lst_h)
+    # Along-azimuth degrees shrink with altitude, and a Sun on the horizon
+    # is the whole point of this, so the cosine cannot be dropped.
+    ca = math.cos(math.radians(alt0))
+    d_ra = eps / max(1e-6, math.cos(math.radians(dec_d))) / 15.0
+    alt_e, az_e = sky.altaz(ra_h + d_ra, dec_d, lat, lst_h)
+    alt_n, az_n = sky.altaz(ra_h, dec_d + eps, lat, lst_h)
+
+    def step(alt_b, az_b):
+        d_az = ((az_b - az0 + 180) % 360) - 180
+        return (d_az * ca / eps, (alt_b - alt0) / eps)
+
+    return step(alt_e, az_e), step(alt_n, az_n)
+
+
+def _eclipse_keys_near(local_day):
+    """Eclipse keys that could be running on this local day.
+
+    The day either side as well, because a place far enough east or west
+    keeps a different date from the one the eclipse is filed under, and the
+    key is a UT date. Three dict lookups against besselian.ELEMENTS rather
+    than solving all twenty-odd of them.
+    """
+    out = []
+    for delta in (-1, 0, 1):
+        key = (local_day + dt.timedelta(days=delta)).strftime("%Y-%m-%d")
+        if key in besselian.ELEMENTS:
+            out.append(key)
+    return out
+
+
+def crossing_bites(place, instants, local_day):
+    """The Moon over the Sun at each instant, or None if it is not there.
+
+    One entry per frame: (dx, dy, radius), in units of the Sun's own radius,
+    already turned into the drawing's frame -- x right, y down.
+
+    Per instant and not once for the crossing, because the Moon keeps moving
+    while the Sun goes down. Over Zurich on 12 August 2026 the Sun sets 41%
+    covered and still uncovering, and a bite fixed at the first frame would
+    sit still through the part anybody would be watching.
+
+    Nothing eclipse-specific is hard-coded. Any eclipse in the Besselian
+    table is found the same way, so the next one works without being told
+    about.
+    """
+    keys = _eclipse_keys_near(local_day)
+    if not keys:
+        return None
+    rho_sin, rho_cos = besselian._observer(place.lat, place.lon)
+    for key in keys:
+        el = besselian.ELEMENTS[key]
+        out, any_bite = [], False
+        for when in instants:
+            # Hours UT on the eclipse's own day, which is what the elements
+            # are indexed by -- a crossing on the day either side has to be
+            # carried across rather than wrapped into 0..24.
+            day0 = dt.datetime.strptime(key, "%Y-%m-%d")
+            ut = (when - day0).total_seconds() / 3600.0
+            s = besselian._state(el, ut + el.dT / 3600.0 - el.t0,
+                                 rho_sin, rho_cos, place.lon)
+            l1, l2 = s["L1"], s["L2"]
+            r_sun = (l1 + l2) / 2.0
+            # m >= L1 is the Moon nowhere near the Sun: nothing to take
+            # out. That is the only test made here.
+            #
+            # disc_art also refuses zeta <= 0, the far side of the Earth,
+            # and that test must NOT be copied across. zeta is measured
+            # against the *geometric* horizon, and sunset is defined 0.833
+            # degrees below it -- refraction and the Sun's own radius keep
+            # it in sight after its centre has geometrically set. So zeta is
+            # negative by construction at every moment this function is ever
+            # asked about, and copying the test rejected every frame of
+            # every crossing. Whether the Sun is up is the caller's
+            # question, and it answered it by asking.
+            if r_sun <= 0 or s["m"] >= l1:
+                out.append(None)
+                continue
+            jd = julian(when)
+            lst = (gmst_hours(jd) + place.lon / 15.0) % 24
+            su = sun(jd)
+            (ex, ey), (nx, ny) = _sky_basis(su["ra"], su["dec"], place.lat,
+                                            lst)
+            # The fundamental plane's x is celestial east and its y is north
+            # (the same reading disc_art works from). Direction only -- the
+            # separation comes from m, which is topocentric and already
+            # right, where a direction taken from the Moon's own geocentric
+            # position would be a degree of parallax out.
+            n = math.hypot(s["u"], s["v"]) or 1.0
+            e_hat, n_hat = s["u"] / n, s["v"] / n
+            x = e_hat * ex + n_hat * nx
+            y = e_hat * ey + n_hat * ny
+            mag = math.hypot(x, y) or 1.0
+            sep = s["m"] / r_sun
+            out.append((x / mag * sep, -y / mag * sep,
+                        (l1 - l2) / 2.0 / r_sun))
+            any_bite = True
+        if any_bite:
+            return out
+    return None
+
+
 def crossing_frames(r):
     """The next crossing as frames the page can play, or None.
 
@@ -4605,9 +4720,17 @@ def crossing_frames(r):
     _alt, az = sky.sun_altaz(first_utc if rising else last_utc, p.lat, p.lon)
     first_local = first_utc + dt.timedelta(hours=off)
     last_local = last_utc + dt.timedelta(hours=off)
+    # Every frame's real instant, so the Moon can be asked where it is at
+    # each one -- on the rare evening the Sun sets eclipsed, which is the
+    # whole reason this is not one drawing repeated.
+    span = (last_utc - first_utc).total_seconds()
+    instants = [first_utc + dt.timedelta(seconds=span * i
+                                         / max(1, art.CROSS_FRAMES - 1))
+                for i in range(art.CROSS_FRAMES)]
+    bites = crossing_bites(p, instants, first_local.date())
     frames, labels = art.sun_horizon_frames(
         first_local, last_local, p.lat, bearing=sky.compass(az),
-        rising=rising)
+        rising=rising, bites=bites)
     return dict(
         frames=[ansi_to_html(chr(10).join(f)) for f in frames],
         labels=labels,
@@ -4622,6 +4745,10 @@ def crossing_frames(r):
         real_seconds=round((last_utc - first_utc).total_seconds()),
         frame_ms=art.CROSS_FRAME_MS,
         hold_ms=CROSSING_HOLD_MS,
+        # Whether the Sun goes down eclipsed. Not decoration: it is why the
+        # drawing has a bite out of it, and something has to be able to say
+        # so without inspecting 44 frames of characters.
+        eclipsed=bool(bites and any(bites)),
     )
 
 

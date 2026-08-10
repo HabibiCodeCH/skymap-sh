@@ -6,6 +6,7 @@ Run:  python3 test_api.py
 import datetime as dt
 import os
 import json
+import math
 import re
 import subprocess
 import tempfile
@@ -3604,3 +3605,108 @@ class TheCrossingMarker(unittest.TestCase):
         self.assertIn("hidden", m)
         self.assertNotIn("<button", m)
         self.assertNotIn("href", m)
+
+
+class TheSunCanSetEclipsed(unittest.TestCase):
+    """On 12 August 2026 the Sun goes down over central Europe with a bite
+    out of it, and the drawing has to show that.
+
+    A plain round Sun setting that evening would be wrong at the exact
+    moment more people are looking at the sky than any other this year --
+    64% wrong over Milan.
+    """
+    NOON = dt.datetime(2026, 8, 12, 12, 0)
+
+    def lit(self, frame_html):
+        return sum(l.count("#") + l.count("+")
+                   for l in re.sub(r"<[^>]*>", "", frame_html).splitlines())
+
+    def crossing(self, place):
+        return api.crossing_frames(api.Request(place=place, when=self.NOON))
+
+    def test_it_knows_which_places_set_eclipsed(self):
+        for name in ("Zurich", "Milan", "Munich", "Berlin", "Madrid"):
+            self.assertTrue(self.crossing(name)["eclipsed"], name)
+        # The eclipse is over before the Sun sets in these.
+        for name in ("London", "Oslo", "Reykjavik"):
+            self.assertFalse(self.crossing(name)["eclipsed"], name)
+
+    def test_the_bite_is_as_deep_as_the_eclipse_really_is(self):
+        # Ordered by how much of the Sun is covered at that place's sunset:
+        # Milan 64%, Munich 58%, Zurich 41%, Berlin 30%, Madrid 7%. The
+        # drawing has to agree, or the geometry is decorative.
+        lit = {n: self.lit(self.crossing(n)["frames"][0])
+               for n in ("Milan", "Munich", "Zurich", "Berlin", "Madrid",
+                         "London")}
+        self.assertLess(lit["Milan"], lit["Munich"])
+        self.assertLess(lit["Munich"], lit["Zurich"])
+        self.assertLess(lit["Zurich"], lit["Berlin"])
+        self.assertLess(lit["Berlin"], lit["Madrid"])
+        self.assertLess(lit["Madrid"], lit["London"])
+
+    def test_the_moon_keeps_moving_while_the_sun_goes_down(self):
+        # Not one bite held for the whole run: Zurich's Sun sets 41% covered
+        # and still uncovering, so the crescent has to open as it drops.
+        p = api.lookup_place("Zurich")
+        r = api.Request(place="Zurich", when=self.NOON)
+        first, last, _rising = api.next_crossing(p, r.when_utc)
+        span = (last - first).total_seconds()
+        inst = [first + dt.timedelta(seconds=span * i / 43) for i in range(44)]
+        bites = api.crossing_bites(p, inst, dt.date(2026, 8, 12))
+        seps = [math.hypot(b[0], b[1]) for b in bites if b]
+        self.assertEqual(len(seps), 44)
+        self.assertEqual(seps, sorted(seps), "the Moon stopped, or went back")
+        self.assertGreater(seps[-1] - seps[0], 0.01, "the bite never moved")
+
+    def test_the_geometric_horizon_does_not_veto_a_setting_sun(self):
+        # The trap this walked into once, and the one most likely to be
+        # walked into again. eclipse.disc_art refuses zeta <= 0 -- the far
+        # side of the Earth -- but zeta is measured against the *geometric*
+        # horizon and sunset is defined 0.833 degrees below it. So zeta is
+        # negative at every instant this is ever asked about, and copying
+        # that test silently threw away every bite of every crossing.
+        p = api.lookup_place("Zurich")
+        r = api.Request(place="Zurich", when=self.NOON)
+        first, last, _rising = api.next_crossing(p, r.when_utc)
+        bites = api.crossing_bites(p, [first, last], dt.date(2026, 8, 12))
+        self.assertTrue(all(bites), "a setting Sun was refused its eclipse")
+
+    def test_an_ordinary_evening_has_no_bite(self):
+        plain = api.crossing_frames(
+            api.Request(place="Zurich", when=dt.datetime(2026, 8, 10, 12, 0)))
+        self.assertFalse(plain["eclipsed"])
+        self.assertGreater(self.lit(plain["frames"][0]),
+                           self.lit(self.crossing("Zurich")["frames"][0]))
+
+    def test_it_is_not_wired_to_this_one_eclipse(self):
+        # The next eclipse in the table has to work with nothing told to it.
+        p = api.lookup_place("Madrid")
+        import besselian
+        c = besselian.local("2027-08-02", p.lat, p.lon)
+        day0 = dt.datetime(2027, 8, 2)
+        inst = [day0 + dt.timedelta(hours=c["first"]
+                                    + (c["last"] - c["first"]) * i / 43)
+                for i in range(44)]
+        bites = api.crossing_bites(p, inst, dt.date(2027, 8, 2))
+        self.assertTrue(all(bites), "the 2027 eclipse was not found")
+
+    def test_a_day_with_no_eclipse_finds_none(self):
+        self.assertEqual(api._eclipse_keys_near(dt.date(2026, 5, 5)), [])
+        self.assertIn("2026-08-12", api._eclipse_keys_near(dt.date(2026, 8, 12)))
+        # The day either side too: the key is a UT date and a place far
+        # enough east or west keeps a different one.
+        self.assertIn("2026-08-12", api._eclipse_keys_near(dt.date(2026, 8, 13)))
+
+    def test_the_basis_is_measured_not_assumed(self):
+        # East and north, as they lie in the observer's sky. Two checks that
+        # do not depend on any sign convention: the pair is close to
+        # orthogonal, and north has to tilt away from straight up for an
+        # object that is not on the meridian.
+        (ex, ey), (nx, ny) = api._sky_basis(12.0, 20.0, 47.4, 18.0)
+        self.assertLess(abs(ex * nx + ey * ny), 0.02, "not orthogonal")
+        self.assertAlmostEqual(math.hypot(ex, ey), 1.0, places=2)
+        self.assertAlmostEqual(math.hypot(nx, ny), 1.0, places=2)
+        # On the meridian, north is straight up and east is straight across.
+        (mex, mey), (mnx, mny) = api._sky_basis(18.0, 20.0, 47.4, 18.0)
+        self.assertAlmostEqual(abs(mny), 1.0, places=2)
+        self.assertLess(abs(mnx), 0.02)
