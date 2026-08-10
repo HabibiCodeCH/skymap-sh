@@ -1399,14 +1399,48 @@ class WorldMap(unittest.TestCase):
         server._geo_hits.update(self._orig)
 
     def test_mask_matches_its_declared_size(self):
+        for fine in (False, True):
+            with self.subTest(fine=fine):
+                rows, w, h, top, bot = server._load_worldmap(fine)
+                self.assertEqual(len(rows), h)
+                self.assertEqual({len(r) for r in rows}, {w})
+                self.assertGreater(top, bot)
+                # Some land, and not all land.
+                dots = sum(r.count("#") for r in rows)
+                self.assertGreater(dots, 1000)
+                self.assertLess(dots, w * h)
+
+    def test_the_browser_grid_is_the_finer_of_the_two(self):
+        # A terminal is stuck with the shell's font, so the coarse grid is as
+        # sharp as curl can get. The page sets its own type size and takes
+        # the fine one. Both cover the same ground, so the fine grid says
+        # more about the coastline and nothing different about the world.
         rows, w, h, top, bot = server._load_worldmap()
-        self.assertEqual(len(rows), h)
-        self.assertEqual({len(r) for r in rows}, {w})
-        self.assertGreater(top, bot)
-        # Some land, and not all land.
-        dots = sum(r.count("#") for r in rows)
-        self.assertGreater(dots, 1000)
-        self.assertLess(dots, w * h)
+        f_rows, fw, fh, f_top, f_bot = server._load_worldmap(fine=True)
+        self.assertGreater(fw, w)
+        self.assertGreater(fh, h)
+        self.assertEqual((f_top, f_bot), (top, bot))
+        # Same land fraction to within a point: a grid that changed *what* is
+        # land, rather than how finely it is cut, would be a different map.
+        share = sum(r.count("#") for r in rows) / (w * h)
+        f_share = sum(r.count("#") for r in f_rows) / (fw * fh)
+        self.assertLess(abs(share - f_share), 0.01)
+
+    def test_an_old_mask_without_the_fine_grid_still_draws(self):
+        # The JSON is generated, so a deploy can land the code first. Falling
+        # back to the coarse grid for both readers loses the sharpening; a
+        # KeyError would lose the map.
+        orig, cached = server.WORLDMAP_FILE, server._worldmap
+        self.addCleanup(setattr, server, "WORLDMAP_FILE", orig)
+        self.addCleanup(setattr, server, "_worldmap", cached)
+        old = dict(width=3, height=2, lat_top=83.0, lat_bot=-56.0,
+                   rows=["# #", " ##"])
+        path = os.path.join(tempfile.mkdtemp(), "old.json")
+        with open(path, "w") as f:
+            json.dump(old, f)
+        server.WORLDMAP_FILE, server._worldmap = path, None
+        self.assertEqual(server._load_worldmap(fine=True),
+                         server._load_worldmap())
 
     def test_known_places_land_in_the_right_cell(self):
         _rows, w, h, top, bot = server._load_worldmap()
@@ -1446,27 +1480,35 @@ class WorldMap(unittest.TestCase):
     def test_traffic_over_water_still_gets_a_dot(self):
         # Reykjavik, Valletta and Honolulu all land on cells the mask calls
         # sea -- the polygons are simplified and an island can be smaller
-        # than a two-degree cell. Skipping them made a third of real traffic
+        # than a whole cell. Skipping them made a third of real traffic
         # invisible, so a cell with requests is drawn whether or not the
         # mask agrees there is land under it.
-        rows, w, h, top, bot = server._load_worldmap()
-        land = {(r, c) for r, row in enumerate(rows)
-                for c, ch in enumerate(row) if ch != " "}
-        sea = next((r, c) for r in range(h) for c in range(w)
-                   if (r, c) not in land)
-        lat = top - (sea[0] + 0.5) * (top - bot) / h
-        lon = -180 + (sea[1] + 0.5) * 360 / w
-        server._geo_hits.update({f"{round(lat)},{round(lon)}": 9})
-        server._heat_cache = (0.0, None, None)
-        cell = server._map_cell(round(lat), round(lon), w, h, top, bot)
-        line = server.api.strip_ansi(server._world_map()[cell[0]])
-        self.assertEqual(line[cell[1]], server.MAP_DOT)
-        self.assertIn(f'id="d{cell[0]}_{cell[1]}"', server._map_html())
+        # Once per grid, on that grid's own coordinates: the terminal's map
+        # and the browser's are different sizes, so a cell number from one
+        # means a different place on the other.
+        for fine in (False, True):
+            with self.subTest(fine=fine):
+                rows, w, h, top, bot = server._load_worldmap(fine)
+                land = {(r, c) for r, row in enumerate(rows)
+                        for c, ch in enumerate(row) if ch != " "}
+                sea = next((r, c) for r in range(h) for c in range(w)
+                           if (r, c) not in land)
+                lat = top - (sea[0] + 0.5) * (top - bot) / h
+                lon = -180 + (sea[1] + 0.5) * 360 / w
+                server._geo_hits.clear()
+                server._geo_hits.update({f"{round(lat)},{round(lon)}": 9})
+                server._heat_cache.clear()
+                cell = server._map_cell(round(lat), round(lon), w, h, top, bot)
+                if fine:
+                    self.assertIn(f"id=d{cell[0]}_{cell[1]}>", server._map_html())
+                else:
+                    line = server.api.strip_ansi(server._world_map()[cell[0]])
+                    self.assertEqual(line[cell[1]], server.MAP_DOT)
 
     def test_empty_ocean_is_still_empty(self):
         # Only cells with traffic; the rest of the sea stays background.
         server._geo_hits.update({"47,9": 4})
-        server._heat_cache = (0.0, None, None)
+        server._heat_cache.clear()
         plain = [server.api.strip_ansi(r) for r in server._world_map()]
         _rows, w, h, top, bot = server._load_worldmap()
         r, c = server._map_cell(0.0, -150.0, w, h, top, bot)   # mid-Pacific
@@ -1493,7 +1535,7 @@ class WorldMap(unittest.TestCase):
         server._geo_hits.update({"47,9": 300, "36,140": 6, "52,0": 5,
                                  "41,-74": 4, "-12,-77": 3, "60,11": 3,
                                  "30,31": 2, "-34,151": 1})
-        server._heat_cache = (0.0, None, None)
+        server._heat_cache.clear()
         _rows, w, h, top, bot = server._load_worldmap()
         shade, _heat = server._map_shader(w, h, top, bot)
         got = {}
@@ -1511,7 +1553,7 @@ class WorldMap(unittest.TestCase):
         # straddle a colour boundary.
         server._geo_hits.update({"47,9": 50, "36,140": 7, "52,0": 7,
                                  "41,-74": 7, "-34,151": 1})
-        server._heat_cache = (0.0, None, None)
+        server._heat_cache.clear()
         _rows, w, h, top, bot = server._load_worldmap()
         shade, _heat = server._map_shader(w, h, top, bot)
         tied = [shade(*server._map_cell(float(k.split(",")[0]),
@@ -1521,7 +1563,7 @@ class WorldMap(unittest.TestCase):
 
     def test_a_single_busy_cell_is_the_maximum(self):
         server._geo_hits.update({"47,9": 12})
-        server._heat_cache = (0.0, None, None)
+        server._heat_cache.clear()
         _rows, w, h, top, bot = server._load_worldmap()
         shade, _heat = server._map_shader(w, h, top, bot)
         self.assertEqual(shade(*server._map_cell(47.0, 9.0, w, h, top, bot)),
@@ -1602,14 +1644,14 @@ class LiveMap(unittest.TestCase):
         self.addCleanup(self._restore)
         server._geo_hits.clear()
         server._geo_recent.clear()
-        server._heat_cache = (0.0, None, None)
+        server._heat_cache.clear()
 
     def _restore(self):
         server._geo_hits.clear()
         server._geo_hits.update(self._hits)
         server._geo_recent.clear()
         server._geo_recent.extend(self._recent)
-        server._heat_cache = (0.0, None, None)
+        server._heat_cache.clear()
 
     def test_since_filters_out_what_the_caller_already_saw(self):
         now = time.time()
@@ -1629,7 +1671,7 @@ class LiveMap(unittest.TestCase):
         server._geo_hits.update({"47,9": 500, "-34,151": 1})
         server._geo_recent.extend([(now, 47, 9), (now, -34, 151)])
         flash = {(r, c): i for r, c, i in server.stats_live_json(0.0)["flash"]}
-        _rows, w, h, top, bot = server._load_worldmap()
+        _rows, w, h, top, bot = server._load_worldmap(fine=True)
         busy = server._map_cell(47.0, 9.0, w, h, top, bot)
         quiet = server._map_cell(-34.0, 151.0, w, h, top, bot)
         self.assertEqual(flash[busy], len(server.MAP_RAMP) - 1)
@@ -1640,7 +1682,7 @@ class LiveMap(unittest.TestCase):
         # arithmetic, and the page only swaps text.
         server._geo_hits.update({"47,9": 5, "-34,151": 2})
         server._places.update({"Zurich": 5, "Sydney": 2})
-        server._heat_cache = (0.0, None, None)
+        server._heat_cache.clear()
         d = server.stats_live_json(0.0)
         self.assertEqual(d["head"], server._headline())
         self.assertIn("requests over", d["head"])
@@ -1654,7 +1696,7 @@ class LiveMap(unittest.TestCase):
         # rewrites nothing and the numbers quietly stop moving.
         server._geo_hits.update({"47,9": 3})
         server._places.update({"Zurich": 3})
-        server._heat_cache = (0.0, None, None)
+        server._heat_cache.clear()
         body = self.client.get("/stats", headers=BROWSER).text
         self.assertIn('<span id="live-head">skymap.sh:', body)
         self.assertIn('<span id="live-legend">1 distinct location(s)', body)
@@ -1741,13 +1783,27 @@ class LiveMap(unittest.TestCase):
 
     def test_browser_gets_addressable_dots_and_curl_does_not(self):
         server._geo_hits.update({"47,9": 3})
-        server._heat_cache = (0.0, None, None)
+        server._heat_cache.clear()
         html_body = self.client.get("/stats", headers=BROWSER).text
-        self.assertRegex(html_body, r'class="d h\d s\d" id="d\d+_\d+"')
+        self.assertRegex(html_body, r"<i id=d\d+_\d+>")
+        self.assertRegex(html_body, r"<i class=h\d id=d\d+_\d+>")
         self.assertIn("/stats/live?since=", html_body)
         text = self.client.get("/stats", headers=TERMINAL).text
         self.assertNotIn("<i ", text)
         self.assertNotIn("stats/live", text)
+
+    def test_a_resting_dot_carries_no_class_at_all(self):
+        # Ten thousand dots and nearly all of them are land nobody has asked
+        # from, so what the resting dot costs is what the map costs. Its look
+        # lives on the bare `i` rule; only the warm ones spend a class.
+        server._geo_hits.update({"47,9": 3})
+        server._heat_cache.clear()
+        body = self.client.get("/stats", headers=BROWSER).text
+        self.assertIn(f"<i id=d", server._map_html())
+        self.assertNotIn("class=h0", server._map_html())
+        # ...but .h0 still exists, because the script settles a dot back onto
+        # its level class and level 0 is a level like any other.
+        self.assertIn(".wmap .h0{", body)
 
     def test_colour_lives_in_classes_not_on_every_dot(self):
         # Seven colours, thousands of dots -- repeating the hex on each one
@@ -1755,14 +1811,17 @@ class LiveMap(unittest.TestCase):
         body = self.client.get("/stats", headers=BROWSER).text
         self.assertNotIn('style="color:#', server._map_html())
         for i in range(len(server.MAP_RAMP)):
-            self.assertIn(f".h{i}{{color:", body)
+            self.assertIn(f".wmap .h{i}{{color:", body)
 
     def test_a_busier_cell_gets_a_bigger_dot_as_well_as_a_warmer_one(self):
         # Size doubles up on colour: on a map this dense a warm dot is easy
-        # to lose among its neighbours, a bigger one less so.
+        # to lose among its neighbours, a bigger one less so. Both ride on
+        # the one level class -- they are set and cleared together, and a
+        # second class was four bytes a dot to repeat what the first said.
         body = self.client.get("/stats", headers=BROWSER).text
         for i, s in enumerate(server.MAP_SIZES):
-            self.assertIn(f".s{i}{{--s:{s:g}}}", body)
+            self.assertIn(f"--s:{s:g}}}", body)
+            self.assertRegex(body, rf"\.wmap \.h{i}\{{color:#[0-9a-f]+;--s:")
         # Land nobody has asked from is nearly every dot on the map, and
         # swelling those would drown out the few that mean something.
         self.assertEqual(server.MAP_SIZES[0], 1.0)
@@ -1771,10 +1830,10 @@ class LiveMap(unittest.TestCase):
 
     def test_a_dot_settles_back_to_the_size_its_total_deserves(self):
         # The flash used to leave an inline colour behind, which only worked
-        # because size wasn't in play. Both now ride on the level classes,
-        # so the settle has to put both back.
+        # because size wasn't in play. Both now ride on the level class, so
+        # the settle has to put both back.
         body = self.client.get("/stats", headers=BROWSER).text
-        self.assertIn("e.className = 'd h' + l + ' s' + l;", body)
+        self.assertIn("e.className = 'h' + l;", body)
         self.assertNotIn("e.style.color", body)
 
     def test_dots_are_pinned_to_one_character_so_the_flash_cannot_shift_them(self):
@@ -1785,17 +1844,34 @@ class LiveMap(unittest.TestCase):
         self.assertIn("font-style:normal", body)   # <i> would italicise
         self.assertIn(server.MAP_FLASH_DOT, body)
 
+    def test_the_map_sets_its_own_type_size_not_the_page_s(self):
+        # This is what buys the resolution: at 7px the grid fits nearly three
+        # times the columns of the page's 11px into the same width. Without
+        # the wrapper the fine grid would just be a wider map, and /stats
+        # would go back to having a scrollbar under everything.
+        body = self.client.get("/stats", headers=BROWSER).text
+        self.assertIn(f"font-size:{server.MAP_FONT_PX:g}px", body)
+        self.assertIn(f"line-height:{server.MAP_LINE_HEIGHT:g}", body)
+        self.assertLess(server.MAP_FONT_PX, 11)      # the page's own size
+        # inline-block, not block: the map sits between two newlines inside
+        # a <pre>, and a block would render each of them as a blank line.
+        self.assertIn(".wmap{display:inline-block", body)
+        self.assertIn("<span class=wmap>", body)
+        # And the terminal is untouched by any of it.
+        text = self.client.get("/stats", headers=TERMINAL).text
+        self.assertNotIn("wmap", text)
+
     def test_polling_starts_after_the_dots_exist(self):
         # The script is injected into the drawer, which the parser reaches
         # before the <pre> holding the map. Starting immediately would find
         # no dots and never poll at all.
         body = self.client.get("/stats", headers=BROWSER).text
         self.assertIn("DOMContentLoaded", body)
-        # id="d\d+_\d+", not just 'id="d' -- the header's own #drawer-
+        # id=d\d+_\d+, not just 'id=d' -- the header's own #drawer-
         # trigger/#drawer-close also start with "d" and sit earlier still,
         # which isn't the same "before the map" this test actually cares
         # about.
-        first_dot = re.search(r'id="d\d+_\d+"', body)
+        first_dot = re.search(r"id=d\d+_\d+>", body)
         self.assertIsNotNone(first_dot, "no map dot found in the response")
         self.assertLess(body.index("stats/live?since="), first_dot.start())
 
@@ -1818,10 +1894,23 @@ class LiveMap(unittest.TestCase):
         server._geo_hits.update({"47,9": 99})
         cached, _t = server._cached_heat(w, h, top, bot)
         self.assertEqual(cached, first)          # inside the TTL
-        server._heat_cache = (time.time() - server.HEAT_TTL - 1,
-                              *server._heat_cache[1:])
+        at, heat, top_n = server._heat_cache[(w, h)]
+        server._heat_cache[(w, h)] = (at - server.HEAT_TTL - 1, heat, top_n)
         fresh, _t = server._cached_heat(w, h, top, bot)
         self.assertNotEqual(fresh, first)        # expired, recomputed
+
+    def test_the_two_grids_do_not_share_a_heat_entry(self):
+        # The same request is a different cell on each map. One shared entry
+        # would hand whichever asked second the other grid's coordinates --
+        # silently, and only off by however much the grids differ.
+        server._geo_hits.update({"47,9": 4})
+        coarse = server._load_worldmap()
+        fine = server._load_worldmap(fine=True)
+        heat_c, _t = server._cached_heat(*coarse[1:])
+        heat_f, _t = server._cached_heat(*fine[1:])
+        self.assertEqual(set(server._heat_cache),
+                         {(coarse[1], coarse[2]), (fine[1], fine[2])})
+        self.assertNotEqual(set(heat_c), set(heat_f))
 
 
 class StatsDailyRoute(unittest.TestCase):

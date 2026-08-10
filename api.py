@@ -8977,13 +8977,22 @@ def strip_ansi(text):
 # count at the top and the location tally under the map. The charts and the
 # counters below them don't move: they are text the server drew, and redrawing
 # them means shipping the whole block again for numbers that mostly crawl.
-def stats_live_html(ramp_hex, sizes, dot, flash_dot, tick_ms=3000):
+def stats_live_html(ramp_hex, sizes, dot, flash_dot, font_px, line_height,
+                    tick_ms=3000):
     """The live map's style and script.
 
     ramp_hex is the heat ramp as hex and sizes is the matching scale per
-    step, both in order, and the two glyphs come from the caller too --
-    server.py owns MAP_RAMP, MAP_SIZES and MAP_DOT, and a second copy of any
-    of them here is a second thing to keep in sync.
+    step, both in order, and the glyphs and the map's own type size come from
+    the caller too -- server.py owns MAP_RAMP, MAP_SIZES, MAP_DOT and
+    MAP_FONT_PX, and a second copy of any of them here is a second thing to
+    keep in sync.
+
+    The map sets its own font size rather than taking the page's 11px, which
+    is what pays for its resolution: at 7px the grid fits nearly three times
+    the columns into the same width. .wmap is an inline-block so that the
+    smaller line height actually applies -- an inline span cannot pull a line
+    box below the <pre>'s own strut, and a block would turn the newlines
+    around the map into blank lines.
 
     Every dot is an inline-block exactly 1ch wide. That is what makes the
     glyph swap safe: a bullet is a wider glyph than a middle dot in most
@@ -8994,27 +9003,35 @@ def stats_live_html(ramp_hex, sizes, dot, flash_dot, tick_ms=3000):
 
     The two multiply rather than one replacing the other, so a flash is
     always a jump up from wherever that dot sits. Capped, because 1.9x on
-    top of the busiest resting size is a blob rather than a dot."""
-    levels = "\n".join(f" .h{i}{{color:{c}}}" for i, c in enumerate(ramp_hex))
-    steps = "\n".join(f" .s{i}{{--s:{s:g}}}" for i, s in enumerate(sizes))
+    top of the busiest resting size is a blob rather than a dot.
+
+    Colour and size share one class per level rather than one each. They were
+    always set and cleared together, and on a map of ten thousand dots the
+    second class was four bytes a dot to say what the first already said.
+    Level 0 is the resting look and lives on the bare `i` rule, so the dots
+    that are nearly all of the map carry no class at all -- .h0 exists only
+    for the script to settle a dot back onto."""
+    levels = "\n".join(f" .wmap .h{i}{{color:{c};--s:{s:g}}}"
+                       for i, (c, s) in enumerate(zip(ramp_hex, sizes)))
     # Stripped here rather than at import: this block is built per call from
     # the ramp it is given, so there is no constant to strip. See minify.py.
     return minify.strip_page("<style>\n"
-            " .d{display:inline-block;width:1ch;vertical-align:baseline;"
-            "text-align:center;font-style:normal;\n"
+            f" .wmap{{display:inline-block;vertical-align:top;"
+            f"font-size:{font_px:g}px;line-height:{line_height:g}}}\n"
+            f" .wmap i{{display:inline-block;width:1ch;color:{ramp_hex[0]};"
+            "vertical-align:baseline;text-align:center;font-style:normal;\n"
             "     transform:scale(min(var(--s,1) * var(--f,1), 2.9));\n"
             "     transition:color 1.4s ease-out,text-shadow 1.4s ease-out,"
             "transform 1.4s ease-out}\n"
             f"{levels}\n"
-            f"{steps}\n"
-            " .d.hot{color:#fff !important;"
+            " .wmap i.hot{color:#fff !important;"
             "text-shadow:0 0 7px #fff,0 0 14px #ffc400,0 0 22px #ff6d00;\n"
             "        --f:1.9;transition:none}\n"
             " @media (prefers-reduced-motion:reduce){\n"
             # The size ramp stays: it says how busy a cell is, and holding
             # still at a size is not motion. Only the flash's jump goes.
-            "   .d,.d.hot{transition:none;text-shadow:none}\n"
-            "   .d.hot{--f:1}\n"
+            "   .wmap i,.wmap i.hot{transition:none;text-shadow:none}\n"
+            "   .wmap i.hot{--f:1}\n"
             " }\n"
             "</style>\n"
             "<script>\n(function(){\n"
@@ -9038,10 +9055,11 @@ def stats_live_html(ramp_hex, sizes, dot, flash_dot, tick_ms=3000):
       el.classList.add('hot');
       (function(e, l){
         setTimeout(function(){
-          // Both level classes at once, which drops 'hot' with them: the
+          // The level class on its own, which drops 'hot' with it: the
           // transition then carries colour and size together back to
-          // whatever the running total now deserves.
-          e.className = 'd h' + l + ' s' + l;
+          // whatever the running total now deserves. Both ride on this one
+          // class, so there is nothing else to put back.
+          e.className = 'h' + l;
           e.textContent = DOT;
         }, 400);
       })(el, lvl);
@@ -9073,7 +9091,7 @@ def stats_live_html(ramp_hex, sizes, dot, flash_dot, tick_ms=3000):
       .then(function(){ setTimeout(poll, tick); });
   }
   function start(){
-    if (!document.querySelector('.d')) return;
+    if (!document.querySelector('.wmap i')) return;
     // First poll asks for everything still in the buffer, which would flash
     // the whole backlog at once. Take that answer only to learn the server's
     // clock, then start showing flashes from there.
