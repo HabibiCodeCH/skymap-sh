@@ -55,6 +55,13 @@ SAMPLE = [
 KM_PER_NM = 1.852
 
 
+def swing(a, b):
+    """How far the azimuth turned going from a to b, signed, -180..180.
+    Bearings wrap, so 3 degrees to 356 is a 7-degree turn left and not a
+    353-degree turn right."""
+    return (b - a + 540) % 360 - 180
+
+
 def fake_upstream(payload=None, fail=None):
     """A stand-in for _get. Records the URLs it was asked for, so a test can
     assert that a second call did not happen rather than only that the answer
@@ -267,6 +274,23 @@ class ARouteIsAnInferenceAndIsTreatedAsOne(ClearCaches):
             fr = self.route_payload(*bad)["response"]["flightroute"]
             self.assertIsNone(planes.route_confident(fr))
 
+    def test_three_letter_codes_win_over_the_town_name(self):
+        """The label sits under a callsign on a sphere. LHR fits there and
+        'London' competes with the sky for the room."""
+        fr = {"origin": {"iata_code": "LHR", "icao_code": "EGLL",
+                         "municipality": "London"},
+              "destination": {"iata_code": "SPU", "icao_code": "LDSP",
+                              "municipality": "Split"}}
+        self.assertEqual(planes.route_confident(fr), ("LHR", "SPU"))
+
+    def test_an_airfield_with_no_iata_code_falls_back_to_icao(self):
+        """Military fields and small strips often carry only the four-letter
+        code, and half a route is no route -- so the fallback is what keeps
+        the whole flight from being dropped over one missing field."""
+        fr = {"origin": {"icao_code": "LFPB", "municipality": "Paris"},
+              "destination": {"iata_code": "SPU"}}
+        self.assertEqual(planes.route_confident(fr), ("LFPB", "SPU"))
+
     def test_a_flight_from_a_place_to_itself_is_a_failed_lookup(self):
         fr = self.route_payload("Geneva", "Geneva")["response"]["flightroute"]
         self.assertIsNone(planes.route_confident(fr))
@@ -312,6 +336,70 @@ class ARouteIsAnInferenceAndIsTreatedAsOne(ClearCaches):
         self.assertEqual(planes.stats["pos_hit"], 1)
         self.assertEqual(planes.stats["route_hit"], 0)
         self.assertEqual(planes.stats["route_miss"], 0)
+
+
+class TheIconKnowsWhichWayItIsPointing(ClearCaches):
+    """The sphere draws an aircraft as a silhouette with a nose, so it needs
+    a direction. The one that matters is where it moves across the *sky*,
+    which is not its compass track -- so the payload carries a second
+    (azimuth, elevation) a minute on and the client aims at that."""
+
+    def test_a_course_due_north_only_moves_the_latitude(self):
+        lat, lon = planes.project(46.2, 6.14, 0.0, 111.19)
+        self.assertAlmostEqual(lon, 6.14, places=6)
+        self.assertAlmostEqual(lat, 47.2, places=2)
+
+    def test_the_projection_lands_the_distance_it_was_asked_for(self):
+        for brg in (0.0, 47.0, 133.0, 271.0):
+            lat, lon = planes.project(46.2, 6.14, brg, 250.0)
+            self.assertAlmostEqual(
+                planes.ground_km(46.2, 6.14, lat, lon), 250.0, places=3)
+            # Wrapped, because due north comes back as 359.9999999999998 and
+            # a plain subtraction would call that 360 degrees of error.
+            self.assertAlmostEqual(
+                swing(brg, planes.bearing(46.2, 6.14, lat, lon)), 0.0, places=1)
+
+    def test_the_track_alone_cannot_say_which_way_it_moves_on_screen(self):
+        """Two aircraft on the *same* course, one north of the observer and
+        one south, cross the view in opposite directions. An icon rotated by
+        the compass track would point them the same way, and one of the two
+        would be visibly wrong."""
+        base = {"hex": "x", "flight": "TEST1   ", "t": "A320",
+                "alt_geom": 38000, "gs": 450.0, "track": 90.0, "lon": LON}
+        north = planes.convert(dict(base, lat=LAT + 0.3), LAT, LON)
+        south = planes.convert(dict(base, lat=LAT - 0.3), LAT, LON)
+        self.assertGreater(swing(north["az"], north["az_next"]), 0)
+        self.assertLess(swing(south["az"], south["az_next"]), 0)
+
+    def test_a_plane_tracking_south_can_still_be_climbing_your_sky(self):
+        """RYR8XE is due north of Geneva on a track of 188 degrees -- almost
+        due south, straight at the observer. On screen it does not go down at
+        all: it rises 24 degrees in the minute while the azimuth barely
+        moves."""
+        p = planes.convert(
+            [a for a in SAMPLE if a["hex"] == "4ca4f8"][0], LAT, LON)
+        self.assertGreater(p["elev_next"] - p["elev"], 20.0)
+        self.assertLess(abs(swing(p["az"], p["az_next"])), 10.0)
+
+    def test_a_climb_lifts_the_nose(self):
+        """Two aircraft in the same place going the same way point
+        differently if one of them is climbing, and the icon should say so."""
+        ac = dict([a for a in SAMPLE if a["hex"] == "4081c0"][0])
+        level = planes.convert(ac, LAT, LON)
+        climbing = planes.convert(dict(ac, geom_rate=2500), LAT, LON)
+        self.assertGreater(climbing["elev_next"], level["elev_next"])
+
+    def test_no_track_means_no_direction_rather_than_a_guessed_one(self):
+        ac = {k: v for k, v in SAMPLE[0].items()
+              if k not in ("track", "true_heading")}
+        p = planes.convert(ac, LAT, LON)
+        self.assertIsNone(p["az_next"])
+        self.assertIsNone(p["elev_next"])
+
+    def test_a_stationary_aircraft_is_not_aimed_either(self):
+        p = planes.convert(dict(SAMPLE[0], gs=0), LAT, LON)
+        self.assertIsNone(p["az_next"])
+        self.assertIsNone(p["elev_next"])
 
 
 class TheUpstreamIsSwappable(ClearCaches):

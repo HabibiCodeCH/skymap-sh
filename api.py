@@ -12190,7 +12190,12 @@ SPHERE_PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
  /* Not the star palette. An aircraft is the one thing on this sphere that
     is not astronomical, and reading as a pale blue rather than a white or
     an amber is what keeps somebody from taking one for a planet. */
- .plane-label span{{color:#8bb9d6}}
+ /* The only two-line label on the sphere. .sky-label sets nowrap for
+    everything else, so the newline between callsign and route has to be let
+    through here, and both lines centre on the aircraft rather than hanging
+    off one edge of it. */
+ .plane-label{{white-space:pre-line;text-align:center}}
+ .plane-label span{{color:#8bb9d6;display:block;line-height:1.25}}
  body.daytime .plane-label span{{color:#14506e;text-shadow:none}}
  body.night .plane-label span{{color:#a33224}}
  body.night #planes-msg{{color:#8c2a20}}
@@ -13240,8 +13245,13 @@ function updateLabelVisibility() {{
     // directly here would just get silently overwritten on the next
     // labelRenderer.render() call, which is why the toggle looked like it
     // did nothing.
-    L.obj.visible = labelsOn && (L.cls !== 'dso-label' || dsoOn)
-                             && (L.cls !== 'plane-label' || planesOn);
+    // Labels is about the celestial ones. A plane stripped of its callsign is
+    // an anonymous shape -- there is no catalogue to look it up in later and
+    // it will be gone in a minute -- so Planes is the only switch that governs
+    // plane labels, and turning Labels off leaves them alone.
+    L.obj.visible = (L.cls === 'plane-label')
+                  ? planesOn
+                  : (labelsOn && (L.cls !== 'dso-label' || dsoOn));
   }});
 }}
 
@@ -13802,24 +13812,43 @@ var planeObjs = [], planeLabels = [], planeTimer = null, planeFetching = false;
 var planesMsg = document.getElementById('planes-msg');
 var planesBtn = document.getElementById('planes-toggle');
 
-function planeRing(centre) {{
-  // Small, and a ring rather than a filled dot: an aircraft is not a light
-  // in the sky the way everything else here is, and it should not compete
-  // with a star it happens to sit next to.
-  var pts = [], up = new THREE.Vector3(0, 1, 0);
+function planeIcon(centre, next) {{
+  // A silhouette rather than a ring, because an aircraft is the one thing on
+  // this sphere that has a nose. Everything else here is a point of light and
+  // has no orientation to draw; drawing this one as a dot would throw away
+  // the only fact about it a glance can use -- which way it is going.
   var n = centre.clone().normalize();
-  var e1 = new THREE.Vector3().crossVectors(n, up);
-  if (e1.lengthSq() < 1e-6) e1 = new THREE.Vector3(1, 0, 0);
-  e1.normalize();
-  var e2 = new THREE.Vector3().crossVectors(n, e1).normalize();
-  var r = RADIUS * 0.022;
-  for (var i = 0; i <= 24; i++) {{
-    var t = i / 24 * Math.PI * 2;
-    pts.push(centre.clone().addScaledVector(e1, Math.cos(t) * r)
-                           .addScaledVector(e2, Math.sin(t) * r));
+  var fwd = null;
+  if (next) {{
+    // Flatten a minute of travel into the plane tangent to the sphere here.
+    // That is the direction it moves *across the sky*, which is not its
+    // compass track: an aircraft flying due north off to your east slides
+    // sideways across the view rather than climbing it.
+    fwd = next.clone().sub(centre);
+    fwd.addScaledVector(n, -fwd.dot(n));
   }}
-  var o = new THREE.LineLoop(new THREE.BufferGeometry().setFromPoints(pts),
-                             new THREE.LineBasicMaterial({{color: PLANE_COLOUR}}));
+  if (!fwd || fwd.lengthSq() < 1e-9) {{
+    // Upstream gave no track or no ground speed. Point at the zenith, so an
+    // aircraft we cannot aim looks deliberate rather than randomly rotated.
+    fwd = new THREE.Vector3(0, 1, 0);
+    fwd.addScaledVector(n, -fwd.dot(n));
+    if (fwd.lengthSq() < 1e-9) fwd = new THREE.Vector3(1, 0, 0);
+  }}
+  fwd.normalize();
+  var side = new THREE.Vector3().crossVectors(n, fwd).normalize();
+  var r = RADIUS * 0.026;
+  function at(f, s) {{
+    return centre.clone().addScaledVector(fwd, f * r)
+                         .addScaledVector(side, s * r);
+  }}
+  // Five strokes, nose first: fuselage, two swept wings, two tailplanes.
+  var pts = [at(1.0, 0), at(-0.9, 0),
+             at(0.2, 0), at(-0.1, -0.9),
+             at(0.2, 0), at(-0.1, 0.9),
+             at(-0.75, 0), at(-0.95, -0.35),
+             at(-0.75, 0), at(-0.95, 0.35)];
+  var o = new THREE.LineSegments(new THREE.BufferGeometry().setFromPoints(pts),
+                                 new THREE.LineBasicMaterial({{color: PLANE_COLOUR}}));
   scene.add(o);
   return o;
 }}
@@ -13843,7 +13872,9 @@ function drawPlanes(data) {{
   var list = data.planes || [];
   list.forEach(function(p) {{
     var centre = toVec(p.elev, p.az);
-    planeObjs.push(planeRing(centre));
+    var next = (p.az_next != null && p.elev_next != null)
+             ? toVec(p.elev_next, p.az_next) : null;
+    planeObjs.push(planeIcon(centre, next));
     var name = p.callsign || p.type || 'aircraft';
     // "likely", every time, and never dropped to save room. ADS-B does not
     // broadcast a destination -- the aircraft sends a callsign and the route
@@ -13851,8 +13882,8 @@ function drawPlanes(data) {{
     // to matter for charters, ferry legs and anything general aviation.
     // Somebody standing outside looking up cannot check it, so the hedge is
     // the only thing standing between a good feature and a confident lie.
-    var text = '\\u2708 ' + name;
-    if (p.route) text += ' \\u00b7 likely ' + p.route[0] + ' \\u2192 ' + p.route[1];
+    var text = name;
+    if (p.route) text += '\\nlikely ' + p.route[0] + ' \\u2192 ' + p.route[1];
     planeLabels.push(addLabel(text, centre, 'plane-label', 2));
   }});
   updateLabelVisibility();

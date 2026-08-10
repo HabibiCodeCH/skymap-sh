@@ -52,6 +52,11 @@ ROUTE_URL = os.environ.get("SKY_ROUTE_URL", "https://api.adsbdb.com")
 # costs upstream payload to fetch objects the floor below throws away.
 RADIUS_NM = 35
 
+# How far ahead to dead-reckon, purely so the icon knows which way to point.
+# A minute is long enough that the shift is unambiguous at 60 km and short
+# enough that a cruising aircraft is still flying the same straight line.
+LOOKAHEAD_S = 60
+
 # ODbL 1.0 is share-alike at the database level, and attribution is required
 # on any surface that shows the data. Serving live query results is not what
 # triggers the share-alike clause -- storing and republishing a derived
@@ -130,6 +135,17 @@ def ground_km(lat1, lon1, lat2, lon2):
     return 2 * R_EARTH_KM * math.asin(min(1.0, math.sqrt(a)))
 
 
+def project(lat, lon, brg_deg, dist_km):
+    """Where a great-circle course from here ends up, as (lat, lon)."""
+    d = dist_km / R_EARTH_KM
+    p1, l1, b = math.radians(lat), math.radians(lon), math.radians(brg_deg)
+    sp = math.sin(p1) * math.cos(d) + math.cos(p1) * math.sin(d) * math.cos(b)
+    sp = max(-1.0, min(1.0, sp))
+    l2 = l1 + math.atan2(math.sin(b) * math.sin(d) * math.cos(p1),
+                         math.cos(d) - math.sin(p1) * sp)
+    return math.degrees(math.asin(sp)), (math.degrees(l2) + 540) % 360 - 180
+
+
 def elevation(alt_km, dist_km):
     """How high above the horizon something at that altitude and ground
     distance appears, in degrees.
@@ -200,6 +216,25 @@ def convert(ac, lat, lon):
     track = ac.get("track")
     if track is None:
         track = ac.get("true_heading")
+    # Where it will be a minute from now, so the icon can point the way it is
+    # actually going *across the sky* rather than along its compass track.
+    # Those are different: an aircraft flying due north 20 km east of you does
+    # not climb the sky northwards, it slides across it. Only the change in
+    # (azimuth, elevation) knows that, and it costs one projection to get.
+    az_next = elev_next = None
+    speed_kt = ac.get("gs")
+    if track is not None and speed_kt:
+        run_km = speed_kt * KM_PER_NM * LOOKAHEAD_S / 3600.0
+        nlat, nlon = project(ac["lat"], ac["lon"], track, run_km)
+        # A climb or descent tilts the nose on screen too. geom_rate matches
+        # alt_geom; baro_rate is the fallback, same order as the altitude.
+        rate = ac.get("geom_rate")
+        if rate is None:
+            rate = ac.get("baro_rate")
+        next_ft = alt_ft + (rate or 0) * LOOKAHEAD_S / 60.0
+        az_next = round(bearing(lat, lon, nlat, nlon), 1)
+        elev_next = round(elevation(next_ft * M_PER_FT / 1000.0,
+                                    ground_km(lat, lon, nlat, nlon)), 1)
     return {
         "hex": ac.get("hex"),
         # Trailing spaces are in the wire format, not an accident here.
@@ -212,7 +247,11 @@ def convert(ac, lat, lon):
         "az": round(bearing(lat, lon, ac["lat"], ac["lon"]), 1),
         "dist_km": round(dist_km, 1),
         "track": round(track, 1) if track is not None else None,
-        "speed_kt": ac.get("gs"),
+        # Both None together or neither: the client draws an unturned icon
+        # rather than guessing a direction it was not given.
+        "az_next": az_next,
+        "elev_next": elev_next,
+        "speed_kt": speed_kt,
         # Filled in by enrich() when a route is known and trusted. Always
         # present as a key so a client never has to distinguish "no route"
         # from "this build has no routes".
@@ -224,17 +263,23 @@ def route_confident(fr):
     """A route worth showing, as (origin, destination), or None.
 
     Anything short of both ends named is dropped rather than half-rendered.
-    "likely London to somewhere" is not an answer, and a route whose two ends
-    are the same airport is a lookup that has gone wrong rather than a flight
-    that goes nowhere.
+    "likely LHR to somewhere" is not an answer, and a route whose two ends are
+    the same airport is a lookup that has gone wrong rather than a flight that
+    goes nowhere.
+
+    IATA first, because three letters fit under a callsign on a sphere where
+    the label is competing with the sky behind it. Not every airfield has one
+    -- military and small strips often carry only the four-letter ICAO -- so
+    that is the fallback, and the town name is the last resort rather than the
+    first choice it used to be.
     """
     try:
         o = fr["origin"]
         d = fr["destination"]
     except (KeyError, TypeError):
         return None
-    a = o.get("municipality") or o.get("name")
-    b = d.get("municipality") or d.get("name")
+    a = o.get("iata_code") or o.get("icao_code") or o.get("municipality")
+    b = d.get("iata_code") or d.get("icao_code") or d.get("municipality")
     if not a or not b or a == b:
         return None
     return a, b
