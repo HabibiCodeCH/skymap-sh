@@ -574,7 +574,7 @@ def sidebar_html(entry, now_utc, disc=None, disc_html='',
     Order matters here. The drawing goes directly under the heading, before
     the prose, because it is the thing that says what kind of eclipse this
     is faster than a sentence can. The caption sits OUTSIDE the frame:
-    .obj-art-frame centres its children, and a caption inside it laid itself
+    .art-frame centres its children, and a caption inside it laid itself
     out beside the drawing and over the top of it.
 
     Real links, not script-swapped panels. Each eclipse is its own URL, so
@@ -590,8 +590,11 @@ def sidebar_html(entry, now_utc, disc=None, disc_html='',
     out = [f'<p class="ecl-sec">{label}</p>']
 
     if disc:
-        out.append('<div class="obj-art-frame ecl-disc">'
-                   '<pre class="obj-art" aria-hidden="true">'
+        # art-frame does the centring and art-plate pins the cell ratio; the
+        # obj-* pair adds only the border and the type size. Both are needed:
+        # .obj-art-frame kept the border when the centring moved out of it.
+        out.append('<div class="art-frame obj-art-frame ecl-disc">'
+                   '<pre class="art-plate obj-art" aria-hidden="true">'
                    + disc_html + '</pre></div>')
         # No caption. It read "At maximum, 90% covered around 20:17. North
         # up, east left" -- the percentage and the time are already in the
@@ -1233,8 +1236,8 @@ def live_html(f, map_rows, legend, ansi_to_html, chart_pre,
         # beginning, drawn, rather than an empty box. The controls only
         # appear once the script has something to control.
         out.append(
-            '<div class="obj-art-frame ecl-anim">'
-            '<pre class="obj-art" id="ecl-play" aria-hidden="true">'
+            '<div class="art-frame obj-art-frame ecl-anim">'
+            '<pre class="art-plate obj-art" id="ecl-play" aria-hidden="true">'
             + frames_html[0] + '</pre>'
             # In the frame, top right, so the time reads as part of the
             # picture rather than as a caption about it -- it is the one

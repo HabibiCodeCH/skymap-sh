@@ -14,6 +14,7 @@ the object cards and then the place cards. Every route below is registered
 ahead of /{place:path}, and if that ordering is ever disturbed these fail
 rather than the site quietly serving "unknown place" for /eclipse.
 """
+import re
 import unittest
 
 from starlette.testclient import TestClient
@@ -465,3 +466,52 @@ class TheWayIn(RouteTest):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TheDrawingsSitOnTheSharedPlate(RouteTest):
+    """Every picture made of characters uses one component: .art-frame does
+    the centring, .art-plate pins the cell ratio the drawing was built for.
+
+    This exists because the eclipse pages were left behind once already.
+    3e6b198 moved the centring out of .obj-art-frame and into .art-frame,
+    updated api.py, and did not touch eclipse_page.py -- so both eclipse
+    drawings went on carrying a class that no longer centred anything and
+    sat jammed against the left edge of their frames, on prod, until
+    somebody looked. A grep is enough to catch that, and nothing else was.
+    """
+
+    def frames(self, html):
+        """(wrapper class list, pre class list) for every drawing found."""
+        pairs = re.findall(
+            r'<div class="([^"]*art-frame[^"]*|[^"]*obj-art-frame[^"]*)">'
+            r'\s*<pre class="([^"]*)"', html)
+        return pairs
+
+    def test_the_solar_page_centres_both_its_drawings(self):
+        r = self.client.get("/Zurich/eclipse/2026-08-12", headers=BROWSER)
+        self.assertEqual(r.status_code, 200)
+        found = self.frames(r.text)
+        self.assertTrue(found, "no drawing found on the eclipse page")
+        for frame_cls, plate_cls in found:
+            self.assertIn("art-frame", frame_cls.split(),
+                          f"wrapper does not centre: {frame_cls}")
+            self.assertIn("art-plate", plate_cls.split(),
+                          f"plate has no cell ratio: {plate_cls}")
+
+    def test_the_animation_frame_is_one_of_them(self):
+        r = self.client.get("/Zurich/eclipse/2026-08-12", headers=BROWSER)
+        self.assertIn('class="art-frame obj-art-frame ecl-anim"', r.text)
+        self.assertIn('class="art-plate obj-art" id="ecl-play"', r.text)
+
+    def test_a_lunar_page_too(self):
+        r = self.client.get("/eclipse", headers=BROWSER)
+        self.assertEqual(r.status_code, 200)
+        for frame_cls, plate_cls in self.frames(r.text):
+            self.assertIn("art-frame", frame_cls.split())
+            self.assertIn("art-plate", plate_cls.split())
+
+    def test_the_border_did_not_go_with_the_centring(self):
+        # Both classes, not one instead of the other: .obj-art-frame is still
+        # what gives the drawing its border and its floor height.
+        r = self.client.get("/Zurich/eclipse/2026-08-12", headers=BROWSER)
+        self.assertIn("obj-art-frame", r.text)
