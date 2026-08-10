@@ -175,6 +175,39 @@ CelesTrak's data derives from US Space Force public tracking data (public
 domain). CelesTrak asks that you cache rather than poll per request — one fetch
 a day is both correct and polite, since TLEs are only issued a few times daily.
 
+## Live aircraft: two services, one of them share-alike
+
+The sphere's Planes toggle reads two APIs at request time. Neither ships in
+the repo, and nothing they return is ever written to disk.
+
+**Positions -- adsb.lol, ODbL 1.0.** Free, no key today, though they say a key
+will eventually be required and feeding the network is how you get one. Three
+community aggregators return the same shape and are drop-in replacements
+(`airplanes.live`, `adsb.one`, `adsb.fi`), which is why the base URL is
+`SKY_ADSB_URL` rather than a constant.
+
+**Routes -- adsbdb.com, MIT.** ADS-B does not broadcast where a flight is
+going; the aircraft transmits a callsign and the route is matched against a
+schedule afterwards. Hence `likely Pisa -> Fes` and never the bare arrow.
+
+ODbL is share-alike **at the database level**, which cuts in two directions
+worth stating plainly:
+
+- Attribution is required on any surface that shows the data. It is in the
+  sphere's status line whenever the toggle is on, not buried in a footer, and
+  `planes.json` carries it as a field so any other consumer gets it too.
+- Serving live query results creates no further obligation. Storing them and
+  republishing would: a dump, a bulk export or a public history of where
+  aircraft have been is a derived database, and it would have to be ODbL.
+
+So the stateless design is a licence decision as much as an engineering one.
+The position cache holds fifteen seconds in memory and the route cache six
+hours; neither touches disk, and no plane history is kept anywhere.
+
+Two sources were rejected on terms rather than quality. **OpenSky** restricts
+commercial use and gates history behind academic access. **ADS-B Exchange** is
+commercial since its acquisition, and now wants feeding or payment.
+
 ## Attribution to include anyway
 
 Not legally required, but it costs a footer line and it is the right thing:
