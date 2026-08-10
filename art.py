@@ -1926,6 +1926,40 @@ def _dso_entry(name):
     return best
 
 
+def dso_art_basis(name):
+    """The measured figures a portrait was built from, as clauses, or ().
+
+    For the credit line on the page. Per object rather than one blanket
+    sentence, for the reason api.object_sources gives: a globular's drawing
+    rests on its concentration class and a galaxy's on its axis ratio and
+    angle, and crediting both everywhere credits a number that had nothing to
+    do with the page being read.
+
+    Answered off the table rather than by drawing the thing, so asking is
+    cheap: object_sources runs on every page and the drawing is not free.
+    """
+    obj = _dso_entry(name)
+    spec = DSO_ART.get(obj["id"]) if obj else None
+    if not spec:
+        return ()
+    if spec["model"] == "real":
+        # The one portrait whose stars are real, so this is a source credit
+        # and not a note about a model.
+        return ("cluster members from the Yale Bright Star Catalogue",)
+    if spec["model"] == "globular":
+        return ("portrait modelled from the published concentration class",)
+    if spec["model"] in ("open", "pair"):
+        return ("portrait modelled from the measured extent",)
+    bits = []
+    if _dso_q(obj, spec) < 0.999:
+        bits.append("axis ratio")
+    if spec.get("pa"):
+        bits.append("position angle")
+    if not bits:
+        return ("portrait modelled from published dimensions",)
+    return (f"portrait modelled from the published {' and '.join(bits)}",)
+
+
 def _dso_q(obj, spec):
     """The axis ratio: measured where dsoinfo.json has both axes, typed in the
     table where it does not, and round otherwise."""

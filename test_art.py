@@ -10,6 +10,7 @@ import datetime as dt
 import math
 import re
 import unittest
+import unittest.mock
 
 import api
 import art
@@ -322,6 +323,37 @@ class TheDeepSkyPlates(unittest.TestCase):
                 for ch in line:
                     self.assertTrue(ch.isascii() or "⠀" <= ch <= "⣿"
                                     or ch in "•●·", repr(ch))
+
+
+class ThePlateSaysWhatItWasBuiltFrom(unittest.TestCase):
+    """The credit line names the figures that drawing used and no others.
+    LICENSES.md carries the licensing reasoning; this is attribution."""
+
+    def test_the_basis_is_specific_to_the_object(self):
+        cases = {"M13": "concentration class", "M31": "axis ratio",
+                 "M31 ": "position angle", "M11": "measured extent",
+                 "Pleiades": "Yale Bright Star Catalogue"}
+        for name, want in cases.items():
+            with self.subTest(name):
+                said = " ".join(art.dso_art_basis(name.strip()))
+                self.assertIn(want, said)
+
+    def test_a_galaxy_is_not_credited_with_a_concentration_class(self):
+        # It has none, and crediting a figure that had nothing to do with the
+        # page is the thing object_sources exists to avoid.
+        self.assertNotIn("concentration", " ".join(art.dso_art_basis("M31")))
+        self.assertNotIn("axis ratio", " ".join(art.dso_art_basis("M13")))
+
+    def test_nothing_is_claimed_where_there_is_no_drawing(self):
+        for name in ("NGC7331", "Orion Nebula", "Betelgeuse", "nonesuch"):
+            self.assertEqual(art.dso_art_basis(name), (), name)
+
+    def test_asking_does_not_draw_the_thing(self):
+        # object_sources runs on every object page, and a portrait costs a
+        # full pass over the canvas to build.
+        with unittest.mock.patch.object(art, "dso_art") as drawn:
+            art.dso_art_basis("M13")
+            drawn.assert_not_called()
 
 
 class BrailleIsHeldToOneCell(unittest.TestCase):

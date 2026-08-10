@@ -108,6 +108,43 @@ Hand-authoring the well-known sizes avoids both questions. If CDS ever pins
 SIMBAD to plain CC BY in writing, this decision is worth revisiting — the
 coverage is much better.
 
+### Added later: the deep-sky portrait parameters
+
+`art.py`'s `DSO_ART` table draws 53 objects from a small set of numbers per
+object. Three kinds sit in it and they have different provenance:
+
+| In the table | What it is | Where it came from |
+|---|---|---|
+| axis ratio | minor over major axis | read from `dsoinfo.json`, hand-authored as above; typed in the table for the three objects `dsoinfo.json` does not cover (NGC 7009, NGC 6543, Cat's Eye and Saturn Nebula sizes) |
+| position angle | orientation of the major axis, north through east | 17 values, checked one at a time against **SIMBAD**'s angular-size record; three against [in-the-sky.org](https://in-the-sky.org); the Ring and Little Dumbbell against their own literature |
+| concentration class | Shapley-Sawyer class, I to XII | 13 values, one per cluster, from each cluster's published class |
+| arm count, pitch, member count | how a spiral or a scatter is drawn | nothing. Drawing choices, and the table says so |
+
+This is on the permitted side of the line this file already drew for
+`dsoinfo.json`: *"a difference in kind between quoting individual measured
+facts and extracting several hundred rows from a database, which is what
+database rights cover."* Thirty-two scalars, looked up individually, is
+quoting facts. It is not a bulk extraction, and no file from any of those
+sources is bundled, mirrored or redistributed — the numbers live in Python
+source as a hand-authored table with the object named beside each one.
+
+Worth being exact about SIMBAD's role, because it is stronger than a check:
+nine of the seventeen position angles were wrong when first typed, and were
+**corrected to SIMBAD's value**. So SIMBAD is the effective source for those
+nine, not merely the thing that verified them. The unpinned-licence worry
+above is about bundling a CDS *dataset* and is not triggered by this; if the
+table ever grows toward whole-catalogue coverage, it stops being individual
+facts and this decision needs revisiting along with the `dsoinfo.json` one.
+
+A single fact of this kind — a Roman numeral, an angle in degrees — is not
+copyrightable expression in any case. That is why Wikipedia's data boxes are a
+usable place to read a concentration class even though its prose is CC BY-SA:
+the class is the fact, not the writing around it.
+
+Three objects have a measured axis ratio and no published angle anywhere:
+M27, M1 and M97. They are drawn with the major axis up, and the table says
+in as many words that this is a convention and not a claim.
+
 ### BSC5 parallax is present and unused
 
 BSC5 carries its own parallax column. `build_starinfo.py` ignores it and uses
@@ -151,7 +188,8 @@ Not legally required, but it costs a footer line and it is the right thing:
 > from JPL approximate elements; Sun and Moon from Meeus. Satellite elements
 > from CelesTrak. City data from SimpleMaps World Cities (CC BY 4.0). Milky
 > Way outline from d3-celestial (Olaf Frohn, BSD-3-Clause), after the Milky
-> Way Outline Catalog (Jose R. Vieira).
+> Way Outline Catalog (Jose R. Vieira). Deep-sky position angles checked
+> against SIMBAD (CDS, Strasbourg).
 
 The city data and the Milky Way outline are the two items that legally require
 the credit rather than merely deserving it -- CC BY on one, the BSD notice on
