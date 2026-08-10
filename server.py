@@ -1280,6 +1280,18 @@ def stats_text(n=50, map_slot=False):
         L.append(f"  {'gif':12} {_stat['gif']:>8,}{rej}")
         L.append(f"  {'png':12} {_stat['png']:>8,}")
         L.append("")
+    if _stat["crossing"] or _stat["crossing_none"]:
+        # Split by direction, because they are two different questions. A
+        # sunset is watched by somebody who had the page open anyway; a
+        # sunrise means somebody was up, or left it open all night.
+        L.append("crossing")
+        L.append(f"  {'sunset':12} {_stat['crossing_set']:>8,}")
+        L.append(f"  {'sunrise':12} {_stat['crossing_rise']:>8,}")
+        # Not a failure -- there is no crossing to draw inside the Arctic
+        # circle in summer. Counted so that "nobody sees this" and "it is
+        # broken" cannot look the same from here.
+        L.append(f"  {'none to draw':12} {_stat['crossing_none']:>8,}")
+        L.append("")
     L.append("views")
     # view:find and view:disc keep their historical totals in _stat (and on
     # disk) but neither is written to any more, so both are skipped here: a
@@ -1425,6 +1437,9 @@ def stats_json(n=50):
         night=_stat["night"], day=_stat["day"], iss=_stat["iss"],
         animate=_stat["animate"], animate_rejected=_stat["animate_rejected"],
         gif=_stat["gif"], gif_rejected=_stat["gif_rejected"], png=_stat["png"],
+        crossing=_stat["crossing"], crossing_set=_stat["crossing_set"],
+        crossing_rise=_stat["crossing_rise"],
+        crossing_none=_stat["crossing_none"],
         sphere=_stat["sphere"], geo_redirect=_stat["geo_redirect"],
         eclipse=dict(page=_stat["eclipse"], gif=_stat["eclipse_gif"],
                      card=_stat["og_eclipse"],
@@ -3087,6 +3102,44 @@ def animate_gif(gif_id: str):
         return PlainTextResponse("Not found or expired.\n", status_code=404)
     return FileResponse(path, media_type="image/gif",
                         headers={"Cache-Control": "public, max-age=31536000, immutable"})
+
+
+@app.get("/{place}/crossing.json")
+def crossing_json(request: Req, place: str):
+    """The next sunset or sunrise, drawn, for the page to play at the minute
+    it happens.
+
+    Its own route rather than markup inlined into every chart page, because
+    the frames are 60-odd KB that almost nobody will see: a page is only
+    open across a crossing occasionally, and paying for the drawing on every
+    load to cover that would be the whole of the page-weight budget spent on
+    a few seconds a day. The page fetches this when the moment is close.
+
+    Always JSON whatever the UA, like sphere.json above and for the same
+    reason -- nothing but the page's own script ever asks for it. A terminal
+    wanting an animation already has ?animate.
+    """
+    if api.lookup_place(place) is None:
+        return JSONResponse({"error": "unknown_place"}, status_code=404)
+    r = _build(request, place)
+    data = api.crossing_frames(r)
+    if data is None:
+        # Not an error. Inside the Arctic circle in June there is no sunset
+        # to draw, and a page there should quietly not have this rather than
+        # see a failure it cannot do anything about.
+        _stat["crossing_none"] += 1
+        return JSONResponse({"crossing": None},
+                            headers={"Cache-Control": "public, max-age=3600"})
+    _stat["crossing"] += 1
+    _stat["crossing_rise" if data["rising"] else "crossing_set"] += 1
+    # Good until the crossing itself: the drawing is the same for everyone at
+    # this place all day, and stale after it happens because the next answer
+    # is a different crossing.
+    left = (dt.datetime.fromisoformat(data["ends_local"])
+            - r.when_local).total_seconds()
+    age = max(60, min(6 * 3600, int(left)))
+    return JSONResponse(data, headers={
+        "Cache-Control": f"public, max-age={age // 4}, s-maxage={age}"})
 
 
 @app.get("/{place}/sphere.json")

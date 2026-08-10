@@ -18,6 +18,7 @@ import pytest
 from starlette.testclient import TestClient
 
 import api
+import art
 import server
 
 BROWSER = {"accept": "text/html", "user-agent": "Mozilla/5.0"}
@@ -4723,3 +4724,106 @@ class TheSitemapCarriesTheEclipsePages(unittest.TestCase):
     def test_robots_does_not_block_what_the_sitemap_offers(self):
         robots = self.c.get("/robots.txt").text
         self.assertNotIn("Disallow: /eclipse", robots)
+
+
+class TheCrossingRoute(unittest.TestCase):
+    """/{place}/crossing.json -- the next sunset or sunrise, drawn, for the
+    page to play at the minute it happens."""
+
+    def setUp(self):
+        client_cm = TestClient(server.app)
+        self.client = client_cm.__enter__()
+        self.addCleanup(client_cm.__exit__, None, None, None)
+        for k in ("crossing", "crossing_set", "crossing_rise",
+                  "crossing_none"):
+            server._stat[k] = 0
+
+    def get(self, url):
+        r = self.client.get(url)
+        return r, r.json()
+
+    def test_it_draws_the_next_sunset(self):
+        r, d = self.get("/Zurich/crossing.json?t=2026-08-10T16:00")
+        self.assertEqual(r.status_code, 200)
+        self.assertFalse(d["rising"])
+        self.assertEqual(len(d["frames"]), art.CROSS_FRAMES)
+        self.assertEqual(len(d["labels"]), art.CROSS_FRAMES)
+        self.assertEqual(d["bearing"], "WNW")
+
+    def test_after_sunset_it_draws_tomorrows_sunrise(self):
+        _r, d = self.get("/Zurich/crossing.json?t=2026-08-10T21:30")
+        self.assertTrue(d["rising"])
+        self.assertTrue(d["starts_local"].startswith("2026-08-11"))
+        # Facing the other way, and it has to be an eastern point.
+        self.assertIn(d["bearing"][0], "EN")
+
+    def test_a_crossing_already_running_is_the_one_you_get(self):
+        # Loaded halfway through a sunset, you want that sunset, not to be
+        # told about tomorrow morning.
+        _r, d = self.get("/Zurich/crossing.json?t=2026-08-10T20:44")
+        self.assertFalse(d["rising"])
+        self.assertEqual(d["starts_local"], "2026-08-10T20:42:43")
+
+    def test_every_clock_in_it_is_local(self):
+        # The rule for the whole site, and the one this project keeps
+        # getting wrong. Zurich in August is UTC+2, and the labels have to
+        # be the local wall clock, not UT shifted by nothing.
+        _r, d = self.get("/Zurich/crossing.json?t=2026-08-10T16:00")
+        self.assertEqual(d["utc_offset"], 2.0)
+        self.assertEqual(d["starts_local"], "2026-08-10T20:42:43")
+        self.assertEqual(d["labels"][0], "20:42")
+        self.assertEqual(d["labels"][-1], "20:46")
+        # And the labels really do span starts_local..ends_local.
+        self.assertTrue(d["ends_local"].startswith("2026-08-10T20:46"))
+
+    def test_it_says_how_long_the_real_thing_takes(self):
+        # The playback is seven seconds wherever you are; the crossing is
+        # not. Quito's is a third of Tromso's, and the number has to travel
+        # with the drawing or the clock is the only clue and it is subtle.
+        _r, zurich = self.get("/Zurich/crossing.json?t=2026-08-10T16:00")
+        _r, quito = self.get("/Quito/crossing.json?t=2026-08-10T12:00")
+        self.assertLess(quito["real_seconds"], zurich["real_seconds"])
+        self.assertGreater(zurich["real_seconds"], 120)
+
+    def test_no_crossing_is_not_an_error(self):
+        # Inside the Arctic circle in June there is no sunset to draw, and a
+        # page there should quietly not have this rather than see a failure.
+        r, d = self.get("/Longyearbyen/crossing.json?t=2026-06-21T12:00")
+        self.assertEqual(r.status_code, 200)
+        self.assertIsNone(d["crossing"])
+
+    def test_an_unknown_place_is_a_404(self):
+        r, d = self.get("/Nowhereville/crossing.json")
+        self.assertEqual(r.status_code, 404)
+        self.assertEqual(d["error"], "unknown_place")
+
+    def test_it_is_cached_no_later_than_the_crossing_itself(self):
+        # Stale after it happens: the next answer is a different crossing.
+        r, _d = self.get("/Zurich/crossing.json?t=2026-08-10T16:00")
+        cache = r.headers["cache-control"]
+        s_maxage = int(re.search(r"s-maxage=(\d+)", cache).group(1))
+        self.assertLessEqual(s_maxage, 6 * 3600)
+        self.assertGreater(s_maxage, 0)
+
+    def test_the_counters_are_kept(self):
+        # Every new route ships a /stats counter in the same change.
+        self.get("/Zurich/crossing.json?t=2026-08-10T16:00")
+        self.get("/Zurich/crossing.json?t=2026-08-10T21:30")
+        self.get("/Longyearbyen/crossing.json?t=2026-06-21T12:00")
+        self.assertEqual(server._stat["crossing"], 2)
+        self.assertEqual(server._stat["crossing_set"], 1)
+        self.assertEqual(server._stat["crossing_rise"], 1)
+        self.assertEqual(server._stat["crossing_none"], 1)
+
+    def test_the_counters_reach_both_stats_views(self):
+        # Both, because /stats has two of them and a counter in one only is
+        # half a counter.
+        self.get("/Zurich/crossing.json?t=2026-08-10T16:00")
+        text = self.client.get("/stats", headers=TERMINAL).text
+        self.assertIn("crossing", text)
+        self.assertIn("sunset", text)
+        data = self.client.get("/stats?format=json").json()
+        for k in ("crossing", "crossing_set", "crossing_rise",
+                  "crossing_none"):
+            self.assertIn(k, data, k)
+        self.assertEqual(data["crossing_set"], 1)

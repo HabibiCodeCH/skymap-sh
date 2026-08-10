@@ -4479,6 +4479,103 @@ _SUN_EVENTS_MEMO = {}
 _SUN_EVENTS_MAX = 256
 
 
+# --- the crossing -----------------------------------------------------------
+# The minute the answer to "is it day or night" changes, drawn rather than
+# stated. art.sun_horizon_frames does the drawing; this decides which
+# crossing is next, when it really happens, and which way to be looking.
+
+# How far ahead to look for one. A day and a bit, so a page open late at
+# night still finds tomorrow's sunrise rather than nothing at all.
+CROSSING_LOOKAHEAD_H = 26
+
+
+def next_crossing(r, within_hours=CROSSING_LOOKAHEAD_H):
+    """(first_utc, last_utc, rising) for the next crossing, or None.
+
+    Next by when it *ends*, not when it starts, so a page loaded halfway
+    through a sunset gets that sunset rather than skipping to tomorrow's
+    sunrise. Both sunsets and sunrises are candidates and the earliest wins.
+
+    None where there is nothing to draw: inside the Arctic circle in summer
+    or winter the Sun does not cross the horizon at all, and at the very
+    edge of that it grazes without ever clearing its own width -- both come
+    back from sky.sun_crossing as None and both mean the same thing here.
+    """
+    p = r.place
+    now = r.when_utc
+    off = p.offset(now)
+    day0_local = r.when_local.replace(hour=0, minute=0, second=0,
+                                      microsecond=0)
+    best = None
+    # Today and tomorrow, both crossings of each. Four candidates, and the
+    # cheapest way to be right about a page open at 23:50.
+    for day in (0, 1):
+        # The same local-midnight-to-UT step every other caller here makes
+        # (see _compose_day), using the offset in force now. A crossing on
+        # the far side of a DST change can therefore be found an hour out;
+        # that is the standing limitation on this page, not a new one.
+        day0 = day0_local + dt.timedelta(days=day) - dt.timedelta(hours=off)
+        for rising in (False, True):
+            got = sky.sun_crossing(day0, p.lat, p.lon, rising=rising)
+            if got is None:
+                continue
+            first, last = got
+            if last < now:
+                continue
+            if (first - now).total_seconds() > within_hours * 3600:
+                continue
+            if best is None or first < best[0]:
+                best = (first, last, rising)
+    return best
+
+
+def crossing_frames(r):
+    """The next crossing as frames the page can play, or None.
+
+    Every clock in here is local to the place the drawing is about. The
+    solver works in UT because the rest of sky.py does; the shift happens
+    once, here, and nothing downstream sees a UT time it could mistake for
+    a local one.
+    """
+    got = next_crossing(r)
+    if got is None:
+        return None
+    first_utc, last_utc, rising = got
+    p = r.place
+    off = p.offset(first_utc)
+    # Which way to look: where the Sun actually is at the moment it is on
+    # the horizon. That is the far end of a sunset and the near end of a
+    # sunrise, because both name the moment the limb is on the line.
+    _alt, az = sky.sun_altaz(first_utc if rising else last_utc, p.lat, p.lon)
+    first_local = first_utc + dt.timedelta(hours=off)
+    last_local = last_utc + dt.timedelta(hours=off)
+    frames, labels = art.sun_horizon_frames(
+        first_local, last_local, p.lat, bearing=sky.compass(az),
+        rising=rising)
+    return dict(
+        frames=[ansi_to_html(chr(10).join(f)) for f in frames],
+        labels=labels,
+        rising=rising,
+        bearing=sky.compass(az),
+        # When to start playing, and how long the real thing takes. Local,
+        # with the offset spelled out, so the page can compare it against
+        # the reader's own clock without having to guess a zone.
+        starts_local=first_local.strftime("%Y-%m-%dT%H:%M:%S"),
+        ends_local=last_local.strftime("%Y-%m-%dT%H:%M:%S"),
+        utc_offset=off,
+        real_seconds=round((last_utc - first_utc).total_seconds()),
+        frame_ms=art.CROSS_FRAME_MS,
+        hold_ms=CROSSING_HOLD_MS,
+    )
+
+
+# How long the sign-off stays up before the takeover closes itself. It has
+# to close itself: nothing asked for it, it fired because the Sun set, and a
+# reader who was not at the screen would otherwise come back to a black page
+# with their chart underneath it.
+CROSSING_HOLD_MS = 2500
+
+
 def sun_events_cached(day0, lat, lon):
     """sun_events, memoised on the day and the place. Rounded to four
     decimals, about ten metres -- two requests that far apart cannot differ
