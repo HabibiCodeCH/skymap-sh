@@ -2365,6 +2365,18 @@ def sun_horizon_art(prog, lat, bearing="", sign="", color=True, bite=None):
         bx, by, br = bite
         mx, my = cx + bx * CROSS_SUN_R, cy + by * CROSS_SUN_R
         mr = br * CROSS_SUN_R
+        # KNOWN GAP, left deliberately. A Sun covered *entirely* lights no
+        # cells at all, so the frame comes out empty and the Sun reads as
+        # having vanished early and come back. It needs totality at the
+        # horizon, which on 12 August 2026 happens around 38-39.5N, 4-5.7E
+        # -- open water between the Balearics and Sardinia, reachable only
+        # by typing coordinates. Mahon is the nearest town and it is past
+        # totality by the time the Sun sets there, at 78% covered.
+        #
+        # The fix is the one eclipse.disc_art already makes: draw the
+        # corona, which is the one time the Moon's edge is genuinely
+        # visible. The rotation it would need is api.crossing_bites, which
+        # already exists and is already checked.
 
         def _inside(x, y):
             return (y <= clip
