@@ -646,3 +646,181 @@ class TheGalaxyFromOutside(unittest.TestCase):
 
     def test_it_reaches_the_object_page_through_art_for(self):
         self.assertTrue(art.art_for(dict(object="Milky Way", kind="milkyway")))
+
+
+class TheCrossing(unittest.TestCase):
+    """The Sun going behind the horizon, and coming back.
+
+    The geometry has right answers, so it gets checked rather than
+    eyeballed: that every frame is the same box (an animation whose frames
+    are different widths shuffles sideways as it plays), that the Sun
+    actually goes down and actually reddens, that it goes *behind* the
+    horizon rather than through it, and that the clock is local.
+    """
+    LAT = 47.37
+
+    def frames(self, **kw):
+        first = dt.datetime(2026, 8, 10, 20, 30)
+        last = dt.datetime(2026, 8, 10, 20, 33)
+        return art.sun_horizon_frames(first, last, self.LAT,
+                                      bearing="WNW", **kw)
+
+    def test_every_frame_is_the_same_box(self):
+        # A frame that trims its blank tail is a narrower block, and whatever
+        # centres it then re-centres it -- the Sun visibly jumps sideways
+        # between frames. Same reason the eclipse frames are not rstripped.
+        frames, _ = self.frames()
+        for i, f in enumerate(frames):
+            self.assertEqual(len(f), art.CROSS_ROWS, f"frame {i} row count")
+            for row in visible(f):
+                self.assertEqual(len(row), art.CROSS_COLS,
+                                 f"frame {i} width")
+
+    def test_the_sun_goes_down(self):
+        # The disc's lowest lit row above the horizon only ever descends.
+        frames, _ = self.frames()
+        tops = []
+        for f in frames:
+            rows = [r for r, line in enumerate(visible(f))
+                    if r < art.CROSS_HORIZON_ROW and line.strip()
+                    and set(line.strip()) & set("#+")]
+            tops.append(min(rows) if rows else art.CROSS_HORIZON_ROW)
+        self.assertEqual(tops, sorted(tops), "the Sun rose during a sunset")
+        self.assertLess(tops[0], art.CROSS_HORIZON_ROW - 1,
+                        "the Sun never started above the horizon")
+
+    def test_it_reddens_on_the_way_down(self):
+        # Yellow at the top of the run, red at the bottom. The exact ramp is
+        # api's own; what matters is the direction of travel.
+        idx = art.CROSS_SUN_RAMP.index
+        limbs = [idx(art._cross_sun_colour(a, core=False))
+                 for a in (1.32, 1.0, 0.5, 0.0, -0.5)]
+        self.assertEqual(limbs, sorted(limbs), "it cooled on the way down")
+        self.assertLess(limbs[0], limbs[-1], "it never reddened at all")
+        # The core is hotter than the limb, which is what stops a flat disc
+        # of one colour reading as a hole rather than a light -- so it is the
+        # core, not the limb, that opens at the top of the ramp.
+        self.assertEqual(art._cross_sun_colour(1.32, core=True),
+                         art.CROSS_SUN_RAMP[0],
+                         "the first frame is not the top of the ramp")
+        self.assertLess(idx(art._cross_sun_colour(0.5, core=True)),
+                        idx(art._cross_sun_colour(0.5, core=False)))
+
+    def test_the_horizon_is_never_broken(self):
+        # The Sun goes behind the world, not in front of it. Every frame's
+        # horizon row is the rule, all the way across, whatever the disc is
+        # doing.
+        frames, _ = self.frames()
+        rule = "\N{BOX DRAWINGS LIGHT HORIZONTAL}" * art.CROSS_COLS
+        for i, f in enumerate(frames):
+            self.assertEqual(visible(f)[art.CROSS_HORIZON_ROW], rule,
+                             f"frame {i} has a hole in the horizon")
+
+    def test_the_stars_only_come_out_once_it_has_gone(self):
+        frames, _ = self.frames()
+        def stars(f):
+            sky_rows = visible(f)[:art.CROSS_HORIZON_ROW]
+            return sum(line.count("*") + line.count("\N{MIDDLE DOT}")
+                       for line in sky_rows)
+        self.assertEqual(stars(frames[0]), 0, "stars in broad daylight")
+        self.assertEqual(stars(frames[len(frames) // 3]), 0)
+        self.assertGreater(stars(frames[-1]), 3, "the sky stayed empty")
+        # And the field builds rather than flickering: never fewer than before.
+        counts = [stars(f) for f in frames]
+        self.assertEqual(counts, sorted(counts), "a star went out again")
+
+    def test_the_clock_is_local_and_runs_the_real_times(self):
+        # Local to the place, never UT. The whole site's rule, and the one
+        # this project has got wrong before.
+        _f, labels = self.frames()
+        self.assertEqual(labels[0], "20:30")
+        self.assertEqual(labels[-1], "20:33")
+        self.assertEqual(labels, sorted(labels), "the clock ran backwards")
+
+    def test_sunrise_is_the_sunset_backwards(self):
+        first = dt.datetime(2026, 8, 10, 6, 24)
+        last = dt.datetime(2026, 8, 10, 6, 27)
+        rise, labels = art.sun_horizon_frames(first, last, self.LAT,
+                                              bearing="ENE", rising=True)
+        # The clock still moves forwards, because time does.
+        self.assertEqual(labels[0], "06:24")
+        self.assertEqual(labels[-1], "06:27")
+        # ... but the Sun comes up.
+        def top(f):
+            rows = [r for r, line in enumerate(visible(f))
+                    if r < art.CROSS_HORIZON_ROW and set(line) & set("#+")]
+            return min(rows) if rows else art.CROSS_HORIZON_ROW
+        self.assertGreater(top(rise[0]), top(rise[-1]),
+                           "the Sun set during a sunrise")
+
+    def test_the_sign_off_holds_the_end(self):
+        frames, _ = self.frames()
+        text = lambda f: "\n".join(visible(f))
+        self.assertIn(art.CROSS_SIGN_SET, text(frames[-1]))
+        self.assertNotIn(art.CROSS_SIGN_SET, text(frames[0]))
+        held = sum(1 for f in frames if art.CROSS_SIGN_SET in text(f))
+        self.assertEqual(held, art.CROSS_SIGN_HOLD)
+        rise, _ = art.sun_horizon_frames(
+            dt.datetime(2026, 8, 10, 6, 24), dt.datetime(2026, 8, 10, 6, 27),
+            self.LAT, rising=True)
+        self.assertIn(art.CROSS_SIGN_RISE, text(rise[-1]))
+
+    def test_the_bearing_carries_no_degree_sign(self):
+        # Every degree sign in this app is a height. The set bearing gave up
+        # its angle for that reason, and this line must not put it back.
+        frames, _ = self.frames()
+        for f in frames:
+            self.assertNotIn("\N{DEGREE SIGN}", "".join(visible(f)))
+        self.assertIn("WNW", "\n".join(visible(frames[0])))
+
+    def test_the_slant_follows_the_latitude(self):
+        # The Sun's path meets the horizon at 90 minus the latitude, so it
+        # drops nearly straight down at the equator and leans a long way over
+        # in the far north. Measured as how far the disc travels sideways.
+        def drift(lat):
+            frames, _ = art.sun_horizon_frames(
+                dt.datetime(2026, 8, 10, 20, 30),
+                dt.datetime(2026, 8, 10, 20, 33), lat)
+            def centre(f):
+                cols = [c for line in visible(f)[:art.CROSS_HORIZON_ROW]
+                        for c, ch in enumerate(line) if ch in "#+"]
+                return sum(cols) / len(cols) if cols else None
+            a, b = centre(frames[0]), centre(frames[len(frames) // 2])
+            return abs(b - a)
+        self.assertLess(drift(2.0), drift(47.0))
+        self.assertLess(drift(47.0), drift(66.0))
+
+    def test_mono_carries_no_escapes(self):
+        frames, _ = self.frames(color=False)
+        self.assertNotIn("\033", "".join(frames[0]))
+
+
+class TheDiscRasteriserIsShared(unittest.TestCase):
+    """art draws the disc; eclipse uses it. One rule, so the Sun with a bite
+    out of it and the Sun going down behind the horizon cannot drift apart."""
+
+    def test_eclipse_uses_it(self):
+        import eclipse
+        self.assertIs(eclipse.art, art)
+
+    def test_coverage_counts_subsamples(self):
+        inside = lambda x, y: True
+        self.assertEqual(art.coverage(0, 0, inside), 9)
+        self.assertEqual(art.coverage(0, 0, lambda x, y: False), 0)
+
+    def test_a_circle_comes_out_round(self):
+        # The cell aspect is applied, or every disc is an egg on its end.
+        r = 4.0
+        inside = lambda x, y: math.hypot(x, y) <= r
+        grid = [[(1, art.cover_glyph(art.coverage(c, row, inside) / 9.0))
+                 if art.coverage(c, row, inside) else None
+                 for c in range(art.COLS)] for row in range(art.ROWS)]
+        x0, x1, y0, y1 = bbox(art.emit_cells(grid))
+        wide, tall = (x1 - x0 + 1) / art.CELL, y1 - y0 + 1
+        self.assertLess(abs(wide - tall), 1.5, "the disc is an egg")
+
+    def test_emit_cells_does_not_trim(self):
+        grid = [[None] * art.COLS for _ in range(2)]
+        grid[0][0] = (220, "#")
+        self.assertEqual([len(l) for l in visible(art.emit_cells(grid))],
+                         [art.COLS, art.COLS])

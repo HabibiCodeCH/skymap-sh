@@ -13,6 +13,7 @@ column a 300 km track is thinner than one character.
 import json
 import math
 
+import art
 import besselian
 import lunar
 import sky
@@ -404,24 +405,24 @@ def disc_art(key, lat, lon, at=None, color=True, sun_r=None):
     x_max, y_max = (ART_COLS - 1) / 2.0 / CELL_X, (ART_ROWS - 1) / 2.0
     phase = _corona_phase(key)
 
-    out = []
+    # The Sun, with the Moon taken out of it. Handed to art.coverage as a
+    # shape rather than rasterised here: the subsampling, the cell aspect and
+    # the coverage glyphs are the same rule the Sun going down behind the
+    # horizon uses (art.sun_horizon_art), and two copies of it would be two
+    # places for the same star to be drawn differently.
+    def _inside(x, y):
+        return (math.hypot(x, y) <= sun_r
+                and math.hypot(x - mx, y - my) > moon_r)
+
+    grid = []
     for r in range(ART_ROWS):
-        line, pen = [], None
+        row = []
         for c in range(ART_COLS):
-            lit = 0
-            for dy in _SUB:
-                y = r - (ART_ROWS - 1) / 2.0 + dy
-                for dx in _SUB:
-                    x = (c - (ART_COLS - 1) / 2.0 + dx) / CELL_X
-                    if (math.hypot(x, y) <= sun_r
-                            and math.hypot(x - mx, y - my) > moon_r):
-                        lit += 1
-            y0 = r - (ART_ROWS - 1) / 2.0
-            x0 = (c - (ART_COLS - 1) / 2.0) / CELL_X
+            lit = art.coverage(c, r, _inside, ART_COLS, ART_ROWS, CELL_X)
+            x0, y0 = art.cell_centre(c, r, ART_COLS, ART_ROWS, CELL_X)
             if lit:
-                frac = lit / 9.0
                 col = _disc_tone(math.hypot(x0, y0) / sun_r)
-                ch = _glyph_for(frac)
+                ch = art.cover_glyph(lit / 9.0)
             elif total:
                 # Corona, and only during totality, because that is the only
                 # time it is visible at all. Nothing inside the Moon: without
@@ -440,25 +441,11 @@ def disc_art(key, lat, lon, at=None, color=True, sun_r=None):
                 col, ch = cell if cell else (None, " ")
             else:
                 col, ch = None, " "
-            if col is None:
-                if pen is not None and color:
-                    line.append("\033[0m")
-                pen = None
-                line.append(ch)
-                continue
-            if color and col != pen:
-                line.append(f"\033[38;5;{col}m")
-                pen = col
-            line.append(ch)
-        if pen is not None and color:
-            line.append("\033[0m")
-        # NOT rstripped, unlike the map above. Every frame has to be exactly
-        # ART_COLS wide, because the frame around it centres its content: a
-        # trimmed line makes a narrower block, which gets re-centred, and the
-        # Sun visibly shuffles sideways from frame to frame while the Moon
-        # crosses it. The Sun is the one thing here that must not move.
-        out.append("".join(line))
-    return out
+            row.append(None if col is None else (col, ch))
+        grid.append(row)
+    # NOT rstripped, unlike the map above -- see art.emit_cells, which is
+    # where that rule now lives along with the reason for it.
+    return art.emit_cells(grid, color)
 
 
 

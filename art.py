@@ -25,6 +25,7 @@ a sphere. It also darkens the limb of a full planet, so an outer planet at
 Colour is the site's own 256-colour ANSI, so the same string works in a
 terminal, in the browser through ansi_to_html, and in the PNG export.
 """
+import datetime as dt
 import math
 
 # The canvas. Wide enough to read, narrow enough to sit in the facts column
@@ -48,6 +49,95 @@ ROWS = 17
 # The two numbers have to move together; a stylesheet that sets its own
 # line-height here would squash every planet back into an ellipse.
 CELL = 2.0
+
+
+# --- the disc rasteriser ----------------------------------------------------
+# One way of turning a round thing into characters, shared rather than
+# written twice. eclipse.disc_art had it first, for the Sun with a bite out
+# of it; sun_horizon_art wants exactly the same rule for the Sun going down
+# behind the horizon, and a second copy of it would be a second place for
+# the two drawings to drift apart. They are the same star.
+#
+# The pieces are deliberately small and separate, because what each drawing
+# does *between* them is what makes it that drawing: the eclipse subtracts
+# the Moon and adds a corona, the crossing clips at the horizon and reddens
+# with height, and neither of those belongs in here.
+
+# Each cell sampled on a 3x3 grid instead of at its centre. At 90% covered
+# the surviving crescent of an eclipse is about a tenth of the Sun's
+# diameter, which is thinner than one character: sampling the centre alone
+# drew it as four disconnected marks with gaps where the crescent passed
+# between samples. It matters just as much for a limb resting on the
+# horizon, which is the same thin sliver seen the other way up.
+SUB = (-1 / 3.0, 0.0, 1 / 3.0)
+
+# Coverage also picks the glyph, so a barely-lit cell reads lighter than a
+# full one and the edge keeps a soft edge instead of a staircase.
+COVER_GLYPH = ((0.34, "."), (0.67, "+"), (1.01, "#"))
+
+
+def cover_glyph(frac):
+    """The glyph for a cell that is `frac` covered, 0..1."""
+    for edge, ch in COVER_GLYPH:
+        if frac <= edge:
+            return ch
+    return "#"
+
+
+def cell_centre(col, row, cols=COLS, rows=ROWS, cell=CELL):
+    """A character cell's centre in drawing units, origin at the middle.
+
+    x is divided by the cell ratio, which is what keeps a circle a circle
+    rather than an egg standing on end."""
+    return (col - (cols - 1) / 2.0) / cell, row - (rows - 1) / 2.0
+
+
+def coverage(col, row, inside, cols=COLS, rows=ROWS, cell=CELL):
+    """How many of a cell's nine subsamples fall inside a shape, 0..9.
+
+    `inside(x, y)` is the shape, in the same drawing units cell_centre
+    returns. Passing the shape in rather than the geometry is what lets one
+    function serve a Sun with the Moon taken out of it and a Sun with the
+    horizon taken out of it."""
+    n = 0
+    for dy in SUB:
+        y = row - (rows - 1) / 2.0 + dy
+        for dx in SUB:
+            x = (col - (cols - 1) / 2.0 + dx) / cell
+            if inside(x, y):
+                n += 1
+    return n
+
+
+def emit_cells(grid, color=True):
+    """Rows of cells to rows of ANSI, one escape per run of a colour.
+
+    A cell is None for nothing there, or (xterm colour, glyph). Nothing is
+    rstripped: every line comes back the full width, because the frames these
+    build get centred by whatever draws a box around them, and a trimmed line
+    makes a narrower block that then re-centres. The Sun visibly shuffles
+    sideways from frame to frame when that happens, and the Sun is the one
+    thing in an animation that must not move.
+    """
+    out = []
+    for row in grid:
+        line, pen = [], None
+        for cell_ in row:
+            if cell_ is None:
+                if pen is not None and color:
+                    line.append("\033[0m")
+                pen = None
+                line.append(" ")
+                continue
+            col, ch = cell_
+            if color and col != pen:
+                line.append(f"\033[38;5;{col}m")
+                pen = col
+            line.append(ch)
+        if pen is not None and color:
+            line.append("\033[0m")
+        out.append("".join(line))
+    return out
 
 
 class Palette:
@@ -2092,3 +2182,229 @@ def dso_art(name, cols=DSO_COLS, rows=DSO_ROWS, ramp=None,
                 grid[row][c] = "•"
                 tint[row][c] = _ramp_colour(tones, 0.7 + 0.3 * b)
     return _emit(grid, tint)
+
+
+# --- the crossing: the Sun going behind the horizon, and coming back -------
+# The one minute of the day when the answer to "is it day or night" changes.
+# Everything else on this site draws the sky as it stands; this draws it
+# changing, which is why it is frames and not a picture.
+#
+# The scene is deliberately almost empty: a black frame cut in half by a
+# white rule, the bearing centred under it, and the Sun. Two richer versions
+# were built and thrown away first, and the reason is worth keeping. At 45x17
+# there is no way to wash a sky in foreground characters that does not read
+# as a defect -- hashed noise looks like television static, and an ordered
+# dither lays down a visible lattice of dots every fourth column. A version
+# using background colour did work, and was dropped for a different reason:
+# nothing in this codebase emits `48;5;N`, so ansi_to_html and gif.py would
+# both have had to learn it first.
+#
+# Reuses the disc rasteriser above, which the eclipse pages had first. It is
+# the same star.
+
+CROSS_COLS, CROSS_ROWS = COLS, ROWS
+CROSS_HORIZON_ROW = 8        # the middle row of 17: the frame cut in half
+CROSS_BEARING_ROW = 11       # the bearing, centred under the line
+CROSS_SIGN_ROW = 14          # the sign-off, under that
+# Smaller than it wants to be. At 3.4 rows the disc filled the upper half of
+# the frame and the stars had nowhere to come out.
+CROSS_SUN_R = 2.6
+
+CROSS_HORIZON_C = 255        # the rule: white, the brightest thing in the
+                             # frame until the stars arrive
+CROSS_BEARING_C = 245
+CROSS_SIGN_C = 252
+
+# The Sun, high to low. The middle five are api's _SUN_GRADIENT, the ramp the
+# chart marker and the headline glyph already share, so the disc going down
+# here is the same colour as the marker going down there. It reaches one step
+# higher because the disc starts well clear of the horizon, and one lower
+# because the last sliver on the horizon is redder than anything the chart
+# has to show.
+CROSS_SUN_RAMP = (226, 220, 214, 208, 202, 196, 160)
+# The core stays hotter than the limb, which is what stops a flat disc of one
+# colour reading as a hole rather than a light.
+CROSS_CORE_LIFT = 2
+CROSS_CORE_R = 0.55
+
+CROSS_STAR_C = (250, 252, 245, 248)
+CROSS_STAR_GLYPH = (".", "\N{MIDDLE DOT}", "*")
+
+# When the stars start arriving, as a fraction of the run. The disc clears
+# the line at 0.78; the first come a little before that, as the last sliver
+# goes, and the field fills through what is left.
+CROSS_STARS_FROM = 0.68
+CROSS_STARS_OVER = 0.30
+# How much of the sky carries a star at all, and how the brightest are
+# chosen. A fixed field, seeded off the cell, so they arrive in the same
+# places every time and nothing wanders between frames.
+CROSS_STAR_DENSITY = 0.055
+
+
+def _cross_hash(col, row, salt=0):
+    return (((col * 73856093) ^ (row * 19349663) ^ (salt * 83492791))
+            % 1000) / 1000.0
+
+
+def _cross_sun_colour(above, core):
+    """Where on the ramp the disc is, by how far above the horizon it still
+    is in its own radii.
+
+    The range has to reach the height the disc actually starts at, or the
+    sequence opens halfway down the ramp and the whole descent happens in
+    orange with no yellow in it at all."""
+    t = 1.0 - max(0.0, min(1.0, (above + 0.35) / 2.05))
+    i = round(t * (len(CROSS_SUN_RAMP) - 1))
+    if core:
+        i = max(0, i - CROSS_CORE_LIFT)
+    return CROSS_SUN_RAMP[i]
+
+
+def _cross_stars(prog):
+    """Which stars are out at this point in the run, as {(col, row): cell}.
+
+    They arrive brightest-first rather than at random, which is both what
+    really happens and what makes the field build instead of flicker."""
+    if prog <= CROSS_STARS_FROM:
+        return {}
+    show = min(1.0, (prog - CROSS_STARS_FROM) / CROSS_STARS_OVER)
+    out = {}
+    for row in range(CROSS_HORIZON_ROW):
+        for col in range(CROSS_COLS):
+            if _cross_hash(col, row, 11) > CROSS_STAR_DENSITY:
+                continue
+            if _cross_hash(col, row, 13) > show:     # its turn to arrive
+                continue
+            bright = _cross_hash(col, row, 17)
+            glyph = (CROSS_STAR_GLYPH[2] if bright > 0.86
+                     else CROSS_STAR_GLYPH[1] if bright > 0.45
+                     else CROSS_STAR_GLYPH[0])
+            colour = CROSS_STAR_C[int(bright * len(CROSS_STAR_C))
+                                  % len(CROSS_STAR_C)]
+            out[(col, row)] = (colour, glyph)
+    return out
+
+
+def _cross_centred(text, row, colour):
+    """Lay text into a row of cells, centred. Trimmed rather than wrapped:
+    a caption that ran off the end would corrupt the frame's width, and
+    every line here has to stay exactly CROSS_COLS wide."""
+    text = text[:CROSS_COLS]
+    start = (CROSS_COLS - len(text)) // 2
+    for i, ch in enumerate(text):
+        if ch != " ":
+            row[start + i] = (colour, ch)
+
+
+def sun_horizon_art(prog, lat, bearing="", sign="", color=True):
+    """One frame of the crossing.
+
+    prog runs 0 (the disc a clear diameter above the horizon) to 1 (gone,
+    with the stars out). Sunrise is this same geometry run backwards -- the
+    caller reverses prog -- so there is one scene and not two of them
+    disagreeing.
+
+    `lat` decides the slant. The Sun's daily path meets the horizon at 90
+    minus the latitude, so it comes down almost vertically at the equator and
+    at a long shallow angle in the far north, and in the northern hemisphere,
+    facing the sunset, it leans left. A vertical drop is the one thing here
+    that would read as a diagram rather than as a sky.
+
+    `bearing` is a compass point, and only a compass point. No angle: a
+    degree sign in this app always means a height, which is why the rise and
+    set bearings gave theirs up -- 55 read as a bearing is ENE, so "55 SSW"
+    with a degree sign in it looked like a bug rather than a shorthand.
+    """
+    y_h = CROSS_HORIZON_ROW - (CROSS_ROWS - 1) / 2.0
+    tilt = math.radians(max(5.0, 90.0 - abs(lat)))
+    # From a clear diameter above the line to a clear diameter below it.
+    span = 2 * CROSS_SUN_R + 2.2
+    drop = -span / 2.0 + span * max(0.0, min(1.0, prog))
+    lean = drop / math.tan(tilt) * (-1 if lat >= 0 else 1)
+    cy, cx = y_h + drop, lean
+    above = (y_h - cy) / CROSS_SUN_R
+
+    grid = [[None] * CROSS_COLS for _ in range(CROSS_ROWS)]
+
+    # Stars first, so the line and the Sun both draw over them.
+    for (col, row), cell in _cross_stars(prog).items():
+        grid[row][col] = cell
+
+    # The horizon: one unbroken white rule, and no terrain. We do not know
+    # what is in front of anybody, and inventing hills would be a picture of
+    # somewhere else.
+    for col in range(CROSS_COLS):
+        grid[CROSS_HORIZON_ROW][col] = (CROSS_HORIZON_C, "\N{BOX DRAWINGS LIGHT HORIZONTAL}")
+
+    if bearing:
+        _cross_centred(bearing, grid[CROSS_BEARING_ROW], CROSS_BEARING_C)
+    if sign:
+        _cross_centred(sign, grid[CROSS_SIGN_ROW], CROSS_SIGN_C)
+
+    # The disc. Clipped half a row short of the rule so it goes *behind* the
+    # horizon: drawn all the way down it broke the line, and a Sun that
+    # interrupts the horizon reads as standing in front of the world.
+    clip = y_h - 0.5
+
+    def _inside(x, y):
+        return y <= clip and math.hypot(x - cx, y - cy) <= CROSS_SUN_R
+
+    for row in range(CROSS_HORIZON_ROW):
+        for col in range(CROSS_COLS):
+            lit = coverage(col, row, _inside, CROSS_COLS, CROSS_ROWS, CELL)
+            if not lit:
+                continue
+            x0, y0 = cell_centre(col, row, CROSS_COLS, CROSS_ROWS, CELL)
+            rr = math.hypot(x0 - cx, y0 - cy) / CROSS_SUN_R
+            grid[row][col] = (_cross_sun_colour(above, core=rr <= CROSS_CORE_R),
+                              cover_glyph(lit / 9.0))
+
+    return emit_cells(grid, color)
+
+
+# 44 frames at 170ms is about 7.5 seconds, which is the length this wants to
+# be. It was specified at a minute and that is too long for something nobody
+# asked for that covers the page while it runs -- 7.5s is a moment somebody
+# watches, a minute is something they have to decide to sit through.
+CROSS_FRAMES = 44
+CROSS_FRAME_MS = 170
+# The sign-off holds the last few frames rather than flashing on the final
+# one, which nobody would read.
+CROSS_SIGN_HOLD = 6
+
+CROSS_SIGN_SET = "Have a good night"
+CROSS_SIGN_RISE = "Have a good day"
+
+
+def sun_horizon_frames(first_local, last_local, lat, bearing="",
+                       rising=False, n=CROSS_FRAMES, color=True):
+    """The whole crossing, as (frames, labels).
+
+    first_local and last_local are the real local clock times the crossing
+    starts and ends at -- the Sun's limb first touching the horizon and last
+    leaving it. **Local to the place the drawing is about**, never UT: every
+    time this site shows is local, and a clock in UT beside a chart in local
+    time is a trap that has caught this project before.
+
+    The labels run those real times across the sequence even though playback
+    is far faster than the sky. A crossing takes about three minutes at
+    Zurich's latitude and much longer in the far north, and this plays in
+    seven and a half seconds. That compression is the whole point of an
+    animation, and the clock is what keeps it honest -- the same trade the
+    eclipse frames make.
+    """
+    frames, labels = [], []
+    sign = CROSS_SIGN_RISE if rising else CROSS_SIGN_SET
+    total = (last_local - first_local).total_seconds()
+    for i in range(n):
+        t = i / max(1, n - 1)
+        # Sunrise is the same descent run backwards. The clock still moves
+        # forwards, because time does.
+        frames.append(sun_horizon_art(1.0 - t if rising else t, lat,
+                                      bearing=bearing,
+                                      sign=sign if i >= n - CROSS_SIGN_HOLD
+                                      else "",
+                                      color=color))
+        labels.append((first_local + dt.timedelta(seconds=total * t))
+                      .strftime("%H:%M"))
+    return frames, labels

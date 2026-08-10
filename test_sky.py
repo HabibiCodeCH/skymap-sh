@@ -1000,3 +1000,66 @@ class TheRadiantGoesToTheInsetWhenItClimbsOut(unittest.TestCase):
         for alt in range(5, 90, 5):
             self.assertNotEqual(self._where(self._chart(3, float(alt), 40.0)),
                                 "missing", alt)
+
+
+class SunCrossing(unittest.TestCase):
+    """The two moments an animation of sunset or sunrise spans: the limb
+    first touching the horizon and the last of it going.
+
+    The length of that is not a constant -- it is the time the Sun takes to
+    travel its own width, which depends entirely on how steeply its path
+    meets the horizon. That is the thing worth testing, because it is the
+    thing a hard-coded three minutes would get wrong everywhere but here.
+    """
+    DAY = dt.datetime(2026, 8, 10, 0, 0)
+
+    def span(self, lat, lon, off, rising=False):
+        c = sky.sun_crossing(self.DAY - dt.timedelta(hours=off), lat, lon,
+                             rising=rising)
+        self.assertIsNotNone(c, f"no crossing at lat {lat}")
+        first, last = c
+        self.assertLess(first, last, "the crossing ran backwards")
+        return (last - first).total_seconds()
+
+    def test_it_takes_longer_the_further_north_you_go(self):
+        quito = self.span(-0.18, -78.47, -5)
+        zurich = self.span(47.3769, 8.5417, 2)
+        reykjavik = self.span(64.13, -21.9, 0)
+        tromso = self.span(69.65, 18.96, 2)
+        self.assertLess(quito, zurich)
+        self.assertLess(zurich, reykjavik)
+        self.assertLess(reykjavik, tromso)
+        # Sanity on the absolute numbers: a couple of minutes at the equator,
+        # not seconds and not an hour.
+        self.assertTrue(100 < quito < 200, quito)
+        self.assertTrue(150 < zurich < 300, zurich)
+
+    def test_sunrise_takes_as_long_as_sunset(self):
+        for lat, lon, off in ((47.3769, 8.5417, 2), (-33.87, 151.21, 10)):
+            up = self.span(lat, lon, off, rising=True)
+            down = self.span(lat, lon, off)
+            self.assertLess(abs(up - down), 30, (lat, up, down))
+
+    def test_sunset_ends_on_the_sunset(self):
+        # The pair has to agree with sun_events, or the animation's clock and
+        # the headline's would disagree about when the Sun went down.
+        day = self.DAY - dt.timedelta(hours=2)
+        ev = sky.sun_events(day, 47.3769, 8.5417)
+        first, last = sky.sun_crossing(day, 47.3769, 8.5417)
+        self.assertEqual(last, ev["sunset"])
+        self.assertLess(first, ev["sunset"])
+        # Sunrise names the *first* gleam, so it is the other end of the pair.
+        rise_first, rise_last = sky.sun_crossing(day, 47.3769, 8.5417,
+                                                 rising=True)
+        self.assertEqual(rise_first, ev["sunrise"])
+        self.assertGreater(rise_last, ev["sunrise"])
+
+    def test_no_crossing_under_the_midnight_sun(self):
+        # Nothing to draw where the Sun does not set. Longyearbyen in June.
+        june = dt.datetime(2026, 6, 21, 0, 0)
+        self.assertIsNone(sky.sun_crossing(june, 78.22, 15.65))
+        self.assertIsNone(sky.sun_crossing(june, 78.22, 15.65, rising=True))
+
+    def test_no_crossing_in_polar_night(self):
+        december = dt.datetime(2026, 12, 21, 0, 0)
+        self.assertIsNone(sky.sun_crossing(december, 78.22, 15.65))

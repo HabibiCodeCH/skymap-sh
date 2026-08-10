@@ -710,6 +710,58 @@ def sun_arc(day_start_utc, lat, lon, step_min=10, floor=-2.0):
     return pts
 
 
+# What "sunset" actually names: the moment the Sun's *upper limb* leaves the
+# horizon, which with refraction thrown in is the centre at -0.833. The
+# crossing an animation draws is longer than that instant at both ends -- it
+# starts when the lower limb first touches, one solar diameter earlier.
+#
+# 0.533 is that diameter. It is the only extra number needed: sun_events
+# already solves the far end.
+SUN_DIAMETER = 0.533
+SUNSET_ALT = -0.833
+
+
+def sun_crossing(day_start_utc, lat, lon, rising=False, ev=None):
+    """(first touch, last gleam) in UT for today's sunset or sunrise, or
+    None where the Sun does not cross the horizon here today.
+
+    The two moments the drawing spans: the limb first touching the horizon
+    and the last of it going. Between them the Sun travels its own diameter,
+    which takes about three minutes at Zurich and the better part of an hour
+    inside the Arctic circle -- so this is solved rather than assumed, and it
+    is what tells an animation which real times to put on its clock.
+
+    Both come back in UT. Every clock this site shows is local, so whatever
+    displays them has to shift them first; this returns UT because that is
+    what the rest of sky.py speaks and a function returning a naive local
+    time would be the trap that keeps catching this project.
+    """
+    ev = ev or sun_events(day_start_utc, lat, lon)
+    if ev.get("polar_day") or ev.get("polar_night"):
+        return None
+    edge = ev.get("sunrise" if rising else "sunset")
+    if edge is None:
+        return None
+    # The other edge is a solar diameter away in altitude. Bracket it either
+    # side of the known one and bisect with the same solver sun_events uses,
+    # rather than estimating from a rate that is wrong at high latitude --
+    # near the poles the Sun can take an hour to cross its own width, and a
+    # linear guess lands outside the bracket entirely.
+    #
+    # Which side to look is not the same for the two. Sunset names the last
+    # gleam, so the first touch is *earlier*; sunrise names the first gleam,
+    # so the disc clearing the horizon is *later*. The bracket and the order
+    # of the pair both follow from that.
+    span = dt.timedelta(hours=3)
+    lo, hi = (edge, edge + span) if rising else (edge - span, edge)
+    other = _cross(lat, lon, lo, hi, SUNSET_ALT + SUN_DIAMETER)
+    if other is None:
+        # No bracket, which this far north means the Sun grazes the horizon
+        # without ever clearing its own width of it. Nothing to draw.
+        return None
+    return (edge, other) if rising else (other, edge)
+
+
 def _cross(lat, lon, t0, t1, target, step=60):
     """Bisect for the moment the Sun's altitude crosses `target`."""
     a0 = _sun_alt(julian(t0), lat, lon)[0] - target
