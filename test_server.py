@@ -367,8 +367,14 @@ class AnimateBrowserVsTerminal(unittest.TestCase):
         # exception it needed -- nothing puts focus in a field now unless
         # the reader asks for it.
         body = self.client.get("/Ibiza?animate=24", headers=BROWSER).text
-        self.assertNotIn("document.addEventListener('click',function(e){", body)
         self.assertNotIn("id==='animate-btn')return;", body)
+        # Not "no click listener at all", which is what this used to say --
+        # the headline's date picker is delegated from the document and is
+        # perfectly well behaved. What must not exist is a click listener
+        # that puts focus in a text field the reader did not ask for.
+        for chunk in body.split("addEventListener('click'")[1:]:
+            self.assertNotIn("place.focus", chunk[:600])
+            self.assertNotIn("q.focus", chunk[:600])
 
     def test_the_transport_hint_only_shows_while_something_is_animating(self):
         # The hint line has room for one row, and space/arrows/d do nothing
@@ -2201,9 +2207,21 @@ class ControlsPanel(unittest.TestCase):
         self.client = client_cm.__enter__()
         self.addCleanup(client_cm.__exit__, None, None, None)
 
-    def test_chart_page_has_the_explore_form(self):
+    def test_the_chart_page_picks_a_moment_on_the_headline(self):
+        # It used to carry a date/time form in the drawer. The moment on the
+        # headline is clickable now and opens a picker where the question is
+        # actually asked, so the drawer copy came out -- two ways to set one
+        # thing, one of them three clicks deep, was one too many.
         resp = self.client.get("/Zurich", headers=BROWSER)
-        self.assertIn('id="explore"', resp.text)
+        self.assertNotIn('id="explore"', resp.text)
+        self.assertNotIn('id="whenDate"', resp.text)
+        self.assertIn('href="#when"', resp.text)
+
+    def test_other_pages_keep_their_explore_form(self):
+        # Only the chart page has a headline with a moment on it.
+        for url in ("/catalog", "/help", "/legend"):
+            resp = self.client.get(url, headers=BROWSER)
+            self.assertIn('id="explore"', resp.text, url)
 
     def test_no_toggle_button_or_hide_show_js_remain(self):
         resp = self.client.get("/Zurich", headers=BROWSER)
@@ -2897,9 +2915,12 @@ class DrawerWiring(unittest.TestCase):
         # to revive them was to click one of the few elements the rule
         # excepted. Tab and "p" still focus the bar on purpose.
         resp = self.client.get("/Zurich", headers=BROWSER)
-        self.assertNotIn("document.addEventListener('click',function(e){",
-                         resp.text)
         self.assertNotIn("q.focus();\n      q.select();", resp.text)
+        # Same narrowing as the animate test above: a document-level click
+        # listener is fine, one that grabs the command bar is not.
+        for chunk in resp.text.split("addEventListener('click'")[1:]:
+            self.assertNotIn("place.focus", chunk[:600])
+            self.assertNotIn("q.focus", chunk[:600])
 
     def test_tab_still_focuses_the_command_bar_and_p_no_longer_does(self):
         resp = self.client.get("/Zurich", headers=BROWSER)
@@ -2983,12 +3004,15 @@ class ExploreFormEmptySubmitGoesHome(unittest.TestCase):
         # The form builds a PATH now rather than a ?find= query: every object
         # has its own page, so finding one navigates to it. With no place and
         # no find it still falls through to the bare home navigation.
-        resp = self.client.get("/Zurich", headers=BROWSER)
+        #
+        # Read off /catalog rather than /Zurich: the chart page has no
+        # explore form any more, its moment being set from the headline.
+        resp = self.client.get("/catalog", headers=BROWSER)
         onsubmit = resp.text.split('onsubmit="', 1)[1].split('">', 1)[0]
         self.assertIn(":('/'+(p?encodeURIComponent(p):''))", onsubmit)
 
     def test_a_find_navigates_to_the_object_page(self):
-        resp = self.client.get("/Zurich", headers=BROWSER)
+        resp = self.client.get("/catalog", headers=BROWSER)
         onsubmit = resp.text.split('onsubmit="', 1)[1].split('">', 1)[0]
         self.assertIn("encodeURIComponent(p)+'/'", onsubmit)
         self.assertNotIn("find=", onsubmit)

@@ -5482,6 +5482,8 @@ def _compose_sky(r):
     # The Sun is on this line through twilight now, and it is the one glyph
     # here that means something by its colour.
     head_painted = paint_sun_glyph(head_painted, st["sun"]["alt"], C.LABEL, c)
+    if r.panel and summary:
+        head_painted = link_head_when(head_painted, r, c)
     # Panel mode still wraps wide -- prose sits in its own full-width block
     # below the chart+zenith row (see the side_panel branch below), not
     # squeezed into the zenith's ~30-column-wide column, so there's no
@@ -6173,9 +6175,10 @@ def _compose_day(r):
         # it here simply loses it -- which is why the day chart had none in a
         # browser while a terminal got one inline.
         zenith = st.get("zenith_lines") or []
-        out = (["", paint_sun_glyph(paint(prefix, C.HEAD, c)
+        out = (["", link_head_when(
+                    paint_sun_glyph(paint(prefix, C.HEAD, c)
                                     + paint(f" · {rest}", C.LABEL, c),
-                                    sa, C.LABEL, c),
+                                    sa, C.LABEL, c), r, c),
                 "", art]
                + ([ZENITH_SLOT] + zenith if zenith else [])
                + [PROSE_SLOT])
@@ -7372,7 +7375,7 @@ def pin_near(head_html, near):
     return head_html.replace(words, " " + pin)
 
 
-def lift_chart_head(rungs, near=None):
+def lift_chart_head(rungs, near=None, when_local=None):
     """Take the summary line out of the drawing, into a ladder of its own.
 
     Returns (head_html, rungs) with the line gone from every rung.
@@ -7420,7 +7423,13 @@ def lift_chart_head(rungs, near=None):
     # own r.place.near, already escaped, and finding where the name ends by
     # looking at the text would be a guess.
     nr = f' data-near="{html.escape(near)}"' if near else ""
-    return (f'<header id="day-head" class="day-box" aria-label="where and when">'
+    # The moment this page is drawn for, in the local clock of the place it
+    # is about, so the picker opens showing where you already are rather than
+    # empty or at the reader's own timezone. On the header and not on the
+    # twelve rungs: there is one page and twelve copies of the line.
+    wn = (f' data-when="{when_local:%Y-%m-%dT%H:%M}"' if when_local else "")
+    return (f'<header id="day-head" class="day-box" aria-label="where and when"'
+            f'{wn}>'
             f'<div id="day-head-ladder">{spans}</div>'
             f'<div id="day-head-live" aria-live="off"{nr}></div></header>'), rest
 
@@ -7971,6 +7980,41 @@ def paint_sun_glyph(painted, alt, restore, c):
                   _sun_head_color(alt) + glyph + restore, painted, count=1)
 
 
+# Where the moment on the headline points. Inert: the click is caught and a
+# picker opens under the date.
+#
+# It pointed at the drawer's own date/time form for a while, as a no-JS
+# fallback, until that form came out of the drawer -- and the fallback was
+# never real anyway. That form submitted through an onsubmit handler and its
+# inputs carried no name attributes, so without JavaScript it sent nothing.
+HEAD_WHEN_HREF = "#when"
+
+
+def link_head_when(painted, r, c, when_local=None):
+    """Make the moment on an already-painted headline a link.
+
+    After painting, and for the same reason pin_near and paint_sun_glyph are:
+    every width decision on this line is made on the plain text, and a marker
+    in the middle of it would be counted as characters by the trim. By here
+    the trimming is done.
+
+    Only in the browser. The markers are C0 control characters and a terminal
+    printing one would be a visible bug -- so this is called from the r.panel
+    branches only, and strip_ansi takes them out of anything that escapes.
+
+    A class and not an id, which the marker mechanism gives for free: the
+    headline is rendered twelve times over, once per rung of the ladder, and
+    twelve elements sharing an id is twelve chances to bind the wrong one.
+    """
+    when = _head_when(r, when_local)
+    if not when or when not in painted:
+        return painted
+    return painted.replace(
+        when,
+        sky.LINK_START + HEAD_WHEN_HREF + sky.LINK_SEP + when + sky.LINK_END,
+        1)
+
+
 def compose_frame(r, dusk_lead_minutes=0, dawn_lag_minutes=0):
     """Header + chart only, no prose/footer/ISS/zenith inset -- for animation
     frames, which are on screen for a fraction of a second and can't be read
@@ -8108,8 +8152,13 @@ def compose_frame(r, dusk_lead_minutes=0, dawn_lag_minutes=0):
     if r.panel:
         pre = _head_prefix(r)
         painted = paint(pre, C.HEAD, c) + paint(head[len(pre):], C.LABEL, c)
-        body = (paint_sun_glyph(painted, sun_alt, C.LABEL, c)
-                + HEAD_SLOT + art)
+        # Only on a frame somebody has stopped on. A running animation
+        # carries no links at all (see r.links), and a date that changes
+        # every 170ms is the last thing worth making clickable.
+        painted = paint_sun_glyph(painted, sun_alt, C.LABEL, c)
+        if r.links:
+            painted = link_head_when(painted, r, c)
+        body = painted + HEAD_SLOT + art
     else:
         body = (paint_sun_glyph(paint(head, C.HEAD, c), sun_alt, C.HEAD, c)
                 + "\n\n" + art)
@@ -8898,11 +8947,21 @@ def ansi_to_html(text):
 
 # The link markers as well as the escapes. Nothing but the browser ever wants
 # either, and a terminal printing a stray \x01 would be a visible bug.
+#
+# The href goes too, not only the three marker characters. A marked run is
+# START + href + SEP + text + END, so dropping the characters alone left the
+# href sitting in the line as visible text -- "Marseille · #explore10 Aug
+# 11:00", eight characters wider than the trim had budgeted for and printed
+# into the PNG header. Latent until now only because the chart's own links
+# are browser-only, and nothing that strips had ever been handed one.
+_LINK_HREF = re.compile(
+    f"{sky.LINK_START}[^{sky.LINK_SEP}{sky.LINK_END}]*{sky.LINK_SEP}")
 _MARKERS = re.compile(f"[{sky.LINK_START}{sky.LINK_SEP}{sky.LINK_END}]")
 
 
 def strip_ansi(text):
-    return _MARKERS.sub("", ANSI.sub("", text))
+    """The line as a reader sees it: no colour, no markers, no hrefs."""
+    return _MARKERS.sub("", _LINK_HREF.sub("", ANSI.sub("", text)))
 
 
 # Live map for /stats, injected through PAGE's {extra} slot rather than into
@@ -9419,6 +9478,13 @@ document.documentElement.classList.add('js');
  .tries{{color:#6e7681;font-size:12px;margin:0}}
  .tries a{{color:#87d7ff;text-decoration:none}}
  .tries a:hover{{text-decoration:underline}}
+/* The examples are places to try, not the site's own pages, and the drawer
+   showed both as one blue row of names -- "London" read as a section of the
+   site sitting next to "catalog". Body colour rather than link colour tells
+   them apart before anything is hovered; the underline on hover still says
+   they are clickable. */
+ .tries-ex a{{color:#c9d1d9}}
+ .tries-ex a:hover{{color:#fff;text-decoration:underline}}
 /*CMDBAR_CSS*/
  .animate-controls{{display:block;margin:0 0 8px}}
  .animate-btn{{background:#0d1117;border:1px solid #30363d;color:#ffd700;
@@ -9661,6 +9727,26 @@ document.documentElement.classList.add('js');
  .modal-close{{background:none;border:0;color:#6e7681;font:inherit;
                font-size:14px;cursor:pointer;padding:0 2px;line-height:1}}
  .modal-close:hover{{color:#c9d1d9}}
+/* The moment on the headline is a link, and clicking it opens this. Anchored
+   to the date rather than parked in a corner: it answers a question asked at
+   that exact spot on the line. */
+ .sky-link{{color:inherit;text-decoration:underline;
+            text-decoration-style:dotted;text-underline-offset:3px;
+            text-decoration-color:#495057;cursor:pointer}}
+ .sky-link:hover{{text-decoration-style:solid;text-decoration-color:#8b949e}}
+ #when-pop{{position:absolute;z-index:70;background:#0d1117;
+            border:1px solid #30363d;border-radius:8px;padding:10px;
+            box-shadow:0 8px 24px rgba(0,0,0,.6);
+            display:flex;gap:6px;align-items:center}}
+ #when-pop[hidden]{{display:none}}
+ #when-pop input{{background:#010409;border:1px solid #30363d;border-radius:5px;
+                  color:#c9d1d9;font:12px ui-monospace,SFMono-Regular,Menlo,
+                  monospace;padding:4px 6px}}
+ #when-pop button{{background:none;border:1px solid #30363d;border-radius:5px;
+                   color:#8b949e;font:12px ui-monospace,Menlo,monospace;
+                   padding:4px 9px;cursor:pointer}}
+ #when-pop button:hover{{color:#c9d1d9;border-color:#484f58}}
+ #when-pop .wp-now{{border-color:transparent}}
 /* The crossing. The whole screen goes black and the drawing is the only
    thing on it -- fixed, so nothing underneath reflows: the chart is sized
    to the window and a reflow would rescale it, which is the rule the
@@ -10858,6 +10944,70 @@ function skymapTakeover(frames,labels,opts){{
   return close;
 }}
 
+// The moment on the headline opens a picker.
+//
+// Delegated from the document, because the thing clicked does not exist yet
+// when this runs and there are twelve of it: the headline is rendered once
+// per rung of the width ladder, and the animation replaces it with a
+// thirteenth. A class, never an id, for the same reason.
+//
+// Without JavaScript the link still goes somewhere honest -- the drawer's
+// own date and time form, which is what this is a shortcut to.
+(function(){{
+  var pop=null;
+  function close(){{
+    if(!pop)return;
+    pop.parentNode&&pop.parentNode.removeChild(pop);
+    pop=null;
+    document.removeEventListener('keydown',onKey,true);
+  }}
+  function onKey(e){{if(e.key==='Escape'){{e.stopPropagation();close();}}}}
+  function open(a){{
+    close();
+    var head=document.getElementById('day-head');
+    var when=(head&&head.getAttribute('data-when'))||'';
+    var d=when.slice(0,10),t=when.slice(11,16);
+    pop=document.createElement('div');
+    pop.id='when-pop';
+    pop.innerHTML='<input type="date" class="wp-d" aria-label="date">'+
+                  '<input type="time" class="wp-t" aria-label="time">'+
+                  '<button type="button" class="wp-go">go</button>'+
+                  '<button type="button" class="wp-now">now</button>';
+    document.body.appendChild(pop);
+    var di=pop.querySelector('.wp-d'),ti=pop.querySelector('.wp-t');
+    if(d)di.value=d;
+    if(t)ti.value=t;
+    // Placed against the page, not the line: the headline sits in a box that
+    // clips (#day-head-ladder hides all but one rung), so a popover inside it
+    // would be cut off.
+    var r=a.getBoundingClientRect();
+    var top=r.bottom+window.pageYOffset+6;
+    var left=Math.max(8,Math.min(r.left+window.pageXOffset,
+                                 window.innerWidth-pop.offsetWidth-8));
+    pop.style.top=top+'px';pop.style.left=left+'px';
+    function go(){{
+      var path=location.pathname;
+      if(!di.value){{location.href=path;return;}}
+      location.href=path+'?t='+di.value+'T'+(ti.value||'00:00');
+    }}
+    pop.querySelector('.wp-go').addEventListener('click',go);
+    pop.querySelector('.wp-now').addEventListener('click',function(){{
+      location.href=location.pathname;
+    }});
+    pop.addEventListener('keydown',function(e){{
+      if(e.key==='Enter'){{e.preventDefault();go();}}
+    }});
+    document.addEventListener('keydown',onKey,true);
+    di.focus();
+  }}
+  document.addEventListener('click',function(e){{
+    var a=e.target&&e.target.closest&&
+          e.target.closest('a.sky-link[href="#when"]');
+    if(a){{e.preventDefault();open(a);return;}}
+    if(pop&&!pop.contains(e.target))close();
+  }});
+}})();
+
 // The welcome. On the day an eclipse crosses this place, the site opens with
 // it drawn instead of described -- it is the one thing here that is the
 // reason somebody came.
@@ -11858,6 +12008,9 @@ return false;">
 # before location.href is ever reached -- which would have made "go" (and
 # Enter in the command bar, which delegates here) do nothing at all on the
 # one page type with a chart on it.
+# UNUSED since the headline's date became the way to pick a moment (the
+# chart page was its only caller). Kept rather than deleted: it is the only
+# date/time form on the site and the picker is new.
 EXPLORE_DATETIME = """<div class="ex">
 <form id="explore" onsubmit="var qEl=document.getElementById('q');
 var p=qEl?qEl.value.trim():'';
@@ -11892,7 +12045,7 @@ DRAWER_LINKS_HTML = """<p class="tries">
 </p>
 """
 
-EXAMPLES_HTML = """<p class="tries">Examples:
+EXAMPLES_HTML = """<p class="tries tries-ex">Examples:
 <a href="/Nairobi">Nairobi</a> ·
 <a href="/Tokyo">Tokyo</a> ·
 <a href="/London">London</a> ·

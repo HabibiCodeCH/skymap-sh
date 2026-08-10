@@ -1644,8 +1644,11 @@ class TheExportMatchesWhatIsOnScreen(unittest.TestCase):
     PLACE = "-23.90,-69.10"
 
     def line(self, text, n):
-        import gif
-        return " ".join(gif.ANSI.sub("", text).split("\n")[n].split())
+        # strip_ansi and not gif.ANSI: the page's copy carries the browser's
+        # link markers too (the moment is clickable there, the PNG's is not),
+        # and comparing the two means comparing what a reader sees. Stripping
+        # colour alone left the href in the text as "#explore05 Aug 03:00".
+        return " ".join(api.strip_ansi(text).split("\n")[n].split())
 
     def top_line(self, text):
         return self.line(text, 0)

@@ -2398,7 +2398,16 @@ def _respond(request: Req, place: str | None):
         pinned = q.get("t") is not None
         crossing = (api.welcome_arm_html(r.place, r.when_utc, pinned=pinned)
                     + api.crossing_arm_html(r.place, pinned=pinned))
-        explore = api.EXPLORE_DATETIME
+        # No date/time form in the drawer any more: the moment on the
+        # headline is clickable and opens a picker where the question is
+        # asked. Two ways to set the same thing, one of them three clicks
+        # deep in a drawer, was one too many.
+        #
+        # The command bar's own submit already reads #whenDate/#whenTime
+        # null-safely, so typing a place still works -- it just no longer
+        # carries a date across with it, which nothing on this page can now
+        # set anyway.
+        explore = ""
         # Shown for everyone -- CSS (.mobile-only, a pointer:coarse media
         # query) decides who actually sees it, since there's no reliable
         # server-side "does this phone have a gyroscope" signal the way
@@ -2511,7 +2520,8 @@ def _respond(request: Req, place: str | None):
             # Both take the summary line out of the drawing and into a box of
             # its own, so head=False either way. The object pages lift theirs
             # into the lede instead and never ask for it.
-            head_html, rungs = api.lift_chart_head(rungs, r.place.near)
+            head_html, rungs = api.lift_chart_head(rungs, r.place.near,
+                                                   r.when_local)
             head_html = api.pin_near(head_html, r.place.near)
             head_html = api.dim_directions(head_html)
             chart_html = api.chart_layout(rungs, zenith, prose, head=False)
