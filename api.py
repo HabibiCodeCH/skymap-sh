@@ -3345,7 +3345,8 @@ def object_html(r, canonical, text, data, place=None, base_url="",
         # every circle back into an ellipse.
         picture = data.get("art") or []
         art_html = (art_plate(picture, frame_cls="obj-art-frame",
-                              plate_cls="obj-art") if picture else "")
+                              plate_cls="obj-art", centre_ink=True)
+                    if picture else "")
         static_html = (art_html
                        + (f'<p class="obj-lede">{html.escape(intro_txt)}</p>'
                           if intro_txt else "")
@@ -6599,7 +6600,73 @@ def _slice_visible(line, a, b):
     return "".join(out)
 
 
-def art_plate(lines, frame_cls="", plate_cls="", style=""):
+BRAILLE_CELL = re.compile(r"[⠀-⣿]")
+
+
+def _mixes_braille(text):
+    """True when a drawing is drawn in braille *and* in ordinary characters."""
+    braille = other = False
+    for ch in text:
+        if ch.isspace():
+            continue
+        if "⠀" <= ch <= "⣿":
+            braille = True
+        else:
+            other = True
+        if braille and other:
+            return True
+    return False
+
+
+def _art_ink_trim(lines):
+    """Every line cut to the drawing's own leftmost and rightmost ink.
+
+    .art-frame centres the <pre>, and the <pre> is as wide as its widest line
+    -- so what gets centred is the canvas, not the picture on it. Cutting to
+    the ink makes those the same thing.
+
+    The old rule here took the same count off each side, on the reasoning that
+    a symmetric cut keeps a disc in the middle. True, but only for a drawing
+    whose ink was already centred on its canvas, which is every planet (they
+    are padded both sides) and not the ones built by art._emit, which strips
+    each row's trailing spaces and keeps its leading ones. M31 was drawn 11
+    columns in from the left and flush with the ink on the right, so the plate
+    centred a box with 11 blank columns down one edge and put Andromeda five
+    and a half cells right of the middle.
+    """
+    vis = [strip_ansi(l) for l in lines]
+    inked = [v for v in vis if v.strip()]
+    if not inked:
+        return list(lines)
+    a = min(len(v) - len(v.lstrip(" ")) for v in inked)
+    b = max(len(v.rstrip(" ")) for v in inked)
+    return [_slice_visible(l, a, b) for l in lines]
+
+
+def _pin_braille(markup, text):
+    """Wrap braille cells so CSS can hold them to one character width.
+
+    Only on a drawing that mixes them with ordinary characters. A plate that
+    is all braille -- every asterism, every shower, the Galaxy -- comes out
+    uniformly wider and keeps its own grid, which is why this went unnoticed
+    for so long; it is left alone and pays nothing. A plate that mixes shears
+    instead. The fallback font's cell is 1.135 times as wide, so every braille
+    cell pushes the rest of its row right, and on a deep-sky cluster that
+    reached 1.35 cells of drift between the mesh and the stars it links.
+
+    A span per cell rather than per run. A run in a fixed-width box would sit
+    in the right place and still space its own cells wrongly inside it, which
+    is the same bug one level down. Only the mixed plates pay for it, and what
+    they pay is the same short string over and over, which is what gzip is
+    for.
+    """
+    if not _mixes_braille(text):
+        return markup
+    return BRAILLE_CELL.sub(lambda m: f'<span class="br">{m.group()}</span>',
+                            markup)
+
+
+def art_plate(lines, frame_cls="", plate_cls="", style="", centre_ink=False):
     """A drawing centred in a plate. Everywhere characters become a picture.
 
     The object pages had this first and the modal frames grew their own copy
@@ -6612,12 +6679,21 @@ def art_plate(lines, frame_cls="", plate_cls="", style=""):
     Centring the block and never the line. With white-space:pre each line is
     its own line box, so text-align:center would centre every line by its own
     width and shear the drawing apart down the middle.
+
+    centre_ink cuts the blank columns off both sides, so what the frame
+    centres is the drawing rather than the canvas it was drawn on. The object
+    pages ask for it: a portrait is alone in its frame and belongs in the
+    middle of it. The modal frames do not, because they sit in a row and would
+    rather agree with each other than each be centred -- see _art_block, which
+    trims by the smaller margin for that reason.
     """
     frame = f"art-frame {frame_cls}".strip()
     plate = f"art-plate {plate_cls}".strip()
+    text = chr(10).join(_art_ink_trim(lines) if centre_ink else lines)
+    body = _pin_braille(ansi_to_html(text), strip_ansi(text))
     return (f'<div class="{frame}">'
-            f'<pre class="{plate}"{style} aria-hidden="true">'
-            f'{ansi_to_html(chr(10).join(lines))}</pre></div>')
+            f'<pre class="{plate}"{style} aria-hidden="true">{body}</pre>'
+            f'</div>')
 
 
 # How tall a drawing is allowed to be, as a fraction of the frame it sits in.
@@ -6638,8 +6714,16 @@ ART_ADVANCE_EM = 0.612
 BRAILLE_ADVANCE_EM = ART_ADVANCE_EM * 1.135
 
 
-def _art_em_width(line):
-    """How wide a row of art is, in em, counting braille as the wider cell."""
+def _art_em_width(line, pinned=False):
+    """How wide a row of art is, in em, counting braille as the wider cell.
+
+    Unless the plate is one of the mixed ones, where _pin_braille has held
+    every braille cell to a single character width and the wide cell is no
+    longer what the browser draws. The measurement has to agree with the
+    rendering or the sizing it feeds is answering about a different picture.
+    """
+    if pinned:
+        return len(line) * ART_ADVANCE_EM
     return sum(BRAILLE_ADVANCE_EM if "\u2800" <= c <= "\u28ff"
                else ART_ADVANCE_EM for c in line)
 
@@ -6681,9 +6765,17 @@ def _art_block(lines, caption, url, cls="dt-art", rows=DAY_ART_ROWS):
         # Trailing spaces are invisible but not free: they widen the <pre>
         # past its own ink, and .art-frame centres the <pre>. A shower whose
         # rows ended in a dozen spaces sat that far left of the middle.
+        #
+        # The smaller of the two margins on purpose, so a drawing that is not
+        # centred on its own canvas keeps the offset it had. The object pages
+        # ask art_plate for the other rule -- see centre_ink there -- because
+        # a portrait is alone in its frame and wants to be in the middle of
+        # it, where these sit in a row and want to agree with each other.
         body = [_slice_visible(l, cut, len(strip_ansi(l).rstrip()) or cut)
                 for l in body]
-        cols = max((_art_em_width(strip_ansi(l)) for l in body), default=0)
+        pinned = _mixes_braille(strip_ansi("\n".join(body)))
+        cols = max((_art_em_width(strip_ansi(l), pinned) for l in body),
+                   default=0)
     if body and rows and len(body) < rows:
         pad = rows - len(body)
         body = [""] * (pad // 2) + body + [""] * (pad - pad // 2)
@@ -9123,6 +9215,19 @@ document.documentElement.classList.add('js');
              min-width:0}}
  .art-plate{{margin:0;line-height:1.2em;white-space:pre;overflow:hidden;
              font-variant-ligatures:none;-webkit-font-smoothing:none}}
+ /* Braille pinned to one cell. Nothing we bundle has U+2800, so the browser
+    falls back to a font that does and those cells come out 1.135 times wider
+    (BRAILLE_ADVANCE_EM). A drawing that is all braille only ends up uniformly
+    wider, which is why this went unnoticed for so long -- but one that mixes
+    braille with characters shears, because every cell after a braille cell
+    slides right. On a deep-sky cluster plate that reached 1.35 cells, which
+    is a mesh line no longer touching the star it links.
+
+    1ch is the advance of "0" in whatever font the plate is actually using, so
+    this is the ASCII cell width by definition rather than a number that has
+    to be kept in step with one. Emitted by art_plate, and only on the
+    drawings that mix -- see _pin_braille. */
+ .art-plate .br{{display:inline-block;width:1ch}}
  /* The modal's own modifier: takes the slack over the caption, so the
     drawing has something to be centred in and the caption keeps the floor. */
  .art-fill{{flex:1 1 auto;min-height:0}}

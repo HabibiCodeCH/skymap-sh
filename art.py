@@ -468,6 +468,11 @@ def art_for(facts):
         return shower_art(name)
     if kind == "milkyway":
         return milkyway_art()
+    # Deep sky. Off the name rather than off the facts, unlike everything
+    # above: none of these changes, and a galaxy looks the same tonight as it
+    # did in 1781. Most of the catalogue gets nothing back -- see DSO_ART.
+    if kind in DSO_KINDS:
+        return dso_art(name)
     if name not in PALETTES:
         return []
     pole_b, pole_pa = facts.get("pole_b", 0.0), facts.get("pole_pa", 90.0)
@@ -479,6 +484,12 @@ def art_for(facts):
                           lit_from_left=bool(facts.get("waning")))
     return planet_art(name, illuminated=STYLE_ILLUMINATED,
                       pole_b=pole_b, pole_pa=pole_pa)
+
+
+# What object_facts calls the four deep-sky categories (api._KIND_WORD has the
+# same four). Named here rather than tested inline so that adding a fifth is
+# one edit and not a hunt.
+DSO_KINDS = ("galaxy", "cluster", "nebula", "planetary nebula")
 
 
 def has_art(name):
@@ -1016,4 +1027,1034 @@ def milkyway_art(cols=MW_COLS, rows=MW_ROWS, sun=True):
         r = int(round(H / 2 - R_SUN_KPC * math.sin(a) * scale)) // SUBY
         if 0 <= r < rows and 0 <= c < cols:
             grid[r][c], tint[r][c] = "☉", MW_SUN
+    return _emit(grid, tint)
+
+
+# --------------------------------------------------------------- deep sky
+# The same problem the Galaxy above has, 120 times over: there is no view of
+# M57 that is not somebody's photograph, and tracing one by hand makes it a
+# derivative work (see the module docstring, and build_dsoinfo.py's reasons
+# for typing 55 sizes rather than importing a catalogue).
+#
+# So these are models too, and only for the objects whose shape a handful of
+# measured numbers actually determines. A planetary nebula is a shell of gas
+# and the ring is limb brightening -- the line of sight through a thin shell
+# is longest at the edge -- so drawing the path length through a shell gives
+# the ring for free rather than by drawing a ring. A spiral is an exponential
+# disc with a logarithmic spiral in it, which is what milkyway_art already
+# draws. A globular is a King profile. Those come out as pictures of the
+# physics, in the same way the planets are pictures of Lambert's law.
+#
+# Where the shape is irregular -- the Orion Nebula, the Veil, the North
+# America -- there is no small set of numbers that produces it, and the only
+# way to draw it is to copy one. Those get nothing, which is the same answer
+# a single-star asterism gets.
+#
+# Every parameter here is either read from dsoinfo.json (the measured extent)
+# or a published measured fact typed in below (position angle, concentration
+# class). Nothing is chosen to look nice except the tone ramps.
+
+DSO_COLS = 45
+DSO_ROWS = 17
+
+# Tone ramps, brightest first, matching sky.DSO_GLYPH's colour per category so
+# the portrait and the glyph the chart marks it with are recognisably the same
+# object: green galaxy, gold cluster, cyan planetary.
+# Clusters of both kinds are gold, matching the glyph the charts mark them
+# with. This is the one place here where the drawing keeps a convention instead
+# of following the physics, and it is a deliberate choice rather than an
+# oversight: a globular photographs white and an open cluster blue-white, and
+# both of those were tried. At eleven pixels on a black plate the white came out
+# as grey mush with no colour to it at all, while the gold reads instantly and
+# agrees with the mark on the chart underneath. A drawing nobody can see the
+# shape of is not more honest for having the right hue.
+CLU_RAMP = ((0.66, "\033[38;5;229m"), (0.30, "\033[38;5;221m"),
+            (0.0, "\033[38;5;136m"))
+
+# What the photographs show, kept for the record and for anyone who wants to
+# see the comparison again: an old population with no dust in it is white, and
+# a young one is blue-white.
+CLU_RAMP_WHITE = ((0.66, "\033[38;5;255m"), (0.30, "\033[38;5;252m"),
+                  (0.0, "\033[38;5;103m"))
+OPEN_RAMP_BLUE = ((0.66, "\033[38;5;255m"), (0.30, "\033[38;5;189m"),
+                  (0.0, "\033[38;5;110m"))
+PLN_RAMP = ((0.66, "\033[38;5;51m"), (0.30, "\033[38;5;44m"),
+            (0.0, "\033[38;5;30m"))
+
+# The other palette a planetary nebula comes in, and the reason it needs one:
+# these things glow in two lines at once. Doubly ionised oxygen is blue-green
+# and hydrogen alpha is red, and which one you see where depends on how far out
+# you are looking -- the inner shell, close to the hot star, is oxygen; the
+# outer shell and the lobes beyond it are hydrogen. So on this ramp the bright
+# middle is blue-white and it goes pink and then deep red outward, which is not
+# a decoration but the order the lines actually come in.
+#
+# The Dumbbell is the obvious case: a red object in every photograph ever taken
+# of it, with a blue-white middle. Drawn in the chart's cyan it was wrong.
+PLN_RAMP_HA = ((0.66, "\033[38;5;159m"), (0.30, "\033[38;5;211m"),
+               (0.0, "\033[38;5;125m"))
+
+# Two objects where the colour follows the radius and not the brightness, so
+# these ramps are read against distance from the middle rather than against the
+# tone. In a shell the two are not the same thing at all: brightness peaks at
+# the ring, where the line of sight is longest, so the middle and the outside
+# are both faint while being completely different colours.
+#
+# The Ring Nebula, from the middle out: blue where doubly ionised oxygen fills
+# the cavity, teal and white through the shell itself, orange in the outer halo
+# where hydrogen and nitrogen take over.
+PLN_RAMP_RING = ((0.55, "\033[38;5;33m"), (0.18, "\033[38;5;80m"),
+                 (0.0, "\033[38;5;173m"))
+
+# The Crab, same idea and different physics. The blue-teal middle is not a
+# spectral line at all -- it is synchrotron light from electrons spiralling in
+# the pulsar's magnetic field, which is why it is smooth where the rest is
+# filaments. The yellow and orange outside it are those filaments.
+PLN_RAMP_CRAB = ((0.55, "\033[38;5;80m"), (0.25, "\033[38;5;228m"),
+                 (0.0, "\033[38;5;172m"))
+
+# The Pleiades' own colours. Its members are hot B stars and the dust around
+# them scatters their light, so the stars and the cloud really are both blue --
+# it is the one object here whose colour is measured rather than a convention.
+# The figure is blue too, not the indigo the constellation lines use
+# (sky.C.DIM), so the shape reads as belonging to the cluster rather than as a
+# piece of Taurus that happens to cross it.
+NEB_BLUE = ((0.66, "\033[38;5;117m"), (0.30, "\033[38;5;74m"),
+            (0.0, "\033[38;5;25m"))
+FIGURE_C = "\033[38;5;68m"
+
+# Nebulosity stops well short of solid. It is the background of its own
+# picture -- the stars are the subject -- and a cloud allowed the top of the
+# ramp draws over them.
+CLOUD_TONES = " ..::"
+
+# The web over a modelled cluster, and the one dim thing in a gold drawing.
+MESH_C = "\033[38;5;94m"
+
+# Single braille dots, for stippling a cloud that would otherwise come out as
+# flat bands of one character.
+SPARKLE_DOTS = (0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0x80)
+
+# Spikes on the brightest members: a dash in each of the four neighbouring
+# cells, laid against the star rather than centred in its own cell, so a
+# character-wide star reads as three cells across.
+#
+# Every photograph of the Pleiades has these, and they are an artefact of the
+# telescope rather than anything in the sky -- but so is the reason the cluster
+# looks like six bright stars and not a thousand faint ones, and drawing the
+# brightest members as bigger is the only way a character grid can say which
+# ones the eye actually goes to.
+SPIKES = ((0, -1, 0x24), (0, 1, 0x09), (-1, 0, 0x12), (1, 0, 0x12))
+
+# How hard a member's halo is compressed against its brightness. Flux runs
+# over a factor of eleven from Alcyone to Celaeno, and at the fourth root of
+# that every sister still gets a halo while Alcyone's stays the largest.
+GLOW_COMPRESS = 0.28
+
+# Galaxies get milkyway_art's own palette instead, because it is the physical
+# one and because the two drawings are of the same kind of thing: the bulge is
+# old stars and yellow, the arms are young stars and blue. A galaxy portrait in
+# the chart's green would agree with the glyph and disagree with the Galaxy
+# plate two pages over, and of those two the physics is the one worth keeping.
+GAL_RAMP = ((0.66, MW_CORE), (0.30, MW_MAJOR), (0.0, MW_HALO))
+
+# The green one the chart marks a galaxy with, kept for comparison.
+GAL_RAMP_CHART = ((0.66, "\033[38;5;157m"), (0.30, "\033[38;5;120m"),
+                  (0.0, "\033[38;5;65m"))
+
+# For the galaxies that are not yellow-and-blue. A spiral seen close to face on
+# is mostly the light of its whole disc at once rather than of its arms, and
+# what that adds up to is white: a cream core, grey-white arms, a blue-grey
+# haze at the edge. The Whirlpool is the one everybody has seen, and drawn in
+# the Galaxy's own palette it came out far too yellow.
+GAL_RAMP_WHITE = ((0.66, "\033[38;5;230m"), (0.30, "\033[38;5;253m"),
+                  (0.0, "\033[38;5;109m"))
+
+# Brightness to characters. One character per cell, chosen from a ramp, which
+# is how the planets above are shaded and for the same reason: these are
+# smooth extended things, and a nebula wants a tone rather than a dot.
+#
+# The braille scatter the asterisms and the meteor showers use is the wrong
+# tool here. It draws points and lines beautifully and a smooth gradient not
+# at all: dithering eight dots per cell against a random threshold turns a
+# fading edge into static, and the first attempt at the Ring Nebula came out
+# as a speckled disc with no ring in it.
+DSO_TONES = {
+    # Sparse to solid. Two entries at each of the low steps, so the faint
+    # outskirts get a wider band of the range than the bright middle -- most
+    # of one of these objects is faint, and a linear ramp spends its whole
+    # ladder on the core.
+    "ascii": " ...::+*#",
+    "blocks": " ░░▒▒▒▓▓█",
+    "braille": " ⠄⠄⠆⠇⡇⡧⡷⣿",
+}
+DSO_STYLE = "ascii"
+
+# Below this nothing is drawn at all. It is what gives the drawing an edge:
+# an exponential disc never actually reaches zero, and without a cut every
+# galaxy fills its whole frame with a haze.
+DSO_FLOOR = 0.10
+
+# How hard the tones are stretched: the asinh stretch astronomical images are
+# displayed with, for the same reason they use it. A galaxy's core is hundreds
+# of times its disc and a King core thousands of times its envelope, so a ramp
+# linear in brightness spends eight of its nine steps on the middle cell and
+# draws everything else as the faintest dot. Lower is a harder stretch.
+#
+# Per model, because the dynamic range is a property of the object rather than
+# of the drawing. A shell has almost none -- the hole in the Ring Nebula is
+# about half as bright as its rim -- and stretching that hard fills the hole
+# in, which is the same mistake the dithered first pass made from the other
+# direction.
+DSO_STRETCH = {"shell": 0.7, "bipolar": 0.7, "eyes": 0.7, "ansae": 0.7,
+               "spiral": 0.03, "elliptical": 0.03, "lens": 0.03,
+               "globular": 0.03}
+DSO_STRETCH_DEFAULT = 0.03
+
+# Where a globular starts resolving into stars, as a fraction of the
+# drawn radius. Inside this it is a smear at any aperture, and that is
+# what makes one look like a globular rather than like a swarm.
+GLOB_RESOLVED_IN = 0.22
+
+# The tones a resolved star may be drawn over: the faint ones only.
+GLOB_OVER = " .:"
+
+
+def _ramp_colour(ramp, b):
+    for t, col in ramp:
+        if b >= t:
+            return col
+    return ramp[-1][1]
+
+
+def _deproject(pa):
+    """Screen (x right, y up) -> (u along the major axis, v across it).
+
+    Position angle is measured from north through east, and east is to the
+    left here as in every other drawing on the site, so the major axis points
+    at (-sin pa, cos pa) on screen.
+    """
+    s, c = math.sin(math.radians(pa)), math.cos(math.radians(pa))
+    return lambda x, y: (-x * s + y * c, x * c + y * s)
+
+
+def _ellipse_box(q, pa, reach=1.0):
+    """Screen half-width and half-height of an ellipse with semi-axes (1, q)
+    turned by pa. Same job _extent does for the ring systems: the box decides
+    the scale, so a galaxy lying diagonally is drawn as large as one lying
+    flat instead of being sized off its major axis and clipped."""
+    s, c = math.sin(math.radians(pa)), math.cos(math.radians(pa))
+    return reach * math.hypot(s, q * c), reach * math.hypot(c, q * s)
+
+
+def _radial_tint(q, pa):
+    """1 in the middle, 0 at the edge, for colouring by radius.
+
+    Needed because in a shell the colour and the brightness run on different
+    axes: the tone peaks at the ring, where the sight line through the gas is
+    longest, so the cavity and the outer halo are equally faint while being
+    completely different colours. Keyed off brightness they come out the same,
+    and the Ring Nebula loses the blue middle that is the whole of what it
+    looks like.
+    """
+    uv = _deproject(pa)
+
+    def hue(x, y):
+        u, v = uv(x, y)
+        return max(0.0, 1.0 - math.hypot(u, v / q))
+    return hue
+
+
+def _field(cols, rows, hx, hy, fn, ramp, style=None,
+           stretch=None, chars=None, hue=None):
+    """A brightness function, sampled onto a character grid.
+
+    fn(u, v) -> 0..1 in units of the object's own major-axis half-length, with
+    the frame scaled so (hx, hy) just fits. Each cell is sampled at the eight
+    sub-pixel positions and averaged, which is what keeps a curved edge from
+    stepping: a cell half inside the shell comes out half as bright rather
+    than in or out.
+
+    Nothing random, so there is no seed: the same numbers give the same
+    picture in the terminal, in the browser and in the PNG export.
+    """
+    # chars overrides the ramp for a layer that must stay a background: a
+    # ladder that stops short of the solid end can never take the eye off
+    # what is drawn on top of it.
+    tones = chars or DSO_TONES[style or DSO_STYLE]
+    stretch = stretch or DSO_STRETCH_DEFAULT
+    W, H = cols * SUBX, rows * SUBY
+    scale = min((cols - 2) * SUBX / 2 / hx, (rows - 2) * SUBY / 2 / hy)
+    cells = [[0.0] * cols for _ in range(rows)]
+    peak = 0.0
+    for r in range(rows):
+        for c in range(cols):
+            tot = 0.0
+            for sy in range(SUBY):
+                for sx in range(SUBX):
+                    px, py = c * SUBX + sx, r * SUBY + sy
+                    tot += fn((px + 0.5 - W / 2) / scale,
+                              (H / 2 - py - 0.5) / scale)
+            cells[r][c] = tot / (SUBX * SUBY)
+            peak = max(peak, cells[r][c])
+    if peak <= 0.0:
+        return ([[" "] * cols for _ in range(rows)],
+                [[None] * cols for _ in range(rows)])
+
+    # Scaled to the drawing's own brightest cell, not to an absolute number.
+    # These profiles differ by orders of magnitude between a galaxy's core and
+    # its outskirts, and one fixed scale for all of them leaves the faint ones
+    # as a smudge; this is a picture of relative brightness, which is what the
+    # eye at an eyepiece sees too.
+    grid = [[" "] * cols for _ in range(rows)]
+    tint = [[None] * cols for _ in range(rows)]
+    top = math.asinh(1.0 / stretch)
+    for r in range(rows):
+        for c in range(cols):
+            b = math.asinh(cells[r][c] / peak / stretch) / top
+            if b <= DSO_FLOOR:
+                continue
+            step = (b - DSO_FLOOR) / (1.0 - DSO_FLOOR) * (len(tones) - 1)
+            grid[r][c] = tones[min(len(tones) - 1, int(step) + 1)]
+            if hue is None:
+                tint[r][c] = _ramp_colour(ramp, b)
+            else:
+                # At the cell's middle rather than averaged: colour has no
+                # business being blended between two of three tones, and a
+                # boundary that lands mid-cell reads better hard than mixed.
+                tint[r][c] = _ramp_colour(
+                    ramp, hue(((c + 0.5) * SUBX - W / 2) / scale,
+                              (H / 2 - (r + 0.5) * SUBY) / scale))
+    return grid, tint
+
+
+# ---- the shapes ---------------------------------------------------------
+
+def _shell_path(p, inner):
+    """How much shell a line of sight at impact parameter p goes through.
+
+    A hollow sphere of outer radius 1 and inner radius `inner`. This is the
+    whole reason a planetary nebula looks like a ring: nothing is dark in the
+    middle, there is simply less gas along that line.
+    """
+    if p >= 1.0:
+        return 0.0
+    out = math.sqrt(1.0 - p * p)
+    return out - (math.sqrt(inner * inner - p * p) if p < inner else 0.0)
+
+
+def _shell_fn(q, pa, inner, gamma=1.0):
+    uv, peak = _deproject(pa), math.sqrt(1.0 - inner * inner)
+
+    def fn(x, y):
+        u, v = uv(x, y)
+        return (_shell_path(math.hypot(u, v / q), inner) / peak) ** gamma
+    return fn
+
+
+def _bipolar_fn(q, pa, sep, lobe, inner, gamma=1.0):
+    """Two shells on a common axis: the shape a bipolar planetary has, and
+    the shape M27 and M76 are named for."""
+    uv = _deproject(pa)
+    peak = math.sqrt(1.0 - inner * inner)
+
+    def fn(x, y):
+        u, v = uv(x, y)
+        b = 0.0
+        for off in (-sep, sep):
+            p = math.hypot((u - off) / lobe, v / (lobe * q))
+            b += _shell_path(p, inner) / peak
+        return min(1.0, b) ** gamma
+    return fn
+
+
+def _eyes_fn(q, pa, inner, eye_u, eye_v, eye_r, gamma=1.0):
+    """A shell with two darker patches in it, which is what earned M97 the
+    name Owl. The patches are cavities, so they are drawn by taking gas away
+    rather than by drawing eyes."""
+    uv, base = _deproject(pa), _shell_fn(q, pa, inner, gamma)
+
+    def fn(x, y):
+        b = base(x, y)
+        if b <= 0.0:
+            return 0.0
+        u, v = uv(x, y)
+        for off in (-eye_u, eye_u):
+            if math.hypot(u - off, v - eye_v) < eye_r:
+                # Darker, not empty. A cavity has less gas along the line of
+                # sight, not none, and drawn as a hole it reads as damage to
+                # the picture rather than as structure in the object.
+                return b * 0.45
+        return b
+    return fn
+
+
+def _ansae_fn(q, pa, inner, knot_u, knot_r, gamma=1.0):
+    """A shell with a knot on each end of the major axis. NGC 7009 is called
+    the Saturn Nebula because those two knots look like a ring seen edge-on;
+    they are real ejecta, not a drawing conceit."""
+    uv, base = _deproject(pa), _shell_fn(q, pa, inner, gamma)
+
+    def fn(x, y):
+        b = base(x, y)
+        u, v = uv(x, y)
+        for off in (-knot_u, knot_u):
+            d = math.hypot(u - off, v) / knot_r
+            if d < 1.0:
+                b = max(b, 0.85 * (1.0 - d * d))
+        return b
+    return fn
+
+
+def _spiral_fn(q, pa, arms, pitch, h, bulge, bulge_amp, sharp=2.0):
+    """An exponential disc with a logarithmic spiral in it.
+
+    The same arm law milkyway_art uses, seen from here instead of from above:
+    the sky-plane point is deprojected onto the disc, so the arms come out as
+    the ellipses a tilted spiral actually shows rather than as circles.
+    """
+    uv, k = _deproject(pa), math.tan(math.radians(pitch))
+
+    def fn(x, y):
+        u, v = uv(x, y)
+        w = v / q
+        r = math.hypot(u, w)
+        if r > 1.0:
+            return 0.0
+        arm = (0.5 + 0.5 * math.cos(arms * (math.atan2(w, u)
+                                            - math.log(max(r, 0.03)) / k)))
+        return (math.exp(-r / h) * (0.34 + 0.66 * arm ** sharp)
+                + bulge_amp * math.exp(-r / bulge))
+    return fn
+
+
+def _elliptical_fn(q, pa, re):
+    """de Vaucouleurs: the profile an elliptical galaxy has, which is why one
+    reads as a smooth gradient with no edge while a spiral reads as arms."""
+    uv = _deproject(pa)
+
+    def fn(x, y):
+        u, v = uv(x, y)
+        r = math.hypot(u, v / q)
+        if r > 1.0:
+            return 0.0
+        return math.exp(-7.67 * ((r / re) ** 0.25 - 1.0))
+    return fn
+
+
+def _lens_fn(pa, disc_q, disc_h, bulge_q, bulge_re, lane_v, lane_w):
+    """A thin disc, a fat bulge, and a dust lane across the disc. The lane is
+    the whole of why M104 is called the Sombrero, and it is dust in front of
+    the disc, so it is drawn by subtracting light rather than adding dark."""
+    uv = _deproject(pa)
+
+    def fn(x, y):
+        u, v = uv(x, y)
+        rd = math.hypot(u, v / disc_q)
+        rb = math.hypot(u, v / bulge_q)
+        b = 0.0
+        if rd <= 1.0:
+            b += math.exp(-rd / disc_h)
+        if rb <= 1.0:
+            b += 0.85 * math.exp(-7.67 * ((rb / bulge_re) ** 0.25 - 1.0))
+        if abs(v - lane_v) < lane_w and rd <= 1.0:
+            b *= 0.02
+        return b
+    return fn
+
+
+def _king_fn(rc):
+    """A King profile: flat core, falling envelope, cut off at the tidal
+    radius. rc is the core radius as a fraction of that cutoff, and it is
+    what the Shapley-Sawyer concentration class measures -- which is the
+    difference between M15's needle-sharp middle and M4's loose sprawl."""
+    floor = 1.0 / (1.0 + 1.0 / (rc * rc))
+
+    def fn(x, y):
+        r = math.hypot(x, y)
+        if r > 1.0:
+            return 0.0
+        return ((1.0 / (1.0 + (r / rc) ** 2) - floor) / (1.0 - floor)) ** 0.8
+    return fn
+
+
+# ---- clusters drawn as stars -------------------------------------------
+# A globular's core is a smear and its outskirts are stars, so the profile
+# above is the right drawing for one. An open cluster is the opposite: it is
+# stars all the way in, which is what "open" means, and a dithered blob would
+# be a picture of the wrong thing.
+
+def _open_stars(seed, n, spread, conc=0.65, cx=0.0, cy=0.0):
+    """n member positions and relative brightnesses, seeded off the name.
+
+    The brightness draw is weighted, because a cluster's luminosity function
+    is: two or three members carry the eye and the rest are faint. Drawn
+    evenly it reads as gravel.
+    """
+    rnd = _seeded(seed)
+    out = []
+    for _ in range(n):
+        r = spread * rnd() ** conc
+        a = rnd() * 2 * math.pi
+        out.append((cx + r * math.cos(a), cy + r * math.sin(a), rnd() ** 2.2))
+    return out
+
+
+def _mesh(stars, keep, place, W, H, limit=None):
+    """Braille links between the brightest members, as sub-pixel dots.
+
+    A modelled open cluster is a scatter, and a scatter of dots is the one
+    thing on this site that reads as an accident rather than as an object.
+    Joining the brightest few gives it an outline -- which is what the eye
+    does at the eyepiece anyway, and what the asterism portraits are built
+    on.
+
+    Each of the brightest few joined to its nearest neighbour among them, and
+    nothing else. Not a spanning tree: a tree has to reach every star it was
+    given, so one outlying member drags a line right across the plate, and
+    that single straggle undoes the shape the rest of the web builds. Local
+    links can simply stop, which is what leaves it a cluster with an outline
+    rather than a diagram of one.
+    """
+    bright = sorted(stars, key=lambda s: -s[2])[:keep]
+    dots, seen = set(), set()
+    for i, a in enumerate(bright):
+        rest = [(math.hypot(a[0] - b[0], a[1] - b[1]), j, b)
+                for j, b in enumerate(bright) if j != i]
+        if not rest:
+            break
+        rest.sort()
+        for d, j, b in rest[:2]:
+            if limit and d > limit:
+                break
+            key = (min(i, j), max(i, j))
+            if key in seen:
+                continue
+            seen.add(key)
+            _ast_line(dots, place(a[0], a[1]), place(b[0], b[1]), W, H)
+    return dots
+
+
+def _star_grid(cols, rows, hx, hy, stars, colour, mesh=0, mesh_limit=None):
+    """Discrete stars onto a character grid, brightest last.
+
+    colour(b) -> ANSI for a star of relative brightness b. Brightest last for
+    the reason the asterism portraits and the horizon chart both settled on:
+    where two stars want one cell, the one worth finding should win it.
+
+    mesh joins that many of the brightest with braille, under the stars.
+    """
+    import sky
+    W, H = cols * SUBX, rows * SUBY
+    scale = min((cols - 2) * SUBX / 2 / hx, (rows - 2) * SUBY / 2 / hy)
+    grid = [[" "] * cols for _ in range(rows)]
+    tint = [[None] * cols for _ in range(rows)]
+
+    def place(x, y):
+        return W / 2 + x * scale, H / 2 - y * scale
+
+    if mesh:
+        cells = {}
+        for x, y in _mesh(stars, mesh, place, W, H, mesh_limit):
+            key = (x // SUBX, y // SUBY)
+            cells[key] = (cells.get(key, 0)
+                          | sky.BRAILLE_DOTS[(x % SUBX, y % SUBY)])
+        for (c, r), bits in cells.items():
+            if 0 <= r < rows and 0 <= c < cols:
+                grid[r][c] = chr(sky.BRAILLE_BASE + bits)
+                tint[r][c] = MESH_C
+
+    for x, y, b in sorted(stars, key=lambda s: s[2]):
+        c = int((W / 2 + x * scale) // SUBX)
+        r = int((H / 2 - y * scale) // SUBY)
+        if 0 <= r < rows and 0 <= c < cols:
+            # Straight to the ladder the charts use, through a magnitude, so a
+            # cluster member and a field star of the same brightness are drawn
+            # with the same glyph.
+            grid[r][c] = sky.glyph_for(5.0 - 4.5 * b)
+            tint[r][c] = colour(b)
+    return grid, tint
+
+
+def _real_field(ra_h, dec_deg, radius_deg, limit):
+    """The catalogue's own stars inside a circle, gnomonic about its centre.
+
+    The one honest way to draw an open cluster: for the Pleiades, stars.json
+    holds nine members brighter than its own 6.5 cutoff, in their real
+    positions, and that scatter is the shape people recognise. It is the only
+    cluster on the site where this works -- every other sized object has one
+    catalogue star inside it, or none.
+    """
+    out = []
+    for x, y, st in _shower_field({"ra": ra_h, "dec": dec_deg}, limit):
+        if math.hypot(x, y) <= radius_deg:
+            out.append((x, y, st))
+    return out
+
+
+def _real_art(spec, stars, cols, rows, style, seed):
+    """An open cluster drawn from its own catalogue stars.
+
+    Three layers, and each is a different kind of claim. The stars are
+    measured: real positions, real magnitudes, real colours. The figure is a
+    convention the way an asterism's is -- somebody decided which of the
+    sisters to join up, and joining them is what makes eight dots read as the
+    Pleiades rather than as scattered field stars. The nebulosity is a model:
+    the dust is really there and really is lit by these stars, so it is drawn
+    as a glow around each member scaled by that member's own brightness, which
+    is why it comes out strongest where the bright sisters are. Nothing about
+    it is copied off a photograph.
+    """
+    import sky
+    # Framed on the members' own bounding box rather than on the cited centre:
+    # the stars bright enough to be in stars.json are not symmetric about it,
+    # and centring there left the Pleiades in the middle third of the plate
+    # with the rest of it empty.
+    xs = [x for x, _y, _st in stars]
+    ys = [y for _x, y, _st in stars]
+    cx, cy = (max(xs) + min(xs)) / 2, (max(ys) + min(ys)) / 2
+    glow = spec.get("glow")
+    # Room for the cloud to fade out in. Without it the glow is cut off square
+    # at the outermost star, which is the one thing a cloud must not do.
+    pad = 1.06 + (2.4 * glow if glow else 0.0)
+    hx = max(1e-6, (max(xs) - min(xs)) / 2) * pad
+    hy = max(1e-6, (max(ys) - min(ys)) / 2) * pad
+    W, H = cols * SUBX, rows * SUBY
+    scale = min((cols - 2) * SUBX / 2 / hx, (rows - 2) * SUBY / 2 / hy)
+
+    def place(x, y):
+        return W / 2 + (x - cx) * scale, H / 2 - (y - cy) * scale
+
+    # The cloud first, so everything else sits inside it.
+    if glow:
+        # A halo per member, and the brightest halo wins rather than the sum.
+        # Summed, the dust between the close sisters piles up into one mound
+        # brighter than anything around it, the whole frame gets normalised to
+        # that mound, and every other star loses its glow -- which is exactly
+        # how the first version came out looking like a wash of watercolour.
+        #
+        # Amplitude compressed hard, because it runs over a factor of eleven
+        # between Alcyone and Celaeno: uncompressed, only Alcyone has a halo
+        # at all. Compressed, every sister gets one and Alcyone's is still the
+        # biggest, which is what the photographs show.
+        top = min(st["m"] for _x, _y, st in stars)
+        lamps = [(x - cx, y - cy,
+                  (10 ** (-0.4 * (st["m"] - top))) ** GLOW_COMPRESS)
+                 for x, y, st in stars]
+
+        # Where the wings are cut off. A power law has no edge, so without
+        # this the faintest step of the ramp covers the whole plate in an even
+        # dusting of full stops -- present everywhere, saying nothing, and the
+        # single biggest reason the first version read as watercolour.
+        cut = spec.get("haze_cut", 0.10)
+
+        def cloud(u, v):
+            # Not a Gaussian: scattered light falls off as a power of the
+            # distance, so a halo has a small bright middle and wings that go
+            # a long way out. A Gaussian has neither, and draws as a disc.
+            return max(0.0, max(a / (1.0 + ((u - px) ** 2 + (v - py) ** 2)
+                                     / (glow * glow))
+                                for px, py, a in lamps) - cut)
+        grid, tint = _field(cols, rows, hx, hy, cloud, NEB_BLUE, style,
+                            spec.get("stretch", 0.55), chars=CLOUD_TONES)
+    else:
+        grid = [[" "] * cols for _ in range(rows)]
+        tint = [[None] * cols for _ in range(rows)]
+
+    # Then the figure, in braille, the way the asterism portraits draw theirs.
+    named = {st.get("n"): (x, y) for x, y, st in stars if st.get("n")}
+    dots = set()
+    for chain in spec.get("figure") or ():
+        pts = [place(*named[n]) for n in chain if n in named]
+        for a, b in zip(pts, pts[1:]):
+            _ast_line(dots, a, b, W, H)
+    cells = {}
+    for x, y in dots:
+        key = (x // SUBX, y // SUBY)
+        cells[key] = cells.get(key, 0) | sky.BRAILLE_DOTS[(x % SUBX, y % SUBY)]
+    for (c, r), bits in cells.items():
+        if 0 <= r < rows and 0 <= c < cols:
+            grid[r][c] = chr(sky.BRAILLE_BASE + bits)
+            tint[r][c] = FIGURE_C
+
+    # A scatter of single braille dots in the blue-white the members are drawn
+    # in. Two jobs. The nebulosity is a smooth function, and a smooth function
+    # over a coarse grid comes out as flat bands of one character -- a wash,
+    # with nothing in it to look at -- so these break it up; dust is not
+    # smooth, and this is closer to the object as well as to a picture worth
+    # having. And the field around the Pleiades is thick with faint stars that
+    # are nowhere near the catalogue's 6.5 cutoff, so open sky here is a
+    # statement about the catalogue rather than about the sky.
+    #
+    # Deliberately braille rather than the star glyphs: at a dot apiece they
+    # read as texture, and nothing in the drawing claims a star at a position
+    # that has not been measured.
+    if spec.get("sparkle"):
+        rnd = _seeded(seed + "sparkle")
+        for _ in range(spec["sparkle"]):
+            c, r = int(rnd() * cols), int(rnd() * rows)
+            bit = SPARKLE_DOTS[int(rnd() * len(SPARKLE_DOTS))]
+            if 0 <= r < rows and 0 <= c < cols and grid[r][c] in CLOUD_TONES:
+                grid[r][c] = chr(sky.BRAILLE_BASE + bit)
+                tint[r][c] = NEB_BLUE[0][1]
+
+    # The stars last and brightest last, as everywhere else here: where two
+    # want one cell, the one worth finding wins it.
+    #
+    # boost shifts the magnitudes into the top of the glyph ladder. A cluster
+    # portrait is a picture of its own members and nothing else, so the
+    # brightest of them should be drawn as the brightest thing the ladder has;
+    # left on the absolute scale the Pleiades came out as eight faint dots,
+    # because on the sky that is what a mag 4 star is.
+    boost = spec.get("boost", 0.0)
+    bright = sorted(stars, key=lambda p: p[2]["m"])[:spec.get("spikes", 0)]
+    for x, y, _st in bright:
+        px, py = place(x, y)
+        c0, r0 = int(px // SUBX), int(py // SUBY)
+        for dc, dr, bits in SPIKES:
+            c, r = c0 + dc, r0 + dr
+            if 0 <= r < rows and 0 <= c < cols:
+                grid[r][c] = chr(sky.BRAILLE_BASE + bits)
+                tint[r][c] = NEB_BLUE[0][1]
+    for x, y, st in sorted(stars, key=lambda p: -p[2]["m"]):
+        px, py = place(x, y)
+        c, r = int(px // SUBX), int(py // SUBY)
+        if 0 <= r < rows and 0 <= c < cols:
+            grid[r][c] = sky.glyph_for(st["m"] - boost)
+            tint[r][c] = sky.star_colour(st.get("ci"))
+    return _emit(grid, tint)
+
+
+# ---- the table ----------------------------------------------------------
+# Keyed by catalogue id, like dsoinfo.json, because a page can be reached by
+# either name ("M57" and "Ring Nebula" are both canonical) and the drawing is
+# of the object, not of the name.
+#
+# Three kinds of number live here and they are not equally trustworthy:
+#
+#   Measured, and read from dsoinfo.json: the axis ratio. Not typed here at
+#   all, except for the few objects dsoinfo does not cover yet.
+#
+#   Measured, and typed here: the position angle of the major axis (north
+#   through east) and the Shapley-Sawyer concentration class. Both are
+#   published facts about the object, and both have been checked against a
+#   source -- SIMBAD's angular-size record for the position angles, the class
+#   from each cluster's own literature. All thirteen classes came back exactly
+#   as first typed; nine of the seventeen position angles did not, and M51 was
+#   out by 142 degrees. Anything typed from memory here has to be checked the
+#   same way before it ships, because a wrong angle on a thin galaxy points it
+#   the wrong way against the chart directly underneath it.
+#
+#   Not measured, and not available: three objects have an axis ratio and no
+#   published angle to go with it -- M27, M1 and M97. They are drawn with the
+#   major axis up, which is a convention and not a claim; see the entries.
+#
+#   Not measured at all: how many members an open cluster is drawn with, and
+#   the arm count and pitch of a spiral. These are drawing choices. A modelled
+#   scatter says "about this rich, over this much sky" and nothing more.
+#
+# Shapley-Sawyer class -> core radius as a fraction of the drawn radius. The
+# class is the published datum and this ladder is the drawing's reading of it,
+# which is the right way round: I is a point with a halo and XII is barely a
+# cluster at all.
+SHAPLEY_RC = {"I": 0.06, "II": 0.09, "III": 0.11, "IV": 0.13, "V": 0.17,
+              "VI": 0.21, "VII": 0.25, "VIII": 0.30, "IX": 0.36, "X": 0.42,
+              "XI": 0.48, "XII": 0.55}
+
+DSO_ART = {
+    # -- planetary nebulae. Shells, so the drawing is a path length.
+    "NGC6720": {"model": "shell", "ramp": "pln_ring", "tint": "radial",
+                "pa": 60.0, "inner": 0.72},           # M57, the Ring
+    # No published angle for the dumbbell axis: SIMBAD carries M27 as round
+    # (6.7 by 6.7) so it has no position angle to give, and the 8.0 by 5.7
+    # in dsoinfo.json comes from the visual observing guides, which quote
+    # an extent and not an orientation. Drawn with the axis up, which is a
+    # convention rather than a claim about where it points.
+    "NGC6853": {"model": "bipolar", "ramp": "pln_ha", "pa": 0.0,
+                "sep": 0.46, "lobe": 0.58, "inner": 0.40},   # M27, Dumbbell
+    "NGC7009": {"model": "ansae", "ramp": "pln", "pa": 70.0, "q": 0.74,
+                "inner": 0.40, "knot_u": 1.34, "knot_r": 0.22,
+                "reach": 1.60},                       # the Saturn Nebula
+    "NGC650":  {"model": "bipolar", "ramp": "pln", "pa": 40.0,
+                "sep": 0.48, "lobe": 0.55,
+                "inner": 0.42},                       # M76, Little Dumbbell
+    "NGC3587": {"model": "eyes", "ramp": "pln", "pa": 0.0, "inner": 0.30,
+                "eye_u": 0.34, "eye_v": 0.08,
+                "eye_r": 0.26},                       # M97, the Owl
+    "NGC6543": {"model": "shell", "ramp": "pln", "pa": 10.0, "q": 0.86,
+                "inner": 0.45},                       # NGC 6543, Cat's Eye
+    # The one drawing here of an object the models do not really fit. A
+    # supernova remnant is filaments, not a shell, and no small set of numbers
+    # produces filaments -- so this is an honest oval at the measured 6.0x4.0
+    # and the prose has to carry the rest. Better than nothing only because
+    # the Crab is famous enough that a reader arrives expecting a picture.
+    "NGC1952": {"model": "shell", "ramp": "pln_crab", "tint": "radial",
+                "pa": 0.0, "inner": 0.10},            # M1, the Crab
+
+    # -- galaxies
+    "NGC224":  {"model": "spiral", "ramp": "gal", "pa": 35.0,
+                "bulge_amp": 0.55},                   # M31, Andromeda
+    "NGC5194": {"model": "spiral", "ramp": "gal_white", "pa": 28.0,
+                "pitch": 18.0, "bulge_amp": 0.50},    # M51, the Whirlpool
+    "NGC4594": {"model": "lens", "ramp": "gal", "pa": 90.0, "disc_q": 0.20,
+                "disc_h": 0.55, "bulge_q": 0.58, "bulge_re": 0.22,
+                "lane_v": -0.03, "lane_w": 0.030},    # M104, the Sombrero
+    "NGC4486": {"model": "elliptical", "ramp": "gal",
+                "pa": 152.0},                         # M87
+    # Round, so there is no angle to get wrong: dsoinfo.json has no minor
+    # axis for it and SIMBAD gives none either.
+    "NGC5457": {"model": "spiral", "ramp": "gal", "pa": 0.0, "arms": 3,
+                "pitch": 20.0, "h": 0.38,
+                "bulge_amp": 0.40},                   # M101, the Pinwheel
+    "NGC598":  {"model": "spiral", "ramp": "gal", "pa": 22.0, "pitch": 22.0,
+                "bulge_amp": 0.25},                   # M33, Triangulum
+    "NGC3031": {"model": "spiral", "ramp": "gal", "pa": 157.0, "pitch": 13.0,
+                "bulge_amp": 0.70},                   # M81, Bode's
+    # A starburst irregular seen edge on: no arms to draw and no bulge to draw
+    # them round, so the smooth profile is the honest one.
+    "NGC3034": {"model": "elliptical", "ramp": "gal", "pa": 66.0,
+                "re": 0.50},                          # M82, the Cigar
+    "NGC5236": {"model": "spiral", "ramp": "gal", "pa": 45.0, "pitch": 18.0,
+                "bulge_amp": 0.50},                   # M83
+    "NGC5055": {"model": "spiral", "ramp": "gal", "pa": 102.0, "arms": 5,
+                "pitch": 12.0, "bulge_amp": 0.60},    # M63, the Sunflower
+    "NGC4826": {"model": "spiral", "ramp": "gal", "pa": 113.0, "pitch": 12.0,
+                "bulge_amp": 0.75},                   # M64, the Black Eye
+    "NGC3623": {"model": "spiral", "ramp": "gal", "pa": 173.0, "pitch": 10.0,
+                "bulge_amp": 0.70},                   # M65
+    "NGC3627": {"model": "spiral", "ramp": "gal", "pa": 170.0,
+                "bulge_amp": 0.60},                   # M66
+    "NGC628":  {"model": "spiral", "ramp": "gal", "pa": 103.0, "pitch": 20.0,
+                "bulge_amp": 0.40},                   # M74
+    "NGC1068": {"model": "spiral", "ramp": "gal", "pa": 27.0, "pitch": 16.0,
+                "bulge_amp": 0.80},                   # M77
+    "NGC221":  {"model": "elliptical", "ramp": "gal", "pa": 170.0,
+                "re": 0.40},                          # M32
+    "NGC205":  {"model": "elliptical", "ramp": "gal", "pa": 170.0,
+                "re": 0.45},                          # M110
+
+    # -- globular clusters, by concentration class
+    "NGC5139": {"model": "globular", "ramp": "clu",
+                "class": "VIII"},                     # Omega Centauri
+    "NGC104":  {"model": "globular", "ramp": "clu",
+                "class": "III"},                      # 47 Tucanae
+    "NGC6205": {"model": "globular", "ramp": "clu",
+                "class": "V"},                        # M13, the Hercules
+    "NGC7078": {"model": "globular", "ramp": "clu",
+                "class": "IV"},                       # M15
+    "NGC5904": {"model": "globular", "ramp": "clu", "class": "V"},    # M5
+    "NGC6656": {"model": "globular", "ramp": "clu", "class": "VII"},  # M22
+    "NGC6121": {"model": "globular", "ramp": "clu", "class": "IX"},   # M4
+    "NGC5272": {"model": "globular", "ramp": "clu", "class": "VI"},   # M3
+    "NGC6341": {"model": "globular", "ramp": "clu", "class": "IV"},   # M92
+    "NGC7089": {"model": "globular", "ramp": "clu", "class": "II"},   # M2
+    "NGC6254": {"model": "globular", "ramp": "clu", "class": "VII"},  # M10
+    "NGC5024": {"model": "globular", "ramp": "clu", "class": "V"},    # M53
+    "NGC6093": {"model": "globular", "ramp": "clu", "class": "II"},   # M80
+
+    # -- open clusters
+    # The Pleiades, and no chain between the stars. An asterism is a figure --
+    # lines somebody drew between stars that have nothing to do with each
+    # other -- and this is the opposite: a real cluster, a thousand stars born
+    # together and still travelling together. Drawing the bowl-and-handle over
+    # it says the shape is the object, when the object is the swarm and the
+    # dust it is lighting.
+    # The radius takes in all seven sisters plus Atlas and Pleione, and stops
+    # short of the mag 5.4 field star three quarters of a degree south, which
+    # is not part of the figure anyone recognises and which set the scale for
+    # the whole plate when it was let in. It is a narrow gap to thread -- 0.61
+    # for the outermost sister against 0.73 for that star -- so the test names
+    # the sisters rather than counting them: 0.60 quietly dropped two.
+    "M45":     {"model": "real", "limit": 6.5, "radius": 0.66, "glow": 0.12,
+                "stretch": 0.30, "haze_cut": 0.30, "boost": 2.4,
+                "sparkle": 26, "spikes": 4},
+    "NGC6705": {"model": "open", "ramp": "clu", "n": 70, "spread": 0.95,
+                "conc": 0.75, "mesh": 14},            # M11, the Wild Duck
+    "NGC869":  {"model": "pair", "ramp": "clu", "with": "NGC884",
+                "n": 34, "radius": 0.16, "mesh": 16},  # the Double Cluster
+    "NGC2632": {"model": "open", "ramp": "clu", "n": 40, "spread": 0.95,
+                "conc": 0.55, "mesh": 12},            # M44, the Beehive
+    "NGC6475": {"model": "open", "ramp": "clu", "n": 30, "spread": 0.95,
+                "conc": 0.50, "mesh": 10},            # M7, Ptolemy's
+    "NGC6405": {"model": "open", "ramp": "clu", "n": 26, "spread": 0.95,
+                "conc": 0.55, "mesh": 10},            # M6, the Butterfly
+    "NGC2168": {"model": "open", "ramp": "clu", "n": 50, "spread": 0.95,
+                "conc": 0.60, "mesh": 12},            # M35
+    "NGC2099": {"model": "open", "ramp": "clu", "n": 60, "spread": 0.95,
+                "conc": 0.65, "mesh": 12},            # M37
+    "NGC1960": {"model": "open", "ramp": "clu", "n": 30, "spread": 0.95,
+                "conc": 0.60, "mesh": 10},            # M36
+    "NGC1912": {"model": "open", "ramp": "clu", "n": 40, "spread": 0.95,
+                "conc": 0.60, "mesh": 11},            # M38
+    "NGC7092": {"model": "open", "ramp": "clu", "n": 20, "spread": 0.95,
+                "conc": 0.45, "mesh": 8},             # M39
+    "NGC2287": {"model": "open", "ramp": "clu", "n": 34, "spread": 0.95,
+                "conc": 0.55, "mesh": 10},            # M41
+    "NGC2437": {"model": "open", "ramp": "clu", "n": 50, "spread": 0.95,
+                "conc": 0.60, "mesh": 12},            # M46
+    "NGC2422": {"model": "open", "ramp": "clu", "n": 24, "spread": 0.95,
+                "conc": 0.50, "mesh": 9},             # M47
+    "NGC7654": {"model": "open", "ramp": "clu", "n": 40, "spread": 0.95,
+                "conc": 0.60, "mesh": 11},            # M52
+    "NGC2682": {"model": "open", "ramp": "clu", "n": 50, "spread": 0.95,
+                "conc": 0.60, "mesh": 12},            # M67
+}
+
+_RAMPS = {"gal": GAL_RAMP, "clu": CLU_RAMP, "pln": PLN_RAMP,
+          "gal_white": GAL_RAMP_WHITE, "pln_ha": PLN_RAMP_HA,
+          "pln_ring": PLN_RAMP_RING, "pln_crab": PLN_RAMP_CRAB,
+          # Not used by anything in the table: the alternatives, so a
+          # comparison can be drawn without editing the palettes back in.
+          "gal_chart": GAL_RAMP_CHART, "clu_white": CLU_RAMP_WHITE,
+          "open_blue": OPEN_RAMP_BLUE}
+
+
+def _dso_entry(name):
+    """The catalogue record behind a page name, or None. Brightest wins, the
+    same tie-break objects._index uses, so "M31" lands on Andromeda rather
+    than on NGC205."""
+    import sky
+    key = (name or "").strip().lower()
+    if not key:
+        return None
+    best = None
+    for o in sky._load("deepsky.json"):
+        if key in (o["n"].lower(), o["id"].lower(),
+                   (o.get("cn") or "").lower()):
+            if best is None or o["m"] < best["m"]:
+                best = o
+    return best
+
+
+def _dso_q(obj, spec):
+    """The axis ratio: measured where dsoinfo.json has both axes, typed in the
+    table where it does not, and round otherwise."""
+    import sky
+    inf = sky._load("dsoinfo.json").get(obj["id"], {})
+    if inf.get("min") and inf.get("maj"):
+        return inf["min"] / inf["maj"]
+    return spec.get("q", 1.0)
+
+
+def dso_art(name, cols=DSO_COLS, rows=DSO_ROWS, ramp=None,
+            style=None):
+    """A deep-sky object's portrait, as ANSI lines, or [].
+
+    [] for anything not in DSO_ART, which is most of the catalogue: an object
+    whose shape is not determined by a few measured numbers gets no picture
+    rather than an invented one.
+    """
+    import sky
+    obj = _dso_entry(name)
+    if obj is None:
+        return []
+    spec = DSO_ART.get(obj["id"])
+    if not spec:
+        return []
+    model = spec["model"]
+    tones = _RAMPS[ramp or spec.get("ramp", "clu")] if model != "real" else None
+    seed = obj["id"]
+    q, pa = _dso_q(obj, spec), spec.get("pa", 0.0)
+    reach = spec.get("reach", 1.0)
+
+    if model == "real":
+        inf = sky._load("dsoinfo.json").get(obj["id"], {})
+        radius = spec.get("radius") or (inf.get("maj") or 60.0) / 120.0
+        stars = _real_field(obj["ra"], obj["de"], radius, spec["limit"])
+        if not stars:
+            return []
+        return _real_art(spec, stars, cols, rows, style, seed)
+
+    if model == "open":
+        stars = _open_stars(seed, spec["n"], spec["spread"], spec["conc"])
+        grid, tint = _star_grid(cols, rows, 1.0, 1.0, stars,
+                                lambda b: _ramp_colour(tones, b),
+                                spec.get("mesh", 0), 0.55 * spec["spread"])
+        return _emit(grid, tint)
+
+    if model == "pair":
+        other = _dso_entry(spec["with"])
+        if other is None:
+            return []
+        # The separation and the angle between them are the catalogue's, so
+        # the pair sits the way it sits in the eyepiece.
+        dx = -(other["ra"] - obj["ra"]) * 15 * math.cos(math.radians(obj["de"]))
+        dy = other["de"] - obj["de"]
+        rad = spec["radius"]
+        stars = (_open_stars(seed, spec["n"], rad, 0.65, -dx / 2, -dy / 2)
+                 + _open_stars(other["id"], spec["n"], rad, 0.65,
+                               dx / 2, dy / 2))
+        hx = abs(dx) / 2 + rad * 1.25
+        hy = abs(dy) / 2 + rad * 1.25
+        grid, tint = _star_grid(cols, rows, hx, hy, stars,
+                                lambda b: _ramp_colour(tones, b),
+                                spec.get("mesh", 0), 0.75 * rad)
+        return _emit(grid, tint)
+
+    if model == "shell":
+        fn = _shell_fn(q, pa, spec["inner"])
+    elif model == "bipolar":
+        fn = _bipolar_fn(q, pa, spec["sep"], spec["lobe"], spec["inner"])
+        reach = spec.get("reach", spec["sep"] + spec["lobe"])
+    elif model == "eyes":
+        fn = _eyes_fn(q, pa, spec["inner"], spec["eye_u"], spec["eye_v"],
+                      spec["eye_r"])
+    elif model == "ansae":
+        fn = _ansae_fn(q, pa, spec["inner"], spec["knot_u"], spec["knot_r"])
+    elif model == "spiral":
+        # Defaults for the numbers most spirals share, so an entry in the table
+        # carries only what is different about that galaxy.
+        fn = _spiral_fn(q, pa, spec.get("arms", 2), spec.get("pitch", 14.0),
+                        spec.get("h", 0.34), spec.get("bulge", 0.06),
+                        spec.get("bulge_amp", 0.55))
+    elif model == "elliptical":
+        fn = _elliptical_fn(q, pa, spec.get("re", 0.42))
+    elif model == "lens":
+        fn = _lens_fn(pa, spec["disc_q"], spec["disc_h"], spec["bulge_q"],
+                      spec["bulge_re"], spec["lane_v"], spec["lane_w"])
+        q = max(spec["disc_q"], spec["bulge_q"])
+    elif model == "globular":
+        rc = spec.get("rc") or SHAPLEY_RC[spec["class"]]
+        fn, q, pa = _king_fn(rc), 1.0, 0.0
+        # How many members resolve, from the concentration itself rather than
+        # typed per cluster: a loose cluster shows more of them, and a tight
+        # one is mostly the smear in the middle.
+        spec = dict(spec, halo=spec.get("halo", int(26 + 60 * rc)))
+    else:
+        return []
+
+    hx, hy = _ellipse_box(q, pa, reach)
+    grid, tint = _field(cols, rows, hx, hy, fn, tones, style,
+                        spec.get("stretch", DSO_STRETCH.get(model)),
+                        hue=_radial_tint(q, pa) if spec.get("tint") == "radial"
+                        else None)
+
+    # A globular resolves into stars at the edges and not in the middle, which
+    # is exactly what an eyepiece shows and what the dithered core cannot say
+    # on its own. Drawn over the field, sampled from the same profile, so the
+    # ones that appear are where the cluster actually has members.
+    if model == "globular" and spec.get("halo"):
+        W, H = cols * SUBX, rows * SUBY
+        scale = min((cols - 2) * SUBX / 2 / hx, (rows - 2) * SUBY / 2 / hy)
+        rnd = _seeded(seed + "halo")
+        drawn = 0
+        for _ in range(spec["halo"] * 12):
+            if drawn >= spec["halo"]:
+                break
+            r = GLOB_RESOLVED_IN + (0.94 - GLOB_RESOLVED_IN) * rnd()
+            if rnd() > fn(r, 0.0) ** 0.45:      # follow the cluster's profile
+                continue
+            a = rnd() * 2 * math.pi
+            b = rnd() ** 2.4
+            c = int((W / 2 + r * math.cos(a) * scale) // SUBX)
+            row = int((H / 2 - r * math.sin(a) * scale) // SUBY)
+            drawn += 1
+            if (0 <= row < rows and 0 <= c < cols
+                    and grid[row][c] in GLOB_OVER):
+                # In the cluster's own brightest tone. The stars that resolve
+                # out of a globular first are really its red giants, and
+                # drawing them amber was tried and dropped: it turns a gold
+                # cluster into two colours arguing with each other.
+                grid[row][c] = "•"
+                tint[row][c] = _ramp_colour(tones, 0.7 + 0.3 * b)
     return _emit(grid, tint)

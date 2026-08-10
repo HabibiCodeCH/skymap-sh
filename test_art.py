@@ -202,9 +202,14 @@ class TheMoonShowsItsRealPhase(unittest.TestCase):
 
 class OnlyWhereThereIsSomethingToDraw(unittest.TestCase):
 
-    def test_a_galaxy_gets_nothing_yet(self):
-        self.assertEqual(art.art_for({"object": "Andromeda Galaxy",
-                                      "kind": "galaxy"}), [])
+    def test_a_deep_sky_object_with_no_entry_gets_nothing(self):
+        # The guarantee that matters now that the deep sky is drawn: most of
+        # the 749-object catalogue is a bare NGC number whose shape nobody has
+        # measured, and it gets no picture rather than an invented one.
+        for name, kind in (("NGC7331", "galaxy"), ("NGC6910", "cluster"),
+                           ("Orion Nebula", "nebula")):
+            self.assertEqual(art.art_for({"object": name, "kind": kind}), [],
+                             name)
 
     def test_a_star_is_drawn_from_its_spectral_type(self):
         lines = art.art_for({"object": "Betelgeuse", "kind": "star",
@@ -223,6 +228,163 @@ class OnlyWhereThereIsSomethingToDraw(unittest.TestCase):
         # by "g" and "s", which are not classes at all.
         for sp, want in (("gK5", "K"), ("sgB2", "B"), ("K5III", "K")):
             self.assertTrue(art.star_art_for(sp, "giant"))
+
+
+class TheDeepSkyPlates(unittest.TestCase):
+    """The models are physics, so they have right answers too: a shell has to
+    come out hollow, a tighter concentration class has to come out tighter,
+    and none of it may wander outside the box the page reserves."""
+
+    def test_every_entry_draws_something_that_fits(self):
+        for dso_id in art.DSO_ART:
+            with self.subTest(dso_id):
+                lines = art.dso_art(dso_id)
+                self.assertTrue(lines, "drew nothing")
+                self.assertLessEqual(len(lines), art.DSO_ROWS)
+                for line in visible(lines):
+                    self.assertLessEqual(len(line), art.DSO_COLS)
+
+    def test_every_entry_is_reachable_by_the_names_a_page_uses(self):
+        # A page is reached by "M57" or by "Ring Nebula", and both have to
+        # land on the drawing. Anything in the table that objects.resolve_name
+        # cannot reach is a plate nobody will ever see.
+        for dso_id in art.DSO_ART:
+            with self.subTest(dso_id):
+                obj = art._dso_entry(dso_id)
+                self.assertIsNotNone(obj)
+                for name in filter(None, (obj["n"], obj.get("cn"))):
+                    self.assertEqual(objects.resolve_name(name), name, name)
+                    self.assertTrue(art.dso_art(name), name)
+
+    def test_the_same_object_is_drawn_the_same_way_twice(self):
+        # The scattered layers are seeded off the object's own id, so the
+        # terminal, the browser and the PNG export cannot disagree about what
+        # M11 looks like.
+        for name in ("M11", "M45", "Double Cluster", "M13"):
+            self.assertEqual(art.dso_art(name), art.dso_art(name), name)
+
+    def test_two_clusters_scatter_differently(self):
+        self.assertNotEqual(art.dso_art("M11"), art.dso_art("M37"))
+
+    def test_a_shell_is_hollow(self):
+        # The Ring Nebula's ring is not drawn as a ring: it is the path length
+        # through a hollow sphere, longest at the limb. If that ever stops
+        # being true the middle fills in and the object loses its name.
+        rows = visible(art.dso_art("M57"))
+        mid = rows[len(rows) // 2]
+        ink = [c for c, ch in enumerate(mid) if ch != " "]
+        middle = mid[ink[0] + len(ink) // 3:ink[0] + 2 * len(ink) // 3]
+        self.assertTrue(middle.strip(), "the middle is empty, not faint")
+        self.assertNotIn("#", middle)
+        self.assertIn("#", mid[:ink[0] + len(ink) // 3])
+
+    def test_concentration_class_reads_off_the_drawing(self):
+        # M15 is class IV and M4 is class IX, so M15's bright core has to be
+        # the smaller of the two. This is the whole content of the class.
+        def core(name):
+            return sum(l.count("#") for l in visible(art.dso_art(name)))
+        self.assertLess(core("M15"), core("M4"))
+
+    def test_the_shapley_ladder_covers_every_class_used(self):
+        for dso_id, spec in art.DSO_ART.items():
+            if spec["model"] == "globular":
+                self.assertIn(spec["class"], art.SHAPLEY_RC, dso_id)
+
+    def test_every_entry_names_a_palette_that_exists(self):
+        for dso_id, spec in art.DSO_ART.items():
+            if spec["model"] != "real":
+                self.assertIn(spec.get("ramp", "clu"), art._RAMPS, dso_id)
+
+    def test_the_pleiades_is_drawn_from_the_catalogue(self):
+        # The one cluster whose members are real, so this names them instead
+        # of counting them. Taygeta and Celaeno sit 0.61 degrees out and the
+        # radius was 0.60 first, which dropped two of the seven sisters from
+        # the picture without dropping anything a count would have noticed.
+        obj = art._dso_entry("M45")
+        spec = art.DSO_ART["M45"]
+        stars = art._real_field(obj["ra"], obj["de"], spec["radius"],
+                                spec["limit"])
+        names = {st.get("n") for _x, _y, st in stars}
+        for sister in ("Alcyone", "Atlas", "Electra", "Maia", "Merope",
+                       "Taygeta", "Celaeno", "Pleione"):
+            self.assertIn(sister, names)
+
+    def test_the_drawings_are_dispatched_by_kind(self):
+        for name, kind in (("Andromeda Galaxy", "galaxy"), ("M13", "cluster"),
+                           ("Ring Nebula", "planetary nebula")):
+            self.assertTrue(art.art_for({"object": name, "kind": kind}), name)
+
+    def test_nothing_but_ascii_and_braille_reaches_the_page(self):
+        # Same rule the rest of this file holds the art to, with braille
+        # allowed because the mesh and the spikes are drawn in it.
+        for dso_id in art.DSO_ART:
+            for line in visible(art.dso_art(dso_id)):
+                for ch in line:
+                    self.assertTrue(ch.isascii() or "⠀" <= ch <= "⣿"
+                                    or ch in "•●·", repr(ch))
+
+
+class BrailleIsHeldToOneCell(unittest.TestCase):
+    """Nothing bundled has U+2800, so the fallback font's braille cell is
+    1.135 times as wide. A drawing that is all braille only comes out
+    uniformly wider; one that mixes shears, and every cell after a braille
+    cell slides right."""
+
+    def test_a_mixed_drawing_gets_its_braille_pinned(self):
+        markup = api.art_plate(art.dso_art("M11"))
+        self.assertIn('class="br"', markup)
+
+    def test_a_drawing_with_no_braille_pays_nothing(self):
+        markup = api.art_plate(art.dso_art("M31"))
+        self.assertNotIn('class="br"', markup)
+        self.assertFalse(api._mixes_braille("".join(visible(
+            art.dso_art("M31")))))
+
+    def test_the_asterisms_and_showers_were_mixed_all_along(self):
+        # Not a new problem and not one this brought in: a shower is braille
+        # trails with catalogue star glyphs over them, so it has always had
+        # the shear. It is only now that anything measured it.
+        self.assertTrue(api._mixes_braille(
+            "".join(visible(art.shower_art("Perseids")))))
+        self.assertIn('class="br"', api.art_plate(art.shower_art("Perseids")))
+
+    def test_a_plate_of_pure_braille_is_left_alone(self):
+        self.assertFalse(api._mixes_braille("⠒⠤⠉\n⠁⠂"))
+
+    def test_the_plate_is_cut_to_the_drawing_so_centring_centres_the_ink(self):
+        # .art-frame centres the <pre>, and the <pre> is as wide as its widest
+        # line, so a canvas with blank columns down one edge puts the drawing
+        # off to one side. M31 was eleven columns in from the left and flush
+        # on the right, and sat five and a half cells right of the middle.
+        def margins(lines):
+            # centre_ink, the way object_html asks for it. The modal frames
+            # deliberately keep the other rule, so this is not a property of
+            # every plate on the site.
+            plate = api.art_plate(lines, centre_ink=True)
+            inner = re.search(r"<pre[^>]*>(.*)</pre>", plate, re.S).group(1)
+            rows = [re.sub(r"<[^>]+>", "", row) for row in inner.split("\n")]
+            ink = [row for row in rows if row.strip()]
+            width = max(len(row.rstrip()) for row in ink)
+            return (min(len(row) - len(row.lstrip(" ")) for row in ink),
+                    width - max(len(row.rstrip()) for row in ink))
+        for name in ("M31", "M11", "M45", "M104", "M13"):
+            with self.subTest(name):
+                self.assertEqual(margins(art.dso_art(name)), (0, 0))
+        # And the drawings that were already there, which have the same shape
+        # of problem: art._emit strips each row's trailing spaces and keeps
+        # its leading ones.
+        self.assertEqual(margins(art.shower_art("Perseids")), (0, 0))
+        self.assertEqual(margins(art.asterism_art("Big Dipper")), (0, 0))
+        self.assertEqual(margins(planet("Saturn")), (0, 0))
+
+    def test_pinning_does_not_touch_the_characters_themselves(self):
+        # The spans go round the cells, so the drawing read back out has to be
+        # the drawing that went in.
+        lines = art.dso_art("M45")
+        markup = api.art_plate(lines)
+        stripped = re.sub(r"<[^>]+>", "", markup)
+        self.assertIn(api.strip_ansi(lines[len(lines) // 2]).strip(),
+                      stripped)
 
 
 if __name__ == "__main__":
