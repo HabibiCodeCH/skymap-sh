@@ -2377,6 +2377,11 @@ def _respond(request: Req, place: str | None):
         # and find is promoted onto the header too (header_html's
         # find_value below), right next to it. This form's own onsubmit
         # still reads both by id regardless of where they live in the DOM.
+        # Armed once for the page, used by whichever header branch runs. A
+        # pinned ?t= page arms nothing: it is not that minute and never
+        # becomes it.
+        crossing = api.crossing_arm_html(r.place,
+                                         pinned=q.get("t") is not None)
         explore = api.EXPLORE_DATETIME
         # Shown for everyone -- CSS (.mobile-only, a pointer:coarse media
         # query) decides who actually sees it, since there's no reliable
@@ -2402,7 +2407,7 @@ def _respond(request: Req, place: str | None):
         # is the invitation. Typing after it searches objects, so "Tokyo/"
         # then "ven" reads as the URL it will go to. /Tokyo/ and /Tokyo are
         # the same page, so the slash costs nothing if it is never used.
-        header = api.header_html(f"{r.place.name}/")
+        header = api.header_html(f"{r.place.name}/", crossing=crossing)
         # The width ladder applies to any plain horizon panorama, find=
         # included -- find draws the full panorama now, not a crop, so it
         # goes through the same _effective_width(r) as the ordinary view
@@ -2495,7 +2500,8 @@ def _respond(request: Req, place: str | None):
             head_html = api.dim_directions(head_html)
             chart_html = api.chart_layout(rungs, zenith, prose, head=False)
             on_pill, on_modal = api.sky_pill_html(r, res.data)
-            header = api.header_html(f"{r.place.name}/", pill=on_pill)
+            header = api.header_html(f"{r.place.name}/", pill=on_pill,
+                                     crossing=crossing)
             chart_html = api.chart_page(head_html, chart_html, on_modal)
             if not r.night and daytime:
                 _stat["day:panel"] += 1

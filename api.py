@@ -3411,7 +3411,9 @@ def object_html(r, canonical, text, data, place=None, base_url="",
         # object seen from a named place. It used to show r.place.name, so
         # /Venus read "Zurich" -- the bar named the reader's location on a
         # page that was not about their location at all.
-        header=header_html(f"{place}/{canonical}" if place else canonical),
+        header=header_html(f"{place}/{canonical}" if place else canonical,
+                           crossing=crossing_arm_html(lookup_place(place)
+                                                      if place else None)),
         controls=controls_html(EXPLORE),
         wide_class=" w-wide", coming_up_card="",
         # The event picker is the eclipse page's picker, so it gets that
@@ -3538,7 +3540,9 @@ def eclipse_html(r, f, key, entry, map_rows, legend, disc=None,
     return _object_page_template().format(
         title=html.escape(eclipse_title(f)),
         head_extra=head,
-        header=header_html(f"{place}/eclipse" if place else "eclipse"),
+        header=header_html(f"{place}/eclipse" if place else "eclipse",
+                           crossing=crossing_arm_html(lookup_place(place)
+                                                      if place else None)),
         controls=controls_html(EXPLORE),
         wide_class=" w-wide", coming_up_card="",
         kbd_urls="{}", shortcuts_hint="", body=body)
@@ -4489,7 +4493,7 @@ _SUN_EVENTS_MAX = 256
 CROSSING_LOOKAHEAD_H = 26
 
 
-def next_crossing(r, within_hours=CROSSING_LOOKAHEAD_H):
+def next_crossing(place, now_utc, within_hours=CROSSING_LOOKAHEAD_H):
     """(first_utc, last_utc, rising) for the next crossing, or None.
 
     Next by when it *ends*, not when it starts, so a page loaded halfway
@@ -4501,11 +4505,11 @@ def next_crossing(r, within_hours=CROSSING_LOOKAHEAD_H):
     edge of that it grazes without ever clearing its own width -- both come
     back from sky.sun_crossing as None and both mean the same thing here.
     """
-    p = r.place
-    now = r.when_utc
+    p = place
+    now = now_utc
     off = p.offset(now)
-    day0_local = r.when_local.replace(hour=0, minute=0, second=0,
-                                      microsecond=0)
+    day0_local = (now + dt.timedelta(hours=off)).replace(
+        hour=0, minute=0, second=0, microsecond=0)
     best = None
     # Today and tomorrow, both crossings of each. Four candidates, and the
     # cheapest way to be right about a page open at 23:50.
@@ -4515,8 +4519,12 @@ def next_crossing(r, within_hours=CROSSING_LOOKAHEAD_H):
         # the far side of a DST change can therefore be found an hour out;
         # that is the standing limitation on this page, not a new one.
         day0 = day0_local + dt.timedelta(days=day) - dt.timedelta(hours=off)
+        # Solved once per day and handed to both directions. sun_events walks
+        # 145 samples, and this used to run it four times for an answer that
+        # only changes twice -- 4.7ms on every uncached chart page.
+        ev = sun_events_cached(day0, p.lat, p.lon)
         for rising in (False, True):
-            got = sky.sun_crossing(day0, p.lat, p.lon, rising=rising)
+            got = sky.sun_crossing(day0, p.lat, p.lon, rising=rising, ev=ev)
             if got is None:
                 continue
             first, last = got
@@ -4529,6 +4537,54 @@ def next_crossing(r, within_hours=CROSSING_LOOKAHEAD_H):
     return best
 
 
+# How near a crossing has to be before the page arms itself for it. Two
+# hours covers somebody who opened the site in the evening and is still
+# there when the Sun goes down, and excludes the tab left open since
+# lunchtime -- a full-screen takeover firing on a page somebody forgot they
+# had is an ambush, not a moment. It is also why a page opened at half past
+# nine gets nothing: tomorrow's sunrise is nine hours away.
+CROSSING_ARM_H = 2.0
+
+
+def crossing_arm_html(place, now_utc=None, pinned=False):
+    """The marker the page's script arms its timer from, or "".
+
+    Emitted rather than the frames themselves: this is a handful of bytes,
+    and it goes on every page of the site that is about a place, so it has
+    to stay small. The 60KB of drawing is fetched from crossing.json only if
+    the moment actually arrives.
+
+    Takes a place rather than a chart Request because it is not a chart
+    feature -- an object page, an eclipse page and the chart all want it,
+    and only one of them has a Request to hand.
+
+    Nothing at all on a pinned page. A ?t= page is not that minute and never
+    becomes it, and firing there would be an animation of a sunset that
+    already happened or has not yet.
+    """
+    if pinned or place is None:
+        return ""
+    now = now_utc or dt.datetime.utcnow()
+    got = next_crossing(place, now)
+    if got is None:
+        return ""
+    first, last, _rising = got
+    if (first - now).total_seconds() > CROSSING_ARM_H * 3600:
+        return ""
+    # Absolute instants, in epoch seconds. A chart page can be served from
+    # cache minutes after it was built, so anything of the shape "in N
+    # seconds" would be that much wrong by the time it is read.
+    at = first.replace(tzinfo=dt.timezone.utc).timestamp()
+    end = last.replace(tzinfo=dt.timezone.utc).timestamp()
+    # Keyed on the crossing, not the day or the reader, so seeing tonight's
+    # sunset does not use up tomorrow's sunrise.
+    key = f"{place.slug}:{first:%Y-%m-%dT%H:%M}"
+    return (f'<div id="crossing-arm" hidden data-at="{at:.0f}" '
+            f'data-end="{end:.0f}" '
+            f'data-url="/{quote(place.slug)}/crossing.json" '
+            f'data-key="{html.escape(key, quote=True)}"></div>')
+
+
 def crossing_frames(r):
     """The next crossing as frames the page can play, or None.
 
@@ -4537,7 +4593,7 @@ def crossing_frames(r):
     once, here, and nothing downstream sees a UT time it could mistake for
     a local one.
     """
-    got = next_crossing(r)
+    got = next_crossing(r.place, r.when_utc)
     if got is None:
         return None
     first_utc, last_utc, rising = got
@@ -8808,7 +8864,7 @@ SEARCH_HELP = (
     'catalog</a></div>')
 
 
-def header_html(value="", pill=""):
+def header_html(value="", pill="", crossing=""):
     """The command bar + nav, identical on every page -- one function so the
     nav can never drift or reorder between routes the way six separate
     PAGE.format() call sites each re-deciding it independently did. "home"
@@ -8853,8 +8909,15 @@ def header_html(value="", pill=""):
     before the merge keep working.
 
     The command bar and the nav row share one flex row (.header-row) so the
-    nav sits inline with it instead of wrapping to a line of its own."""
-    return (f'<div class="header-row">'
+    nav sits inline with it instead of wrapping to a line of its own.
+
+    `crossing` is the hidden marker that arms the sunset/sunrise takeover
+    (crossing_arm_html), and it rides here for one reason: this function is
+    the only thing every page on the site already calls. PAGE.format() has
+    twelve call sites and giving it a new key would mean teaching all twelve
+    -- the same reason _object_page_template exists rather than a second
+    copy of the shell. Pages with no place pass nothing and arm nothing."""
+    return (f'{crossing}<div class="header-row">'
             f'<div class="bar-wrap">'
             f'<form class="cmdbar" id="bar" method="get" action="/">'
             f'<span class="prompt" aria-hidden="true">$</span>'
@@ -9341,6 +9404,34 @@ document.documentElement.classList.add('js');
  .modal-close{{background:none;border:0;color:#6e7681;font:inherit;
                font-size:14px;cursor:pointer;padding:0 2px;line-height:1}}
  .modal-close:hover{{color:#c9d1d9}}
+/* The crossing. The whole screen goes black and the drawing is the only
+   thing on it -- fixed, so nothing underneath reflows: the chart is sized
+   to the window and a reflow would rescale it, which is the rule the
+   drawer had before this. */
+ #crossing-stage{{position:fixed;inset:0;z-index:90;background:#000;
+                  display:flex;align-items:center;justify-content:center;
+                  opacity:0;transition:opacity .7s ease}}
+ #crossing-stage.on{{opacity:1}}
+ .cx-frame{{position:relative;border:1px solid #1c2128;border-radius:8px;
+            padding:min(2vw,26px);background:#000}}
+/* Sized against the viewport rather than pinned: 45 columns of monospace at
+   about 0.6em an advance puts the frame at roughly two thirds of the width,
+   and the vh term is what stops it overflowing a short window instead. */
+ .cx-art{{margin:0;white-space:pre;font-family:ui-monospace,SFMono-Regular,
+          Menlo,Consolas,monospace;font-size:min(2.1vw,6.2vh);line-height:1.05;
+          color:#c9d1d9;font-variant-ligatures:none;-webkit-font-smoothing:none}}
+ .cx-clock{{position:absolute;top:min(2vw,26px);right:calc(min(2vw,26px) + 6px);
+            font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+            font-size:min(1vw,15px);color:#8b949e;letter-spacing:.04em}}
+ .cx-close{{position:fixed;top:16px;right:20px;border:0;background:none;
+            color:#6e7681;font:300 30px/1 inherit;cursor:pointer;padding:4px 10px}}
+ .cx-close:hover{{color:#c9d1d9}}
+/* The fade is the one thing here that is decoration, so it goes. The stage
+   itself must not: the close path cannot depend on a transition running,
+   or a reader with motion off gets a black screen they cannot dismiss. */
+ @media (prefers-reduced-motion: reduce){{
+   #crossing-stage{{transition:none}}
+ }}
  /* Two frames, always two, always the same height. A modal that is a
     different shape on a quiet night than on the night of an eclipse is one
     the reader has to re-read every time. */
@@ -10443,6 +10534,145 @@ function skymapRenderGif(btn){{
     e.stopPropagation();set(false);
   }});
 }})();
+
+// The crossing: the minute the answer to "is it day or night" changes.
+//
+// Nobody asks for this. It fires because the Sun did, so every rule here is
+// about not ambushing somebody:
+//
+//   - only while the crossing is actually happening (the real few minutes,
+//     not a moment either side of it),
+//   - only if this tab is the visible one right then, and never queued up
+//     for whenever they come back to it,
+//   - once per crossing per reader,
+//   - never with reduced motion asked for,
+//   - and it closes itself, because a reader who walked away must not come
+//     back to a black page over their chart.
+//
+// The server decides whether to arm at all: no marker in the page means
+// there is no crossing near enough to matter, or this is a pinned ?t= page,
+// where it is not that minute and never will be.
+(function(){{
+  // Where the crossing is known from, and why it is two things.
+  //
+  // A page that names a place is served `private` -- no shared cache -- so
+  // the server can put the reader's own crossing straight into it. The
+  // pages that do not name one (/help, /eclipse, /events, /catalog) are
+  // served `public`, and baking an IP-guessed sunset into those would hand
+  // the first reader's location to everyone who asked for the next hour.
+  // That is exactly how a Columbus datacentre once became the place every
+  // shared link was about.
+  //
+  // So those pages arm from what this browser already knows: any place page
+  // writes its crossing here, and every other page reads it. No request, no
+  // guessed location, and nothing about one reader in anybody else's cache.
+  var STORE='skymap.crossing.next';
+  var el=document.getElementById('crossing-arm'),rec=null;
+  if(el){{
+    // Absolute instants, not "seconds from now". A page can be served from
+    // cache minutes after it was built and a countdown baked into it would
+    // be that much stale; an instant stays true however long it sat.
+    rec={{at:+el.getAttribute('data-at')*1000,
+         end:+el.getAttribute('data-end')*1000,
+         url:el.getAttribute('data-url'),
+         key:el.getAttribute('data-key')}};
+    try{{localStorage.setItem(STORE,JSON.stringify(rec));}}catch(e){{}}
+  }}else{{
+    try{{rec=JSON.parse(localStorage.getItem(STORE)||'null');}}catch(e){{}}
+  }}
+  if(!rec||!rec.at||!rec.end||!rec.url)return;
+  var at=rec.at,end=rec.end,url=rec.url,key='skymap.crossing.'+rec.key;
+  // The remembered one has to be checked here, because only the marker went
+  // through the server's window. A record left over from yesterday, or one
+  // for a crossing still hours off, arms nothing.
+  var ahead=at-Date.now();
+  if(Date.now()>=end||ahead>{CROSSING_ARM_H_MS})return;
+  var seen=false;
+  // Safari in private mode throws on localStorage outright, so every touch
+  // of it is guarded. Failing to read it means showing the animation twice
+  // at worst, which is a better failure than the page dying here.
+  try{{seen=!!localStorage.getItem(key);}}catch(e){{}}
+  if(seen)return;
+  if(window.matchMedia&&
+     window.matchMedia('(prefers-reduced-motion: reduce)').matches)return;
+
+  var data=null,asked=false,timer=null,playing=false;
+
+  function done(){{ if(timer){{clearInterval(timer);timer=null;}} }}
+
+  function fetchFrames(){{
+    if(asked)return;
+    asked=true;
+    fetch(url,{{headers:{{'accept':'application/json'}}}})
+      .then(function(r){{return r.ok?r.json():null;}})
+      .then(function(d){{ if(d&&d.frames&&d.frames.length)data=d; }})
+      .catch(function(){{}});
+  }}
+
+  function play(){{
+    if(playing||!data)return;
+    playing=true;
+    done();
+    try{{localStorage.setItem(key,'1');}}catch(e){{}}
+    var stage=document.createElement('div');
+    stage.id='crossing-stage';
+    stage.innerHTML='<div class="cx-frame"><pre class="cx-art"></pre>'+
+                    '<span class="cx-clock"></span></div>'+
+                    '<button type="button" class="cx-close" '+
+                    'aria-label="close">&times;</button>';
+    document.body.appendChild(stage);
+    var art=stage.querySelector('.cx-art'),
+        clock=stage.querySelector('.cx-clock'),
+        shut=stage.querySelector('.cx-close');
+    var i=0,step=null,hold=null;
+    function show(){{art.innerHTML=data.frames[i];clock.textContent=data.labels[i];}}
+    function close(){{
+      if(step){{clearInterval(step);step=null;}}
+      if(hold){{clearTimeout(hold);hold=null;}}
+      stage.classList.remove('on');
+      // Not on transitionend: with reduced motion there is no transition to
+      // end, and a stage that cannot be dismissed is the worst thing this
+      // could leave behind.
+      setTimeout(function(){{
+        if(stage.parentNode)stage.parentNode.removeChild(stage);
+      }},700);
+      document.removeEventListener('keydown',onKey);
+    }}
+    function onKey(e){{if(e.key==='Escape')close();}}
+    show();
+    // A frame on the far side of the reveal, or the transition has no
+    // starting opacity to move from and it snaps straight to black.
+    requestAnimationFrame(function(){{stage.classList.add('on');}});
+    step=setInterval(function(){{
+      if(i>=data.frames.length-1){{
+        clearInterval(step);step=null;
+        hold=setTimeout(close,data.hold_ms||2500);
+        return;
+      }}
+      i++;show();
+    }},data.frame_ms||170);
+    shut.addEventListener('click',close);
+    stage.addEventListener('click',function(e){{if(e.target===stage)close();}});
+    document.addEventListener('keydown',onKey);
+  }}
+
+  function tick(){{
+    var now=Date.now();
+    if(now>=end){{done();return;}}          // gone; there is no catching up
+    if(now>=at-120000)fetchFrames();        // two minutes out, so it is ready
+    if(now<at)return;
+    // Inside the crossing. Only for somebody actually looking at it: a tab
+    // in the background gets nothing, and gets nothing later either.
+    if(document.hidden)return;
+    if(data)play();
+  }}
+
+  // Five seconds, not one long timer to the moment itself. Browsers throttle
+  // timers in background tabs and a laptop that slept through sunset would
+  // fire late or not at all; re-reading the clock survives both.
+  timer=setInterval(tick,5000);
+  tick();
+}})();
 /*CMDBAR_JS*/
 (function(){{
   // Drawer (SPEC-command-bar.md #9) -- present on every page (see
@@ -11228,6 +11458,11 @@ PAGE = PAGE.replace("{KBD_BAR}", str(KBD_BAR_H))
 # raw would put unprintables in the page source.
 PAGE = PAGE.replace("{ZENITH_SLOT_JS}", json.dumps(ZENITH_SLOT))
 PAGE = PAGE.replace("{HEAD_SLOT_JS}", json.dumps(HEAD_SLOT))
+# The same window the server arms within, in the units the page counts in.
+# Written once from the constant rather than twice by hand: a page that
+# armed on a wider window than the server does would fire off a remembered
+# crossing the server had already decided was too far away to be wanted.
+PAGE = PAGE.replace("{CROSSING_ARM_H_MS}", str(int(CROSSING_ARM_H * 3600_000)))
 
 
 # Only shown on an actual chart page (server.py passes "" everywhere else) --

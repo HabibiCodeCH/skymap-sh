@@ -4827,3 +4827,74 @@ class TheCrossingRoute(unittest.TestCase):
                   "crossing_none"):
             self.assertIn(k, data, k)
         self.assertEqual(data["crossing_set"], 1)
+
+
+class TheCrossingArmsAcrossTheSite(unittest.TestCase):
+    """Where the takeover can fire from, and -- just as much -- where the
+    reader's location must not be written into a shared cache."""
+
+    PLACE_PAGES = ("/Zurich", "/Zurich/venus", "/Zurich/eclipse/2026-08-12")
+    # Every one of these is served `public`, so none of them may carry a
+    # place-derived time: /events is cached for a day.
+    SHARED_PAGES = ("/eclipse", "/help", "/catalog", "/events")
+
+    def setUp(self):
+        client_cm = TestClient(server.app)
+        self.client = client_cm.__enter__()
+        self.addCleanup(client_cm.__exit__, None, None, None)
+        # Widened, or nothing arms anywhere except in the couple of hours
+        # before a real crossing and the test only passes in the evening.
+        self.was = api.CROSSING_ARM_H
+        api.CROSSING_ARM_H = 24.0
+        self.addCleanup(setattr, api, "CROSSING_ARM_H", self.was)
+
+    def page(self, url):
+        return self.client.get(url, headers=BROWSER).text
+
+    def test_a_page_about_a_place_carries_the_marker(self):
+        for url in self.PLACE_PAGES:
+            self.assertIn('id="crossing-arm"', self.page(url), url)
+
+    def test_a_shared_page_never_carries_one(self):
+        # This is the whole reason the browser remembers it instead. An
+        # IP-guessed sunset baked into a publicly cached page is one
+        # reader's location served to everyone who asks next -- which is
+        # how a datacentre in Columbus once became the place every shared
+        # link was about.
+        for url in self.SHARED_PAGES:
+            self.assertNotIn('id="crossing-arm"', self.page(url), url)
+
+    def test_but_every_page_can_still_fire_one(self):
+        # The script is what reads the remembered crossing, and it ships
+        # everywhere -- otherwise "arm it everywhere" is only the chart.
+        for url in self.PLACE_PAGES + self.SHARED_PAGES:
+            self.assertIn("skymap.crossing.next", self.page(url), url)
+
+    def test_a_guessed_place_never_reaches_a_shared_cache(self):
+        # The rule the whole split rests on, and it is narrower than "no
+        # marker on a public page". /Zurich/eclipse/... is public, and that
+        # is fine: the place is in the URL, so a cache keyed by that URL
+        # hands Zurich's crossing to everyone asking about Zurich.
+        #
+        # What must never be shared is a place nobody named -- the bare
+        # root, where it comes from the reader's IP. That page has to stay
+        # private, or one reader's sunset is served to the next.
+        root = self.client.get("/", headers=BROWSER)
+        self.assertIn("private", root.headers.get("cache-control", ""))
+        if 'id="crossing-arm"' in root.text:
+            self.assertIn("private", root.headers["cache-control"])
+
+    def test_a_place_named_in_the_url_may_be_cached_publicly(self):
+        # Stated so the narrower rule above is not read as the broad one and
+        # quietly "fixed" by someone later.
+        r = self.client.get("/Zurich/eclipse/2026-08-12", headers=BROWSER)
+        self.assertIn('data-url="/Zurich/crossing.json"', r.text)
+
+    def test_a_pinned_page_carries_nothing(self):
+        self.assertNotIn('id="crossing-arm"',
+                         self.page("/Zurich?t=2026-08-10T19:45"))
+
+    def test_the_marker_names_the_place_the_page_is_about(self):
+        self.assertIn('data-url="/Paris/crossing.json"', self.page("/Paris"))
+        self.assertIn('data-url="/Paris/crossing.json"',
+                      self.page("/Paris/venus"))

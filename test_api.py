@@ -3508,3 +3508,99 @@ class DayHeadlineFitsItsBoxTest(unittest.TestCase):
 
 
 
+
+
+class TheCrossingMarker(unittest.TestCase):
+    """The few bytes that arm the sunset takeover.
+
+    Not the drawing -- that is art.py's and it is fetched separately. This
+    is only "is there a crossing near enough to be worth waiting for, and
+    when exactly".
+    """
+    # 2026-08-10, Zurich: the Sun's limb touches the horizon at 20:42:43
+    # local and the last of it goes at 20:46:08.
+    SUNSET_LOCAL = dt.datetime(2026, 8, 10, 20, 42, 43)
+
+    def setUp(self):
+        self.place = api.lookup_place("Zurich")
+
+    def at(self, local, **kw):
+        """The marker as it would be at a local wall-clock moment."""
+        return api.crossing_arm_html(
+            self.place, local - dt.timedelta(hours=2), **kw)
+
+    def field(self, markup, name):
+        return re.search(rf'data-{name}="([^"]*)"', markup).group(1)
+
+    def test_it_arms_inside_the_window(self):
+        self.assertTrue(self.at(dt.datetime(2026, 8, 10, 19, 30)))
+        self.assertTrue(self.at(dt.datetime(2026, 8, 10, 20, 41)))
+
+    def test_it_stays_quiet_outside_it(self):
+        # Six hours out, and a full-screen takeover on a page somebody
+        # opened at lunchtime and forgot is an ambush, not a moment.
+        self.assertEqual(self.at(dt.datetime(2026, 8, 10, 14, 0)), "")
+        # And half past nine at night: tomorrow's sunrise is nine hours off.
+        self.assertEqual(self.at(dt.datetime(2026, 8, 10, 21, 30)), "")
+
+    def test_a_crossing_already_running_still_arms(self):
+        # Landing mid-sunset should show you the sunset happening outside.
+        self.assertTrue(self.at(dt.datetime(2026, 8, 10, 20, 44)))
+
+    def test_a_pinned_page_never_arms(self):
+        # ?t= is not that minute and never becomes it.
+        self.assertEqual(self.at(dt.datetime(2026, 8, 10, 19, 30),
+                                 pinned=True), "")
+
+    def test_no_place_arms_nothing(self):
+        self.assertEqual(api.crossing_arm_html(None), "")
+
+    def test_the_midnight_sun_arms_nothing(self):
+        far_north = api.lookup_place("Longyearbyen")
+        self.assertEqual(
+            api.crossing_arm_html(far_north, dt.datetime(2026, 6, 21, 10, 0)),
+            "")
+
+    def test_the_instants_are_absolute(self):
+        # Not "in N seconds". A page can be served from cache minutes after
+        # it was built, and a countdown baked into it would be that stale;
+        # an epoch instant stays true however long it sat.
+        m = self.at(dt.datetime(2026, 8, 10, 19, 30))
+        at = dt.datetime.utcfromtimestamp(int(self.field(m, "at")))
+        end = dt.datetime.utcfromtimestamp(int(self.field(m, "end")))
+        self.assertEqual(at, self.SUNSET_LOCAL - dt.timedelta(hours=2))
+        self.assertLess(at, end)
+        self.assertLess((end - at).total_seconds(), 600)
+
+    def test_the_same_crossing_gets_the_same_key_from_any_moment(self):
+        # The key is what makes "once per crossing" mean the crossing and
+        # not the page load, so two pages opened minutes apart have to agree.
+        a = self.field(self.at(dt.datetime(2026, 8, 10, 19, 30)), "key")
+        b = self.field(self.at(dt.datetime(2026, 8, 10, 20, 30)), "key")
+        self.assertEqual(a, b)
+        self.assertIn("Zurich", a)
+
+    def test_tomorrows_sunrise_is_a_different_crossing(self):
+        # Seeing tonight's sunset must not use up tomorrow morning.
+        tonight = self.field(self.at(dt.datetime(2026, 8, 10, 19, 30)), "key")
+        morning = self.field(
+            self.at(dt.datetime(2026, 8, 11, 5, 30)), "key")
+        self.assertNotEqual(tonight, morning)
+
+    def test_it_points_at_the_place_it_is_about(self):
+        m = self.at(dt.datetime(2026, 8, 10, 19, 30))
+        self.assertEqual(self.field(m, "url"), "/Zurich/crossing.json")
+
+    def test_the_page_counts_in_the_same_window_the_server_arms_in(self):
+        # Two copies of one number, in two languages. A page that armed on a
+        # wider window than the server does would fire off a remembered
+        # crossing the server had already decided was too far away.
+        wanted = int(api.CROSSING_ARM_H * 3600_000)
+        self.assertIn(f"ahead>{wanted}", api.PAGE)
+        self.assertNotIn("{CROSSING_ARM_H_MS}", api.PAGE)
+
+    def test_it_is_invisible_and_not_a_control(self):
+        m = self.at(dt.datetime(2026, 8, 10, 19, 30))
+        self.assertIn("hidden", m)
+        self.assertNotIn("<button", m)
+        self.assertNotIn("href", m)
