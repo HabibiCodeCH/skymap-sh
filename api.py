@@ -12161,6 +12161,16 @@ SPHERE_PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
  #toolbar{{position:fixed;left:0;right:72px;bottom:0;z-index:1000;padding:10px 12px;
          display:flex;gap:8px;flex-wrap:wrap;align-items:center;
          background:linear-gradient(rgba(4,6,10,0),rgba(4,6,10,.85) 65%)}}
+ /* Grouped so the wrap is a decision rather than an accident. Left to the
+    toolbar's own flex-wrap the break fell wherever the button labels happened
+    to run out of room, which is a different place on every phone and moved
+    again whenever a word changed. Two fixed columns on a narrow screen puts
+    the pair that changes WHAT is in the sky above the pair that changes how
+    it is drawn; on a wide one there is room for all four and it stays a row. */
+ #toggles{{display:flex;gap:8px;flex-wrap:wrap;align-items:center}}
+ @media (max-width:520px){{
+   #toggles{{display:grid;grid-template-columns:1fr 1fr}}
+ }}
  .toggle-btn{{background:#0d1117;border:1px solid #30363d;color:#6e7681;
              padding:6px 12px;border-radius:4px;font:inherit;font-size:12px;
              cursor:pointer}}
@@ -12209,6 +12219,10 @@ SPHERE_PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
  .plane-label span{{color:#8bb9d6;display:block;line-height:1.25}}
  body.daytime .plane-label span{{color:#14506e;text-shadow:none}}
  body.night .plane-label span{{color:#a33224}}
+ /* Pale blue on the daytime dome is pale blue on pale blue -- the line was
+    there and unreadable. Same darkening the plane labels already do, and the
+    same value, so the count and the labels it describes stay one colour. */
+ body.daytime #planes-msg{{color:#14506e}}
  body.night #planes-msg{{color:#8c2a20}}
  /* Mode switch: a vertical pair in the bottom-right corner, thumb-reachable
     on a phone held up in front of you. Two cells rather than one cycling
@@ -12428,10 +12442,12 @@ you're holding it; anywhere else, drag to look around.</p>
 <input id="place-input" type="text" placeholder="city or lat,lon">
 <button type="submit">Go</button>
 </form>
-<button id="labels-toggle" class="toggle-btn on">Labels</button>
+<div id="toggles">
 <button id="dso-toggle" class="toggle-btn">Deep sky</button>
 <button id="planes-toggle" class="toggle-btn" title="Aircraft overhead right now">Planes</button>
+<button id="labels-toggle" class="toggle-btn on">Labels</button>
 <button id="night-toggle" class="toggle-btn" title="Red light: keeps your night vision">Red</button>
+</div>
 <form id="find-form" autocomplete="off">
 <input id="find-input" type="text" placeholder="Find (Venus, Vega...)">
 <button type="submit">Find</button>

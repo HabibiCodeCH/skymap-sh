@@ -3673,6 +3673,21 @@ class TheEventStripOnTheSphere(unittest.TestCase):
         self.assertIsNotNone(strip)
         self.assertIn('id="radiant-hud-close"', strip.group(1))
 
+    def test_the_plane_count_darkens_in_daylight_too(self):
+        """#planes-msg is pale blue so it reads against a black sky. On the
+        daytime dome that is pale blue on pale blue: the line was there and
+        invisible. Same failure as the event strip's, same fix, so they are
+        pinned together."""
+        rule = re.search(r"body\.daytime #planes-msg\{([^}]*)\}", self.page)
+        self.assertIsNotNone(rule, "no daytime rule for the plane count")
+        self.assertIn("color:", rule.group(1))
+        # The same value the plane labels use, so the count and the aircraft
+        # it is counting do not end up two different colours.
+        label = re.search(r"body\.daytime \.plane-label span\{([^}]*)\}", self.page)
+        self.assertIsNotNone(label)
+        hexes = re.search(r"color:(#[0-9a-f]{6})", rule.group(1)).group(1)
+        self.assertIn(hexes, label.group(1))
+
     def test_dismissals_do_not_outlive_the_visit(self):
         """sessionStorage, not localStorage: a shower runs for days and its
         peak is one night of them, so a cross tapped on the 9th must not be
