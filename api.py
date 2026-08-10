@@ -12194,6 +12194,12 @@ SPHERE_PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
     everything else, so the newline between callsign and route has to be let
     through here, and both lines centre on the aircraft rather than hanging
     off one edge of it. */
+ /* Sits on the aircraft, so it gets the same glow the labels use to survive
+    a black sky, and loses it in daylight where a shadow just smudges. */
+ .plane-glyph{{color:#8bb9d6;font-size:15px;line-height:1;pointer-events:none;
+              text-shadow:0 0 4px #000,0 0 4px #000}}
+ body.daytime .plane-glyph{{color:#14506e;text-shadow:none}}
+ body.night .plane-glyph{{color:#a33224}}
  .plane-label{{white-space:pre-line;text-align:center}}
  .plane-label span{{color:#8bb9d6;display:block;line-height:1.25}}
  body.daytime .plane-label span{{color:#14506e;text-shadow:none}}
@@ -13534,6 +13540,7 @@ fetch('/' + PLACE + '/sphere.json' + window.location.search).then(function(r) {{
   }} else {{
     statusEl.textContent = data.place + ': ' + starsUp + ' stars up. Look around you.';
   }}
+  countPlanesForWelcome();
 }}).catch(function(err) {{
   statusEl.textContent = "Couldn't load the sky (" + err.message + "), tap to retry.";
 }});
@@ -13841,63 +13848,96 @@ var PLANE_POLL_MS = 15000;      // matches the server's own tile cache TTL --
                                 // polling faster would only re-serve the
                                 // same fifteen-second-old fix
 var PLANE_COLOUR = 0x8bb9d6;
-var planeObjs = [], planeLabels = [], planeTimer = null, planeFetching = false;
+var planeGlyphs = [], planeLabels = [], planeTimer = null, planeFetching = false;
 var planesMsg = document.getElementById('planes-msg');
 var planesBtn = document.getElementById('planes-toggle');
 
-function planeIcon(centre, next) {{
-  // A silhouette rather than a ring, because an aircraft is the one thing on
-  // this sphere that has a nose. Everything else here is a point of light and
-  // has no orientation to draw; drawing this one as a dot would throw away
-  // the only fact about it a glance can use -- which way it is going.
-  var n = centre.clone().normalize();
-  var fwd = null;
-  if (next) {{
-    // Flatten a minute of travel into the plane tangent to the sphere here.
-    // That is the direction it moves *across the sky*, which is not its
-    // compass track: an aircraft flying due north off to your east slides
-    // sideways across the view rather than climbing it.
-    fwd = next.clone().sub(centre);
-    fwd.addScaledVector(n, -fwd.dot(n));
-  }}
-  if (!fwd || fwd.lengthSq() < 1e-9) {{
-    // Upstream gave no track or no ground speed. Point at the zenith, so an
-    // aircraft we cannot aim looks deliberate rather than randomly rotated.
-    fwd = new THREE.Vector3(0, 1, 0);
-    fwd.addScaledVector(n, -fwd.dot(n));
-    if (fwd.lengthSq() < 1e-9) fwd = new THREE.Vector3(1, 0, 0);
-  }}
-  fwd.normalize();
-  var side = new THREE.Vector3().crossVectors(n, fwd).normalize();
-  var r = RADIUS * 0.026;
-  function at(f, s) {{
-    return centre.clone().addScaledVector(fwd, f * r)
-                         .addScaledVector(side, s * r);
-  }}
-  // Five strokes, nose first: fuselage, two swept wings, two tailplanes.
-  var pts = [at(1.0, 0), at(-0.9, 0),
-             at(0.2, 0), at(-0.1, -0.9),
-             at(0.2, 0), at(-0.1, 0.9),
-             at(-0.75, 0), at(-0.95, -0.35),
-             at(-0.75, 0), at(-0.95, 0.35)];
-  var o = new THREE.LineSegments(new THREE.BufferGeometry().setFromPoints(pts),
-                                 new THREE.LineBasicMaterial({{color: PLANE_COLOUR}}));
-  scene.add(o);
-  return o;
+// The aircraft glyph itself, not geometry: one character in a CSS2D element,
+// turned to face the way it is going. It costs no buffers, inherits the
+// label font's rendering, and at this size a drawn silhouette collapsed into
+// a smudge anyway.
+//
+// Deliberately NOT registered in LABELS -- these must sit exactly on the
+// aircraft, and declutterLabels' whole job is to move things off their mark.
+function planeGlyph(centre, next) {{
+  var el = document.createElement('div');
+  el.className = 'plane-glyph';
+  el.textContent = '\\u2708';
+  var obj = new CSS2DObject(el);
+  obj.position.copy(centre);
+  scene.add(obj);
+  var g = {{obj: obj, el: el, centre: centre.clone(),
+           next: next ? next.clone() : null, deg: null}};
+  planeGlyphs.push(g);
+  return g;
+}}
+
+// The character is drawn nose up-and-right, roughly 45 degrees off the
+// horizontal, so every rotation is measured from there rather than from 0.
+var PLANE_GLYPH_BIAS = -45;
+
+function aimPlanes() {{
+  if (!planeGlyphs.length) return;
+  camera.updateMatrixWorld(true);
+  planeGlyphs.forEach(function(g) {{
+    if (!g.next) {{
+      if (g.deg === null) {{ g.deg = 0; g.el.style.transform = 'rotate(0deg)'; }}
+      return;
+    }}
+    // Both ends have to be in front of the camera. Projecting a point behind
+    // it returns a mirrored position, which would spin the aircraft round to
+    // point backwards for the frames either side of the horizon of vision.
+    _camSpace.copy(g.centre).applyMatrix4(camera.matrixWorldInverse);
+    if (_camSpace.z > 0) return;
+    _camSpace.copy(g.next).applyMatrix4(camera.matrixWorldInverse);
+    if (_camSpace.z > 0) return;
+    _projected.copy(g.centre).project(camera);
+    var ax = _projected.x, ay = _projected.y;
+    _projected.copy(g.next).project(camera);
+    // Screen y grows downwards and clip-space y grows up, hence the flip.
+    var dx = (_projected.x - ax) * window.innerWidth;
+    var dy = -(_projected.y - ay) * window.innerHeight;
+    if (!dx && !dy) return;
+    var deg = Math.atan2(dy, dx) * 180 / Math.PI + PLANE_GLYPH_BIAS;
+    // Only touch the DOM when the number actually moved. Writing an identical
+    // transform on fifteen elements every frame is fifteen needless style
+    // recalculations a frame on the device least able to afford them.
+    if (deg !== g.deg) {{
+      g.deg = deg;
+      g.el.style.transform = 'rotate(' + deg.toFixed(1) + 'deg)';
+    }}
+  }});
 }}
 
 function clearPlanes() {{
-  planeObjs.forEach(function(o) {{
-    scene.remove(o);
-    // Three.js does not free GPU buffers on remove(). At one poll every 15
-    // seconds this leaks a geometry and a material per aircraft per poll --
-    // invisible for a minute and a real problem on a phone left running.
-    if (o.geometry) o.geometry.dispose();
-    if (o.material) o.material.dispose();
-  }});
+  // No geometry or material to dispose now that these are CSS2D elements --
+  // removing the object drops the only reference to the div with it.
+  planeGlyphs.forEach(function(g) {{ scene.remove(g.obj); }});
   planeLabels.forEach(removeLabel);
-  planeObjs = [];
+  planeGlyphs = [];
   planeLabels = [];
+}}
+
+// The welcome screen names how many aircraft are overhead. It is the only
+// number on that screen that changes while you stand there -- 630 stars is
+// the same 630 stars tomorrow night, eleven aircraft is not -- and it is the
+// honest argument for the Planes button existing at all.
+//
+// Fired only after the sky has painted. This is a call to somebody else's
+// free service and it must never sit in front of the thing the visitor came
+// for. A failure is silent for the same reason: the sky is the point, and a
+// missing count is not worth an error message on a welcome screen.
+function countPlanesForWelcome() {{
+  fetch('/' + PLACE + '/planes.json?welcome=1')
+    .then(function(r) {{ return r.json(); }})
+    .then(function(data) {{
+      var n = (data.planes || []).length;
+      // "aircraft" is its own plural, so one line covers 1 and 11.
+      if (n && statusEl) {{
+        statusEl.textContent += ' \\u2708 ' + n + ' aircraft overhead.';
+      }}
+    }})
+    .catch(function() {{}});
 }}
 
 function planeText(name, route) {{
@@ -13928,7 +13968,7 @@ function drawPlanes(data) {{
     var centre = toVec(p.elev, p.az);
     var next = (p.az_next != null && p.elev_next != null)
              ? toVec(p.elev_next, p.az_next) : null;
-    planeObjs.push(planeIcon(centre, next));
+    planeGlyph(centre, next);
     var name = p.callsign || p.type || 'aircraft';
     var entry = addLabel(planeText(name, p.route), centre, 'plane-label', 2);
     entry.plane = name;
@@ -14264,6 +14304,11 @@ function animate() {{
   updateFindArrow();
   renderer.render(scene, camera);
   if (throttleTick) declutterLabels();
+  // Every frame, not on the throttle tick: this one is a rotation, and a
+  // rotation updated at 15fps visibly steps round while you pan. It returns
+  // on its first line when there are no aircraft, which is most of the time,
+  // and only writes to the DOM when the angle actually changed.
+  aimPlanes();
   labelRenderer.render(scene, camera);
 }}
 animate();

@@ -1554,6 +1554,12 @@ def stats_sphere_text(n=50):
         served = max(_stat["planes"] - _stat["planes_error"], 1)
         L.append(f"  {'shown':12} {shown:>8,}  "
                  f"({shown / served:.1f} per fetch)")
+        # The welcome screen counts aircraft before anyone presses anything.
+        # Everything left over is somebody who turned the toggle on, so this
+        # pair is what says whether the count on the door is worth its call.
+        welcome = _stat["planes_welcome"]
+        L.append(f"  {'from welcome':12} {welcome:>8,}  "
+                 f"({_stat['planes'] - welcome:,} from the toggle)")
         # Route coverage decides whether the feature reads as "a plane" or as
         # "BA530 to Split". Below about half, the inference framing is
         # carrying more weight than it can.
@@ -1598,6 +1604,7 @@ def stats_sphere_json(n=50):
         sphere_golden_on=_stat["sphere_golden_on"],
         mobile_redirect=_stat["mobile_redirect"],
         planes=dict(fetches=_stat["planes"], shown=_stat["planes_shown"],
+                    from_welcome=_stat["planes_welcome"],
                     routed=_stat["planes_routed"],
                     empty=_stat["planes_empty"], errors=_stat["planes_error"],
                     floor=planes.FLOOR_DEG,
@@ -3324,6 +3331,12 @@ def planes_json(request: Req, place: str):
         return JSONResponse({"error": "unknown_place"}, status_code=404)
     r = _build(request, place)
     _stat["planes"] += 1
+    # The welcome screen asks for a count before anyone has pressed anything,
+    # so without this every landing would look like somebody using the
+    # feature. Split, "planes" stays the total and the difference between the
+    # two is the only number that answers "did the count make them tap it".
+    if request.query_params.get("welcome"):
+        _stat["planes_welcome"] += 1
     found, err = planes.overhead(r.place.lat, r.place.lon)
     if err:
         _stat["planes_error"] += 1

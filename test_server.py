@@ -4942,6 +4942,90 @@ class TheCrossingRoute(unittest.TestCase):
         self.assertEqual(data["crossing_set"], 1)
 
 
+class ThePlanesRoute(unittest.TestCase):
+    """/{place}/planes.json -- aircraft overhead right now.
+
+    The upstream is stubbed throughout. A test that reached adsb.lol would
+    be asking somebody else's free service for permission to pass, and would
+    fail on a quiet sky rather than on a broken route.
+    """
+
+    SKY = [{"hex": "abc", "callsign": "BAW530", "type": "A20N",
+            "alt_ft": 39000, "alt_source": "alt_geom", "alt_m": 11887,
+            "elev": 24.9, "az": 122.6, "dist_km": 24.7, "track": 119.0,
+            "az_next": 118.0, "elev_next": 26.1, "speed_kt": 434.7,
+            "route": {"codes": ["LHR", "SPU"],
+                      "names": ["London Heathrow Airport", "Split Airport"]}}]
+
+    def setUp(self):
+        client_cm = TestClient(server.app)
+        self.client = client_cm.__enter__()
+        self.addCleanup(client_cm.__exit__, None, None, None)
+        for k in ("planes", "planes_welcome", "planes_shown", "planes_routed",
+                  "planes_empty", "planes_error"):
+            server._stat[k] = 0
+        self.real = server.planes.overhead
+        self.addCleanup(setattr, server.planes, "overhead", self.real)
+
+    def stub(self, found, err=None):
+        server.planes.overhead = lambda lat, lon, **kw: (found, err)
+
+    def test_it_serves_the_aircraft_and_the_attribution_with_them(self):
+        self.stub(self.SKY)
+        r = self.client.get("/Geneva/planes.json")
+        self.assertEqual(r.status_code, 200)
+        d = r.json()
+        self.assertEqual(len(d["planes"]), 1)
+        self.assertEqual(d["planes"][0]["route"]["codes"], ["LHR", "SPU"])
+        # ODbL: the credit travels with the data rather than being left to
+        # each caller to remember.
+        self.assertIn("adsb.lol", d["attribution"])
+        self.assertEqual(d["floor"], server.planes.FLOOR_DEG)
+
+    def test_it_is_never_cached(self):
+        """Everything else here is a prediction and holds for minutes. A
+        position fifteen seconds old is already the oldest thing worth
+        serving."""
+        self.stub(self.SKY)
+        r = self.client.get("/Geneva/planes.json")
+        self.assertEqual(r.headers["cache-control"], "no-store")
+
+    def test_an_empty_sky_and_a_broken_one_are_counted_apart(self):
+        self.stub([])
+        self.client.get("/Geneva/planes.json")
+        self.stub([], err="upstream unavailable")
+        self.client.get("/Geneva/planes.json")
+        self.assertEqual(server._stat["planes_empty"], 1)
+        self.assertEqual(server._stat["planes_error"], 1)
+
+    def test_the_welcome_screens_count_is_not_somebody_using_the_feature(self):
+        """The welcome screen asks before anyone has pressed anything. Left
+        in one bucket, every landing would read as a visitor who turned the
+        toggle on."""
+        self.stub(self.SKY)
+        self.client.get("/Geneva/planes.json?welcome=1")
+        self.client.get("/Geneva/planes.json")
+        self.assertEqual(server._stat["planes"], 2)
+        self.assertEqual(server._stat["planes_welcome"], 1)
+
+    def test_an_unknown_place_is_a_404_not_an_empty_sky(self):
+        r = self.client.get("/Nowhereville/planes.json")
+        self.assertEqual(r.status_code, 404)
+
+    def test_the_counters_reach_both_stats_views(self):
+        self.stub(self.SKY)
+        self.client.get("/Geneva/planes.json?welcome=1")
+        text = self.client.get("/stats/sphere", headers=TERMINAL).text
+        self.assertIn("planes", text)
+        self.assertIn("from welcome", text)
+        d = self.client.get("/stats/sphere?format=json").json()["planes"]
+        self.assertEqual(d["fetches"], 1)
+        self.assertEqual(d["from_welcome"], 1)
+        # Split from the sky cache on purpose, and from each other.
+        self.assertIn("pos_hit", d["cache"])
+        self.assertIn("route_hit", d["cache"])
+
+
 class TheCrossingArmsAcrossTheSite(unittest.TestCase):
     """Where the takeover can fire from, and -- just as much -- where the
     reader's location must not be written into a shared cache."""
