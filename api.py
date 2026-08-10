@@ -12335,7 +12335,21 @@ SPHERE_PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
                     border-radius:4px;padding:1px 6px;font-size:11px;
                     white-space:nowrap}}
  #radiant-hud-cycle[hidden]{{display:none}}
- body.daytime #radiant-hud{{color:#8a2f74}}
+ /* Pinned to the strip's own top-right rather than sitting inline after the
+    text: the caption changes length as you cycle, and a dismiss that moves
+    around under the thumb is a dismiss you miss. Its tap area is padded well
+    past the glyph -- the cross is 13px and a fingertip is not. */
+ #radiant-hud-close{{position:absolute;top:-4px;right:6px;pointer-events:auto;
+                    cursor:pointer;font-size:13px;line-height:1;padding:6px 8px;
+                    opacity:.75;border:0;background:none;color:inherit;
+                    font-family:inherit}}
+ #radiant-hud-close:hover,#radiant-hud-close:active{{opacity:1}}
+ /* The glow above exists to hold this off a black night sky. Against the
+    daytime dome's light blue it is a dark smudge around dark text, which
+    reads as being out of focus -- the same reason .sky-label drops its
+    shadow in daylight. body.night.daytime already did this; plain daytime
+    was the one that got missed. */
+ body.daytime #radiant-hud{{color:#8a2f74;text-shadow:none}}
  body.daytime #radiant-hud span{{border-bottom-color:rgba(138,47,116,.55)}}
  /* Red mode (the Red button). This page is meant to be held up at the sky
     outdoors, where its normal white-and-blue undoes the dark adaptation
@@ -12447,7 +12461,7 @@ you're holding it; anywhere else, drag to look around.</p>
 <p id="find-msg"></p>
 <p id="planes-msg" hidden></p>
 <div id="find-arrow">&gt;&gt;&gt;</div>
-<p id="radiant-hud"><span id="radiant-hud-text" role="button" tabindex="0"></span><span id="radiant-hud-cycle" role="button" tabindex="0" hidden></span></p>
+<p id="radiant-hud"><span id="radiant-hud-text" role="button" tabindex="0"></span><span id="radiant-hud-cycle" role="button" tabindex="0" hidden></span><button id="radiant-hud-close" type="button" aria-label="Dismiss">&times;</button></p>
 <div id="find-reticle">
 <div class="tick tick-top"></div>
 <div class="tick tick-bottom"></div>
@@ -13128,13 +13142,52 @@ function addMarkers(list) {{
   }});
   showMarker(0);
   var hud = document.getElementById('radiant-hud');
-  if (hud) hud.style.display = 'block';
+  // Not shown at all when everything in it was already dismissed this visit,
+  // otherwise the strip would come back empty on the next page in the tab.
+  if (hud && liveMarkerCount()) hud.style.display = 'block';
   liftRadiantHud();
+}}
+
+// Dismissals live in sessionStorage, not localStorage. A shower runs for days
+// and its peak is one night of them, so a cross tapped on the 9th must not be
+// what stops the Perseids being mentioned on the 12th. Gone for this visit,
+// back next time -- which is also the whole of what the cross looks like it
+// promises.
+var HUD_DISMISSED = 'skymap.radiant.dismissed';
+
+function dismissedMarkers() {{
+  try {{ return JSON.parse(sessionStorage.getItem(HUD_DISMISSED)) || {{}}; }}
+  catch (e) {{ return {{}}; }}
+}}
+
+function markerDismissed(m) {{ return !!dismissedMarkers()[m.name]; }}
+
+function dismissMarker(m) {{
+  var d = dismissedMarkers();
+  d[m.name] = 1;
+  try {{ sessionStorage.setItem(HUD_DISMISSED, JSON.stringify(d)); }} catch (e) {{}}
+}}
+
+function liveMarkerCount() {{
+  var n = 0;
+  for (var i = 0; i < MARKERS.length; i++) {{ if (!markerDismissed(MARKERS[i])) n++; }}
+  return n;
+}}
+
+function hideRadiantHud() {{
+  var hud = document.getElementById('radiant-hud');
+  if (hud) hud.style.display = 'none';
 }}
 
 function showMarker(i) {{
   if (!MARKERS.length) return;
-  markerIndex = ((i % MARKERS.length) + MARKERS.length) % MARKERS.length;
+  var n = MARKERS.length;
+  var idx = ((i % n) + n) % n;
+  // Step past anything dismissed this visit. Bounded by the array length, so
+  // an entirely dismissed list falls out of the loop instead of spinning.
+  for (var k = 0; k < n && markerDismissed(MARKERS[idx]); k++) idx = (idx + 1) % n;
+  if (markerDismissed(MARKERS[idx])) {{ hideRadiantHud(); return; }}
+  markerIndex = idx;
   var m = MARKERS[markerIndex];
   var text = document.getElementById('radiant-hud-text');
   var cyc = document.getElementById('radiant-hud-cycle');
@@ -13142,8 +13195,16 @@ function showMarker(i) {{
   if (cyc) {{
     // Hidden entirely at one marker -- a "1/1 ›" that does nothing is worse
     // than no control. Two or more happens about ten nights a year.
-    cyc.hidden = MARKERS.length < 2;
-    cyc.textContent = (markerIndex + 1) + '/' + MARKERS.length + ' ›';
+    var live = liveMarkerCount();
+    cyc.hidden = live < 2;
+    // Counted among the ones still showing, not among all of them: "2/3"
+    // with one already dismissed is arithmetic the reader cannot check
+    // against anything in front of them.
+    var pos = 0;
+    for (var j = 0; j <= markerIndex; j++) {{
+      if (!markerDismissed(MARKERS[j])) pos++;
+    }}
+    cyc.textContent = pos + '/' + live + ' ›';
   }}
 }}
 
@@ -13174,6 +13235,25 @@ function aimAtMarker() {{
       ev.stopPropagation();      // cycling is not aiming
       showMarker(markerIndex + 1);
       liftRadiantHud();          // the caption length changes the wrap
+    }});
+  }}
+  var close = document.getElementById('radiant-hud-close');
+  if (close) {{
+    close.addEventListener('click', function(ev) {{
+      ev.preventDefault();
+      ev.stopPropagation();      // dismissing is not aiming either
+      var m = MARKERS[markerIndex];
+      if (!m) return;
+      dismissMarker(m);
+      // The ring and the label stay in the sky. This dismisses the strip's
+      // sentence about the event, not the event -- somebody who taps a cross
+      // on a caption has not asked to have the Perseids taken off their sky.
+      if (liveMarkerCount()) {{
+        showMarker(markerIndex + 1);
+        liftRadiantHud();
+      }} else {{
+        hideRadiantHud();
+      }}
     }});
   }}
 }})();

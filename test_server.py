@@ -3635,6 +3635,57 @@ class SpherePage(unittest.TestCase):
         self.assertNotIn("mobile_redirect", stats)
 
 
+class TheEventStripOnTheSphere(unittest.TestCase):
+    """#radiant-hud -- the line above the toolbar that names a shower or an
+    eclipse and offers to point the camera at it."""
+
+    def setUp(self):
+        client_cm = TestClient(server.app)
+        self.client = client_cm.__enter__()
+        self.addCleanup(client_cm.__exit__, None, None, None)
+        self.page = self.client.get("/Zurich/sphere", headers=BROWSER).text
+
+    def test_it_drops_its_glow_in_daylight(self):
+        """The shadow is there to hold pink text off a black sky. Against the
+        daytime dome it is a dark smudge around dark text and the strip reads
+        as being out of focus. body.night.daytime always cleared it; plain
+        daytime did not, which is the bug this pins."""
+        rule = re.search(r"body\.daytime #radiant-hud\{([^}]*)\}", self.page)
+        self.assertIsNotNone(rule, "the daytime rule went missing")
+        self.assertIn("text-shadow:none", rule.group(1))
+
+    def test_the_night_daytime_rule_still_clears_it_too(self):
+        # Red mode over a daylit dome is a third combination, and it had this
+        # right before the plain daytime rule did.
+        rule = re.search(r"body\.night\.daytime #radiant-hud\{([^}]*)\}", self.page)
+        self.assertIsNotNone(rule)
+        self.assertIn("text-shadow:none", rule.group(1))
+
+    def test_it_carries_a_dismiss_control(self):
+        self.assertIn('id="radiant-hud-close"', self.page)
+        # Named for a screen reader: a bare multiplication sign is not a word.
+        self.assertRegex(self.page, r'id="radiant-hud-close"[^>]*aria-label=')
+
+    def test_the_dismiss_sits_inside_the_strip(self):
+        """It is positioned against the strip's own corner. As a sibling it
+        would anchor to the page instead and drift away from what it closes."""
+        strip = re.search(r'<p id="radiant-hud">(.*?)</p>', self.page, re.S)
+        self.assertIsNotNone(strip)
+        self.assertIn('id="radiant-hud-close"', strip.group(1))
+
+    def test_dismissals_do_not_outlive_the_visit(self):
+        """sessionStorage, not localStorage: a shower runs for days and its
+        peak is one night of them, so a cross tapped on the 9th must not be
+        what silences the Perseids on the 12th."""
+        script = re.search(r'<script type="module">(.*?)</script>',
+                           self.page, re.S).group(1)
+        self.assertIn("skymap.radiant.dismissed", script)
+        near = script[script.index("skymap.radiant.dismissed") - 400:
+                      script.index("skymap.radiant.dismissed") + 400]
+        self.assertIn("sessionStorage", near)
+        self.assertNotIn("localStorage.setItem(HUD_DISMISSED", script)
+
+
 class ThePhoneHasAWayOutOfTheSphere(unittest.TestCase):
     """A phone landing on the root is sent to the sphere, which is right --
     but the sphere had no link off it, so that was where you arrived and
