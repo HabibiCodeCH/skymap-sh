@@ -834,10 +834,16 @@ def _daily_chart(days=CHART_DAYS, cols=CHART_COLS, width=2, legend=True):
 # that file for why it isn't derived from cities.json.
 WORLDMAP_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                              "worldmap.json")
-# White for land nobody has asked from, warming through yellow and orange to
+# Grey for land nobody has asked from, warming through yellow and orange to
 # red at the busiest cell. xterm-256, the same palette sky.py's renderer uses,
 # so api.ansi_to_html() converts it for the browser with no extra work.
-MAP_RAMP = (231, 229, 227, 220, 214, 208, 196)
+# The first step is grey rather than white because it is not really a step:
+# it is ten thousand dots, the whole shape of the continents, and the six
+# colours that mean something have to read against it. At white they didn't
+# -- the map was a bright coastline with a few brighter specks on it. Dimmed,
+# the land recedes to the background it always was and the traffic sits on
+# top of it. The other six are untouched; only the floor moved.
+MAP_RAMP = (248, 229, 227, 220, 214, 208, 196)
 MAP_DOT = "·"
 # Swapped in for the moment a dot flashes. A bullet is a bigger, rounder mark
 # than a middle dot, which is the point -- at one character per cell a flash
