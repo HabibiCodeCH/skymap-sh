@@ -6,6 +6,7 @@ Run:  python3 test_sky.py
 import re
 import unittest
 import datetime as dt
+from unittest import mock
 import sky
 
 
@@ -310,6 +311,72 @@ class QuadrantGrid(unittest.TestCase):
         self.assertIsNone(st["quad_applied"])
         self.assertEqual(st["quad_error"], "ZZ")
         self.assertTrue(st["quad_cells"])   # still shows the base grid to pick from
+
+
+class QuadrantDrawsDeeper(unittest.TestCase):
+    """A quadrant crop has 5.5x the room per patch of sky that the full sweep
+    has, so it draws to the bottom of the catalogue instead of to mag 4.0.
+    Before this, zooming in gave you the same 518 stars drawn larger across
+    cells that were mostly empty."""
+
+    T = dt.datetime(2026, 7, 30, 22, 0)
+    ZURICH = (47.3769, 8.5417)
+
+    def _render(self, **kw):
+        return sky.render_linear(self.T, *self.ZURICH, color=False, **kw)
+
+    def test_deepen_caps_at_the_catalogue_and_never_goes_shallower(self):
+        self.assertIsNone(sky._deepen(None))          # no limit stays no limit
+        self.assertAlmostEqual(sky._deepen(4.0), 5.5)  # full dark -> the whole catalogue
+        self.assertAlmostEqual(sky._deepen(5.0), 5.5)  # find='s 5.0, capped not 6.5
+        self.assertAlmostEqual(sky._deepen(6.0), 6.0)  # already past it: left alone
+        # Daylight. _fade_mag_limit pins the sweep at -5.0 and the crop must
+        # still draw nothing -- Sirius, the brightest star there is, is -1.46.
+        self.assertLess(sky._deepen(-5.0), -1.46)
+
+    def test_crop_draws_to_the_catalogue_floor(self):
+        _art, base = self._render(quadrants=True)
+        letter = base["quad_cells"][0]["letter"]
+        _art, crop = self._render(quadrants=True, quadrant=letter)
+        self.assertAlmostEqual(base["mag_limit"], 4.0)
+        self.assertAlmostEqual(crop["mag_limit"], sky.CATALOGUE_FAINTEST)
+
+    def test_crop_actually_puts_more_stars_on_the_chart(self):
+        letter = self._render(quadrants=True)[1]["quad_cells"][0]["letter"]
+        deep, _st = self._render(quadrants=True, quadrant=letter)
+        with mock.patch.object(sky, "QUADRANT_MAG_GAIN", 0.0):
+            flat, _st = self._render(quadrants=True, quadrant=letter)
+        # Faint stars all render as "·". So do the background gridline dots,
+        # but those are identical in both renders and cancel in the delta.
+        self.assertGreater(deep.count("·"), flat.count("·"))
+
+    def test_star_count_is_about_the_sky_not_the_zoom(self):
+        """stars_up and the brightest-few list come from st['visible'], which
+        is every lit star above the horizon and not just the ones inside the
+        window. Deepening that too would have turned a zoom into a claim that
+        1,600-odd stars had appeared over Zurich."""
+        _art, base = self._render(quadrants=True)
+        letter = base["quad_cells"][0]["letter"]
+        _art, crop = self._render(quadrants=True, quadrant=letter)
+        self.assertEqual(len(crop["visible"]), len(base["visible"]))
+        self.assertAlmostEqual(crop["count_limit"], base["count_limit"])
+        self.assertGreater(crop["mag_limit"], crop["count_limit"])
+
+    def test_daylight_crop_still_draws_no_stars(self):
+        letter = self._render(quadrants=True)[1]["quad_cells"][0]["letter"]
+        _art, crop = self._render(quadrants=True, quadrant=letter, mag_limit=-5.0)
+        self.assertEqual(crop["visible"], [])
+        self.assertLess(crop["mag_limit"], -1.46)
+
+    def test_uncropped_render_is_untouched(self):
+        """The deepening lives entirely inside the crop branch. Every other
+        caller -- the CLI, compose_frame, the daytime view -- must be exactly
+        what it was."""
+        _art, st = self._render()
+        self.assertAlmostEqual(st["mag_limit"], 4.0)
+        self.assertAlmostEqual(st["count_limit"], 4.0)
+        _art, grid = self._render(quadrants=True)      # grid shown, no letter picked
+        self.assertAlmostEqual(grid["mag_limit"], 4.0)
 
 
 class MoonPhaseGlyph(unittest.TestCase):

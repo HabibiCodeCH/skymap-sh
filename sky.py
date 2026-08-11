@@ -1458,6 +1458,47 @@ def pick_constellations(cpos, cons, jd, lat, lst, alt_max, sectors=6, extra=2,
 
 LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
 
+# How faint the catalogue itself goes. A crop may ask for more stars than the
+# full sweep draws; it may not ask for more than exist.
+CATALOGUE_FAINTEST = 5.5
+
+# What a quadrant crop adds to whatever limit the caller asked for.
+#
+# A crop of the full sweep is 118x15 cells over 90° of azimuth and 23° of
+# altitude, where the sweep is 176x22 over 360°x70°: 1.19 square degrees per
+# cell against 6.51, so 5.5x the room per patch of sky. Star counts here go up
+# about 3.15x per magnitude (518 stars to mag 4.0, 1,630 to mag 5.0), so 1.5
+# magnitudes is very nearly the exact number that fills the extra room without
+# leaving the crop any denser than the sweep it was cut from. A crop of a
+# facing= window is tighter still (about 16x), and would take 2.4 magnitudes --
+# but the catalogue runs out first either way, so both land on 5.5 and one
+# constant covers both.
+#
+# Why a crop should be deeper at all: mag 4.0 is a readability limit, not an
+# honesty one. It is where the full sweep stops because mag 4-5 is 63% of the
+# field and drawing it turns most of the sky grey (see api.py's find= notes).
+# A crop has the room the sweep does not. find= already does exactly this on
+# its own crop, at a flat mag_limit=5.0.
+#
+# Added to mag_limit rather than replacing it, which is what keeps the twilight
+# ramp intact: _fade_mag_limit pins daylight at -5.0, and -3.5 still draws
+# nothing at all (Sirius, the brightest thing in the catalogue, is -1.46). The
+# crop deepens as the sky darkens, exactly as the chart it came from does, and
+# only reaches 5.5 at full dark.
+QUADRANT_MAG_GAIN = 1.5
+
+
+def _deepen(limit):
+    """A magnitude limit as a quadrant crop should draw it, or None unchanged
+    (None means "no limit" for line_limit and "no unlit pass" for dim_limit --
+    neither has anything for a deeper field to add).
+
+    Never returns a limit shallower than the one it was given: a caller that
+    already asked for something past the catalogue keeps what it asked for."""
+    if limit is None:
+        return None
+    return max(limit, min(limit + QUADRANT_MAG_GAIN, CATALOGUE_FAINTEST))
+
 def quadrant_grid(centre, span, alt_lo, alt_hi, cols=4, rows=3):
     """Split an az/alt window into a fixed 4x3 grid, labelled A, B, C... in
     reading order (left to right, top to bottom). More, smaller cells means
@@ -1540,6 +1581,16 @@ def render_linear(when_utc, lat, lon, W=176, H=22, color=True, show_lines=True,
     alt_hi = float(alt_max) if alt_hi is None else float(alt_hi)
     alt_rng = alt_hi - alt_lo
 
+    # The limit the star COUNT is taken against, fixed here before a quadrant
+    # crop deepens the drawing limits below. "N stars above the horizon" is a
+    # fact about the place and the hour, not about which corner of the sky is
+    # on screen, so it has to read the same whether or not a crop is applied --
+    # and st['visible'] is a whole-sky list (every lit star above the horizon,
+    # not only those inside the window), which feeds stars_up in the JSON and
+    # the brightest-few line. Deepening this too would have taken a Geneva
+    # night from "287 stars" to "1,632 stars" on nothing but a zoom.
+    count_limit = mag_limit
+
     quad_cells, quad_error, quad_applied = [], None, None
     if quadrants and target is None:
         quad_cells = quadrant_grid(centre, span, alt_lo, alt_hi)
@@ -1557,6 +1608,18 @@ def render_linear(when_utc, lat, lon, W=176, H=22, color=True, show_lines=True,
                 H = max(8, int(round(W * alt_rng / (2 * span))))
                 clamped = ""
                 quad_cells = []          # cropped -- no overlay grid on itself
+                # More sky, in more detail. Until now a crop was the same 518
+                # stars drawn larger, across cells that were mostly empty --
+                # the one zoom in the product that promised detail and handed
+                # back none. Same reasoning that already turns the deep-sky
+                # layer on for a quadrant: the point of zooming in is to
+                # reveal more. line_limit follows so constellation lines
+                # cannot run to stars that are not drawn, and dim_limit
+                # follows so the twilight sketch is the field the crop is
+                # heading for rather than the sweep's.
+                mag_limit = _deepen(mag_limit)
+                line_limit = _deepen(line_limit)
+                dim_limit = _deepen(dim_limit)
 
     # Frame chosen by the object itself -- but only when the caller actually
     # asked for a crop. Re-centring a 60° window on the target is the whole
@@ -1910,7 +1973,13 @@ def render_linear(when_utc, lat, lon, W=176, H=22, color=True, show_lines=True,
         # brightest-few list are built from, and an unlit star is one you
         # cannot see -- counting it would make the line above the chart say
         # 287 stars over a sky showing none.
-        if lit:
+        #
+        # count_limit, not mag_limit: they are the same number everywhere
+        # except inside a quadrant crop, which draws deeper than the sweep it
+        # came from. The extra stars are genuinely drawn and genuinely lit --
+        # they just do not change the answer to "how many stars are up",
+        # which is about the sky and not about the zoom.
+        if s["m"] <= count_limit:
             visible.append((s, a, z))
         col = star_colour(s.get("ci")) if lit else C.UNLIT
         # The glyph is chosen by magnitude either way, so a star keeps its
@@ -2355,6 +2424,9 @@ def render_linear(when_utc, lat, lon, W=176, H=22, color=True, show_lines=True,
     st = dict(visible=visible, up=up, moon=mo, sun=su, lst=lst, jd=jd,
               track=track, iss_err=iss_err, top3=top3, span=span, clamped=clamped,
               cons=[c["con"]["name"] for c in chosen],
+              # What was actually drawn to, after any quadrant deepening --
+              # not necessarily the mag_limit the caller passed in.
+              mag_limit=mag_limit, count_limit=count_limit,
               quad_cells=quad_cells, quad_applied=quad_applied, quad_error=quad_error,
               zenith_lines=zenith_lines if side_panel else None)
     return "\n".join(out), st
