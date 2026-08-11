@@ -1441,6 +1441,19 @@ def stats_text(n=50, map_slot=False):
         L.append("day page")
         L.append(f"  {'panel':12} {d_panel:>8,}  (browser daylight charts)")
         L.append("")
+    # The aircraft layer on the chart. Three counters, not one, because the
+    # question is not "how many saw it" -- it is on by default in daylight,
+    # so almost every day chart did. What is worth knowing is whether anyone
+    # turns it off, and whether anyone at night goes looking for it.
+    ch_on, ch_off, ch_night = (_stat["chart_planes"], _stat["chart_noplanes"],
+                               _stat["chart_planes_night"])
+    if ch_on or ch_off or ch_night:
+        L.append("planes on the chart")
+        L.append(f"  {'drawn':12} {ch_on:>8,}  (day charts, the default)")
+        L.append(f"  {'turned off':12} {ch_off:>8,}  "
+                 f"({100 * ch_off / max(ch_on + ch_off, 1):.0f}% of daylight)")
+        L.append(f"  {'asked at night':12} {ch_night:>8,}  (?planes=1 after dark)")
+        L.append("")
     pages = sorted(k for k in _stat if k.startswith("page:"))
     if pages:
         L.append("pages")
@@ -1520,6 +1533,9 @@ def stats_json(n=50):
         # day_page, not day: `day` above is already the daylight/night request
         # split, and that one is the older, more-read number of the two.
         day_page=dict(panel=_stat["day:panel"]),
+        chart_planes=dict(drawn=_stat["chart_planes"],
+                          turned_off=_stat["chart_noplanes"],
+                          asked_at_night=_stat["chart_planes_night"]),
         views={k[5:]: v for k, v in _stat.items()
                if k.startswith("view:") and k not in RETIRED_VIEWS},
         pages={k[5:]: v for k, v in _stat.items() if k.startswith("page:")},
@@ -2016,6 +2032,13 @@ def _build(request: Req, place: str | None):
         quadrant=(q["quadrant"] if "quadrant" in q else None),
         nodso=bool(q.get("nodso")),
         panel=bool(q.get("panel")),
+        # Whether the answer is going to be markup. ?panel= alone was the
+        # gate on the chart's link markers, and anyone can send it -- so a
+        # terminal asking for ?panel=1 got raw \x11/\x12/\x13 and the href
+        # between them printed into the chart. panel still means what it
+        # always did (the inset beside the chart, a documented CLI option);
+        # this is the separate question _chart_link actually needed to ask.
+        browser=_wants(request)[0] == "html",
         planes=bool(q.get("planes")),
         noplanes=bool(q.get("noplanes")),
         # The opt-out, not the opt-in: golden hour is on by default, so the
@@ -2037,6 +2060,9 @@ UNKNOWN = """\
                          curl 'skymap.sh/San Francisco, US'
                          curl 'skymap.sh/Paris, TX'
 """
+
+
+api._plane_counter = lambda key: _stat.__setitem__(key, _stat[key] + 1)
 
 
 def _cache_ttl(r, daytime):
@@ -2095,6 +2121,12 @@ def _cached(r):
     """(Result, daytime, from_cache). One entry serves all four output modes."""
     global _hits, _misses
     daytime = api.is_daytime(r)
+    # Counted here and not in the composer: the composer sits behind this
+    # cache, so with a fifteen-second entry three readers in one bucket
+    # showed up as one. This runs per request, which is the question being
+    # asked -- how many people were shown aircraft, not how many times the
+    # chart was drawn.
+    api._count_planes(r, daytime)
     key = _cache_key(r, daytime)
     now = time.time()
     hit = _cache.get(key)

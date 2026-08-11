@@ -599,7 +599,7 @@ class Request:
                  find=None, iss=False, lines=True, color=True, fallback=None,
                  tle=None, now=None, night=False, width=None, dso=False, quadrant=None,
                  nodso=False, panel=False, nogolden=False, links=False,
-                 planes=False, noplanes=False):
+                 planes=False, noplanes=False, browser=False):
         self.place = resolve_place(place, fallback)
         self.view, self.facing, self.span = view, facing, span
         self.find, self.iss, self.lines, self.color = find, iss, lines, color
@@ -622,6 +622,8 @@ class Request:
         # which needs the finished request.
         self.planes_asked = planes
         self.noplanes = noplanes
+        # Is the answer markup? Only a browser may be handed link markers.
+        self.browser = browser
         # Bounded to a single letter (or None) here, before it ever reaches a
         # cache key -- otherwise arbitrary ?quadrant= garbage would each mint
         # its own cache entry, the same free-cache-miss surface ?w= and ?t=
@@ -711,6 +713,9 @@ class Request:
         r2.quadrant_requested, r2.nodso = self.quadrant_requested, self.nodso
         r2.panel, r2.golden = self.panel, self.golden
         r2.planes_asked, r2.noplanes = self.planes_asked, self.noplanes
+        # Carried, or every animation frame silently loses its links: at() is
+        # how the frames are built and the flag is what lets them have any.
+        r2.browser = self.browser
         r2.links = self.links
         r2.when_utc = when_utc
         r2.when_local = when_utc + dt.timedelta(hours=self.place.offset(when_utc))
@@ -5548,7 +5553,7 @@ def _compose_sky(r):
     art, st = render_linear(r.when_utc, p.lat, p.lon, color=c, show_lines=r.lines,
                             tle=r.tle, facing=r.facing, span=r.span,
                             planes=overhead, plane_labels=False,
-                            plane_tips=bool(r.panel),
+                            plane_tips=bool(r.panel and getattr(r, 'browser', False)),
                             width=r.width if r.facing else _effective_width(r),
                             height=None if r.facing else _horizon_height(r),
                             mag_limit=mag_limit, line_limit=mag_limit,
@@ -6083,6 +6088,45 @@ def _golden_layer(r, bands, ev, off, sa, sz, alt_hi, width):
     return alt_bands, [n for n in notes if n["text"]]
 
 
+# Set by server.py so api can count without importing it. A no-op in tests
+# and in the CLI, which have no /stats to feed.
+_plane_counter = None
+
+
+def _count_planes(r, daytime):
+    """Tell /stats what this chart decided about aircraft."""
+    if _plane_counter is None:
+        return
+    on = planes_on(r)
+    if daytime:
+        _plane_counter("chart_planes" if on else "chart_noplanes")
+    elif on:
+        _plane_counter("chart_planes_night")
+
+
+def planes_note(found, place_name=None):
+    """The one line of prose about aircraft, for the day chart, or None.
+
+    The chart says where to look and this says what is up there -- the count
+    somebody would otherwise have to make by eye, the highest one, and where
+    it is likely going. Kept to a single line because the day chart's empty
+    half is generous but not infinite, and because the same sentence is what
+    a search engine reads: the arrows are a picture and no crawler sees one.
+    """
+    if not found:
+        return None
+    top = max(found, key=lambda p: p["elev"])
+    n = len(found)
+    bit = f"{n} plane{'' if n == 1 else 's'} overhead"
+    bit += f" \u00b7 highest {top['elev']:.0f}\u00b0 in the {compass(top['az'])}"
+    r = top.get("route")
+    if r:
+        ends = r.get("codes") or r.get("names")
+        if ends and len(ends) == 2 and all(ends):
+            bit += f" \u00b7 likely {ends[0]} \u2192 {ends[1]}"
+    return bit
+
+
 def _golden_json(bands, ev, off, sa, sz, lat, lon):
     """The golden-hour facts, structured.
 
@@ -6177,8 +6221,14 @@ def _compose_day(r):
     day_planes = None
     if planes_on(r):
         day_planes, _perr = planes.overhead(p.lat, p.lon)
+    # Under the golden/blue lines, not above them: notes nudge upward out of
+    # an occupied row, so a low altitude is what puts this beneath the band
+    # rather than stacked on top of the times.
+    pnote = planes_note(day_planes)
+    if pnote:
+        notes = list(notes) + [dict(text=pnote, col=sky.C.PLANE, alt=1.5)]
     art, st = render_linear(r.when_utc, p.lat, p.lon, color=c, show_lines=False,
-                            planes=day_planes, plane_tips=bool(r.panel),
+                            planes=day_planes, plane_tips=bool(r.panel and getattr(r, 'browser', False)),
                             mag_limit=_fade_mag_limit(sa_now), alt_lo=0.0, alt_hi=alt_hi,
                             overlay=(arc, SUN_COL, "SUN", (sa_now, sz_now)),
                             bodies=show, width=_effective_width(r),
@@ -6421,7 +6471,10 @@ def _chart_link(r):
     Browser only. A terminal cannot click a star, and the markers this
     produces would print as control characters if they ever reached one.
     """
-    if not r.panel:
+    # Both: the inset-beside layout is a documented CLI option, so panel
+    # alone does not mean somebody is reading HTML, and these markers print
+    # as control characters anywhere that is not.
+    if not r.panel or not getattr(r, "browser", False):
         return None
     place = quote(r.place.slug)
 

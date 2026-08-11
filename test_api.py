@@ -3025,8 +3025,12 @@ class OnlyThePausedFrameGetsItsLabelsAsLinks(unittest.TestCase):
     asks for them one frame at a time, on the frame it has stopped on."""
 
     def _frame(self, **kw):
+        # browser=True as well as panel: panel is the inset-beside layout and
+        # is a documented CLI option, so it alone no longer means somebody is
+        # reading HTML. Link markers need both, because they print as control
+        # characters anywhere that is not a browser.
         r = api.Request(place="Zurich", when=dt.datetime(2026, 8, 19, 23, 0),
-                        width=200, panel=True, **kw)
+                        width=200, panel=True, browser=True, **kw)
         return api.compose_frame(r)[0]
 
     def test_a_plain_frame_carries_none(self):
@@ -3041,7 +3045,7 @@ class OnlyThePausedFrameGetsItsLabelsAsLinks(unittest.TestCase):
         """A label opens the sky it was drawn in, which for a frame is the
         frame's moment and not the page's."""
         r = api.Request(place="Zurich", when=dt.datetime(2026, 8, 19, 20, 0),
-                        width=200, panel=True, links=True)
+                        width=200, panel=True, links=True, browser=True)
         later = r.at(r.when_utc + dt.timedelta(hours=3))
         html = api.ansi_to_html(api.compose_frame(later)[0])
         self.assertIn("t=2026-08-19T23:00", html)

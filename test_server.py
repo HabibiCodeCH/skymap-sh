@@ -5641,3 +5641,61 @@ class NoAircraftOnAChartOfAnotherMoment(unittest.TestCase):
         hint = re.search(r'<p class="kbd-hint">(.*?)</p>', page, re.S).group(1)
         self.assertIn("<kbd>p</kbd> planes", hint)
         self.assertNotIn("live charts only", hint)
+
+
+class TheChartSaysInWordsWhatTheArrowsShow(unittest.TestCase):
+    """One line under the golden band. The arrows are a picture and no
+    crawler sees one; this is the same fact in text."""
+
+    FOUND = [{"callsign": "A1", "elev": 35.0, "az": 135.0,
+              "route": {"codes": ["LBC", "PMI"], "names": ["Lubeck", "Palma"]}},
+             {"callsign": "B2", "elev": 12.0, "az": 300.0, "route": None}]
+
+    def test_it_counts_names_the_highest_and_where_it_goes(self):
+        line = api.planes_note(self.FOUND)
+        self.assertIn("2 planes overhead", line)
+        self.assertIn("highest 35", line)
+        self.assertIn("SE", line)
+        self.assertIn("likely LBC", line)
+
+    def test_one_plane_is_singular(self):
+        self.assertIn("1 plane overhead", api.planes_note(self.FOUND[:1]))
+
+    def test_no_planes_no_line(self):
+        self.assertIsNone(api.planes_note([]))
+        self.assertIsNone(api.planes_note(None))
+
+    def test_it_says_nothing_about_a_route_it_does_not_have(self):
+        line = api.planes_note([dict(self.FOUND[1])])
+        self.assertNotIn("likely", line)
+
+
+class TheChartPlaneCountersAreShippedWithTheParameter(unittest.TestCase):
+    """Three counters, not one. It is on by default in daylight so almost
+    every day chart drew it -- what is worth knowing is whether anyone turns
+    it off, and whether anyone at night goes looking for it."""
+
+    def setUp(self):
+        client_cm = TestClient(server.app)
+        self.client = client_cm.__enter__()
+        self.addCleanup(client_cm.__exit__, None, None, None)
+        for k in ("chart_planes", "chart_noplanes", "chart_planes_night"):
+            server._stat[k] = 0
+
+    def test_they_reach_both_stats_views(self):
+        self.client.get("/Geneva", headers=TERMINAL)
+        text = self.client.get("/stats", headers=TERMINAL).text
+        self.assertIn("planes on the chart", text)
+        data = self.client.get("/stats?format=json").json()
+        self.assertIn("chart_planes", data)
+        for k in ("drawn", "turned_off", "asked_at_night"):
+            self.assertIn(k, data["chart_planes"])
+
+    def test_they_count_requests_and_not_renders(self):
+        """The composer sits behind a fifteen-second cache, so counting
+        there showed three readers in one bucket as one."""
+        before = server._stat["chart_planes"] + server._stat["chart_noplanes"]
+        for _ in range(3):
+            self.client.get("/Geneva", headers=TERMINAL)
+        after = server._stat["chart_planes"] + server._stat["chart_noplanes"]
+        self.assertEqual(after - before, 3)
