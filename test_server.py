@@ -3780,6 +3780,47 @@ class TheWelcomeIsNotCachedPastTheDayItDescribes(unittest.TestCase):
         self.assertLessEqual(int(cc.rsplit("=", 1)[1]), 3600)
 
 
+class TheFindBoxOffersWhatIsActuallyUpThere(unittest.TestCase):
+    """The Find box had no completion at all. It is the phone's search box
+    for the sky, and "Vega" is easy but "Alpheratz" is not."""
+
+    def setUp(self):
+        client_cm = TestClient(server.app)
+        self.client = client_cm.__enter__()
+        self.addCleanup(client_cm.__exit__, None, None, None)
+        self.page = self.client.get("/Zurich/sphere", headers=BROWSER).text
+        self.script = re.search(r'<script type="module">(.*?)</script>',
+                                self.page, re.S).group(1)
+
+    def test_the_input_is_wired_to_a_datalist(self):
+        self.assertIn('id="find-names"', self.page)
+        self.assertRegex(self.page, r'id="find-input"[^>]*list="find-names"')
+
+    def test_the_form_still_refuses_the_browsers_own_history(self):
+        """autocomplete=off stays. These are the names of what is overhead,
+        not the things this reader typed here last week."""
+        self.assertRegex(self.page, r'id="find-form"[^>]*autocomplete="off"')
+
+    def test_it_is_filled_when_the_sky_arrives_and_again_for_deep_sky(self):
+        # Once for the definition, once per call site.
+        self.assertEqual(self.script.count("refreshFindNames()"), 3)
+
+    def test_it_offers_only_fields_that_can_actually_be_found(self):
+        """The completion is built from the same fields findInLoadedData
+        searches. If the two ever drift, the box starts suggesting names it
+        then cannot resolve, which is worse than suggesting nothing."""
+        build = self.script[self.script.index("function refreshFindNames"):]
+        build = build[:build.index("function findInLoadedData")]
+        lookup = self.script[self.script.index("function findInLoadedData"):]
+        lookup = lookup[:lookup.index("document.getElementById(\'find-form\')")]
+        for field in ("bodies", "stars", "asterisms", "deepsky"):
+            self.assertIn(field, build, field)
+            self.assertIn(field, lookup, field)
+        # deep sky is reachable by catalogue id as well as by name
+        self.assertIn("o.id", build)
+        self.assertIn("x.id", lookup)
+
+
 class TheEventStripOnTheSphere(unittest.TestCase):
     """#radiant-hud -- the line above the toolbar that names a shower or an
     eclipse and offers to point the camera at it."""

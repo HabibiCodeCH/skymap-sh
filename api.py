@@ -12495,7 +12495,8 @@ you're holding it; anywhere else, drag to look around.</p>
 <button id="night-toggle" class="toggle-btn" title="Red light: keeps your night vision">Red</button>
 </div>
 <form id="find-form" autocomplete="off">
-<input id="find-input" type="text" placeholder="Find (Venus, Vega...)">
+<input id="find-input" type="text" placeholder="Find (Venus, Vega...)" list="find-names">
+<datalist id="find-names"></datalist>
 <button type="submit">Find</button>
 <button type="button" id="find-cancel" hidden>Cancel</button>
 </form>
@@ -13605,6 +13606,7 @@ fetch('/' + PLACE + '/sphere.json' + window.location.search).then(function(r) {{
   return r.json();
 }}).then(function(data) {{
   lastData = data;
+  refreshFindNames();
   dullForDaylight(data);
   updateSkyDome(data.sun_alt);
   var starGroups = groupBy(data.stars, function(s) {{ return s.glyph; }});
@@ -13990,6 +13992,10 @@ document.getElementById('dso-toggle').addEventListener('click', function() {{
         dullForDaylight(data);
         addDeepSky(data.deepsky);
         if (lastData) lastData.deepsky = data.deepsky;
+        // The catalogue only exists once this toggle has been pressed, so
+        // the offered names grow with it rather than promising M31 to
+        // somebody who has not loaded it.
+        refreshFindNames();
         dsoLoaded = true; dsoOn = true;
         btn.disabled = false; btn.textContent = 'Deep sky';
         btn.classList.add('on');
@@ -14252,6 +14258,47 @@ var reticleTicks = {{
   left: findReticle.querySelector('.tick-left'),
   right: findReticle.querySelector('.tick-right')
 }};
+
+// What the Find box offers while you type. Built from the sky already in the
+// browser, and specifically from the same fields findInLoadedData searches,
+// so nothing can be suggested that then fails to resolve -- a completion that
+// leads to "couldn't find that" is worse than no completion.
+//
+// The phone keyboard draws this itself, above the keys. That is the whole
+// reason for a datalist rather than a dropdown of our own: on the surface
+// this matters on, the input is a few pixels above a keyboard covering half
+// the screen, and a list we positioned ourselves would be under it.
+//
+// The form keeps autocomplete="off", which stops the browser offering things
+// you typed here before. That is not what this is: these are the names of
+// what is actually overhead right now.
+function refreshFindNames() {{
+  var list = document.getElementById('find-names');
+  if (!list || !lastData) return;
+  var seen = Object.create(null);
+  function add(n) {{
+    if (n && !seen[n.toLowerCase()]) seen[n.toLowerCase()] = n;
+  }}
+  (lastData.bodies || []).forEach(function(b) {{ add(b.name); }});
+  (lastData.stars || []).forEach(function(s) {{ add(s.name); }});
+  (lastData.asterisms || []).forEach(function(a) {{ add(a.name); }});
+  // Deep sky arrives later, and only if that toggle is pressed -- both the
+  // catalogue id and the common name, because findInLoadedData takes either
+  // and somebody typing "M31" should not have to know it is Andromeda.
+  (lastData.deepsky || []).forEach(function(o) {{
+    add(o.common_name); add(o.name); add(o.id);
+  }});
+  var names = Object.keys(seen).map(function(k) {{ return seen[k]; }});
+  names.sort(function(a, b) {{ return a.localeCompare(b); }});
+  var frag = document.createDocumentFragment();
+  names.forEach(function(n) {{
+    var opt = document.createElement('option');
+    opt.value = n;
+    frag.appendChild(opt);
+  }});
+  list.textContent = '';
+  list.appendChild(frag);
+}}
 
 function findInLoadedData(name) {{
   if (!lastData) return null;
