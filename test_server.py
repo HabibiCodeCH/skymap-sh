@@ -5568,7 +5568,10 @@ class AChartWithAircraftCannotOutliveThem(unittest.TestCase):
     this was found."""
 
     def req(self, **kw):
-        return api.Request(place="Geneva", when=dt.datetime(2026, 8, 12, 12, 0),
+        """A *live* day request. when= would set when_explicit, and a pinned
+        chart has no aircraft at all -- see NoAircraftOnAChartOfAnotherMoment.
+        `now` pins the clock without pinning the view."""
+        return api.Request(place="Geneva", now=dt.datetime(2026, 8, 12, 12, 0),
                            **kw)
 
     def test_a_day_chart_holds_only_as_long_as_a_position_does(self):
@@ -5583,7 +5586,7 @@ class AChartWithAircraftCannotOutliveThem(unittest.TestCase):
         self.assertEqual(server._cache_ttl(r, True), server.DAY_TTL)
 
     def test_a_night_chart_is_unaffected(self):
-        r = api.Request(place="Geneva", when=dt.datetime(2026, 8, 12, 23, 0))
+        r = api.Request(place="Geneva", now=dt.datetime(2026, 8, 12, 23, 0))
         self.assertFalse(api.planes_on(r))
         self.assertEqual(server._cache_ttl(r, False), server.NIGHT_TTL)
 
@@ -5596,3 +5599,45 @@ class AChartWithAircraftCannotOutliveThem(unittest.TestCase):
         """The failure mode of this fix is no caching at all."""
         r = self.req()
         self.assertEqual(server._cache_key(r, True), server._cache_key(r, True))
+
+
+class NoAircraftOnAChartOfAnotherMoment(unittest.TestCase):
+    """A chart pinned to Thursday afternoon was drawing the callsigns of
+    whatever was overhead this minute. Three days on, those aircraft are the
+    other side of a continent. Everything else on this page is a prediction
+    and survives being asked about another moment; this does not."""
+
+    PINNED = "?t=2026-08-14T14:00"
+
+    def setUp(self):
+        client_cm = TestClient(server.app)
+        self.client = client_cm.__enter__()
+        self.addCleanup(client_cm.__exit__, None, None, None)
+
+    def test_a_pinned_chart_never_resolves_planes_on(self):
+        for flags in ({}, {"planes": True}):
+            # when= is what sets when_explicit -- see Request.__init__.
+            r = api.Request(place="Geneva",
+                            when=dt.datetime(2026, 8, 14, 14, 0), **flags)
+            self.assertTrue(r.when_explicit)
+            self.assertFalse(api.planes_on(r), flags)
+
+    def test_the_p_key_is_not_offered_there(self):
+        """A key that navigates for no visible reason is worse than an inert
+        one -- pressing it used to move you off the moment you had picked."""
+        page = self.client.get("/Geneva" + self.PINNED, headers=BROWSER).text
+        kbd = re.search(r"var KBD=(\{.*?\});", page, re.S)
+        self.assertIsNotNone(kbd)
+        self.assertNotIn('"planes"', kbd.group(1))
+
+    def test_the_bar_says_why_instead_of_going_quiet(self):
+        page = self.client.get("/Geneva" + self.PINNED, headers=BROWSER).text
+        hint = re.search(r'<p class="kbd-hint">(.*?)</p>', page, re.S).group(1)
+        self.assertIn("live charts only", hint)
+        self.assertNotIn("<kbd>p</kbd>", hint)
+
+    def test_a_live_chart_still_offers_it(self):
+        page = self.client.get("/Geneva", headers=BROWSER).text
+        hint = re.search(r'<p class="kbd-hint">(.*?)</p>', page, re.S).group(1)
+        self.assertIn("<kbd>p</kbd> planes", hint)
+        self.assertNotIn("live charts only", hint)

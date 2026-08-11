@@ -2570,7 +2570,10 @@ def _respond(request: Req, place: str | None):
             # The mirror of the above: golden hour is a daylight layer, so
             # the g key exists exactly where the quadrant keys do not.
             kbd["golden"] = api._golden_toggle_url(r)
-        kbd["planes"] = api._planes_toggle_url(r)
+        # No p on a pinned chart: there is nothing to toggle, and a key that
+        # navigates somewhere for no visible reason is worse than an inert one.
+        if not r.when_explicit:
+            kbd["planes"] = api._planes_toggle_url(r)
         controls = api.controls_html(explore, animate_btn, quadrant_btn, sphere_btn, extra)
         # Trailing slash: the bar is a path, and on a chart the next segment
         # is the invitation. Typing after it searches objects, so "Tokyo/"
@@ -2692,7 +2695,7 @@ def _respond(request: Req, place: str | None):
                                header=header, controls=controls,
                                wide_class=" w-wide" if fits_width else "",
                                coming_up_card=coming_up_card,
-                               kbd_urls=json.dumps(kbd), shortcuts_hint=api.SHORTCUTS_HINT,
+                               kbd_urls=json.dumps(kbd), shortcuts_hint=api.shortcuts_hint(r),
                                body=chart_html)
         else:
             # Plain "skymap.sh", not the guessed location: this branch is
@@ -2706,7 +2709,7 @@ def _respond(request: Req, place: str | None):
                                header=header, controls=controls,
                                wide_class=" w-wide" if fits_width else "",
                                coming_up_card=coming_up_card,
-                               kbd_urls=json.dumps(kbd), shortcuts_hint=api.SHORTCUTS_HINT,
+                               kbd_urls=json.dumps(kbd), shortcuts_hint=api.shortcuts_hint(r),
                                body=chart_html)
         return HTMLResponse(body, status_code=res.status, headers=headers)
     # The layout seams are for a browser to break the text apart at; a

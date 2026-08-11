@@ -5421,8 +5421,14 @@ def _toggle_qs(r, night=None, nolines=None, dso=None, quadrant_requested=None,
     # that is depends on the time of day -- see planes_on. Writing the
     # agreeing one would put a parameter on every link for no change in what
     # renders, and mint a second cache entry for an identical page.
-    if planes and not is_daytime(r): q.append("planes=1")
-    elif not planes and is_daytime(r): q.append("noplanes=1")
+    #
+    # Nothing at all on a pinned chart, where planes are off unconditionally
+    # and neither flag would change what renders. Without this every toggle
+    # link on a pinned day chart picked up a noplanes=1 that did nothing --
+    # including the golden-hour one, which is how it was caught.
+    if not r.when_explicit:
+        if planes and not is_daytime(r): q.append("planes=1")
+        elif not planes and is_daytime(r): q.append("noplanes=1")
     if quadrant_requested:
         q.append("quadrant")
         if force_dso_off: q.append("nodso=1")
@@ -5468,6 +5474,14 @@ def planes_on(r):
     chart is already the thing somebody came for and they would be clutter
     across it.
     """
+    # Never on a pinned chart, whatever was asked for. Aircraft are a live
+    # reading and nothing else: a chart of Thursday afternoon drawn today
+    # would carry the callsigns of whatever is overhead this minute, and
+    # three days from now those aircraft are on the other side of a
+    # continent. Everything else on this page is a prediction and survives
+    # being asked about another moment. This does not.
+    if getattr(r, "when_explicit", False):
+        return False
     if r.noplanes:
         return False
     if r.planes_asked:
@@ -12127,6 +12141,21 @@ PAGE = PAGE.replace("{CROSSING_ARM_H_MS}", str(int(CROSSING_ARM_H * 3600_000)))
 # chosen against: tab rather than p (both focus the place field, tab is the
 # one people try), and no g, since "Share as a GIF" is a button sitting
 # right there in the drawer with its own label.
+# The planes item, and what stands in for it where the key does nothing.
+# Kept beside SHORTCUTS_HINT so the two cannot drift.
+PLANES_HINT = '<kbd>p</kbd> planes &middot; '
+PLANES_HINT_PINNED = 'planes: live charts only &middot; '
+
+
+def shortcuts_hint(r=None):
+    """The keyboard bar. On a pinned chart the p item is replaced by a note
+    rather than dropped: a key that silently does nothing reads as broken,
+    and the reason is worth one line."""
+    if r is not None and getattr(r, "when_explicit", False):
+        return SHORTCUTS_HINT.replace(PLANES_HINT, PLANES_HINT_PINNED)
+    return SHORTCUTS_HINT
+
+
 SHORTCUTS_HINT = (
     # "tab place / f find" described two fields. There is one now, and both
     # keys still reach it, so it is listed once under the name of the thing
