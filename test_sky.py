@@ -1198,3 +1198,106 @@ class AircraftNearlyOverheadReachTheZenithCap(unittest.TestCase):
             sky.render_linear.__globals__["math"] and None)   # keep import warm
         txt = self.chart([self.HIGH])
         self.assertIn("HIGH1", txt)
+
+
+class TheRouteIsATooltipAndNeverText(unittest.TestCase):
+    """Hovering a callsign says where it is likely going, in full airport
+    names. A terminal must never see any of it."""
+
+    WHEN = dt.datetime(2026, 8, 12, 12, 0)
+    PLANE = {"callsign": "TEST1", "type": "A320", "elev": 30.0, "az": 180.0,
+             "az_next": 184.0, "elev_next": 30.0,
+             "route": {"codes": ["LHR", "SPU"],
+                       "names": ["London Heathrow Airport", "Split Airport"]}}
+
+    def chart(self, **kw):
+        out = sky.render_linear(self.WHEN, 46.20, 6.14, W=110, H=22,
+                                color=False, alt_max=70, planes=[self.PLANE],
+                                **kw)
+        return str(out[0] if isinstance(out, tuple) else out)
+
+    def test_the_tip_uses_full_names_not_codes(self):
+        """A tooltip is read once, deliberately, with a pointer already on
+        the word. There is room for the airport's name and no reason to make
+        anybody decode LHR."""
+        tip = sky.plane_tip(self.PLANE)
+        self.assertIn("London Heathrow Airport", tip)
+        self.assertNotIn("LHR", tip)
+        self.assertTrue(tip.startswith("likely "))
+
+    def test_codes_are_the_fallback_when_there_is_no_name(self):
+        p = dict(self.PLANE, route={"codes": ["LHR", "SPU"]})
+        self.assertEqual(sky.plane_tip(p), "likely LHR → SPU")
+
+    def test_no_route_no_tip(self):
+        self.assertIsNone(sky.plane_tip(dict(self.PLANE, route=None)))
+
+    def test_a_terminal_render_carries_no_marker_and_no_route(self):
+        """The leak this guards against is not hypothetical: the href had it
+        once, and the first version of this tooltip put three control bytes
+        and 'likely Tunis Carthage International Airport' in the middle of a
+        curl user's chart."""
+        txt = self.chart(plane_tips=False)
+        for ch in (sky.LINK_START, sky.LINK_SEP, sky.LINK_END, sky.LINK_TIP):
+            self.assertNotIn(ch, txt)
+        self.assertNotIn("Airport", txt)
+        self.assertNotIn("likely", txt)
+
+    def test_asking_for_tips_puts_the_markers_in(self):
+        txt = self.chart(plane_tips=True)
+        self.assertIn(sky.LINK_TIP, txt)
+        self.assertIn("London Heathrow Airport", txt)
+
+    def test_the_marker_run_survives_being_stripped_for_a_terminal(self):
+        """api.strip_ansi is what a PNG header and any width measurement
+        read. A tooltip left in there is eight characters of invisible
+        budget, which is how the href bug showed itself."""
+        import api
+        clean = api.strip_ansi(self.chart(plane_tips=True))
+        self.assertNotIn("Airport", clean)
+        self.assertNotIn("likely", clean)
+        for ch in (sky.LINK_START, sky.LINK_SEP, sky.LINK_END, sky.LINK_TIP):
+            self.assertNotIn(ch, clean)
+
+
+class KnownRoutesReadDifferentlyFromUnknownOnes(unittest.TestCase):
+    """Blue where the route resolved, grey where it did not. Charters,
+    ferry legs and general aviation land in the second group -- they are
+    exactly the flights with no schedule to look up."""
+
+    WHEN = dt.datetime(2026, 8, 12, 12, 0)
+
+    def plane(self, **kw):
+        p = {"callsign": "TEST1", "type": "A320", "elev": 30.0, "az": 180.0,
+             "az_next": 184.0, "elev_next": 30.0, "route": None}
+        p.update(kw)
+        return p
+
+    def chart(self, planes, **kw):
+        out = sky.render_linear(self.WHEN, 46.20, 6.14, W=110, H=22,
+                                color=True, alt_max=70, planes=planes, **kw)
+        return str(out[0] if isinstance(out, tuple) else out)
+
+    ROUTE = {"codes": ["LHR", "SPU"],
+             "names": ["London Heathrow Airport", "Split Airport"]}
+
+    def test_a_routed_flight_is_blue(self):
+        txt = self.chart([self.plane(route=self.ROUTE)])
+        self.assertIn(sky.C.PLANE, txt)
+        self.assertNotIn(sky.C.PLANE_DIM, txt)
+
+    def test_an_unrouted_one_is_grey(self):
+        txt = self.chart([self.plane()])
+        self.assertIn(sky.C.PLANE_DIM, txt)
+
+    def test_the_colour_does_not_depend_on_tooltips(self):
+        """A terminal has no tooltips at all and the distinction is just as
+        worth seeing there."""
+        txt = self.chart([self.plane(route=self.ROUTE)], plane_tips=False)
+        self.assertIn(sky.C.PLANE, txt)
+        self.assertNotIn(sky.C.PLANE_DIM, txt)
+
+    def test_the_two_colours_are_not_neighbours_on_the_ramp(self):
+        """The difference has to be legible at a glance, not a shade nobody
+        can name."""
+        self.assertNotEqual(sky.C.PLANE, sky.C.PLANE_DIM)

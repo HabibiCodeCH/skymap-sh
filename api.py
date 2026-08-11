@@ -5548,6 +5548,7 @@ def _compose_sky(r):
     art, st = render_linear(r.when_utc, p.lat, p.lon, color=c, show_lines=r.lines,
                             tle=r.tle, facing=r.facing, span=r.span,
                             planes=overhead, plane_labels=False,
+                            plane_tips=bool(r.panel),
                             width=r.width if r.facing else _effective_width(r),
                             height=None if r.facing else _horizon_height(r),
                             mag_limit=mag_limit, line_limit=mag_limit,
@@ -6177,7 +6178,7 @@ def _compose_day(r):
     if planes_on(r):
         day_planes, _perr = planes.overhead(p.lat, p.lon)
     art, st = render_linear(r.when_utc, p.lat, p.lon, color=c, show_lines=False,
-                            planes=day_planes,
+                            planes=day_planes, plane_tips=bool(r.panel),
                             mag_limit=_fade_mag_limit(sa_now), alt_lo=0.0, alt_hi=alt_hi,
                             overlay=(arc, SUN_COL, "SUN", (sa_now, sz_now)),
                             bodies=show, width=_effective_width(r),
@@ -9089,9 +9090,17 @@ def _anchor_markers(s):
         if i == 0:
             out.append(chunk)
             continue
-        href, _, rest = chunk.partition(sky.LINK_SEP)
+        head, _, rest = chunk.partition(sky.LINK_SEP)
         body, _, tail = rest.partition(sky.LINK_END)
-        out.append(f'<a class="sky-link" href="{href}">{body}</a>{tail}')
+        href, _, tip = head.partition(sky.LINK_TIP)
+        title = f' title="{tip}"' if tip else ""
+        if href:
+            out.append(f'<a class="sky-link"{title} href="{href}">{body}</a>{tail}')
+        else:
+            # A tooltip with nowhere to go. An aircraft's route is worth
+            # reading and there is nothing to click through to, and an
+            # anchor with no href is a link that lies about being one.
+            out.append(f'<span class="sky-tip"{title}>{body}</span>{tail}')
     return "".join(out)
 
 
@@ -9122,7 +9131,8 @@ def ansi_to_html(text):
 # are browser-only, and nothing that strips had ever been handed one.
 _LINK_HREF = re.compile(
     f"{sky.LINK_START}[^{sky.LINK_SEP}{sky.LINK_END}]*{sky.LINK_SEP}")
-_MARKERS = re.compile(f"[{sky.LINK_START}{sky.LINK_SEP}{sky.LINK_END}]")
+_MARKERS = re.compile(
+    f"[{sky.LINK_START}{sky.LINK_SEP}{sky.LINK_END}{sky.LINK_TIP}]")
 
 
 def strip_ansi(text):

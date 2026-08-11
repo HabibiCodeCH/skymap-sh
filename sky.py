@@ -55,6 +55,12 @@ class C:
     # to look it up. Clear of blue-white stars (117), planets (180), deep sky
     # (120), constellation names (104) and the ISS (48).
     PLANE = "\033[38;5;110m"
+    # An aircraft whose route could not be resolved. Grey rather than a
+    # duller blue: the difference between "I know where this one is going"
+    # and "I do not" should be legible at a glance and not a shade nobody
+    # can name. Charters, ferry legs and general aviation land here, and
+    # they are exactly the ones with no schedule to look up.
+    PLANE_DIM = "\033[38;5;245m"
     DSO = "\033[38;5;120m"      # deep-sky objects -- green, so they read
                                 # apart from purple constellation names and
                                 # white stars/Moon at a glance
@@ -92,6 +98,29 @@ def plane_arrow(dx, dy):
     return PLANE_ARROWS[int(round(ang / (math.pi / 4))) % 8]
 
 
+def plane_tip(p):
+    """What hovering an aircraft's callsign says, or None.
+
+    Full airport names rather than the three-letter codes on the sphere: a
+    tooltip is read once, deliberately, with a pointer already on the word,
+    so there is room for "London Heathrow Airport" and no reason to make
+    somebody decode LHR.
+
+    "likely", every time. ADS-B broadcasts no destination -- the aircraft
+    sends a callsign and the route is matched against a schedule afterwards,
+    which misses charters, ferry legs and anything unscheduled. A reader
+    standing outside cannot check it, so the hedge is the whole difference
+    between a good feature and a confident lie.
+    """
+    r = (p or {}).get("route")
+    if not r:
+        return None
+    ends = r.get("names") or r.get("codes")
+    if not ends or len(ends) != 2 or not all(ends):
+        return None
+    return f"likely {ends[0]} \u2192 {ends[1]}"
+
+
 def paint(s, c, on=True):
     return f"{c}{s}{C.OFF}" if on else s
 
@@ -109,6 +138,16 @@ def paint(s, c, on=True):
 # "\x00\x05\x00", so the low three would have matched inside every one of
 # them and torn a ZENITH_SLOT in half on its way to the browser.
 LINK_START, LINK_SEP, LINK_END = "\x11", "\x12", "\x13"
+
+# A tooltip, carried inside the same head as the href and separated from it
+# by this. Deliberately inside: _LINK_HREF strips everything between
+# LINK_START and LINK_SEP, so a terminal cannot see a tooltip any more than
+# it can see a URL, without that rule needing to learn about this one.
+#
+# A label may have a tooltip and no href -- an aircraft's route is worth
+# reading and there is nothing to click through to -- in which case the head
+# is empty before the separator and api emits a span rather than an anchor.
+LINK_TIP = "\x14"
 
 
 # ---------------------------------------------------------------- time
@@ -1446,7 +1485,8 @@ def render_linear(when_utc, lat, lon, W=176, H=22, color=True, show_lines=True,
                   bodies=None, inset=True, width=None, height=None, dso_limit=None,
                   quadrant=None, quadrants=False, side_panel=False,
                   alt_bands=None, notes=None, milkyway=False, dim_limit=None,
-                  radiant=None, link=None, planes=None, plane_labels=True):
+                  radiant=None, link=None, planes=None, plane_labels=True,
+                  plane_tips=False):
     """Horizon panorama. facing=None gives the full 360 deg sweep; facing='SW'
     gives a window centred there, which is narrow enough to be undistorted.
 
@@ -1602,7 +1642,7 @@ def render_linear(when_utc, lat, lon, W=176, H=22, color=True, show_lines=True,
             return True
         return False
 
-    def _try(r, c, s, colr, dx, href=None):
+    def _try(r, c, s, colr, dx, href=None, tip=None):
         start = c + dx if dx > 0 else c - len(s) + dx
         if not (0 <= r < H and 0 <= start and start + len(s) <= W):
             return False
@@ -1611,20 +1651,25 @@ def render_linear(when_utc, lat, lon, W=176, H=22, color=True, show_lines=True,
         for k, ch in enumerate(s):
             grid[r][start + k], tint[r][start + k] = ch, colr
             soft[r][start + k], lock[r][start + k] = False, True
-        if href:
+        if href or tip:
             # Where the label ended up, so the row assembly can wrap it. The
             # placement search tries seven rows and six offsets before it
             # settles, so this is the only point that knows.
-            anchors.setdefault(r, []).append((start, start + len(s), href))
+            #
+            # href and tooltip travel as one string so the assembly and the
+            # strippers stay a three-tuple and never learn there are two
+            # things in here.
+            head = (href or "") + (LINK_TIP + tip if tip else "")
+            anchors.setdefault(r, []).append((start, start + len(s), head))
         return True
 
-    def text(az, alt, s, colr, href=None):
+    def text(az, alt, s, colr, href=None, tip=None):
         c, r = col_of(az), row_of(alt)
         if c is None or r is None:
             return False
         for dr in (0, -1, 1, -2, 2, -3, 3):
             for dx in (2, -2, 5, -5, 9, -9):
-                if _try(r + dr, c, s, colr, dx, href):
+                if _try(r + dr, c, s, colr, dx, href, tip):
                     return True
         return False
 
@@ -1956,8 +2001,10 @@ def render_linear(when_utc, lat, lon, W=176, H=22, color=True, show_lines=True,
                     # y is up on the disc and rows run down, hence the flip,
                     # so this reads the same way the panorama's does.
                     cap = plane_arrow(x1 - x0, -(y1 - y0)) or cap
-                inset_items.append((p["elev"], p["az"], cap, C.PLANE,
-                                    name if plane_labels else None))
+                inset_items.append(
+                    (p["elev"], p["az"], cap,
+                     C.PLANE if plane_tip(p) else C.PLANE_DIM,
+                     name if plane_labels else None))
                 continue
             c0, r0 = colf_of(p["az"]), rowf_of(p["elev"])
             if c0 is None or r0 is None:
@@ -1973,7 +2020,20 @@ def render_linear(when_utc, lat, lon, W=176, H=22, color=True, show_lines=True,
                     if abs(dc) > (W - 1) / 2.0:
                         dc -= math.copysign(W - 1, dc)
                     mark = plane_arrow(dc, r1 - r0) or mark
-            marks.append((p["az"], p["elev"], mark, name))
+            # Tooltips only where the caller says a browser is reading.
+            # A tooltip goes through the same marker machinery an href does,
+            # and _chart_link says why that is browser-only: the markers
+            # print as control characters if they reach a terminal. Without
+            # this gate, "likely Tunis Carthage International Airport" and
+            # three control bytes landed in the middle of a curl user's
+            # chart -- which is exactly the leak the href had once.
+            # Colour on whether the route is known, not on whether a
+            # tooltip is being drawn: a terminal has no tooltips at all and
+            # the distinction is just as worth seeing there.
+            tip = plane_tip(p)
+            marks.append((p["az"], p["elev"], mark, name,
+                          tip if plane_tips else None,
+                          C.PLANE if tip else C.PLANE_DIM))
 
         # Every mark first, then every name. place() refuses a cell that
         # lock[][] has claimed and labels are what claim them, so drawing
@@ -1981,17 +2041,17 @@ def render_linear(when_utc, lat, lon, W=176, H=22, color=True, show_lines=True,
         # swallow the second one's arrow -- silently, leaving a callsign
         # floating beside a faint star, which is the same "\u00b7" character.
         # Three of eighteen went that way over Geneva.
-        drawn = [(az, alt, name)
-                 for az, alt, mark, name in marks
-                 if place(az, alt, mark, C.PLANE, over=True)]
+        drawn = [(az, alt, name, tip, col)
+                 for az, alt, mark, name, tip, col in marks
+                 if place(az, alt, mark, col, over=True)]
         # Only what actually got a mark gets a name. A callsign floating
         # beside a faint star -- the same "\u00b7" character an arrow would
         # have replaced -- reads as a plane drawn wrong rather than as one
         # the chart had no room for.
         if plane_labels:
-            for az, alt, name in drawn:
+            for az, alt, name, tip, col in drawn:
                 if name:
-                    text(az, alt, name, C.PLANE)
+                    text(az, alt, name, col, tip=tip)
 
     # The radiant of whatever shower is running, marked where the meteors
     # come from. Same shape as the ISS marker above: one glyph and a name.
