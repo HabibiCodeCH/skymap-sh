@@ -3,6 +3,7 @@
 
 Run:  python3 test_sky.py
 """
+import re
 import unittest
 import datetime as dt
 import sky
@@ -1063,3 +1064,76 @@ class SunCrossing(unittest.TestCase):
     def test_no_crossing_in_polar_night(self):
         december = dt.datetime(2026, 12, 21, 0, 0)
         self.assertIsNone(sky.sun_crossing(december, 78.22, 15.65))
+
+
+class AircraftOnTheHorizonChart(unittest.TestCase):
+    """Planes are drawn as an arrow pointing the way they cross the chart,
+    which is not their compass track: one flying due north off to your east
+    slides across the panorama rather than climbing it."""
+
+    WHEN = dt.datetime(2026, 8, 12, 21, 0)
+    LAT, LON = 46.20, 6.14
+
+    def chart(self, planes, **kw):
+        out = sky.render_linear(self.WHEN, self.LAT, self.LON, W=110, H=22,
+                                color=False, alt_max=70, planes=planes, **kw)
+        body = out[0] if isinstance(out, tuple) else out
+        if isinstance(body, list):
+            body = "\n".join(str(x) for x in body)
+        return re.sub(r"\x1b\[[0-9;]*m", "", str(body))
+
+    def plane(self, **kw):
+        p = {"callsign": "TEST1", "type": "A320", "elev": 30.0, "az": 180.0,
+             "az_next": None, "elev_next": None}
+        p.update(kw)
+        return p
+
+    def test_every_direction_gets_its_own_arrow(self):
+        for daz, dalt, want in ((+6, 0, "→"), (+6, +6, "↗"), (0, +6, "↑"),
+                                (-6, +6, "↖"), (-6, 0, "←"), (-6, -6, "↙"),
+                                (0, -6, "↓"), (+6, -6, "↘")):
+            txt = self.chart([self.plane(az_next=180.0 + daz,
+                                         elev_next=30.0 + dalt)])
+            self.assertIn(want, txt, f"daz={daz} dalt={dalt}")
+
+    def test_a_plane_with_no_track_is_still_drawn(self):
+        """Upstream gives no ground speed for some aircraft. A dot says
+        'something is there' without claiming a direction we were not told."""
+        txt = self.chart([self.plane()])
+        self.assertNotIn("→", txt)
+        self.assertIn("TEST1", txt)
+
+    def test_crossing_due_north_does_not_read_as_a_hard_left_turn(self):
+        """Column 109 to column 0 is one step east across the meridian, and
+        as a raw subtraction it is the whole sky in the other direction."""
+        txt = self.chart([self.plane(az=359.0, elev=40.0,
+                                     az_next=3.0, elev_next=40.0)],
+                         facing=0.0, span=180.0)
+        self.assertIn("→", txt)
+        self.assertNotIn("←", txt)
+
+    def test_only_the_highest_few_are_named(self):
+        many = [self.plane(callsign=f"FL{i:03d}", elev=60.0 - i * 4,
+                           az=40.0 + i * 25, az_next=44.0 + i * 25,
+                           elev_next=60.0 - i * 4)
+                for i in range(8)]
+        txt = self.chart(many)
+        named = sum(1 for i in range(8) if f"FL{i:03d}" in txt)
+        self.assertEqual(named, sky.PLANE_LABELS)
+        # The highest ones, not whichever came first in the list.
+        self.assertIn("FL000", txt)
+        self.assertNotIn("FL007", txt)
+
+    def test_no_planes_changes_nothing(self):
+        self.assertEqual(self.chart(None), self.chart([]))
+
+    def test_the_arrows_are_all_in_the_bundled_font(self):
+        """Braille needed its own rasteriser in gif.py because no bundled
+        font carries it. These must not need the same."""
+        from fontTools.ttLib import TTFont
+        f = TTFont("fonts/JetBrainsMono-Regular.ttf", fontNumber=0)
+        cmap = set()
+        for t in f["cmap"].tables:
+            cmap |= set(t.cmap.keys())
+        for ch in sky.PLANE_ARROWS:
+            self.assertIn(ord(ch), cmap, ch)

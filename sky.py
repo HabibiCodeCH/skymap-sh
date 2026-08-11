@@ -49,6 +49,12 @@ class C:
     UNLIT = "\033[38;5;237m"
     PLANET = "\033[38;5;180m"
     MOON = "\033[38;5;253m"
+    # Aircraft. Pale steel blue, and chosen to be none of the others: an
+    # aircraft is the only thing on this chart that is not astronomical, and
+    # the failure that matters is somebody taking one for a planet and going
+    # to look it up. Clear of blue-white stars (117), planets (180), deep sky
+    # (120), constellation names (104) and the ISS (48).
+    PLANE = "\033[38;5;110m"
     DSO = "\033[38;5;120m"      # deep-sky objects -- green, so they read
                                 # apart from purple constellation names and
                                 # white stars/Moon at a glance
@@ -61,6 +67,34 @@ def star_colour(ci):
     if ci < 0.60:             return "\033[38;5;230m"   # pale yellow
     if ci < 1.00:             return "\033[38;5;222m"   # yellow
     return "\033[38;5;216m"                              # orange-red
+
+
+# Eight directions, starting at screen-right and going anticlockwise, which
+# is what atan2 hands back. JetBrains Mono carries all eight, so the PNG
+# export needs no special case -- unlike braille, and unlike the aircraft
+# glyph the sphere uses, which is in neither bundled font.
+# How many aircraft get their callsign written next to them. Three is what
+# fits before the labels start colliding with each other and with the
+# cardinal letters, in the crowded band low on the chart where planes are.
+PLANE_LABELS = 3
+
+PLANE_ARROWS = ("\u2192", "\u2197", "\u2191", "\u2196",
+                "\u2190", "\u2199", "\u2193", "\u2198")
+
+
+def plane_arrow(dx, dy):
+    """The arrow for a movement of (dx, dy) *cells on the chart*.
+
+    Cells, not degrees, and certainly not the compass track. An aircraft
+    flying due north twenty kilometres to your east does not climb the
+    panorama northwards, it slides across it, and only the change in its
+    position on the drawing knows that. dy is positive downward, because
+    that is how rows run.
+    """
+    if not dx and not dy:
+        return None
+    ang = math.atan2(-dy, dx)
+    return PLANE_ARROWS[int(round(ang / (math.pi / 4))) % 8]
 
 
 def paint(s, c, on=True):
@@ -1403,7 +1437,7 @@ def render_linear(when_utc, lat, lon, W=176, H=22, color=True, show_lines=True,
                   bodies=None, inset=True, width=None, height=None, dso_limit=None,
                   quadrant=None, quadrants=False, side_panel=False,
                   alt_bands=None, notes=None, milkyway=False, dim_limit=None,
-                  radiant=None, link=None):
+                  radiant=None, link=None, planes=None):
     """Horizon panorama. facing=None gives the full 360 deg sweep; facing='SW'
     gives a window centred there, which is narrow enough to be undistorted.
 
@@ -1864,6 +1898,48 @@ def render_linear(when_utc, lat, lon, W=176, H=22, color=True, show_lines=True,
                 place(mk[2], mk[1], "Ξ", ISS, over=True)
                 text(mk[2], mk[1], "ISS", ISS)
                 break
+
+    # Aircraft overhead, if the caller fetched any. Same shape as the ISS
+    # above -- a mark and a name -- with three differences it does not need.
+    #
+    # The mark is an arrow, not a fixed glyph, because direction is the one
+    # thing about an aircraft that is free to know and useful to be told:
+    # it says which way to look next. It is worked out from where the plane
+    # will be a minute on, converted to chart cells, so it points the way the
+    # thing moves *across the drawing*. The compass track would be wrong for
+    # most of the sky -- see plane_arrow.
+    #
+    # Only the highest few get a name. Eight aircraft above the floor into
+    # 110 columns, with six-character callsigns, land in rows 2-8 where the
+    # cardinal axis and the low stars already are, and the labels collide
+    # into porridge. The rest stay as bare arrows, which still answer "where
+    # do I look".
+    #
+    # Nothing here says where they are going. That belongs in the prose under
+    # the chart, where there is room for "likely LHR to SPU" without it
+    # having to survive being one glyph wide.
+    if planes:
+        seen = 0
+        for p in sorted(planes, key=lambda x: -x["elev"]):
+            c0, r0 = colf_of(p["az"]), rowf_of(p["elev"])
+            if c0 is None or r0 is None:
+                continue
+            mark = "\u00b7"
+            if p.get("az_next") is not None and p.get("elev_next") is not None:
+                c1, r1 = colf_of(p["az_next"]), rowf_of(p["elev_next"])
+                if c1 is not None and r1 is not None:
+                    # Wrapped: a plane crossing due north goes from column
+                    # 109 to column 0, which as a raw subtraction is a hard
+                    # left turn across the whole sky.
+                    dc = c1 - c0
+                    if abs(dc) > (W - 1) / 2.0:
+                        dc -= math.copysign(W - 1, dc)
+                    mark = plane_arrow(dc, r1 - r0) or mark
+            place(p["az"], p["elev"], mark, C.PLANE, over=True)
+            name = p.get("callsign") or p.get("type")
+            if name and seen < PLANE_LABELS:
+                if text(p["az"], p["elev"], name, C.PLANE):
+                    seen += 1
 
     # The radiant of whatever shower is running, marked where the meteors
     # come from. Same shape as the ISS marker above: one glyph and a name.
