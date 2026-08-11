@@ -606,6 +606,21 @@ def iss_track(tle_path, when_utc, lat, lon, minutes=110, step=0.5):
     return (best or None), None
 
 
+def zenith_xy(alt, az, alt_max, lat=0.0):
+    """Where an (alt, az) falls on the zenith disc, in -1..1 either way.
+
+    Pulled out of _zenith_inset so the aircraft arrows can be worked out in
+    the disc's own geometry rather than the panorama's. The two projections
+    disagree completely -- the strip is linear in azimuth, the disc is polar
+    and turned half a circle in the south -- so an arrow computed for one and
+    drawn on the other points somewhere the aircraft is not going.
+    """
+    span = 90.0 - alt_max
+    turn = -1.0 if lat < 0 else 1.0
+    r = (90.0 - alt) / span
+    return turn * -math.sin(az * D) * r, turn * math.cos(az * D) * r
+
+
 def _zenith_inset(items, alt_max, color, indent, IW=21, IH=11, lat=0.0,
                   target=None, link=None):
     """Small all-sky disc for the cap the panorama cannot honestly show.
@@ -656,9 +671,8 @@ def _zenith_inset(items, alt_max, color, indent, IW=21, IH=11, lat=0.0,
     # order the name column beside the disc reads in.
     named = []
     for alt, az, ch, col, nm in sorted(items, key=lambda v: (bool(v[4]), -v[0])):
-        r = (90.0 - alt) / span
-        put(turn * -math.sin(az * D) * r, turn * math.cos(az * D) * r,
-            ch, col, over=True)
+        x, y = zenith_xy(alt, az, alt_max, lat)
+        put(x, y, ch, col, over=True)
         if nm:
             named.append((nm, col))
 
@@ -1917,11 +1931,29 @@ def render_linear(when_utc, lat, lon, W=176, H=22, color=True, show_lines=True,
         # Highest first, so where they do collide the ones nearest overhead
         # win the room -- text() gives up rather than overwrite.
         for p in sorted(planes, key=lambda x: -x["elev"]):
+            name = p.get("callsign") or p.get("type")
+            has_next = (p.get("az_next") is not None
+                        and p.get("elev_next") is not None)
+            # The cap first, before any panorama test. rowf_of returns None
+            # above alt_hi, so asking it first threw away exactly the
+            # aircraft this branch exists for -- the one nearly overhead,
+            # which is the one somebody is most likely to be looking at.
+            if p["elev"] > alt_hi:
+                cap = "\u00b7"
+                if has_next:
+                    x0, y0 = zenith_xy(p["elev"], p["az"], alt_hi, lat)
+                    x1, y1 = zenith_xy(p["elev_next"], p["az_next"], alt_hi, lat)
+                    # y is up on the disc and rows run down, hence the flip,
+                    # so this reads the same way the panorama's does.
+                    cap = plane_arrow(x1 - x0, -(y1 - y0)) or cap
+                inset_items.append((p["elev"], p["az"], cap, C.PLANE,
+                                    name if plane_labels else None))
+                continue
             c0, r0 = colf_of(p["az"]), rowf_of(p["elev"])
             if c0 is None or r0 is None:
                 continue
             mark = "\u00b7"
-            if p.get("az_next") is not None and p.get("elev_next") is not None:
+            if has_next:
                 c1, r1 = colf_of(p["az_next"]), rowf_of(p["elev_next"])
                 if c1 is not None and r1 is not None:
                     # Wrapped: a plane crossing due north goes from column
@@ -1932,7 +1964,6 @@ def render_linear(when_utc, lat, lon, W=176, H=22, color=True, show_lines=True,
                         dc -= math.copysign(W - 1, dc)
                     mark = plane_arrow(dc, r1 - r0) or mark
             place(p["az"], p["elev"], mark, C.PLANE, over=True)
-            name = p.get("callsign") or p.get("type")
             if plane_labels and name:
                 text(p["az"], p["elev"], name, C.PLANE)
 

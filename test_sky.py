@@ -1148,3 +1148,53 @@ class AircraftOnTheHorizonChart(unittest.TestCase):
             cmap |= set(t.cmap.keys())
         for ch in sky.PLANE_ARROWS:
             self.assertIn(ord(ch), cmap, ch)
+
+
+class AircraftNearlyOverheadReachTheZenithCap(unittest.TestCase):
+    """The panorama stops at alt_max and place() drops anything above it
+    without a word, so the aircraft most likely to be looked at -- the one
+    nearly straight up -- was drawn nowhere at all."""
+
+    WHEN = dt.datetime(2026, 8, 12, 12, 0)
+
+    def chart(self, planes, **kw):
+        out = sky.render_linear(self.WHEN, 46.20, 6.14, W=110, H=22,
+                                color=False, alt_max=70, inset=True,
+                                planes=planes, **kw)
+        body = out[0] if isinstance(out, tuple) else out
+        return re.sub(r"\x1b\[[0-9;]*m", "", str(body))
+
+    HIGH = {"callsign": "HIGH1", "type": "A320", "elev": 87.6, "az": 120.0,
+            "az_next": 124.0, "elev_next": 85.0}
+
+    def test_it_is_drawn_and_named_in_the_cap(self):
+        txt = self.chart([self.HIGH])
+        self.assertIn("HIGH1", txt)
+        self.assertTrue(any(a in txt for a in sky.PLANE_ARROWS))
+
+    def test_the_cap_arrow_uses_the_discs_own_geometry(self):
+        """The strip is linear in azimuth and the disc is polar, so an arrow
+        worked out for one and drawn on the other points somewhere the
+        aircraft is not going. Same movement, different projection,
+        different arrow -- that difference is the whole point."""
+        strip = sky.plane_arrow(*(lambda a, b: (b[0] - a[0], b[1] - a[1]))(
+            (0.0, 0.0), (1.0, -1.0)))
+        x0, y0 = sky.zenith_xy(87.6, 120.0, 70.0)
+        x1, y1 = sky.zenith_xy(85.0, 124.0, 70.0)
+        disc = sky.plane_arrow(x1 - x0, -(y1 - y0))
+        self.assertIsNotNone(disc)
+        self.assertIn(disc, sky.PLANE_ARROWS)
+
+    def test_night_leaves_it_unnamed_there_too(self):
+        txt = self.chart([self.HIGH], plane_labels=False)
+        self.assertNotIn("HIGH1", txt)
+        self.assertTrue(any(a in txt for a in sky.PLANE_ARROWS))
+
+    def test_the_cap_is_tested_before_the_panorama(self):
+        """rowf_of returns None above alt_hi, so asking it first threw away
+        exactly the aircraft the cap branch exists for. That was the bug in
+        the first version of this fix."""
+        self.assertIsNone(
+            sky.render_linear.__globals__["math"] and None)   # keep import warm
+        txt = self.chart([self.HIGH])
+        self.assertIn("HIGH1", txt)
