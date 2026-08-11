@@ -63,6 +63,18 @@ ALIASES = {
     "cdg": "paris", "lhr": "london", "fra": "frankfurt",
     "muc": "munich", "dxb": "dubai", "sin": "singapore",
     "ist": "istanbul",
+    # Short forms of cities filed under their long name, which returned
+    # nothing at all before. These cost nobody anything: there is no other
+    # Castellon, Coruna or Gasteiz to lose the name to.
+    #
+    # Not on this list, on purpose: Valencia, Santiago, Cordoba, Cartagena,
+    # Vitoria and Salamanca. Each of those already answers with a real city
+    # that is simply larger -- Santiago means Chile to seven million people
+    # -- and an alias would not disambiguate them, it would just move the
+    # problem to the other hemisphere.
+    "castellon": "castellon de la plana",
+    "coruna": "a coruna",
+    "gasteiz": "vitoria-gasteiz",
 }
 
 

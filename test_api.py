@@ -3823,3 +3823,32 @@ class TheEclipseWelcome(unittest.TestCase):
         self.assertEqual(api.PAGE.count("skymapTakeover("), 3)  # def + 2 uses
         # And a guard so the two cannot stack on the same evening.
         self.assertIn("SKYMAP_STAGE", api.PAGE)
+
+
+class ShortFormsOfSpanishCitiesResolve(unittest.TestCase):
+    """Cities filed under a long name answered to nothing when typed short.
+    Found the day before the 12 August 2026 eclipse, when all three sit
+    inside the path and a reader typing their own city got a 404."""
+
+    def test_the_short_forms_now_find_the_city(self):
+        for typed, want in (("Castellon", "Castellón de la Plana"),
+                            ("Coruna", "A Coruña"),
+                            ("Gasteiz", "Vitoria-Gasteiz")):
+            p = api.lookup_place(typed)
+            self.assertIsNotNone(p, typed)
+            self.assertEqual(p.name, want)
+
+    def test_they_took_the_name_from_nobody(self):
+        """Each was a 404 before, so no other city lost its name -- which is
+        the whole reason these three were safe to add and Valencia was not."""
+        for typed in ("castellon", "coruna", "gasteiz"):
+            others = [h for h in api._cities().get(typed, [])]
+            self.assertEqual(others, [], f"{typed} was not free after all")
+
+    def test_the_contested_names_were_left_alone(self):
+        """Valencia, Santiago and the rest still answer with the larger city.
+        An alias would not have disambiguated them, only moved the problem to
+        the other hemisphere -- that call is the user's, not this file's."""
+        self.assertEqual(api.lookup_place("Santiago").name, "Santiago")
+        self.assertLess(api.lookup_place("Santiago").lat, 0)      # Chile
+        self.assertLess(api.lookup_place("Valencia").lat, 20)     # Venezuela
