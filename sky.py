@@ -1587,11 +1587,20 @@ def render_linear(when_utc, lat, lon, W=176, H=22, color=True, show_lines=True,
         return None if r is None else int(round(r))
 
     def place(az, alt, ch, col, over=False):
+        """True if the glyph actually landed.
+
+        It often does not: lock[][] belongs to labels already written and is
+        never overridden, because an arrow dropped into the middle of
+        "Cassiopeia" corrupts the word. Callers that need to know -- the
+        aircraft layer, which must not print a callsign beside a mark that
+        was never drawn -- read the result."""
         c, r = col_of(az), row_of(alt)
         if c is None or r is None:
-            return
+            return False
         if 0 <= r < H and not lock[r][c] and (over or free(r, c)):
             grid[r][c], tint[r][c], soft[r][c] = ch, col, False
+            return True
+        return False
 
     def _try(r, c, s, colr, dx, href=None):
         start = c + dx if dx > 0 else c - len(s) + dx
@@ -1930,6 +1939,7 @@ def render_linear(when_utc, lat, lon, W=176, H=22, color=True, show_lines=True,
     if planes:
         # Highest first, so where they do collide the ones nearest overhead
         # win the room -- text() gives up rather than overwrite.
+        marks = []
         for p in sorted(planes, key=lambda x: -x["elev"]):
             name = p.get("callsign") or p.get("type")
             has_next = (p.get("az_next") is not None
@@ -1963,9 +1973,25 @@ def render_linear(when_utc, lat, lon, W=176, H=22, color=True, show_lines=True,
                     if abs(dc) > (W - 1) / 2.0:
                         dc -= math.copysign(W - 1, dc)
                     mark = plane_arrow(dc, r1 - r0) or mark
-            place(p["az"], p["elev"], mark, C.PLANE, over=True)
-            if plane_labels and name:
-                text(p["az"], p["elev"], name, C.PLANE)
+            marks.append((p["az"], p["elev"], mark, name))
+
+        # Every mark first, then every name. place() refuses a cell that
+        # lock[][] has claimed and labels are what claim them, so drawing
+        # each aircraft's arrow and name in turn let the first one's label
+        # swallow the second one's arrow -- silently, leaving a callsign
+        # floating beside a faint star, which is the same "\u00b7" character.
+        # Three of eighteen went that way over Geneva.
+        drawn = [(az, alt, name)
+                 for az, alt, mark, name in marks
+                 if place(az, alt, mark, C.PLANE, over=True)]
+        # Only what actually got a mark gets a name. A callsign floating
+        # beside a faint star -- the same "\u00b7" character an arrow would
+        # have replaced -- reads as a plane drawn wrong rather than as one
+        # the chart had no room for.
+        if plane_labels:
+            for az, alt, name in drawn:
+                if name:
+                    text(az, alt, name, C.PLANE)
 
     # The radiant of whatever shower is running, marked where the meteors
     # come from. Same shape as the ISS marker above: one glyph and a name.
