@@ -2041,9 +2041,20 @@ def render_linear(when_utc, lat, lon, W=176, H=22, color=True, show_lines=True,
         # swallow the second one's arrow -- silently, leaving a callsign
         # floating beside a faint star, which is the same "\u00b7" character.
         # Three of eighteen went that way over Geneva.
+        # over=False, so an aircraft never takes a cell something real is
+        # already in. free() allows an empty cell or a background gridline
+        # dot and refuses a star, which is the rule that matters: the stars
+        # are what somebody came outside for and an aircraft is passing
+        # through. With over=True an arrow simply replaced whatever was
+        # underneath it, and a star that had been there was gone -- which
+        # reads as the chart having moved it.
+        #
+        # The cost is that an aircraft sitting exactly on a star is not
+        # drawn. That is the right way round: one arrow missing from a
+        # transient overlay against one star missing from the sky.
         drawn = [(az, alt, name, tip, col)
                  for az, alt, mark, name, tip, col in marks
-                 if place(az, alt, mark, col, over=True)]
+                 if place(az, alt, mark, col)]
         # Only what actually got a mark gets a name. A callsign floating
         # beside a faint star -- the same "\u00b7" character an arrow would
         # have replaced -- reads as a plane drawn wrong rather than as one

@@ -1301,3 +1301,62 @@ class KnownRoutesReadDifferentlyFromUnknownOnes(unittest.TestCase):
         """The difference has to be legible at a glance, not a shade nobody
         can name."""
         self.assertNotEqual(sky.C.PLANE, sky.C.PLANE_DIM)
+
+
+class AnAircraftNeverTakesAStarsCell(unittest.TestCase):
+    """Reported as "they move stars when too close". An arrow drawn with
+    over=True simply replaced whatever was underneath it, so a star that had
+    been there was gone -- which reads as the chart having moved it."""
+
+    WHEN = dt.datetime(2026, 8, 12, 22, 0)
+    LAT, LON = 46.20, 6.14
+
+    def render(self, planes=None):
+        out = sky.render_linear(self.WHEN, self.LAT, self.LON, W=110, H=22,
+                                color=False, alt_max=70, planes=planes,
+                                plane_labels=False)
+        body = out[0] if isinstance(out, tuple) else out
+        return re.sub(r"\x1b\[[0-9;]*m", "", str(body)).split("\n")
+
+    def test_a_star_is_still_there_with_a_plane_on_top_of_it(self):
+        """The aircraft is put exactly where a star already is. The star
+        wins; the aircraft is simply not drawn."""
+        plain = self.render()
+        # Find a cell holding a real star: something that is not a space and
+        # not the background dot the empty grid is drawn with.
+        star = None
+        for ri, row in enumerate(plain):
+            for ci, ch in enumerate(row):
+                if ch in "●•" :
+                    star = (ri, ci, ch)
+                    break
+            if star:
+                break
+        self.assertIsNotNone(star, "no star on this chart to test against")
+        ri, ci, ch = star
+        # Work back from the cell to an alt/az, then put a plane there.
+        alt = (1 - (ri - 1) / 21.0) * 70.0
+        az = (ci - 5) / 109.0 * 360.0
+        with_plane = self.render([{ "callsign": "TEST1", "type": "A320",
+                                    "elev": alt, "az": az,
+                                    "az_next": az + 4, "elev_next": alt,
+                                    "route": None }])
+        # Whatever else moved, no cell that held a star now holds an arrow.
+        for rb, rw in zip(plain, with_plane):
+            for cb, cw in zip(rb, rw):
+                if cb in "●•":
+                    self.assertNotIn(cw, sky.PLANE_ARROWS,
+                                     "an arrow took a star's cell")
+
+    def test_the_aircraft_is_dropped_rather_than_the_star(self):
+        """One arrow missing from a transient overlay beats one star missing
+        from the sky."""
+        plain = self.render()
+        stars_before = sum(row.count(c) for row in plain for c in "●•")
+        many = [{"callsign": f"F{i}", "type": "A320",
+                 "elev": 5.0 + i * 3.0, "az": i * 17.0,
+                 "az_next": i * 17.0 + 4, "elev_next": 5.0 + i * 3.0,
+                 "route": None} for i in range(20)]
+        after = self.render(many)
+        stars_after = sum(row.count(c) for row in after for c in "●•")
+        self.assertEqual(stars_before, stars_after)
