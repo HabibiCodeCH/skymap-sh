@@ -20,6 +20,7 @@ import brand
 import facts as facts_table
 import motion
 import objects
+import planes
 from sky import (C, paint, julian, gmst_hours, altaz, angsep, compass, moon_glyph,
                  phase_name, resolve_target, visibility, next_visible,
                  solar_elongation, find_text, find_marker, sky_read, render_linear,
@@ -597,7 +598,8 @@ class Request:
     def __init__(self, place=None, when=None, view="horizon", facing=None, span=None,
                  find=None, iss=False, lines=True, color=True, fallback=None,
                  tle=None, now=None, night=False, width=None, dso=False, quadrant=None,
-                 nodso=False, panel=False, nogolden=False, links=False):
+                 nodso=False, panel=False, nogolden=False, links=False,
+                 planes=False, noplanes=False):
         self.place = resolve_place(place, fallback)
         self.view, self.facing, self.span = view, facing, span
         self.find, self.iss, self.lines, self.color = find, iss, lines, color
@@ -608,6 +610,18 @@ class Request:
         # request at any width renders exactly as it always has unless
         # someone explicitly asks for it too.
         self.panel = panel
+        # Aircraft overhead. Three states, not two, because the useful
+        # default is not the same all day: a day chart has the Sun and
+        # perhaps the Moon on it and planes are most of what is actually up
+        # there, while a night chart is already full and they would be
+        # clutter over the stars somebody came for.
+        #
+        # So: nothing in the URL means on by day and off by night, ?planes=1
+        # forces it on and ?noplanes=1 forces it off. Both flags are kept
+        # rather than collapsed here, because resolving needs is_daytime(),
+        # which needs the finished request.
+        self.planes_asked = planes
+        self.noplanes = noplanes
         # Bounded to a single letter (or None) here, before it ever reaches a
         # cache key -- otherwise arbitrary ?quadrant= garbage would each mint
         # its own cache entry, the same free-cache-miss surface ?w= and ?t=
@@ -696,6 +710,7 @@ class Request:
         r2.dso, r2.quadrant = self.dso, self.quadrant
         r2.quadrant_requested, r2.nodso = self.quadrant_requested, self.nodso
         r2.panel, r2.golden = self.panel, self.golden
+        r2.planes_asked, r2.noplanes = self.planes_asked, self.noplanes
         r2.links = self.links
         r2.when_utc = when_utc
         r2.when_local = when_utc + dt.timedelta(hours=self.place.offset(when_utc))
@@ -5364,7 +5379,7 @@ def _png_url(r):
 
 
 def _toggle_qs(r, night=None, nolines=None, dso=None, quadrant_requested=None,
-                force_dso_off=False, golden=None):
+                force_dso_off=False, golden=None, planes=None):
     """Query string for the current view with one or more flags overridden --
     shared basis for every toggle link (the quadrant button, and the d/l
     keyboard shortcuts). facing/span/w/panel/t always carry over, same
@@ -5388,6 +5403,7 @@ def _toggle_qs(r, night=None, nolines=None, dso=None, quadrant_requested=None,
     dso = r.dso if dso is None else dso
     quadrant_requested = r.quadrant_requested if quadrant_requested is None else quadrant_requested
     golden = r.golden if golden is None else golden
+    planes = planes_on(r) if planes is None else planes
     q = []
     if r.facing: q.append(f"facing={r.facing}")
     if r.span: q.append(f"span={r.span:g}")
@@ -5401,6 +5417,12 @@ def _toggle_qs(r, night=None, nolines=None, dso=None, quadrant_requested=None,
     # on every link for no change in what renders, and mint a second cache
     # entry for an identical page.
     if not golden: q.append("nogolden=1")
+    # Only the side that differs from the default travels, and which side
+    # that is depends on the time of day -- see planes_on. Writing the
+    # agreeing one would put a parameter on every link for no change in what
+    # renders, and mint a second cache entry for an identical page.
+    if planes and not is_daytime(r): q.append("planes=1")
+    elif not planes and is_daytime(r): q.append("noplanes=1")
     if quadrant_requested:
         q.append("quadrant")
         if force_dso_off: q.append("nodso=1")
@@ -5435,6 +5457,33 @@ def _quadrant_grid_url(r):
     client-side. Unlike _quadrant_toggle_url this never turns the grid off:
     it's a "go here" link, not a toggle."""
     return f"/{r.place.slug}{_toggle_qs(r, quadrant_requested=True)}"
+
+
+def planes_on(r):
+    """Whether this chart draws aircraft.
+
+    On by day, off by night, either overridden. Day is where they earn their
+    place: the chart has the Sun and maybe the Moon on it and almost nothing
+    else, and aircraft are most of what is genuinely overhead. At night the
+    chart is already the thing somebody came for and they would be clutter
+    across it.
+    """
+    if r.noplanes:
+        return False
+    if r.planes_asked:
+        return True
+    return is_daytime(r)
+
+
+def _planes_toggle_url(r):
+    """Toggle URL for the 'p' key.
+
+    Writes whichever flag actually differs from the default here, so the URL
+    only ever carries a parameter that changes something: turning them off
+    by day writes ?noplanes=1, turning them on at night writes ?planes=1,
+    and going back to the default drops both.
+    """
+    return f"/{r.place.slug}{_toggle_qs(r, planes=not planes_on(r))}"
 
 
 def _golden_toggle_url(r):
@@ -5479,8 +5528,12 @@ def _compose_sky(r):
     mag_limit = _fade_mag_limit(sun_alt)
     dso_limit = DSO_LIMIT if r.dso else None
     mw_floor = _milkyway_floor_now(p.lat, p.lon, sun_alt)
+    overhead = None
+    if planes_on(r):
+        overhead, _perr = planes.overhead(p.lat, p.lon)
     art, st = render_linear(r.when_utc, p.lat, p.lon, color=c, show_lines=r.lines,
                             tle=r.tle, facing=r.facing, span=r.span,
+                            planes=overhead,
                             width=r.width if r.facing else _effective_width(r),
                             height=None if r.facing else _horizon_height(r),
                             mag_limit=mag_limit, line_limit=mag_limit,
@@ -6106,7 +6159,11 @@ def _compose_day(r):
     # formula _compose_sky uses rather than a second hardcoded copy of it.
     alt_bands, notes = _golden_layer(r, bands, ev, off, sa_now, sz_now, alt_hi,
                                      _effective_width(r))
+    day_planes = None
+    if planes_on(r):
+        day_planes, _perr = planes.overhead(p.lat, p.lon)
     art, st = render_linear(r.when_utc, p.lat, p.lon, color=c, show_lines=False,
+                            planes=day_planes,
                             mag_limit=_fade_mag_limit(sa_now), alt_lo=0.0, alt_hi=alt_hi,
                             overlay=(arc, SUN_COL, "SUN", (sa_now, sz_now)),
                             bodies=show, width=_effective_width(r),
@@ -11555,6 +11612,11 @@ function skymapTakeover(frames,labels,opts){{
     // GIF; that moved to v when golden hour arrived, since g is the letter
     // people reach for and the GIF button is right there on screen anyway.
     if(e.key==='g'&&KBD.golden){{location.href=KBD.golden;return;}}
+    // p is aircraft overhead. On by day and off by night without anyone
+    // asking, so this key is mostly for turning them off on a busy day
+    // chart -- and for turning them on at night, which is a different and
+    // rarer want.
+    if(e.key==='p'&&KBD.planes){{location.href=KBD.planes;return;}}
     if(e.key==='v'){{
       var gb=document.getElementById('gif-btn');
       if(gb&&!gb.disabled)gb.click();
@@ -12074,6 +12136,7 @@ SHORTCUTS_HINT = (
     '<kbd>m</kbd> my location &middot; '
     '<kbd>space</kbd> animate &middot; <kbd>d</kbd> deep sky &middot; '
     '<kbd>i</kbd> inset &middot; '
+    '<kbd>p</kbd> planes &middot; '
     '<kbd>z</kbd> zoom &middot; '
     '<kbd>esc</kbd> cancel</p>'
 )

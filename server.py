@@ -99,6 +99,18 @@ def _sphere_os(request):
 NIGHT_BUCKET = 300          # seconds
 DAY_BUCKET = 900            # seconds
 NIGHT_TTL, DAY_TTL = 420, 1200        # origin holds a little past the bucket
+# A chart with aircraft on it cannot outlive the aircraft. The rest of this
+# page is a prediction and holds for twenty minutes quite happily -- the Sun
+# does nothing surprising in that time -- but a plane at 900 km/h crosses
+# four degrees of sky in fifteen seconds, and a cached chart served nineteen
+# minutes later shows it somewhere it has long since left.
+#
+# Matched to planes.POS_TTL, so the page and the position behind it go stale
+# together. The upstream cost does not move: planes.py caches by tile, so a
+# hundred readers in one city still make one call every fifteen seconds
+# however often their pages re-render.
+PLANES_BUCKET = 15
+PLANES_TTL = 20
 NIGHT_EDGE, DAY_EDGE = 300, 900
 CACHE_MAX = 3000
 # The social card is a 1200x630 raster, not a terminal view, so it gets its
@@ -2004,6 +2016,8 @@ def _build(request: Req, place: str | None):
         quadrant=(q["quadrant"] if "quadrant" in q else None),
         nodso=bool(q.get("nodso")),
         panel=bool(q.get("panel")),
+        planes=bool(q.get("planes")),
+        noplanes=bool(q.get("noplanes")),
         # The opt-out, not the opt-in: golden hour is on by default, so the
         # plain URL stays clean and only someone who turned it off carries a
         # parameter for it.
@@ -2023,6 +2037,13 @@ UNKNOWN = """\
                          curl 'skymap.sh/San Francisco, US'
                          curl 'skymap.sh/Paris, TX'
 """
+
+
+def _cache_ttl(r, daytime):
+    """How long this render may be held. See PLANES_BUCKET."""
+    if api.planes_on(r):
+        return PLANES_TTL
+    return DAY_TTL if daytime else NIGHT_TTL
 
 
 def _cache_key(r, daytime):
@@ -2056,11 +2077,16 @@ def _cache_key(r, daytime):
     # snapped to 0.1 on every path -- lookup_place snaps typed ones, _geo
     # snaps the CDN's -- so a coordinate name is one of the same 6.5 million,
     # and named cities add the 41,000 in the catalogue.
+    # planes_on and not the raw flags: two URLs that resolve to the same
+    # answer are the same page, and a day chart with ?planes=1 renders
+    # exactly what the bare URL does.
     q = (r.place.name, round(r.place.lat, 1), round(r.place.lon, 1),
+         api.planes_on(r),
          r.view, r.facing, r.span,
          (r.find or "").lower(), bool(r.tle), r.night, r.width, r.dso, r.quadrant,
          r.quadrant_requested, r.lines, r.panel, r.golden, r.links)
-    bucket = DAY_BUCKET if daytime else NIGHT_BUCKET
+    bucket = PLANES_BUCKET if api.planes_on(r) else (
+        DAY_BUCKET if daytime else NIGHT_BUCKET)
     stamp = int(r.when_utc.timestamp() // bucket)
     return (q, stamp)
 
@@ -2079,7 +2105,7 @@ def _cached(r):
     _misses += 1
     r.color = True                      # cache the coloured render; strip on the way out
     res = api.compose(r)
-    _cache[key] = (now + (DAY_TTL if daytime else NIGHT_TTL), res)
+    _cache[key] = (now + _cache_ttl(r, daytime), res)
     _cache.move_to_end(key)
     while len(_cache) > CACHE_MAX:
         _cache.popitem(last=False)
@@ -2544,6 +2570,7 @@ def _respond(request: Req, place: str | None):
             # The mirror of the above: golden hour is a daylight layer, so
             # the g key exists exactly where the quadrant keys do not.
             kbd["golden"] = api._golden_toggle_url(r)
+        kbd["planes"] = api._planes_toggle_url(r)
         controls = api.controls_html(explore, animate_btn, quadrant_btn, sphere_btn, extra)
         # Trailing slash: the bar is a path, and on a chart the next segment
         # is the invitation. Typing after it searches objects, so "Tokyo/"
@@ -4115,7 +4142,7 @@ def _cached_object(r, canonical):
     _misses += 1
     r.color = True                      # cache the coloured render; strip on the way out
     res = api.compose_object(r, canonical)
-    _cache[key] = (now + (DAY_TTL if daytime else NIGHT_TTL), res)
+    _cache[key] = (now + _cache_ttl(r, daytime), res)
     _cache.move_to_end(key)
     while len(_cache) > CACHE_MAX:
         _cache.popitem(last=False)

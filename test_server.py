@@ -398,9 +398,14 @@ class AnimateBrowserVsTerminal(unittest.TestCase):
         body = self.client.get("/Ibiza", headers=BROWSER).text
         hint = re.search(r'<p class="kbd-hint">(.*?)</p>', body, re.S).group(1)
         self.assertIn("<kbd>tab</kbd> search", hint)
-        # p still focuses the place field, it just isn't the one advertised.
-        self.assertNotIn("<kbd>p</kbd>", hint)
-        # Share as a GIF is a labelled button in the drawer already.
+        # p is advertised now that it means the aircraft layer. It fits: the
+        # bar comes to 108 plain characters against a 110-column chart, and
+        # that budget is the whole reason this test exists.
+        self.assertIn("<kbd>p</kbd> planes", hint)
+        plain = re.sub(r"<[^>]+>", "", hint).replace("&middot;", "\u00b7")
+        self.assertLessEqual(len(plain.strip()), 110, plain)
+        # Share as a GIF is a labelled button in the drawer already, so g
+        # stays bound and unadvertised -- which is what the budget buys.
         self.assertNotIn("<kbd>g</kbd>", hint)
 
     def test_terminal_gif_followup_carries_the_requested_time(self):
@@ -2222,9 +2227,14 @@ class KeyboardShortcuts(unittest.TestCase):
         # more. It is not re-pointed at the search bar either: that would
         # spend a scarce single letter on a duplicate of tab.
         self.assertNotIn("e.key==='f'", resp.text)
-        # "p" was dropped earlier for its own reason: a single letter that
-        # jumps focus into a text field kills every shortcut pressed after it.
-        self.assertNotIn("e.key==='p'", resp.text)
+        # "p" is bound, but to the aircraft layer, not to the search bar.
+        # The rule it was dropped for still stands and is what gets checked:
+        # a single letter that jumps focus into a text field kills every
+        # shortcut pressed after it.
+        self.assertIn("<kbd>p</kbd> planes", resp.text)
+        s_norm = resp.text.replace(" ", "").replace("\n", "")
+        self.assertNotIn("p'){place.focus", s_norm)
+        self.assertNotIn("p'){q.focus", s_norm)
         self.assertNotIn("e.key==='/'", resp.text)
 
     def test_hint_and_js_bind_m_to_geolocation(self):
@@ -3011,11 +3021,18 @@ class DrawerWiring(unittest.TestCase):
             self.assertNotIn("place.focus", chunk[:600])
             self.assertNotIn("q.focus", chunk[:600])
 
-    def test_tab_still_focuses_the_command_bar_and_p_no_longer_does(self):
+    def test_tab_focuses_the_command_bar_and_no_letter_does(self):
         resp = self.client.get("/Zurich", headers=BROWSER)
         self.assertIn("if(e.key==='Tab'){", resp.text)
         self.assertIn("place.focus();place.select();", resp.text)
-        self.assertNotIn("e.key==='p'", resp.text)
+        s_norm = resp.text.replace(" ", "").replace("\n", "")
+        # "p" is bound again, to the aircraft layer. The reason it was
+        # dropped was never the letter: it was that a single letter which
+        # jumps focus into a text field kills every shortcut pressed after
+        # it. This p navigates to a toggle URL, exactly as g, d, z and i do,
+        # so what is asserted here is the rule rather than the letter.
+        self.assertNotIn("p'){place.focus", s_norm)
+        self.assertNotIn("p'){q.focus", s_norm)
 
     def test_the_drawer_still_closes_on_an_outside_click(self):
         # A separate mousedown listener, not the removed click one -- the
@@ -3180,7 +3197,8 @@ class CommandBarValue(unittest.TestCase):
         # handler (ghost-completion accept) relies on for the opposite case.
         resp = self.client.get("/Zurich", headers=BROWSER)
         self.assertIn("e.key==='Tab'", resp.text)
-        self.assertNotIn("e.key==='p'", resp.text)
+        s_norm = resp.text.replace(" ", "").replace("\n", "")
+        self.assertNotIn("p'){place.focus", s_norm)
 
 
 class HomeNavLink(unittest.TestCase):
@@ -5540,3 +5558,41 @@ class TheWelcomeRoute(unittest.TestCase):
                                headers=BROWSER).text
         self.assertNotIn('id="welcome-arm"', page)
         self.assertNotIn('id="crossing-arm"', page)
+
+
+class AChartWithAircraftCannotOutliveThem(unittest.TestCase):
+    """The rest of this page is a prediction and holds for twenty minutes
+    quite happily. A plane at 900 km/h crosses four degrees of sky in
+    fifteen seconds, so a chart cached for nineteen minutes shows it
+    somewhere it left long ago -- and refreshing did nothing, which is how
+    this was found."""
+
+    def req(self, **kw):
+        return api.Request(place="Geneva", when=dt.datetime(2026, 8, 12, 12, 0),
+                           **kw)
+
+    def test_a_day_chart_holds_only_as_long_as_a_position_does(self):
+        r = self.req()                       # planes on by default by day
+        self.assertTrue(api.planes_on(r))
+        self.assertEqual(server._cache_ttl(r, True), server.PLANES_TTL)
+        self.assertLessEqual(server.PLANES_TTL, 20)
+
+    def test_turning_them_off_gets_the_long_cache_back(self):
+        r = self.req(noplanes=True)
+        self.assertFalse(api.planes_on(r))
+        self.assertEqual(server._cache_ttl(r, True), server.DAY_TTL)
+
+    def test_a_night_chart_is_unaffected(self):
+        r = api.Request(place="Geneva", when=dt.datetime(2026, 8, 12, 23, 0))
+        self.assertFalse(api.planes_on(r))
+        self.assertEqual(server._cache_ttl(r, False), server.NIGHT_TTL)
+
+    def test_the_bucket_matches_the_position_cache_behind_it(self):
+        """Page and position go stale together, or one of them is lying."""
+        import planes
+        self.assertEqual(server.PLANES_BUCKET, planes.POS_TTL)
+
+    def test_two_readers_in_one_bucket_still_share_a_render(self):
+        """The failure mode of this fix is no caching at all."""
+        r = self.req()
+        self.assertEqual(server._cache_key(r, True), server._cache_key(r, True))
