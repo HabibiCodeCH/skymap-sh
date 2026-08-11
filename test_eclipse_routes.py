@@ -19,6 +19,8 @@ import unittest
 
 from starlette.testclient import TestClient
 
+import besselian
+import eclipse_page
 import server
 
 BROWSER = {"accept": "text/html", "user-agent": "Mozilla/5.0"}
@@ -515,3 +517,43 @@ class TheDrawingsSitOnTheSharedPlate(RouteTest):
         # what gives the drawing its border and its floor height.
         r = self.client.get("/Zurich/eclipse/2026-08-12", headers=BROWSER)
         self.assertIn("obj-art-frame", r.text)
+
+
+class TotalityIsNeverClaimedShortOfIt(unittest.TestCase):
+    """Bilbao on 12 August 2026 is 99.979% covered and outside the path.
+    Rounded for display that read "100% covered", one line above the
+    paragraph saying this page will not tell you whether the Sun is fully
+    covered there. 100% is the number somebody takes their filter off for.
+    """
+
+    BILBAO = (43.257, -2.924)
+    IBIZA = (38.91, 1.43)
+
+    def local(self, lat, lon):
+        return besselian.local("2026-08-12", lat, lon)
+
+    def test_a_hair_short_of_total_never_prints_a_hundred(self):
+        f = self.local(*self.BILBAO)
+        self.assertNotEqual(f["kind"], "total")
+        self.assertGreater(f["obscuration"], 0.995)
+        self.assertEqual(eclipse_page.covered_pct(f), ">99%")
+        self.assertEqual(eclipse_page.covered_pct(f, 1), ">99.9%")
+
+    def test_real_totality_still_prints_a_hundred(self):
+        f = self.local(*self.IBIZA)
+        self.assertEqual(f["kind"], "total")
+        self.assertEqual(eclipse_page.covered_pct(f), "100%")
+
+    def test_ordinary_values_are_left_alone(self):
+        for pct, want in ((0.904612, "90%"), (0.946496, "95%"), (0.5, "50%")):
+            f = {"obscuration": pct, "kind": "partial"}
+            self.assertEqual(eclipse_page.covered_pct(f), want)
+
+    def test_the_page_itself_does_not_say_a_hundred_at_bilbao(self):
+        client_cm = TestClient(server.app)
+        client = client_cm.__enter__()
+        self.addCleanup(client_cm.__exit__, None, None, None)
+        body = client.get("/Bilbao/eclipse/2026-08-12", headers=TERMINAL).text
+        self.assertIn("covered", body)
+        self.assertNotIn("100% covered", body)
+        self.assertNotIn("100.0% of the Sun", body)

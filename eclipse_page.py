@@ -51,6 +51,27 @@ SAFETY_TOTALITY = (
 )
 
 
+def covered_pct(f, places=0):
+    """How much of the Sun is covered, as text, never rounding up to 100%
+    unless the eclipse really is total here.
+
+    Bilbao on 12 August 2026 is 99.979% covered and outside the path. Printed
+    with :.0f that reads "100% covered" -- one line above the paragraph that
+    says this page will not tell you whether the Sun is completely covered
+    here, so the page contradicted itself. It fell in the one direction it
+    must never fall: 100% is the number somebody takes their filter off for,
+    and the difference between 99.979% and totality is an eye.
+
+    ">99%" instead. It is honest about being a hair short without ever being
+    the number that means safe to look. Only kind == "total" earns 100%.
+    """
+    pct = (f.get("obscuration") or 0.0) * 100.0
+    text = f"{pct:.{places}f}%"
+    if f.get("kind") == "total" or not text.startswith("100"):
+        return text
+    return f">{100.0 - 10 ** -places:.{places}f}%"
+
+
 def _entries():
     """Eclipses from the table, oldest first, the comment row dropped."""
     return sorted(events._eclipses(), key=lambda e: e["when_utc"])
@@ -341,7 +362,7 @@ def headline(f):
                 if secs else f"{place} is in the path")
     if f["on_the_edge"]:
         return f"{place} is right on the edge of the path"
-    return f"{f['obscuration'] * 100:.0f}% of the Sun covered from {place}"
+    return f"{covered_pct(f)} of the Sun covered from {place}"
 
 
 def _minutes_words(secs):
@@ -480,7 +501,7 @@ def prose(f):
             f"either way. Check a detailed map before travelling on it.")
     else:
         out.append(f"From {f['place']} this is a partial eclipse: "
-                   f"{f['obscuration'] * 100:.1f}% of the Sun is covered at "
+                   f"{covered_pct(f, 1)} of the Sun is covered at "
                    f"maximum, around {f['maximum']}.")
 
     if f.get("sun_alt") is not None:
@@ -559,7 +580,7 @@ def _blurb(entry, f=None):
                    f"to call.")
     else:
         out.append(f"In {place}, the eclipse reaches a maximum of "
-                   f"{f['obscuration'] * 100:.0f}% at around {f['maximum']}.")
+                   f"{covered_pct(f)} at around {f['maximum']}.")
     if f.get("sun_alt") is not None:
         out.append(f"Look to the {f['compass']}, {f['sun_alt']:.0f}° above "
                    f"the horizon.")
@@ -1216,7 +1237,7 @@ def live_head_html(f, escape=html.escape):
                      f'<span class="v">{f["duration_s"]:.0f}s</span></div>')
     elif f.get("obscuration"):
         cells.append('<div><span class="k">covered</span>'
-                     f'<span class="v">{f["obscuration"] * 100:.0f}%</span></div>')
+                     f'<span class="v">{covered_pct(f)}</span></div>')
     return ('<div class="obj-live-head ecl-head ecl-times">'
             + "".join(cells) + '</div>')
 
@@ -1340,7 +1361,7 @@ def disc_caption(f):
     if f.get("kind") == "total":
         what = "At totality, with the corona"
     elif f.get("obscuration"):
-        what = f"At maximum, {f['obscuration'] * 100:.0f}% covered"
+        what = f"At maximum, {covered_pct(f)} covered"
     else:
         what = "At maximum"
     return f"{what}{' around ' + when if when else ''}. North up, east left."
