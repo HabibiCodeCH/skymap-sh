@@ -3780,6 +3780,55 @@ class TheWelcomeIsNotCachedPastTheDayItDescribes(unittest.TestCase):
         self.assertLessEqual(int(cc.rsplit("=", 1)[1]), 3600)
 
 
+class TheCrossingOnlyFiresWhereTheReaderIs(unittest.TestCase):
+    """Looking at Sao Paulo from Switzerland played a sunrise over a page
+    whose local clock said 02:31. Reading about somewhere is not standing in
+    it, and the takeover covers the whole screen."""
+
+    SWISS = (47.4, 8.5)
+    BRAZIL = (-23.5, -46.6)
+
+    def setUp(self):
+        self.now = dt.datetime.utcnow()
+        # Widened in-process so the test proves the wiring rather than the
+        # clock: with the real 2-hour window almost every run would pass by
+        # arming nothing anywhere, which cannot tell "correctly silent" from
+        # "not wired at all".
+        self._arm = api.CROSSING_ARM_H
+        api.CROSSING_ARM_H = 24.0
+        self.addCleanup(setattr, api, "CROSSING_ARM_H", self._arm)
+
+    def armed(self, place_name, own):
+        p = api.lookup_place(place_name)
+        return bool(api.crossing_arm_html(p, self.now, pinned=False, own=own))
+
+    def test_your_own_place_arms(self):
+        self.assertTrue(self.armed("Zurich", self.SWISS))
+        self.assertTrue(self.armed("Sao Paulo", self.BRAZIL))
+
+    def test_somebody_elses_does_not(self):
+        self.assertFalse(self.armed("Sao Paulo", self.SWISS))
+        self.assertFalse(self.armed("Zurich", self.BRAZIL))
+
+    def test_the_next_city_over_is_still_somebody_else(self):
+        """Zurich to Geneva is 225 km. Same country, different sunset, and
+        not the sky the reader is standing under."""
+        self.assertFalse(self.armed("Geneva", self.SWISS))
+
+    def test_not_knowing_where_they_are_means_silence(self):
+        """No CDN geo header: the default for a full-screen takeover has to
+        be not showing it."""
+        self.assertFalse(self.armed("Zurich", None))
+        self.assertFalse(self.armed("Zurich", ()))
+
+    def test_a_publicly_cached_page_is_never_handed_the_reader(self):
+        """The eclipse page is public, max-age=600. A marker decided by one
+        reader's position would be served to everybody who asked for that
+        URL -- the Columbus bug. It passes own=None and arms nothing."""
+        html_out = api._arms(api.lookup_place("Zurich"), self.now)
+        self.assertNotIn("crossing-arm", html_out)
+
+
 class OnePlaceIsNotServedAnothersName(unittest.TestCase):
     """The page cache was keyed on the rounded cell and not on who asked, so
     every request within about 11 km shared one entry -- and the entry
@@ -5334,7 +5383,10 @@ class TheCrossingArmsAcrossTheSite(unittest.TestCase):
     """Where the takeover can fire from, and -- just as much -- where the
     reader's location must not be written into a shared cache."""
 
-    PLACE_PAGES = ("/Zurich", "/Zurich/venus", "/Zurich/eclipse/2026-08-12")
+    # /Zurich/eclipse/... is deliberately NOT here any more -- see
+    # test_a_publicly_cached_page_can_no_longer_carry_one below.
+    PLACE_PAGES = ("/Zurich", "/Zurich/venus")
+    ZURICH_READER = {"cf-iplatitude": "47.4", "cf-iplongitude": "8.5"}
     # Every one of these is served `public`, so none of them may carry a
     # place-derived time: /events is cached for a day.
     SHARED_PAGES = ("/eclipse", "/help", "/catalog", "/events")
@@ -5349,10 +5401,14 @@ class TheCrossingArmsAcrossTheSite(unittest.TestCase):
         api.CROSSING_ARM_H = 24.0
         self.addCleanup(setattr, api, "CROSSING_ARM_H", self.was)
 
-    def page(self, url):
-        return self.client.get(url, headers=BROWSER).text
+    def page(self, url, reader=None):
+        h = dict(BROWSER)
+        h.update(reader or self.ZURICH_READER)
+        return self.client.get(url, headers=h).text
 
     def test_a_page_about_a_place_carries_the_marker(self):
+        # For a reader standing in that place. Whose sky it has to be is
+        # TheCrossingOnlyFiresWhereTheReaderIs.
         for url in self.PLACE_PAGES:
             self.assertIn('id="crossing-arm"', self.page(url), url)
 
@@ -5385,20 +5441,34 @@ class TheCrossingArmsAcrossTheSite(unittest.TestCase):
         if 'id="crossing-arm"' in root.text:
             self.assertIn("private", root.headers["cache-control"])
 
-    def test_a_place_named_in_the_url_may_be_cached_publicly(self):
-        # Stated so the narrower rule above is not read as the broad one and
-        # quietly "fixed" by someone later.
-        r = self.client.get("/Zurich/eclipse/2026-08-12", headers=BROWSER)
-        self.assertIn('data-url="/Zurich/crossing.json"', r.text)
+    def test_a_publicly_cached_page_can_no_longer_carry_one(self):
+        """This test used to assert the opposite, and the reasoning it gave
+        was right at the time: /Zurich/eclipse/... is public, but the place
+        was in the URL, so a cache keyed by that URL handed Zurich's
+        crossing to everyone asking about Zurich. Nobody's location leaked.
+
+        The marker now also depends on where the *reader* is, so that no
+        longer holds -- one reader's position would be baked into a page the
+        next reader is served. The page arms nothing of its own and falls
+        back to what the reader's own page remembered, which is the same
+        route /help and /events already take."""
+        r = self.client.get("/Zurich/eclipse/2026-08-12",
+                            headers={**BROWSER, **self.ZURICH_READER})
+        self.assertIn("public", r.headers.get("cache-control", ""))
+        self.assertNotIn('id="crossing-arm"', r.text)
+        # ...but the script that reads the remembered one still ships there.
+        self.assertIn("skymap.crossing.next", r.text)
 
     def test_a_pinned_page_carries_nothing(self):
         self.assertNotIn('id="crossing-arm"',
                          self.page("/Zurich?t=2026-08-10T19:45"))
 
     def test_the_marker_names_the_place_the_page_is_about(self):
-        self.assertIn('data-url="/Paris/crossing.json"', self.page("/Paris"))
+        paris = {"cf-iplatitude": "48.9", "cf-iplongitude": "2.4"}
         self.assertIn('data-url="/Paris/crossing.json"',
-                      self.page("/Paris/venus"))
+                      self.page("/Paris", paris))
+        self.assertIn('data-url="/Paris/crossing.json"',
+                      self.page("/Paris/venus", paris))
 
 
 class TheWelcomeRoute(unittest.TestCase):

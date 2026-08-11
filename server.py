@@ -2512,7 +2512,8 @@ def _respond(request: Req, place: str | None):
         # becomes it.
         pinned = q.get("t") is not None
         crossing = (api.welcome_arm_html(r.place, r.when_utc, pinned=pinned)
-                    + api.crossing_arm_html(r.place, pinned=pinned))
+                    + api.crossing_arm_html(r.place, pinned=pinned,
+                                            own=_geo(request)))
         # No date/time form in the drawer any more: the moment on the
         # headline is clickable and opens a picker where the question is
         # asked. Two ways to set the same thing, one of them three clicks
@@ -4083,7 +4084,10 @@ def _respond_object(request: Req, place: str | None, canonical: str):
                                             prose=prose, static=static,
                                             live_head=live_head,
                                             live_sub=live_sub,
-                                            live_what=live_what),
+                                            live_what=live_what,
+                                            # private route, so the reader's
+                                            # own position may go in here
+                                            own=_geo(request)),
                             status_code=res.status, headers=headers)
     return PlainTextResponse(api.strip_ansi(text) if not colour else text,
                              status_code=res.status, headers=headers)

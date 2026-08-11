@@ -3296,7 +3296,7 @@ FEEDBACK_BOX = (
 
 def object_html(r, canonical, text, data, place=None, base_url="",
                 rungs=None, zenith="", prose="", static="", live_head="",
-                live_sub="", live_what=""):
+                live_sub="", live_what="", own=None):
     """The browser page: the same chart and prose everything else gets, in
     the shared shell, with the object's own head."""
     # Lift the title out of the <pre> and set it as a real heading.
@@ -3426,7 +3426,7 @@ def object_html(r, canonical, text, data, place=None, base_url="",
         # page that was not about their location at all.
         header=header_html(f"{place}/{canonical}" if place else canonical,
                            crossing=_arms(lookup_place(place)
-                                          if place else None)),
+                                          if place else None, own=own)),
         controls=controls_html(EXPLORE),
         wide_class=" w-wide", coming_up_card="",
         # The event picker is the eclipse page's picker, so it gets that
@@ -4559,7 +4559,31 @@ def next_crossing(place, now_utc, within_hours=CROSSING_LOOKAHEAD_H):
 CROSSING_ARM_H = 2.0
 
 
-def crossing_arm_html(place, now_utc=None, pinned=False):
+# How far from the reader a crossing may be and still be theirs, in km.
+# Generous enough that somebody twenty minutes outside their own city still
+# counts, tight enough that the next country does not: Zurich to Geneva is
+# 225 km and is somebody else's sunset.
+CROSSING_OWN_KM = 100.0
+
+
+def _same_sky(place, own):
+    """Is this page about roughly where the reader is?
+
+    own is (lat, lon) from the CDN, already rounded to 0.1 by server._geo,
+    or None when we do not know -- and not knowing means no, because the
+    takeover covers the whole screen and the default has to be silence.
+    """
+    if place is None or not own:
+        return False
+    la1, lo1 = math.radians(place.lat), math.radians(place.lon)
+    la2, lo2 = math.radians(own[0]), math.radians(own[1])
+    d = math.acos(max(-1.0, min(1.0,
+        math.sin(la1) * math.sin(la2)
+        + math.cos(la1) * math.cos(la2) * math.cos(lo1 - lo2))))
+    return 6371.0 * d <= CROSSING_OWN_KM
+
+
+def crossing_arm_html(place, now_utc=None, pinned=False, own=None):
     """The marker the page's script arms its timer from, or "".
 
     Emitted rather than the frames themselves: this is a handful of bytes,
@@ -4576,6 +4600,19 @@ def crossing_arm_html(place, now_utc=None, pinned=False):
     already happened or has not yet.
     """
     if pinned or place is None:
+        return ""
+    # Only where the reader actually is. Browsing Sao Paulo from Switzerland
+    # is reading about somewhere, not standing in it, and a full-screen
+    # sunrise over a page where the local clock says 02:31 is an animation of
+    # somebody else's morning.
+    #
+    # Passed in rather than read here: this decision depends on the reader,
+    # so it may only be baked into a response no shared cache will hand to
+    # anybody else. The chart and object pages are `private` and get it. The
+    # eclipse page is `public, max-age=600` and deliberately gets None, which
+    # is the Columbus rule -- it falls back to what the reader's own page
+    # remembered instead.
+    if not _same_sky(place, own):
         return ""
     now = now_utc or dt.datetime.utcnow()
     got = next_crossing(place, now)
@@ -4736,11 +4773,15 @@ def welcome_frames(place, key, kind=""):
     return [ansi_to_html(chr(10).join(f)) for f in frames], labels
 
 
-def _arms(place, now_utc=None, pinned=False):
+def _arms(place, now_utc=None, pinned=False, own=None):
     """Both markers, for the pages that build their own header. One call so
-    a page cannot end up arming one takeover and not the other."""
+    a page cannot end up arming one takeover and not the other.
+
+    own is the reader's own position, and only a privately-cached page may
+    pass it. Public pages leave it None and arm nothing of their own.
+    """
     return (welcome_arm_html(place, now_utc, pinned)
-            + crossing_arm_html(place, now_utc, pinned))
+            + crossing_arm_html(place, now_utc, pinned, own))
 
 
 def welcome_arm_html(place, now_utc=None, pinned=False):

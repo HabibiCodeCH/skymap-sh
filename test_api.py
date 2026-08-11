@@ -3529,7 +3529,14 @@ class TheCrossingMarker(unittest.TestCase):
         self.place = api.lookup_place("Zurich")
 
     def at(self, local, **kw):
-        """The marker as it would be at a local wall-clock moment."""
+        """The marker as it would be at a local wall-clock moment, for a
+        reader standing in the place the page is about.
+
+        own defaults to the place itself here because these tests are about
+        *when* the marker arms and what it contains. Whether it arms for a
+        reader somewhere else is TheCrossingOnlyFiresWhereTheReaderIs, in
+        test_server.py."""
+        kw.setdefault("own", (self.place.lat, self.place.lon))
         return api.crossing_arm_html(
             self.place, local - dt.timedelta(hours=2), **kw)
 
@@ -3558,6 +3565,13 @@ class TheCrossingMarker(unittest.TestCase):
 
     def test_no_place_arms_nothing(self):
         self.assertEqual(api.crossing_arm_html(None), "")
+
+    def test_no_reader_arms_nothing_either(self):
+        """Not knowing where somebody is has to mean silence: this covers
+        the whole screen, so the default cannot be to show it."""
+        self.assertEqual(
+            api.crossing_arm_html(self.place,
+                                  dt.datetime(2026, 8, 10, 17, 30)), "")
 
     def test_the_midnight_sun_arms_nothing(self):
         far_north = api.lookup_place("Longyearbyen")
