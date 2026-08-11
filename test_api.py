@@ -3816,17 +3816,37 @@ class TheEclipseWelcome(unittest.TestCase):
         self.assertTrue(frames)
         self.assertNotIn("Enjoy", "".join("".join(f) for f in frames))
 
+    ZURICH_READER = (47.4, 8.5)
+
     def test_the_marker_arms_only_where_it_should(self):
         z = self.place("Zurich")
-        self.assertIn('id="welcome-arm"', api.welcome_arm_html(z, self.DAY))
-        self.assertEqual(api.welcome_arm_html(z, self.DAY, pinned=True), "")
-        self.assertEqual(api.welcome_arm_html(None), "")
+        here = self.ZURICH_READER
+        self.assertIn('id="welcome-arm"',
+                      api.welcome_arm_html(z, self.DAY, own=here))
         self.assertEqual(
-            api.welcome_arm_html(self.place("Vienna"), self.DAY), "")
+            api.welcome_arm_html(z, self.DAY, pinned=True, own=here), "")
+        self.assertEqual(api.welcome_arm_html(None), "")
+        # Vienna sees too little of it to be worth a takeover.
+        self.assertEqual(
+            api.welcome_arm_html(self.place("Vienna"), self.DAY,
+                                 own=(48.2, 16.4)), "")
+
+    def test_it_greets_nobody_who_is_somewhere_else(self):
+        """"Enjoy totality today, 20:33 WNW" is an instruction to go outside.
+        Handing it to a reader in Switzerland who is looking at Ibiza sends
+        them out for something 1,300 km away."""
+        ibiza = self.place("Ibiza")
+        self.assertIn('id="welcome-arm"',
+                      api.welcome_arm_html(ibiza, self.DAY, own=(38.9, 1.4)))
+        self.assertEqual(
+            api.welcome_arm_html(ibiza, self.DAY, own=self.ZURICH_READER), "")
+        # And not knowing where they are means not sending them anywhere.
+        self.assertEqual(api.welcome_arm_html(ibiza, self.DAY), "")
 
     def test_both_takeovers_are_armed_together(self):
         # One call, so a page cannot end up arming one and not the other.
-        armed = api._arms(self.place("Zurich"), self.DAY)
+        armed = api._arms(self.place("Zurich"), self.DAY,
+                          own=self.ZURICH_READER)
         self.assertIn('id="welcome-arm"', armed)
 
     def test_there_is_one_stage_and_two_callers(self):

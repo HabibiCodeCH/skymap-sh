@@ -3688,10 +3688,11 @@ class TheWelcomeGreetsOnTheDayAndNotBefore(unittest.TestCase):
     def test_the_marker_is_not_in_the_page_the_day_before(self):
         """The server side of the same rule -- no marker means the page
         cannot arm even if the script runs."""
+        here = (47.4, 8.5)          # a reader standing in Zurich
         before = api.welcome_arm_html(
-            self.place, dt.datetime(2026, 8, 11, 6, 0))
+            self.place, dt.datetime(2026, 8, 11, 6, 0), own=here)
         onday = api.welcome_arm_html(
-            self.place, dt.datetime(2026, 8, 12, 6, 0))
+            self.place, dt.datetime(2026, 8, 12, 6, 0), own=here)
         self.assertEqual(before, "")
         self.assertIn('id="welcome-arm"', onday)
 

@@ -4559,11 +4559,12 @@ def next_crossing(place, now_utc, within_hours=CROSSING_LOOKAHEAD_H):
 CROSSING_ARM_H = 2.0
 
 
-# How far from the reader a crossing may be and still be theirs, in km.
+# How far from the reader a takeover's subject may be and still be theirs,
+# in km. Governs both of them -- the crossing and the eclipse welcome.
 # Generous enough that somebody twenty minutes outside their own city still
 # counts, tight enough that the next country does not: Zurich to Geneva is
 # 225 km and is somebody else's sunset.
-CROSSING_OWN_KM = 100.0
+OWN_SKY_KM = 100.0
 
 
 def _same_sky(place, own):
@@ -4580,7 +4581,7 @@ def _same_sky(place, own):
     d = math.acos(max(-1.0, min(1.0,
         math.sin(la1) * math.sin(la2)
         + math.cos(la1) * math.cos(la2) * math.cos(lo1 - lo2))))
-    return 6371.0 * d <= CROSSING_OWN_KM
+    return 6371.0 * d <= OWN_SKY_KM
 
 
 def crossing_arm_html(place, now_utc=None, pinned=False, own=None):
@@ -4780,19 +4781,26 @@ def _arms(place, now_utc=None, pinned=False, own=None):
     own is the reader's own position, and only a privately-cached page may
     pass it. Public pages leave it None and arm nothing of their own.
     """
-    return (welcome_arm_html(place, now_utc, pinned)
+    return (welcome_arm_html(place, now_utc, pinned, own)
             + crossing_arm_html(place, now_utc, pinned, own))
 
 
-def welcome_arm_html(place, now_utc=None, pinned=False):
+def welcome_arm_html(place, now_utc=None, pinned=False, own=None):
     """The marker the welcome arms from, or "".
 
-    Same shape and the same two reasons as crossing_arm_html: a few bytes on
-    a page that names a place, nothing at all on a pinned one, and never an
+    Same shape and the same three reasons as crossing_arm_html: a few bytes
+    on a page that names a place, nothing at all on a pinned one, never an
     IP-guessed place baked into a page a shared cache could hand to somebody
-    else.
+    else -- and only where the reader is.
+
+    That last one matters more here than it does for a sunset. "Enjoy
+    totality today, 20:33 WNW" is an instruction to go outside and look up,
+    and handing it to somebody in Switzerland reading about Ibiza sends them
+    out for something happening 1,300 km away.
     """
     if pinned or place is None:
+        return ""
+    if not _same_sky(place, own):
         return ""
     got = welcome_eclipse(place, now_utc)
     if got is None:

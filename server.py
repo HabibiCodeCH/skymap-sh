@@ -2511,9 +2511,10 @@ def _respond(request: Req, place: str | None):
         # pinned ?t= page arms nothing: it is not that minute and never
         # becomes it.
         pinned = q.get("t") is not None
-        crossing = (api.welcome_arm_html(r.place, r.when_utc, pinned=pinned)
-                    + api.crossing_arm_html(r.place, pinned=pinned,
-                                            own=_geo(request)))
+        own = _geo(request)          # private route, so this may go in
+        crossing = (api.welcome_arm_html(r.place, r.when_utc, pinned=pinned,
+                                         own=own)
+                    + api.crossing_arm_html(r.place, pinned=pinned, own=own))
         # No date/time form in the drawer any more: the moment on the
         # headline is clickable and opens a picker where the question is
         # asked. Two ways to set the same thing, one of them three clicks
