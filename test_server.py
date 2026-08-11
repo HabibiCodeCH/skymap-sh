@@ -5670,6 +5670,121 @@ class TheChartSaysInWordsWhatTheArrowsShow(unittest.TestCase):
         self.assertNotIn("likely", line)
 
 
+class TheChartCreditsWhereTheAircraftCameFrom(unittest.TestCase):
+    """ODbL 1.0 wants attribution on any surface that shows the data. The
+    sphere has carried it since aircraft landed there; the charts drew the
+    same aircraft and said nothing."""
+
+    SKY = [{"hex": "abc", "callsign": "BAW530", "type": "A20N",
+            "alt_ft": 39000, "alt_source": "alt_geom", "alt_m": 11887,
+            "elev": 24.9, "az": 122.6, "dist_km": 24.7, "track": 119.0,
+            "az_next": 118.0, "elev_next": 26.1, "speed_kt": 434.7,
+            "route": {"codes": ["LHR", "SPU"],
+                      "names": ["London Heathrow Airport", "Split Airport"]}}]
+
+    # Same aircraft, but with the route known only by name. planes_note falls
+    # back to names when there are no airport codes, which is what makes this
+    # line long enough to be genuinely too wide for a 60-column chart -- about
+    # 89 characters against the code version's 60, which fits exactly and
+    # would have made the narrow-chart test pass by luck rather than by rule.
+    NAMED = [{"hex": "abc", "callsign": "BAW530", "type": "A20N",
+              "alt_ft": 39000, "alt_source": "alt_geom", "alt_m": 11887,
+              "elev": 24.9, "az": 122.6, "dist_km": 24.7, "track": 119.0,
+              "az_next": 118.0, "elev_next": 26.1, "speed_kt": 434.7,
+              "route": {"names": ["London Heathrow Airport", "Split Airport"]}}]
+
+    def setUp(self):
+        client_cm = TestClient(server.app)
+        self.client = client_cm.__enter__()
+        self.addCleanup(client_cm.__exit__, None, None, None)
+        real = server.planes.overhead
+        self.addCleanup(setattr, server.planes, "overhead", real)
+        self.addCleanup(server._cache.clear)
+        # The prose lives on the day chart, and "day" here is whatever the
+        # clock says when the suite runs. Pinned, so this does not pass all
+        # morning and fail every evening. ?t= cannot do it -- aircraft are
+        # never drawn on an explicit time, by design.
+        real_day = api.is_daytime
+        self.addCleanup(setattr, api, "is_daytime", real_day)
+        api.is_daytime = lambda r: True
+        self.stub(self.SKY)
+
+    def stub(self, found, daytime=True):
+        """Swap the upstream AND drop the render cache. One entry serves all
+        four output modes for fifteen seconds, so without the clear a test
+        that changes the aircraft is handed the previous test's chart."""
+        server.planes.overhead = lambda lat, lon, **kw: (found, None)
+        api.is_daytime = lambda r: daytime
+        server._cache.clear()
+
+    def chart(self, url="/Geneva"):
+        text = self.client.get(url, headers=TERMINAL).text
+        return re.sub(r"\033\[[0-9;]*m", "", text).split("\n")
+
+    def test_the_credit_is_on_the_day_chart(self):
+        joined = "\n".join(self.chart())
+        self.assertIn("1 plane overhead", joined)
+        self.assertIn("adsb.lol", joined)
+        self.assertIn("ODbL", joined)
+        self.assertIn("adsbdb.com", joined)
+
+    def test_it_reads_under_the_sentence_it_belongs_to(self):
+        """Notes nudge upward out of an occupied row and never downward, so
+        the order they are added in is the order they land in, upside down.
+        Added the obvious way round the credit sat on top of the prose."""
+        lines = self.chart()
+        facts = next(i for i, l in enumerate(lines) if "plane overhead" in l)
+        credit = next(i for i, l in enumerate(lines) if "adsb.lol" in l)
+        self.assertGreater(credit, facts)
+
+    def test_the_credit_survives_a_chart_too_narrow_for_the_prose(self):
+        """The reason these are two notes and not one sentence. A note wider
+        than the chart is dropped whole, and ?w= goes down to 60 -- joining
+        them would have lost the credit on exactly the narrow terminals where
+        it is most likely a real one."""
+        self.stub(self.NAMED)
+        wide = "\n".join(self.chart())
+        self.assertIn("plane overhead", wide)        # fits at the default width
+        self.stub(self.NAMED)
+        narrow = "\n".join(self.chart("/Geneva?w=60"))
+        self.assertNotIn("plane overhead", narrow)   # too wide at 60, dropped
+        self.assertIn("adsb.lol", narrow)            # the obligation is not
+
+    def test_the_night_chart_credits_them_too(self):
+        """?planes=1 draws the same aircraft on the night chart, which has no
+        prose line to hang the credit off. It gets one of its own."""
+        self.stub(self.SKY, daytime=False)
+        self.assertIn("adsb.lol", "\n".join(self.chart("/Geneva?planes=1")))
+
+    def test_the_night_credit_sits_on_the_top_frame_row(self):
+        """Glued to the top edge and centred, so it reads as a caption on the
+        frame rather than as something in the sky. It rides the chart's top
+        altitude row, which is also the guard on NIGHT_ALT_MAX: a note pinned
+        outside render_linear's altitude window is dropped in silence, so if
+        the two ever drift apart this is what says so."""
+        self.stub(self.SKY, daytime=False)
+        lines = self.chart("/Geneva?planes=1")
+        credit = next(i for i, l in enumerate(lines) if "adsb.lol" in l)
+        self.assertIn("%d°" % api.NIGHT_ALT_MAX, lines[credit])
+        # And it really is the top of the sky, not just a row that mentions
+        # it: every lower altitude label comes after it.
+        lower = next(i for i, l in enumerate(lines)
+                     if "%d°" % (api.NIGHT_ALT_MAX - 10) in l)
+        self.assertGreater(lower, credit)
+
+    def test_a_night_chart_without_aircraft_stays_clean(self):
+        """Off by default at night, and nothing drawn means nothing to
+        attribute -- the night chart is what somebody came for and does not
+        carry a line about a layer that is not on."""
+        self.stub(self.SKY, daytime=False)
+        self.assertNotIn("adsb.lol", "\n".join(self.chart()))
+
+    def test_no_aircraft_no_credit(self):
+        """Nothing shown, nothing to attribute."""
+        self.stub([])
+        self.assertNotIn("adsb.lol", "\n".join(self.chart()))
+
+
 class TheChartPlaneCountersAreShippedWithTheParameter(unittest.TestCase):
     """Three counters, not one. It is on by default in daylight so almost
     every day chart drew it -- what is worth knowing is whether anyone turns

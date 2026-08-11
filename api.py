@@ -3658,6 +3658,13 @@ def compose_eclipse(r, key):
 # already has its own aspect-locked "true shape" formula and shouldn't be
 # second-guessed by this.
 DEFAULT_HORIZON_WIDTH = 110
+
+# The top of the night chart's panorama; above it is the zenith inset's job.
+# The same number render_linear defaults to, named because _compose_sky now
+# needs to say "the top row" for the aircraft credit, and a note pinned to an
+# altitude outside the window is dropped without a word. Passing it and
+# reading it from one name is what stops those two drifting apart.
+NIGHT_ALT_MAX = 70
 HORIZON_COLS_PER_ROW = 110 / 24
 
 
@@ -5550,8 +5557,29 @@ def _compose_sky(r):
     overhead = None
     if planes_on(r):
         overhead, _perr = planes.overhead(p.lat, p.lon)
+    # Same ODbL obligation the day chart carries, on the one other surface
+    # that draws the aircraft. ?planes=1 is the only way to reach it here --
+    # off by default at night, because the night chart is already the thing
+    # somebody came for. So this line only ever appears on a chart where the
+    # reader asked for the layer, and only when it actually returned
+    # something: nothing drawn, nothing to attribute, no line.
+    #
+    # Pinned to the top row and centred, so it reads as a caption on the frame
+    # rather than as something in the sky. Unlike the day chart there is no
+    # prose for it to sit under -- it is the whole of what the chart says
+    # about aircraft, and the top edge is where a credit belongs when it is
+    # not annotating anything below it.
+    #
+    # NIGHT_ALT_MAX is passed to render_linear as well as read here. It is
+    # render_linear's own default, but a note whose altitude lands outside the
+    # window is dropped silently, so the two must not be able to drift: one
+    # name, used twice, rather than a 70 in each place.
+    plane_notes = ([dict(text=planes.ATTRIBUTION, col=sky.C.MUTE,
+                         alt=NIGHT_ALT_MAX)]
+                   if overhead else None)
     art, st = render_linear(r.when_utc, p.lat, p.lon, color=c, show_lines=r.lines,
                             tle=r.tle, facing=r.facing, span=r.span,
+                            alt_max=NIGHT_ALT_MAX, notes=plane_notes,
                             planes=overhead, plane_labels=False,
                             plane_tips=bool(r.panel and getattr(r, 'browser', False)),
                             width=r.width if r.facing else _effective_width(r),
@@ -6226,7 +6254,25 @@ def _compose_day(r):
     # rather than stacked on top of the times.
     pnote = planes_note(day_planes)
     if pnote:
-        notes = list(notes) + [dict(text=pnote, col=sky.C.PLANE, alt=1.5)]
+        # ODbL 1.0 wants attribution on any surface that shows the data, and
+        # the chart is one -- the sphere has carried it since planes landed
+        # there, the chart never did.
+        #
+        # Its own note rather than appended to the line above, because a note
+        # wider than the chart is dropped whole (render_linear's len(s) > W).
+        # The facts run to about 60 characters and the credit to 50; joined,
+        # 113 would vanish on anything narrower than that, and ?width= goes
+        # down to 60 -- which would have lost the aircraft prose and the
+        # attribution together on exactly the narrow terminals most likely to
+        # be a real one. Split, each stands or falls on its own.
+        #
+        # Credit first in the list, facts second, which is what puts the
+        # credit UNDERNEATH on the chart: notes nudge upward out of an
+        # occupied row and never downward, so the one added first takes the
+        # lower row and the other rides above it. Added the other way round
+        # the credit sat on top of the sentence it belongs to.
+        notes = list(notes) + [dict(text=planes.ATTRIBUTION, col=sky.C.MUTE, alt=0.5),
+                               dict(text=pnote, col=sky.C.PLANE, alt=1.5)]
     art, st = render_linear(r.when_utc, p.lat, p.lon, color=c, show_lines=False,
                             planes=day_planes, plane_tips=bool(r.panel and getattr(r, 'browser', False)),
                             mag_limit=_fade_mag_limit(sa_now), alt_lo=0.0, alt_hi=alt_hi,
