@@ -3663,6 +3663,25 @@ class TheWelcomeGreetsOnTheDayAndNotBefore(unittest.TestCase):
     def test_it_is_silent_the_day_after(self):
         self.assertIsNone(self.armed("2026-08-13"))
 
+    def test_it_stops_at_last_contact_and_not_at_midnight(self):
+        """"Enjoy the eclipse today, 20:42 WNW" at 23:00 is not a greeting.
+        It is the site telling somebody to go outside and look at something
+        that finished two hours ago. Zurich runs 19:24 to 21:08 local."""
+        # local -> UT; August in Zurich is UTC+2.
+        def at(hh, mm):
+            now = dt.datetime(2026, 8, 12, hh, mm) - dt.timedelta(hours=2)
+            return api.welcome_eclipse(self.place, now)
+        self.assertIsNotNone(at(6, 0), "breakfast on the day must still greet")
+        self.assertIsNotNone(at(21, 7), "still running, one minute to go")
+        self.assertIsNone(at(21, 9), "over -- nothing to enjoy")
+        self.assertIsNone(at(23, 0))
+
+    def test_it_greets_through_the_eclipse_not_only_up_to_the_peak(self):
+        """Cut at maximum and the greeting would go dark in the middle of
+        the event. Half an eclipse is still worth running outside for."""
+        now = dt.datetime(2026, 8, 12, 20, 42) - dt.timedelta(hours=2)
+        self.assertIsNotNone(api.welcome_eclipse(self.place, now))
+
     def test_it_is_silent_two_days_before(self):
         self.assertIsNone(self.armed("2026-08-10"))
 
@@ -3731,6 +3750,19 @@ class TheWelcomeIsNotCachedPastTheDayItDescribes(unittest.TestCase):
         greeting that did not arrive."""
         self.assertEqual(self.ttl(23, 50, 3600), 600)
         self.assertEqual(self.ttl(23, 0, 3600), 3600)
+
+    def test_a_greeting_cannot_be_cached_past_last_contact(self):
+        """The clamp that matters most. Zurich's eclipse ends 21:08 local;
+        a greeting cached at 21:07 for the full half hour would be handed
+        out until 21:37, after it had stopped being true."""
+        r = self.R()
+        r.place = api.lookup_place("Zurich")
+        r.when_utc = dt.datetime(2026, 8, 12, 21, 7) - dt.timedelta(hours=2)
+        ends = api.welcome_eclipse(r.place, r.when_utc)["ends"]
+        ttl = server._welcome_ttl(r, server.WELCOME_MAX_AGE, ends)
+        self.assertLessEqual(ttl, 120)
+        # ...but still not zero, for the stampede reason below.
+        self.assertGreaterEqual(ttl, 60)
 
     def test_it_never_falls_to_zero(self):
         """A max-age of 0 on the last second of the day, on a route every

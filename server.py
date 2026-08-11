@@ -3276,8 +3276,10 @@ WELCOME_MAX_AGE = 1800
 WELCOME_NONE_MAX_AGE = 3600
 
 
-def _welcome_ttl(r, cap):
-    """Seconds this answer may be cached for, never past local midnight.
+def _welcome_ttl(r, cap, until_local=None):
+    """Seconds this answer may be cached for, never past the moment it stops
+    being true: last contact where there is a greeting, local midnight
+    otherwise.
 
     The answer to "is there an eclipse today" stops being true at midnight,
     so an entry that outlives the day is served as fact after it has become
@@ -3297,7 +3299,11 @@ def _welcome_ttl(r, cap):
     local = r.when_utc + dt.timedelta(hours=off)
     midnight = dt.datetime.combine(local.date() + dt.timedelta(days=1),
                                    dt.time.min)
-    left = int((midnight - local).total_seconds())
+    # A greeting expires at last contact, which on eclipse evening is hours
+    # before midnight -- cached to midnight it would outlive the eclipse and
+    # be handed out afterwards, which is the thing the greeting must never do.
+    edge = min(midnight, until_local) if until_local else midnight
+    left = int((edge - local).total_seconds())
     # Never zero: a max-age of 0 on a page every visitor fetches would turn
     # the last second of the day into an origin stampede.
     return max(60, min(cap, left))
@@ -3341,7 +3347,7 @@ def welcome_json(request: Req, place: str):
         ends_local=got["ends"].strftime("%Y-%m-%dT%H:%M:%S"),
         frame_ms=WELCOME_FRAME_MS, hold_ms=api.CROSSING_HOLD_MS,
     ), headers={"Cache-Control": "public, max-age="
-                f"{_welcome_ttl(r, WELCOME_MAX_AGE)}"})
+                f"{_welcome_ttl(r, WELCOME_MAX_AGE, got['ends'])}"})
 
 
 @app.get("/{place}/planes.json")

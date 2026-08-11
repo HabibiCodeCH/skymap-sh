@@ -4646,6 +4646,22 @@ def welcome_eclipse(place, now_utc=None):
         # which is the day it is actually seen there.
         if not (starts.date() <= local_day <= ends.date()):
             continue
+        # And it has to still be ahead of them, to the minute.
+        #
+        # The greeting deliberately fires on arrival rather than at a
+        # particular time, so that somebody landing at breakfast is told what
+        # happens tonight. That argument only runs one way. Once the Moon has
+        # left the Sun there is nothing to enjoy and nothing to go outside
+        # for, and "Enjoy the eclipse today, 20:42 WNW" at 23:00 is not a
+        # greeting, it is the site telling somebody to go and look at
+        # something that finished two hours ago.
+        #
+        # Last contact and not maximum: an eclipse still half on is still
+        # worth running outside for, and cutting at the peak would shut the
+        # greeting off in the middle of the event.
+        local_now = now + dt.timedelta(hours=off)
+        if local_now > ends:
+            continue
         return dict(key=key, starts=starts, ends=ends,
                     obscuration=c.get("obscuration") or 0.0,
                     kind=c.get("kind"))
