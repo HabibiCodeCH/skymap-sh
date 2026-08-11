@@ -4626,9 +4626,27 @@ def welcome_eclipse(place, now_utc=None):
         # the hours are decimal UT on that date and a place far enough east
         # keeps a different local date.
         day0 = dt.datetime.strptime(key, "%Y-%m-%d")
-        return dict(key=key,
-                    starts=day0 + dt.timedelta(hours=first, minutes=off * 60),
-                    ends=day0 + dt.timedelta(hours=last, minutes=off * 60),
+        starts = day0 + dt.timedelta(hours=first, minutes=off * 60)
+        ends = day0 + dt.timedelta(hours=last, minutes=off * 60)
+        # It has to be running on the local day being asked about.
+        #
+        # _eclipse_keys_near returns the day either side on purpose, because
+        # the key is a UT date and a place far enough east or west keeps a
+        # different local one while the eclipse is overhead. That is the right
+        # net for "is the Moon over the Sun at this instant", which is what
+        # crossing_bites asks. It is the wrong net for "is there an eclipse
+        # today", which is this -- and without this test the greeting went out
+        # on 11 August for the 12 August eclipse and told every reader in
+        # Europe it was happening today, on the morning before the one event
+        # the site exists for.
+        #
+        # Compared in local time on both sides, so the east/west case the
+        # wider net was built for still passes: an eclipse filed under 12
+        # August that starts after midnight local is greeted on the 13th,
+        # which is the day it is actually seen there.
+        if not (starts.date() <= local_day <= ends.date()):
+            continue
+        return dict(key=key, starts=starts, ends=ends,
                     obscuration=c.get("obscuration") or 0.0,
                     kind=c.get("kind"))
     return None

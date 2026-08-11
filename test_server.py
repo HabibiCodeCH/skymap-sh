@@ -3635,6 +3635,72 @@ class SpherePage(unittest.TestCase):
         self.assertNotIn("mobile_redirect", stats)
 
 
+class TheWelcomeGreetsOnTheDayAndNotBefore(unittest.TestCase):
+    """Shipped firing a day early: on 11 August 2026 every place in Europe
+    was greeted with the 12 August eclipse and told it was today.
+
+    The cause was reusing _eclipse_keys_near, which returns the day either
+    side because the key is a UT date. That net is right for "is the Moon
+    over the Sun at this instant" and wrong for "is there an eclipse today".
+    """
+
+    ZURICH = None
+
+    def setUp(self):
+        self.place = api.lookup_place("Zurich")
+
+    def armed(self, day, hour=6):
+        now = dt.datetime.strptime(day, "%Y-%m-%d") + dt.timedelta(hours=hour)
+        got = api.welcome_eclipse(self.place, now)
+        return got["key"] if got else None
+
+    def test_it_is_silent_the_day_before(self):
+        self.assertIsNone(self.armed("2026-08-11"))
+
+    def test_it_greets_on_the_day(self):
+        self.assertEqual(self.armed("2026-08-12"), "2026-08-12")
+
+    def test_it_is_silent_the_day_after(self):
+        self.assertIsNone(self.armed("2026-08-13"))
+
+    def test_it_is_silent_two_days_before(self):
+        self.assertIsNone(self.armed("2026-08-10"))
+
+    def test_the_marker_is_not_in_the_page_the_day_before(self):
+        """The server side of the same rule -- no marker means the page
+        cannot arm even if the script runs."""
+        before = api.welcome_arm_html(
+            self.place, dt.datetime(2026, 8, 11, 6, 0))
+        onday = api.welcome_arm_html(
+            self.place, dt.datetime(2026, 8, 12, 6, 0))
+        self.assertEqual(before, "")
+        self.assertIn('id="welcome-arm"', onday)
+
+    def test_a_place_whose_local_day_differs_still_gets_greeted(self):
+        """The east/west case the wider net was built for. The key is a UT
+        date; what has to match is the local one, so this must keep working
+        or the fix has traded one wrong day for another."""
+        seen = []
+        for name in ("Tokyo", "Auckland", "Honolulu", "Madrid", "Reykjavik"):
+            p = api.lookup_place(name)
+            if p is None:
+                continue
+            for day in ("2026-08-11", "2026-08-12", "2026-08-13"):
+                for hour in (0, 6, 12, 18):
+                    now = dt.datetime.strptime(day, "%Y-%m-%d") + \
+                        dt.timedelta(hours=hour)
+                    got = api.welcome_eclipse(p, now)
+                    if got:
+                        off = p.offset(now)
+                        local = (now + dt.timedelta(hours=off)).date()
+                        # Whatever day it fires on, it must be a day the
+                        # eclipse is actually running there.
+                        self.assertLessEqual(got["starts"].date(), local)
+                        self.assertGreaterEqual(got["ends"].date(), local)
+                        seen.append(p.name)
+        self.assertTrue(seen, "nowhere was greeted at all -- fix went too far")
+
+
 class TheEventStripOnTheSphere(unittest.TestCase):
     """#radiant-hud -- the line above the toolbar that names a shower or an
     eclipse and offers to point the camera at it."""
