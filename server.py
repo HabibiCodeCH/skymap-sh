@@ -2033,7 +2033,31 @@ def _cache_key(r, daytime):
     # first won the entry and the other was served its answer: ?quadrant came
     # back with no grid, or ?dso=1 came back wearing one. ?quadrant&nodso=1
     # collided with the plain view the same way.
-    q = (round(r.place.lat, 1), round(r.place.lon, 1), r.view, r.facing, r.span,
+    #
+    # The name is in here for the same reason, found the hard way a second
+    # time. Without it the key was the rounded cell alone, so every request
+    # landing within about 11 km shared one cached page -- and the page
+    # carries the whole Place inside it, name, exact coordinates and the
+    # "near X" hint. Whichever request arrived first decided who everyone
+    # else was told they were:
+    #
+    #   ask /47.38,8.54 first, then /Zurich  -> both say "47.40,8.50"
+    #   ask /Zurich first, then /47.38,8.54  -> both say "Zürich"
+    #
+    # and it is not only coordinates against a name. 754 pairs of distinct
+    # towns over 40,000 people share a cell -- New York with Brooklyn, Manila
+    # with Quezon City, Kinshasa with Brazzaville, which is two countries.
+    #
+    # The sky was never wrong: both round to the same cell, and 11 km is well
+    # inside what a text chart resolves, which is what the rounding is for.
+    # Only the identity was, which is why nobody reported it.
+    #
+    # This costs nothing in cardinality. Coordinates reach here already
+    # snapped to 0.1 on every path -- lookup_place snaps typed ones, _geo
+    # snaps the CDN's -- so a coordinate name is one of the same 6.5 million,
+    # and named cities add the 41,000 in the catalogue.
+    q = (r.place.name, round(r.place.lat, 1), round(r.place.lon, 1),
+         r.view, r.facing, r.span,
          (r.find or "").lower(), bool(r.tle), r.night, r.width, r.dso, r.quadrant,
          r.quadrant_requested, r.lines, r.panel, r.golden, r.links)
     bucket = DAY_BUCKET if daytime else NIGHT_BUCKET

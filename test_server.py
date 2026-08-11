@@ -3780,6 +3780,58 @@ class TheWelcomeIsNotCachedPastTheDayItDescribes(unittest.TestCase):
         self.assertLessEqual(int(cc.rsplit("=", 1)[1]), 3600)
 
 
+class OnePlaceIsNotServedAnothersName(unittest.TestCase):
+    """The page cache was keyed on the rounded cell and not on who asked, so
+    every request within about 11 km shared one entry -- and the entry
+    carries the whole Place inside it. Whichever arrived first decided the
+    name, the coordinates and the "near X" hint everyone else was shown.
+
+    The sky was never wrong: both round to the same cell and 11 km is inside
+    what a text chart resolves. Only the identity was, which is why it went
+    unreported.
+    """
+
+    T = "?t=2026-08-14T22:00"
+
+    def setUp(self):
+        client_cm = TestClient(server.app)
+        self.client = client_cm.__enter__()
+        self.addCleanup(client_cm.__exit__, None, None, None)
+        server._cache.clear()
+
+    def header(self, path):
+        body = self.client.get(path + self.T, headers=TERMINAL).text
+        line = body.split("\n")[1]
+        return re.sub(r"\x1b\[[0-9;]*m", "", line)
+
+    def test_coordinates_do_not_take_the_citys_name(self):
+        self.assertIn("47.40,8.50", self.header("/47.38,8.54"))
+        self.assertIn("Zürich", self.header("/Zurich"))
+
+    def test_and_it_does_not_depend_on_which_came_first(self):
+        server._cache.clear()
+        self.assertIn("Zürich", self.header("/Zurich"))
+        self.assertIn("47.40,8.50", self.header("/47.38,8.54"))
+
+    def test_two_towns_in_one_cell_keep_their_own_names(self):
+        """New York and Brooklyn share a cell, as do 752 other pairs over
+        40,000 people -- Manila with Quezon City, and Kinshasa with
+        Brazzaville, which is two countries."""
+        self.assertIn("New York", self.header("/New York"))
+        self.assertIn("Brooklyn", self.header("/Brooklyn"))
+        server._cache.clear()
+        self.assertIn("Kinshasa", self.header("/Kinshasa"))
+        self.assertIn("Brazzaville", self.header("/Brazzaville"))
+
+    def test_the_cache_still_caches(self):
+        """The failure mode of this fix is a key so specific that nothing
+        ever hits it again."""
+        before = server._hits
+        for _ in range(4):
+            self.client.get("/Zurich" + self.T, headers=TERMINAL)
+        self.assertGreaterEqual(server._hits - before, 3)
+
+
 class TheFindBoxOffersWhatIsActuallyUpThere(unittest.TestCase):
     """The Find box had no completion at all. It is the phone's search box
     for the sky, and "Vega" is easy but "Alpheratz" is not."""
