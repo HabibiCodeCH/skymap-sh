@@ -1112,17 +1112,28 @@ class AircraftOnTheHorizonChart(unittest.TestCase):
         self.assertIn("→", txt)
         self.assertNotIn("←", txt)
 
-    def test_only_the_highest_few_are_named(self):
-        many = [self.plane(callsign=f"FL{i:03d}", elev=60.0 - i * 4,
+    def many(self):
+        return [self.plane(callsign=f"FL{i:03d}", elev=60.0 - i * 4,
                            az=40.0 + i * 25, az_next=44.0 + i * 25,
                            elev_next=60.0 - i * 4)
                 for i in range(8)]
-        txt = self.chart(many)
+
+    def test_by_day_every_callsign_is_written(self):
+        """The day chart is nearly empty and the callsign is most of what
+        there is to read on it."""
+        txt = self.chart(self.many())
         named = sum(1 for i in range(8) if f"FL{i:03d}" in txt)
-        self.assertEqual(named, sky.PLANE_LABELS)
-        # The highest ones, not whichever came first in the list.
-        self.assertIn("FL000", txt)
-        self.assertNotIn("FL007", txt)
+        self.assertGreaterEqual(named, 6, "labels are being dropped by day")
+
+    def test_by_night_none_are(self):
+        """The night chart is the thing somebody came outside for, and
+        six-character callsigns across it are text over the stars. The
+        arrows stay -- they are what answers 'where do I look'."""
+        txt = self.chart(self.many(), plane_labels=False)
+        for i in range(8):
+            self.assertNotIn(f"FL{i:03d}", txt)
+        self.assertTrue(any(a in txt for a in "\u2192\u2197\u2191\u2196"
+                                             "\u2190\u2199\u2193\u2198"))
 
     def test_no_planes_changes_nothing(self):
         self.assertEqual(self.chart(None), self.chart([]))

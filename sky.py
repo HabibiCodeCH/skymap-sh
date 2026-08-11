@@ -73,11 +73,6 @@ def star_colour(ci):
 # is what atan2 hands back. JetBrains Mono carries all eight, so the PNG
 # export needs no special case -- unlike braille, and unlike the aircraft
 # glyph the sphere uses, which is in neither bundled font.
-# How many aircraft get their callsign written next to them. Three is what
-# fits before the labels start colliding with each other and with the
-# cardinal letters, in the crowded band low on the chart where planes are.
-PLANE_LABELS = 3
-
 PLANE_ARROWS = ("\u2192", "\u2197", "\u2191", "\u2196",
                 "\u2190", "\u2199", "\u2193", "\u2198")
 
@@ -1437,7 +1432,7 @@ def render_linear(when_utc, lat, lon, W=176, H=22, color=True, show_lines=True,
                   bodies=None, inset=True, width=None, height=None, dso_limit=None,
                   quadrant=None, quadrants=False, side_panel=False,
                   alt_bands=None, notes=None, milkyway=False, dim_limit=None,
-                  radiant=None, link=None, planes=None):
+                  radiant=None, link=None, planes=None, plane_labels=True):
     """Horizon panorama. facing=None gives the full 360 deg sweep; facing='SW'
     gives a window centred there, which is narrow enough to be undistorted.
 
@@ -1909,17 +1904,18 @@ def render_linear(when_utc, lat, lon, W=176, H=22, color=True, show_lines=True,
     # thing moves *across the drawing*. The compass track would be wrong for
     # most of the sky -- see plane_arrow.
     #
-    # Only the highest few get a name. Eight aircraft above the floor into
-    # 110 columns, with six-character callsigns, land in rows 2-8 where the
-    # cardinal axis and the low stars already are, and the labels collide
-    # into porridge. The rest stay as bare arrows, which still answer "where
-    # do I look".
+    # Names by day, none by night. The day chart is nearly empty and the
+    # callsign is most of what there is to read; the night chart is the
+    # thing somebody came outside for, and six-character callsigns laid
+    # across it in the crowded low band would be text over the stars. The
+    # arrows stay either way, and they are what answers "where do I look".
     #
     # Nothing here says where they are going. That belongs in the prose under
     # the chart, where there is room for "likely LHR to SPU" without it
     # having to survive being one glyph wide.
     if planes:
-        seen = 0
+        # Highest first, so where they do collide the ones nearest overhead
+        # win the room -- text() gives up rather than overwrite.
         for p in sorted(planes, key=lambda x: -x["elev"]):
             c0, r0 = colf_of(p["az"]), rowf_of(p["elev"])
             if c0 is None or r0 is None:
@@ -1937,9 +1933,8 @@ def render_linear(when_utc, lat, lon, W=176, H=22, color=True, show_lines=True,
                     mark = plane_arrow(dc, r1 - r0) or mark
             place(p["az"], p["elev"], mark, C.PLANE, over=True)
             name = p.get("callsign") or p.get("type")
-            if name and seen < PLANE_LABELS:
-                if text(p["az"], p["elev"], name, C.PLANE):
-                    seen += 1
+            if plane_labels and name:
+                text(p["az"], p["elev"], name, C.PLANE)
 
     # The radiant of whatever shower is running, marked where the meteors
     # come from. Same shape as the ISS marker above: one glyph and a name.

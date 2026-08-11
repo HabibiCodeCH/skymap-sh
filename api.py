@@ -5547,7 +5547,7 @@ def _compose_sky(r):
         overhead, _perr = planes.overhead(p.lat, p.lon)
     art, st = render_linear(r.when_utc, p.lat, p.lon, color=c, show_lines=r.lines,
                             tle=r.tle, facing=r.facing, span=r.span,
-                            planes=overhead,
+                            planes=overhead, plane_labels=False,
                             width=r.width if r.facing else _effective_width(r),
                             height=None if r.facing else _horizon_height(r),
                             mag_limit=mag_limit, line_limit=mag_limit,
