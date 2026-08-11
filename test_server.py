@@ -3701,6 +3701,53 @@ class TheWelcomeGreetsOnTheDayAndNotBefore(unittest.TestCase):
         self.assertTrue(seen, "nowhere was greeted at all -- fix went too far")
 
 
+class TheWelcomeIsNotCachedPastTheDayItDescribes(unittest.TestCase):
+    """"Is there an eclipse today" stops being true at midnight. An entry
+    that outlives the local day is served as fact after it has become false,
+    which is the same bug the greeting just had, half an hour wide."""
+
+    class R:
+        pass
+
+    def ttl(self, local_hh, local_mm, cap):
+        r = self.R()
+        r.place = api.lookup_place("Zurich")
+        # August in Zurich is UTC+2.
+        r.when_utc = dt.datetime(2026, 8, 12, local_hh, local_mm) \
+            - dt.timedelta(hours=2)
+        return server._welcome_ttl(r, cap)
+
+    def test_it_is_the_full_cap_in_the_middle_of_the_day(self):
+        self.assertEqual(self.ttl(6, 0, 1800), 1800)
+
+    def test_it_cannot_reach_past_midnight(self):
+        # 23:50 with a 30-minute cap would otherwise still be answering at
+        # 00:20 the next day.
+        self.assertEqual(self.ttl(23, 50, 1800), 600)
+
+    def test_the_no_eclipse_answer_is_clamped_too(self):
+        """The quiet direction, and the worse one: a 'no eclipse' cached on
+        the eve keeps refusing into eclipse day, and nobody reports a
+        greeting that did not arrive."""
+        self.assertEqual(self.ttl(23, 50, 3600), 600)
+        self.assertEqual(self.ttl(23, 0, 3600), 3600)
+
+    def test_it_never_falls_to_zero(self):
+        """A max-age of 0 on the last second of the day, on a route every
+        visitor fetches, is an origin stampede rather than a fix."""
+        self.assertGreaterEqual(self.ttl(23, 59, 1800), 60)
+
+    def test_the_route_sends_a_clamped_header(self):
+        client_cm = TestClient(server.app)
+        client = client_cm.__enter__()
+        self.addCleanup(client_cm.__exit__, None, None, None)
+        r = client.get("/Zurich/welcome.json")
+        self.assertEqual(r.status_code, 200)
+        cc = r.headers["cache-control"]
+        self.assertTrue(cc.startswith("public, max-age="), cc)
+        self.assertLessEqual(int(cc.rsplit("=", 1)[1]), 3600)
+
+
 class TheEventStripOnTheSphere(unittest.TestCase):
     """#radiant-hud -- the line above the toolbar that names a shower or an
     eclipse and offers to point the camera at it."""

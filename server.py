@@ -3272,6 +3272,37 @@ def crossing_json(request: Req, place: str):
         "Cache-Control": f"public, max-age={age // 4}, s-maxage={age}"})
 
 
+WELCOME_MAX_AGE = 1800
+WELCOME_NONE_MAX_AGE = 3600
+
+
+def _welcome_ttl(r, cap):
+    """Seconds this answer may be cached for, never past local midnight.
+
+    The answer to "is there an eclipse today" stops being true at midnight,
+    so an entry that outlives the day is served as fact after it has become
+    false. It goes wrong in both directions and the quiet one is worse:
+
+      - a greeting cached at 23:50 keeps greeting until 00:20, so the day
+        after the eclipse opens with yesterday's,
+      - a "no eclipse" cached at 23:50 on the eve keeps refusing until
+        00:50, so the first fifty minutes of eclipse day are silent -- and
+        nobody reports a greeting that did not arrive.
+
+    Same shape as the bug this route just had, half an hour wide instead of
+    a day. Clamped here rather than by shortening the cache for everyone,
+    because the entry is perfectly good right up to the boundary.
+    """
+    off = r.place.offset(r.when_utc) if r.place else 0
+    local = r.when_utc + dt.timedelta(hours=off)
+    midnight = dt.datetime.combine(local.date() + dt.timedelta(days=1),
+                                   dt.time.min)
+    left = int((midnight - local).total_seconds())
+    # Never zero: a max-age of 0 on a page every visitor fetches would turn
+    # the last second of the day into an origin stampede.
+    return max(60, min(cap, left))
+
+
 @app.get("/{place}/welcome.json")
 def welcome_json(request: Req, place: str):
     """The eclipse to greet somebody with today, drawn.
@@ -3289,13 +3320,17 @@ def welcome_json(request: Req, place: str):
         # Not an error: most of the map sees no eclipse most days, and half
         # of Europe sees none of this one.
         _stat["welcome_none"] += 1
-        return JSONResponse({"welcome": None},
-                            headers={"Cache-Control": "public, max-age=3600"})
+        return JSONResponse(
+            {"welcome": None},
+            headers={"Cache-Control": "public, max-age="
+                     f"{_welcome_ttl(r, WELCOME_NONE_MAX_AGE)}"})
     made = api.welcome_frames(r.place, got["key"], got["kind"])
     if made is None:
         _stat["welcome_none"] += 1
-        return JSONResponse({"welcome": None},
-                            headers={"Cache-Control": "public, max-age=3600"})
+        return JSONResponse(
+            {"welcome": None},
+            headers={"Cache-Control": "public, max-age="
+                     f"{_welcome_ttl(r, WELCOME_NONE_MAX_AGE)}"})
     frames, labels = made
     _stat["welcome"] += 1
     _stat[f"welcome:{got['kind']}"] += 1
@@ -3305,7 +3340,8 @@ def welcome_json(request: Req, place: str):
         starts_local=got["starts"].strftime("%Y-%m-%dT%H:%M:%S"),
         ends_local=got["ends"].strftime("%Y-%m-%dT%H:%M:%S"),
         frame_ms=WELCOME_FRAME_MS, hold_ms=api.CROSSING_HOLD_MS,
-    ), headers={"Cache-Control": "public, max-age=1800"})
+    ), headers={"Cache-Control": "public, max-age="
+                f"{_welcome_ttl(r, WELCOME_MAX_AGE)}"})
 
 
 @app.get("/{place}/planes.json")
