@@ -10,6 +10,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import time
 import unittest
@@ -5140,6 +5141,41 @@ class TheDemoPageRunsTheSameCommandBar(unittest.TestCase):
         header = api.header_html("demo")
         for name in re.findall(r'id="([^"]+)"', header):
             self.assertIn(f'id="{name}"', self.page, name)
+
+    def test_the_committed_page_is_exactly_what_the_builder_makes(self):
+        """The whole file, byte for byte, not a list of ids.
+
+        The id check above passed for five days while /demo served a drawer
+        with no home/events/help links and a search-help panel that had
+        never heard of the eclipse pages. None of that drift had an id, so
+        none of it was visible to a test looking only at id attributes --
+        a guard that half-checks an artifact is how the artifact drifts.
+
+        Byte-for-byte is affordable here because the builder is
+        deterministic: every one of its ten charts is pinned to a fixed
+        datetime (see build_sky_html.py), so nothing in the output moves
+        with the clock. If this fails, run `python build_sky_html.py` and
+        commit the result -- the failure means the committed file no longer
+        matches the code that generates it, which is the only thing it can
+        mean.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            # Run it somewhere else and compare, rather than letting it
+            # overwrite the file under test. The script writes sky_demo.html
+            # relative to the working directory; everything it reads comes
+            # through `import api`, which resolves data off sky.BASE, so a
+            # different cwd changes where it writes and nothing else.
+            build = os.path.join(api.sky.BASE, "build_sky_html.py")
+            done = subprocess.run([sys.executable, build], cwd=tmp,
+                                  capture_output=True, text=True)
+            self.assertEqual(done.returncode, 0, done.stderr)
+            with open(os.path.join(tmp, "sky_demo.html")) as f:
+                fresh = f.read()
+        if fresh != self.page:
+            self.fail("sky_demo.html is stale -- run `python "
+                      "build_sky_html.py` and commit the result "
+                      f"({len(self.page)} bytes committed, "
+                      f"{len(fresh)} bytes fresh)")
 
     def test_the_builder_keeps_no_second_copy_of_the_bar(self):
         """The rule that replaces the comment asking people to remember.

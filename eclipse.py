@@ -735,25 +735,21 @@ def moon_art(key, at=None, color=True, lat=None, lon=None):
     return out
 
 
-def moon_frames(key, n=FRAMES, color=True, tz=0.0, lat=None, lon=None):
-    """The whole lunar eclipse, first contact to last, as n drawings."""
-    c = lunar.contacts(key)
-    if not c:
-        return [], []
-    first = c.get("P1") or c.get("U1")
-    last = c.get("P4") or c.get("U4")
-    if first is None or last is None:
-        return [], []
-    frames, labels = [], []
-    for i in range(n):
-        t = first + (last - first) * i / (n - 1)
-        art = moon_art(key, at=t, color=color, lat=lat, lon=lon)
-        if not art:
-            continue
-        frames.append(art)
-        secs = round(((t + tz) % 24) * 3600)
-        labels.append(f"{secs // 3600:02d}:{secs // 60 % 60:02d}")
-    return frames, labels
+# There is no moon_frames, deliberately. It existed as the lunar mirror of
+# disc_frames -- the Moon entering the shadow, frame by frame -- and never
+# had a caller or a test: the lunar page animates arc_frames instead, the
+# Moon's whole night as a curve, because how long it is up for is the
+# question that page is answering.
+#
+# Removed rather than kept. The two functions this project keeps unused
+# (api.coming_up_card_html, api.events_cards) are kept because they are
+# still unit-tested and could plausibly come back; this one was neither, and
+# it had just been given lat/lon parameters that made it look maintained.
+#
+# Everything it needs still exists if the lunar disc ever wants animating:
+# moon_art(key, at=..., lat=..., lon=...) draws one frame at one instant,
+# and disc_frames is the shape to copy. It is in the history at the commit
+# that removed it.
 
 
 # ------------------------------------------------------------ the night arc
