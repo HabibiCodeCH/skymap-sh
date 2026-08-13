@@ -10,6 +10,7 @@ The land mask underneath is `eclipsemap.json` (build_eclipsemap.py), a
 region rather than the whole planet: at the /stats map's 1.7 degrees per
 column a 300 km track is thinner than one character.
 """
+import datetime as dt
 import json
 import math
 
@@ -327,6 +328,48 @@ def _speckle(d, ang):
     return ((i * 1103515245 + 12345) >> 8 & 0xFFFF) / 65535.0
 
 
+def _as_seen(u, v, ra_h, dec_d, lat, lon, when_utc):
+    """A celestial direction turned into the drawing's frame: x right, y down.
+
+    (u, v) is east and north, the way the Besselian fundamental plane and
+    the Earth's shadow both give directions. What comes back is where that
+    direction points for somebody standing at lat/lon at this instant,
+    looking at it -- unit length, so the caller scales it by whatever
+    separation it already trusts.
+
+    This is the whole difference between a diagram and a picture. Celestial
+    north is only up when the thing is on your meridian; on 12 August 2026
+    the Sun sets over Ibiza 53 degrees from that, so the Moon took its first
+    bite out of the bottom-right of the Sun while this page drew it top
+    right. Two people compared the drawing to the sky and the sky won.
+
+    Below the horizon the answer is still well defined (altaz does not stop
+    at zero) and still the right one -- it is what you would see if the
+    ground were not in the way, which is what an animation running past
+    sunset is already showing.
+    """
+    jd = sky.julian(when_utc)
+    lst = (sky.gmst_hours(jd) + lon / 15.0) % 24
+    (ex, ey), (nx, ny) = sky.sky_basis(ra_h, dec_d, lat, lst)
+    n = math.hypot(u, v) or 1.0
+    e_hat, n_hat = u / n, v / n
+    x = e_hat * ex + n_hat * nx
+    y = e_hat * ey + n_hat * ny      # altitude, positive up
+    m = math.hypot(x, y) or 1.0
+    return x / m, -y / m             # y down, the way cell_centre counts rows
+
+
+def _utc_at(key, hours_ut):
+    """The eclipse's own UT date plus hours, as a datetime.
+
+    Not wrapped into 0..24: a contact can fall on the day either side of the
+    date the eclipse is filed under, and hours of 25.4 has to stay 25.4 so
+    it lands on the right day rather than on the right clock time of the
+    wrong one.
+    """
+    return dt.datetime.strptime(key, "%Y-%m-%d") + dt.timedelta(hours=hours_ut)
+
+
 def _corona_cell(d, ang, phase, room):
     """(colour, glyph) for one cell of corona, or None where there is none."""
     if d < CORONA_LIMB:
@@ -359,16 +402,23 @@ def disc_art(key, lat, lon, at=None, color=True, sun_r=None):
     Totality is the exception and gets the corona, which is the one time the
     Moon's edge is genuinely visible, as the hole in the middle of it.
 
-    Orientation is celestial: north up, east left. Turning that into
-    zenith-up needs the parallactic angle, and a drawing that silently got
-    that wrong would be worse than one that says which way up it is.
+    Orientation is what you see: up is up. The Moon goes where it goes for
+    somebody standing at lat/lon and looking, not where it goes on a star
+    chart -- see _as_seen for why that is not the same thing and what it
+    cost when this drew the celestial frame instead.
     """
     el = besselian.ELEMENTS.get(key)
     if el is None:
         return []
     rho_sin, rho_cos = besselian._observer(lat, lon)
     if at is None:
-        _t, s = besselian._solve_max(el, rho_sin, rho_cos, lon)
+        # _solve_max answers in the elements' own time (hours from t0, on a
+        # clock that has already been given delta-T). Everything downstream
+        # of here wants hours UT, which is what `at` means on the way in, so
+        # the conversion happens once and immediately -- the same one track()
+        # makes, and the inverse of the _state call in the other branch.
+        t_el, s = besselian._solve_max(el, rho_sin, rho_cos, lon)
+        at = el.t0 + t_el - el.dT / 3600.0
     else:
         s = besselian._state(el, at + el.dT / 3600.0 - el.t0,
                              rho_sin, rho_cos, lon)
@@ -395,10 +445,14 @@ def disc_art(key, lat, lon, at=None, color=True, sun_r=None):
         sun_r = SUN_R_TOTAL if total else SUN_R_PARTIAL
     moon_r = sun_r * (r_moon / r_sun)
     sep = sun_r * (s["m"] / r_sun)
-    n = math.hypot(s["u"], s["v"]) or 1.0
-    # Fundamental-plane x is celestial east, y is north. On screen north is
-    # up and east is left, so both signs flip.
-    mx, my = -s["u"] / n * sep, -s["v"] / n * sep
+    # Fundamental-plane x is celestial east, y is north. Direction only --
+    # the distance comes from m, which is topocentric and already right,
+    # where a direction taken from the Moon's own geocentric position would
+    # be a degree of parallax out.
+    when = _utc_at(key, at)
+    su = sky.sun(sky.julian(when))
+    dx, dy = _as_seen(s["u"], s["v"], su["ra"], su["dec"], lat, lon, when)
+    mx, my = dx * sep, dy * sep
     # How much room the frame leaves, measured in the same units the drawing
     # is done in, so a streamer can be told to stop at the edge rather than
     # be clipped by it.
@@ -601,7 +655,7 @@ def _umbra_tone(d, umbra_r):
     return UMBRA_TONES[-1][1]
 
 
-def moon_art(key, at=None, color=True):
+def moon_art(key, at=None, color=True, lat=None, lon=None):
     """The Moon at a moment of a lunar eclipse, as lines.
 
     `at` is hours UT; the default is greatest eclipse. Empty when there are
@@ -609,9 +663,14 @@ def moon_art(key, at=None, color=True):
     same way it treats a solar eclipse with no elements: no picture, and the
     page says why rather than drawing a guess.
 
-    North up, east left, like everything else here. The shadow crosses from
-    the east, which is the left-hand side, because the Moon overtakes it
-    going east.
+    Given a place, this is drawn the way you would see it from there: up is
+    up, and the shadow comes in from wherever it actually comes in from,
+    which depends on where the Moon is in your sky and is nowhere near
+    constant over a night. Without a place it stays in the celestial frame
+    (north up, east left, shadow entering from the left as the Moon
+    overtakes it going east) -- that is the shared social card, which is
+    fetched once by a crawler and shown to everybody, so there is no "you"
+    to draw it for.
     """
     el = lunar.elements(key)
     if el is None:
@@ -622,6 +681,17 @@ def moon_art(key, at=None, color=True):
     if centre is None or geo is None:
         return []
     sx, sy = centre
+    if lat is not None and lon is not None:
+        # shadow_centre already answers in the celestial drawing frame (x
+        # right, y down, north up, east left), so it is turned back into
+        # east/north before being asked where it points from here. Length is
+        # kept: it is a real distance in Moon radii and the rotation is only
+        # ever about direction.
+        d = math.hypot(sx, sy)
+        when = _utc_at(key, at)
+        mo = sky.moon(sky.julian(when))
+        ux, uy = _as_seen(-sx, -sy, mo["ra"], mo["dec"], lat, lon, when)
+        sx, sy = ux * d, uy * d
     # Per eclipse, not constants: the shadow is a good ten percent bigger at
     # apogee than at perigee, and the published magnitudes are what pin it.
     _s_min, umbra_r, penumbra_r = geo
@@ -665,7 +735,7 @@ def moon_art(key, at=None, color=True):
     return out
 
 
-def moon_frames(key, n=FRAMES, color=True, tz=0.0):
+def moon_frames(key, n=FRAMES, color=True, tz=0.0, lat=None, lon=None):
     """The whole lunar eclipse, first contact to last, as n drawings."""
     c = lunar.contacts(key)
     if not c:
@@ -677,7 +747,7 @@ def moon_frames(key, n=FRAMES, color=True, tz=0.0):
     frames, labels = [], []
     for i in range(n):
         t = first + (last - first) * i / (n - 1)
-        art = moon_art(key, at=t, color=color)
+        art = moon_art(key, at=t, color=color, lat=lat, lon=lon)
         if not art:
             continue
         frames.append(art)

@@ -2254,6 +2254,7 @@ class KeyboardShortcuts(unittest.TestCase):
             resp = self.client.get(path, headers=BROWSER)
             self.assertIn("e.key==='m'", resp.text, path)
 
+
     def test_d_binds_to_the_combined_quadrant_toggle_not_a_standalone_dso(self):
         resp = self.client.get("/Zurich?t=2026-07-30T23:00", headers=BROWSER)
         self.assertIn("e.key==='d'&&KBD.quadrant", resp.text)
@@ -2293,6 +2294,208 @@ class KeyboardShortcuts(unittest.TestCase):
     def test_help_documents_the_shortcuts(self):
         resp = self.client.get("/help", headers=TERMINAL)
         self.assertIn("KEYBOARD", resp.text)
+
+
+class RealLocationIsReachableWithoutAKeyboard(unittest.TestCase):
+    """`m` was the only way to give the site a true position, and a phone
+    has no `m` to press -- so the one device that always knows exactly where
+    it is could only ever be located by its IP. That is the case that goes
+    wrong while travelling: a roaming SIM reports the carrier's home
+    gateway, hotel wifi reports whatever the ISP registered, and a week on
+    one island rendered as two different countries."""
+
+    def setUp(self):
+        client_cm = TestClient(server.app)
+        self.client = client_cm.__enter__()
+        self.addCleanup(client_cm.__exit__, None, None, None)
+
+    def test_the_drawer_carries_a_locate_button(self):
+        for path in ("/Zurich", "/catalog", "/help"):
+            resp = self.client.get(path, headers=BROWSER)
+            self.assertIn('id="locate-btn"', resp.text, path)
+
+    def test_the_button_and_the_key_run_the_same_code(self):
+        """One implementation, three entry points. Two copies of a
+        getCurrentPosition call is how they drift."""
+        resp = self.client.get("/Zurich", headers=BROWSER)
+        self.assertIn("window.skymapLocate", resp.text)
+        self.assertEqual(resp.text.count("getCurrentPosition"), 1)
+
+    def test_the_page_says_which_zone_it_is_drawn_for(self):
+        resp = self.client.get("/Zurich", headers=BROWSER)
+        self.assertIn('id="where"', resp.text)
+        self.assertIn('data-zone="Europe/Zurich"', resp.text)
+
+    def test_the_mismatch_check_compares_zones_and_not_offsets(self):
+        """The bug in one line: Europe/Zurich and Europe/Madrid are both
+        UTC+2 in August, so a page comparing offsets would have agreed that
+        a phone in Ibiza was in Zurich."""
+        resp = self.client.get("/Zurich", headers=BROWSER)
+        self.assertIn("resolvedOptions().timeZone", resp.text)
+        self.assertNotIn("getTimezoneOffset", resp.text)
+        self.assertIn("Looks like you", resp.text)
+
+    def test_the_notice_offers_a_fix_and_a_way_out(self):
+        resp = self.client.get("/Zurich", headers=BROWSER)
+        self.assertIn("where-fix", resp.text)
+        self.assertIn("where-no", resp.text)
+        self.assertIn(".where-note{", resp.text.replace(" ", ""))
+
+
+class TheSphereWelcomeChecksWhereYouAre(unittest.TestCase):
+    """A phone never sees the chart page: skymap.sh on a phone redirects
+    straight to the 3D sphere (_mobile_sphere_redirect), so the check that
+    matters most on mobile has to live on the welcome screen it actually
+    lands on. The sky behind that screen is drawn for one place and pointed
+    at one horizon, and it is worth catching a wrong one before somebody
+    holds their phone up at it."""
+
+    def setUp(self):
+        # Entered as a context manager, not just constructed: /sphere.json
+        # goes through _build, which reads app.state.tle, and that is only
+        # set by the startup event a bare TestClient never fires.
+        client_cm = TestClient(server.app)
+        self.client = client_cm.__enter__()
+        self.addCleanup(client_cm.__exit__, None, None, None)
+
+    def test_the_sphere_data_carries_the_zone_name(self):
+        resp = self.client.get("/Zurich/sphere.json")
+        self.assertEqual(resp.json()["zone"], "Europe/Zurich")
+
+    def test_the_zone_is_a_name_and_not_only_an_offset(self):
+        """Zurich and Madrid are both +02:00 in August, which is the pair
+        that got it wrong. The offset cannot tell them apart; the name can,
+        and the payload has to carry the name for the page to compare."""
+        a = self.client.get("/Zurich/sphere.json").json()
+        b = self.client.get("/Madrid/sphere.json").json()
+        self.assertNotEqual(a["zone"], b["zone"])
+
+    def test_the_welcome_screen_can_offer_a_correction(self):
+        resp = self.client.get("/Zurich/sphere", headers=BROWSER)
+        self.assertIn('id="where-off"', resp.text)
+        self.assertIn('id="where-off-fix"', resp.text)
+        self.assertIn('id="where-off-no"', resp.text)
+        self.assertIn("Looks like you", resp.text)
+
+    def test_it_compares_zones_and_not_offsets(self):
+        resp = self.client.get("/Zurich/sphere", headers=BROWSER)
+        self.assertIn("resolvedOptions().timeZone", resp.text)
+        self.assertIn("mine === data.zone", resp.text)
+        self.assertNotIn("getTimezoneOffset", resp.text)
+
+    def test_the_offer_is_not_trapped_inside_the_welcome_overlay(self):
+        """#overlay waits for a tap only on iOS Safari, which is the one
+        browser that makes you ask for motion permission inside a gesture.
+        Android and desktop run startGyro()/startDrag() at load and both set
+        overlay.hidden = true immediately -- so a panel nested in there was
+        un-hidden into an already display:none parent and appeared on
+        nothing but an iPhone. Backwards, for a check whose entire reason to
+        exist is phones."""
+        body = self.client.get("/Zurich/sphere", headers=BROWSER).text
+        opened = body.index('<div id="overlay"')
+        # #overlay holds a button and a paragraph, no nested div, so the
+        # first closing tag after it is its own. Sliced this way rather than
+        # up to the next section: everything between the two IS the region
+        # in question, so a slice that overshoots proves nothing.
+        closed = body.index("</div>", opened)
+        self.assertGreater(body.index('id="where-off"'), closed,
+                           "the offer is inside the overlay that hides itself")
+
+    def test_the_offer_sits_above_the_overlay_it_is_no_longer_in(self):
+        """Outside it, but drawn over it -- so on iOS it is still readable
+        on the welcome screen, which is where a phone lands."""
+        css = self.client.get("/Zurich/sphere", headers=BROWSER).text
+        css = css.replace(" ", "").replace("\n", "")
+        self.assertIn("#where-off{position:fixed", css)
+        self.assertIn("z-index:1002", css)
+
+    def test_the_mark_is_stripped_before_any_guard_can_return(self):
+        """It used to be stripped inside checkWhere, behind the zone guard,
+        so a place with no nearest city (zone "") or a sphere.json that
+        simply failed left #ip in the address bar -- ready to be bookmarked
+        or sent to somebody, and to fire the notice on a page they chose."""
+        body = self.client.get("/Zurich/sphere", headers=BROWSER).text
+        strip = body.index("history.replaceState")
+        self.assertLess(strip, body.index("function checkWhere"),
+                        "the strip runs after the function that can skip it")
+
+    def test_the_offer_starts_hidden(self):
+        """Shown only on a real mismatch. A panel that greets everybody
+        with "you are not here" is a panel everybody learns to tap past."""
+        resp = self.client.get("/Zurich/sphere", headers=BROWSER)
+        self.assertIn('<div id="where-off" hidden>', resp.text)
+
+    def test_the_fix_keeps_you_in_the_sphere(self):
+        """Someone who arrived in 3D and asked to be put in the right place
+        wants the right place in 3D, not the text chart."""
+        resp = self.client.get("/Zurich/sphere", headers=BROWSER)
+        self.assertIn("+ '/sphere'", resp.text)
+
+
+class TheNotHereOfferKnowsWhenToKeepQuiet(unittest.TestCase):
+    """It shipped firing on every page whose zone differed from the reader's
+    device -- which is every page about anywhere else, and looking up
+    anywhere else is the ordinary use of this site. A prompt that appears
+    when nothing is wrong is a prompt people learn to dismiss without
+    reading, which costs exactly the one time it is right."""
+
+    def setUp(self):
+        client_cm = TestClient(server.app)
+        self.client = client_cm.__enter__()
+        self.addCleanup(client_cm.__exit__, None, None, None)
+
+    def _js(self, path="/Zurich"):
+        return self.client.get(path, headers=BROWSER).text
+
+    def test_it_waits_for_the_server_to_admit_it_guessed(self):
+        self.assertIn("skymapWasGuessed", self._js())
+        self.assertIn("location.hash==='#ip'", self._js().replace(" ", ""))
+
+    def test_both_surfaces_share_one_rule(self):
+        """A phone only sees the sphere and a desktop only sees the chart,
+        so a rule living in one of them exempts half the visitors."""
+        for path in ("/Zurich", "/Zurich/sphere"):
+            page = self._js(path)
+            self.assertIn("skymapWasGuessed", page, path)
+            self.assertIn("skymapWavedOff", page, path)
+            self.assertIn("skymapWaveOff", page, path)
+
+    def test_the_mark_never_survives_the_page_that_read_it(self):
+        """It is not part of what the link means. Left in place it would
+        come back on a reload, ride along into a bookmark, and travel to
+        whoever the link was sent to."""
+        self.assertIn("history.replaceState", self._js())
+
+    def test_dismissal_is_keyed_on_the_pair_of_zones(self):
+        """Not on the place. Waving off "you're not in Zurich" while in
+        Ibiza must not silence the same warning on a different trip a year
+        later -- and it must stay silent for the rest of this one."""
+        js = self._js().replace(" ", "")
+        self.assertIn("mine+'>'+theirs", js)
+        self.assertIn("SKYMAP_WAVE_DAYS=30", js)
+
+    def test_a_stale_dismissal_expires_rather_than_sticking(self):
+        self.assertIn("SKYMAP_WAVE_DAYS*864e5", self._js().replace(" ", ""))
+
+    def test_no_hop_on_the_phone_path_swallows_the_mark(self):
+        """A phone on the bare domain takes two redirects to reach a named
+        place, and only the first can set the fragment -- fragments never
+        reach a server, so the second hop cannot re-add one. The user agent
+        carries it across (RFC 7231 7.1.2: a Location with no fragment
+        inherits the previous one), which holds only as long as no hop on
+        this path puts a fragment of its own on the way. This is what says
+        so, because the failure is silent: the welcome screen would simply
+        stop appearing for the visitors it exists for."""
+        first = self.client.get("/", headers={
+            **MOBILE, "cf-iplatitude": "38.91", "cf-iplongitude": "1.43"},
+            follow_redirects=False)
+        self.assertTrue(first.headers["location"].endswith("#ip"),
+                        first.headers["location"])
+        second = self.client.get(first.headers["location"].split("#")[0],
+                                 headers=MOBILE, follow_redirects=False)
+        if second.status_code == 302:
+            self.assertNotIn("#", second.headers["location"],
+                             "a fragment here overrides the inherited #ip")
 
 
 class ControlsPanel(unittest.TestCase):
@@ -4127,11 +4330,16 @@ class MobileRedirectsToSphere(unittest.TestCase):
     def test_mobile_root_redirects_to_sphere(self):
         resp = self.client.get("/", headers=MOBILE)
         self.assertEqual(resp.status_code, 302)
-        self.assertTrue(resp.headers["location"].endswith("/sphere"))
+        # "#ip" after it: the bare domain means the server chose the place,
+        # and the welcome screen needs to know that before it is allowed to
+        # ask whether the reader is really there.
+        self.assertTrue(resp.headers["location"].endswith("/sphere#ip"),
+                        resp.headers["location"])
 
     def test_mobile_named_place_redirects_to_its_own_sphere(self):
         resp = self.client.get("/Tokyo", headers=MOBILE)
         self.assertEqual(resp.status_code, 302)
+        # No mark. Somebody asked for Tokyo.
         self.assertEqual(resp.headers["location"], "/Tokyo/sphere")
 
     def test_query_string_carries_over(self):
@@ -4247,7 +4455,8 @@ class HeadRequestsAreAnswered(unittest.TestCase):
     def test_head_still_redirects_a_phone_to_the_sphere(self):
         resp = self.client.request("HEAD", "/", headers=MOBILE)
         self.assertEqual(resp.status_code, 302)
-        self.assertTrue(resp.headers["location"].endswith("/sphere"))
+        self.assertTrue(resp.headers["location"].endswith("/sphere#ip"),
+                        resp.headers["location"])
 
     def test_head_keeps_the_cache_headers_a_get_would_get(self):
         head = self.client.request("HEAD", "/Geneva", headers=TERMINAL)
@@ -4415,7 +4624,21 @@ class BareDomainGeoRedirectsToNearbyCity(unittest.TestCase):
         resp = self.client.get("/", headers={**BROWSER, **self.GENEVA},
                                follow_redirects=False)
         self.assertEqual(resp.status_code, 302)
-        self.assertEqual(resp.headers["location"], "/Geneva")
+        # #ip: the server chose Geneva, the reader did not. The page reads
+        # that mark to decide whether it is allowed to ask "looks like
+        # you're not in Geneva", and strips it from the address bar at once.
+        self.assertEqual(resp.headers["location"], "/Geneva#ip")
+
+    def test_only_a_guess_is_marked_as_one(self):
+        """The mark is the entire difference between a warning worth having
+        and one people learn to tap past. Coordinates in the path are a
+        request for that place -- somebody typed them, followed a link or
+        pressed "use my location" -- so that redirect carries no mark, and
+        the page never queries a place its reader picked."""
+        chosen = self.client.get("/46.20,6.15", headers=BROWSER,
+                                 follow_redirects=False)
+        self.assertEqual(chosen.headers["location"], "/Geneva")
+        self.assertNotIn("#ip", chosen.headers["location"])
 
     def test_root_redirect_is_not_cached_at_the_edge(self):
         # This one's even more load-bearing than the /lat,lon case: the
@@ -4882,6 +5105,28 @@ class TheDemoPageRunsTheSameCommandBar(unittest.TestCase):
         for name in {n for s in scripts
                      for n in re.findall(r"getElementById\('([^']+)'\)", s)}:
             self.assertIn(f'id="{name}"', self.page, name)
+
+    def test_every_button_it_shows_is_a_button_that_does_something(self):
+        """The exact inverse of the check above, and the half that was
+        missing. That one catches a script reaching for an element the page
+        no longer has; this catches a page shipping a control no script ever
+        wires up.
+
+        It shipped: controls_html put "use my location" in the drawer of
+        every page, the demo included, but the handler lived in api.PAGE and
+        this template splices only CMDBAR_JS. A button that looks live and
+        does nothing when tapped reads as the whole site being broken, and
+        nothing in the suite could tell.
+
+        Buttons with an id only. A <button type="submit"> inside a form is
+        wired by the form, and links go where their href says."""
+        scripts = re.findall(r"<script(?![^>]*src)[^>]*>(.*?)</script>",
+                             self.page, re.S)
+        wired = {n for s in scripts
+                 for n in re.findall(r"getElementById\('([^']+)'\)", s)}
+        for bid in re.findall(r'<button[^>]*\bid="([^"]+)"', self.page):
+            self.assertIn(bid, wired,
+                          f'#{bid} is on the page with nothing listening')
 
     def test_it_carries_the_current_bar_not_a_frozen_one(self):
         for marker in ('id="bar-dropdown"', 'id="help-pill"',

@@ -450,6 +450,71 @@ class TheWayIn(RouteTest):
         self.assertIn(f'href="/eclipse/{SOLAR}"', got.text)
         self.assertIn(f'href="/eclipse/{LUNAR}"', got.text)
 
+    def test_next_means_next_including_a_lunar_one(self):
+        """/eclipse picks the next eclipse it can compute for a place, and
+        "computable" used to mean "in besselian.ELEMENTS" -- a solar table.
+        Every lunar eclipse failed that test however complete its numbers
+        were, so on 13 August 2026 the page answered "annular solar, 6
+        February 2027" and stepped over a partial lunar eclipse eleven days
+        away, visible across Europe, with every contact time in lunar.json.
+        """
+        import datetime as dt
+        got = eclipse_page.next_computable(dt.datetime(2026, 8, 13, 20, 0))
+        self.assertEqual(eclipse_page.key_of(got), LUNAR)
+        self.assertIn("lunar", got["type"])
+
+    def test_computable_asks_the_table_that_matches_the_kind(self):
+        """Solar from Besselian elements, lunar from published contacts.
+        One table cannot answer for both."""
+        for entry in eclipse_page.upcoming(
+                __import__("datetime").datetime(2026, 1, 1), count=None):
+            self.assertTrue(eclipse_page.is_computable(entry),
+                            eclipse_page.key_of(entry))
+
+    def test_a_lunar_page_does_not_deny_its_own_numbers(self):
+        """The same solar-only test gated the "no computed local
+        circumstances" note, so every lunar page printed it directly above
+        its own contact times, its percentage in shadow and a drawing of the
+        Moon -- all computed, all local."""
+        got = self.client.get(f"/Ibiza/eclipse/{LUNAR}", headers=BROWSER)
+        self.assertNotIn("No computed local circumstances", got.text)
+        plain = self.client.get(f"/Ibiza/eclipse/{LUNAR}",
+                                headers=TERMINAL).text
+        self.assertIn("maximum", plain)
+
+    def test_a_drawing_you_cannot_see_does_not_claim_you_can(self):
+        """The rotation to "as you'd see it from here" only means something
+        where the eclipse is visible. /Zurich/eclipse/2026-03-03 says "not
+        visible from Zürich" at the top -- the Moon is 36 degrees below the
+        horizon at greatest -- and the caption underneath promised the
+        drawing showed what you would see from there. A page contradicting
+        itself in two lines.
+
+        A solar eclipse cannot reach this state: disc_art refuses to draw a
+        Sun below the horizon at all. The Moon's shadow geometry is the same
+        everywhere, so moon_art will draw an eclipse nobody here can see, and
+        that is the picture this caption has to be honest about."""
+        plain = self.client.get("/Zurich/eclipse/2026-03-03",
+                                headers=TERMINAL).text
+        self.assertIn("not visible from", plain)
+        self.assertNotIn("as you'd see it from here", plain)
+        self.assertIn("north up", plain.lower())
+
+    def test_a_lunar_eclipse_is_not_given_a_corona(self):
+        """The corona belongs to the Sun. A total lunar eclipse is also
+        kind == "total", so the shared caption called it "At totality, with
+        the corona" -- on a page whose whole subject is the Moon turning
+        copper inside the Earth's shadow."""
+        plain = self.client.get("/Zurich/eclipse/2026-03-03",
+                                headers=TERMINAL).text
+        self.assertNotIn("with the corona", plain)
+
+    def test_a_solar_eclipse_still_gets_its_corona(self):
+        plain = self.client.get(f"/Oviedo/eclipse/{SOLAR}",
+                                headers=TERMINAL).text
+        self.assertIn("with the corona", plain)
+        self.assertIn("as you'd see it from here", plain)
+
     def test_the_two_catalogues_list_the_same_eclipses(self):
         """They render from one data structure so they cannot drift, and
         this is what says so."""

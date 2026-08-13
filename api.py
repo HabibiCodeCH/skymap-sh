@@ -3607,7 +3607,11 @@ def compose_eclipse_card(r, key, place=None):
         rows = (eclipse_map.render(key, mark=here)
                 if eclipse_map.has_map(key) else [])
     else:
-        disc = eclipse_map.moon_art(key)
+        # Same rule as compose_eclipse: only rotate it to a sky this place
+        # actually has.
+        disc = (eclipse_map.moon_art(key, lat=here[0], lon=here[1])
+                if eclipse_page.seen_from_here(f) else
+                eclipse_map.moon_art(key))
         rows = eclipse_map.night_map(key, mark=here)
     return eclipse_page.card_lines(entry, f) + (eclipse_page.card_art(f, disc, rows),)
 
@@ -3639,7 +3643,18 @@ def compose_eclipse(r, key):
     else:
         rows = eclipse_map.night_map(key, mark=here, color=r.color)
         legend = eclipse_map.night_legend(color=r.color) if rows else ""
-        disc = eclipse_map.moon_art(key, color=r.color)
+        # Rotated to this place's sky only when there is a sky to rotate to.
+        # A solar disc simply is not drawn when the Sun is down (disc_art
+        # refuses zeta <= 0), but the Moon's shadow geometry is the same
+        # everywhere, so moon_art will happily draw an eclipse nobody at this
+        # place can see. Turning that to "as you'd see it from here" would be
+        # rotating a picture to match a direction below the horizon, under a
+        # heading that already says it is not visible. Unrotated it is what
+        # it honestly is: the geometry, north up.
+        disc = (eclipse_map.moon_art(key, color=r.color,
+                                     lat=here[0], lon=here[1])
+                if eclipse_page.seen_from_here(f) else
+                eclipse_map.moon_art(key, color=r.color))
         frames, labels = eclipse_map.arc_frames(key, *here, color=r.color,
                                                 tz=r.tz)
     return (Result(eclipse_page.text(f, rows, legend, disc, r.color), f),
@@ -4837,31 +4852,12 @@ def welcome_arm_html(place, now_utc=None, pinned=False, own=None):
             f'data-place="{html.escape(place.slug, quote=True)}"></div>')
 
 
-def _sky_basis(ra_h, dec_d, lat, lst_h, eps=1e-3):
-    """How celestial east and north lie in the observer's sky, at a point.
-
-    Returns two (along-azimuth, altitude) pairs, in degrees per degree.
-
-    Measured off sky.altaz rather than derived from the parallactic angle.
-    The angle itself is three lines of trigonometry, but every one of its
-    sign conventions is a coin flip, and eclipse.disc_art says plainly why
-    that matters: a drawing that silently got the rotation wrong would be
-    worse than one that never tried. Stepping the real function east and
-    north and seeing where the answers land has no convention left in it.
-    """
-    alt0, az0 = sky.altaz(ra_h, dec_d, lat, lst_h)
-    # Along-azimuth degrees shrink with altitude, and a Sun on the horizon
-    # is the whole point of this, so the cosine cannot be dropped.
-    ca = math.cos(math.radians(alt0))
-    d_ra = eps / max(1e-6, math.cos(math.radians(dec_d))) / 15.0
-    alt_e, az_e = sky.altaz(ra_h + d_ra, dec_d, lat, lst_h)
-    alt_n, az_n = sky.altaz(ra_h, dec_d + eps, lat, lst_h)
-
-    def step(alt_b, az_b):
-        d_az = ((az_b - az0 + 180) % 360) - 180
-        return (d_az * ca / eps, (alt_b - alt0) / eps)
-
-    return step(alt_e, az_e), step(alt_n, az_n)
+# Moved to sky.sky_basis, where eclipse.disc_art can reach it too -- the
+# sunset crossing below and the eclipse page's own disc need the same
+# rotation, and the disc spent a release drawing 12 August 2026 over Ibiza
+# with the bite in the wrong corner because it had no way to ask. Kept as a
+# name here because this module's callers and tests already use it.
+_sky_basis = sky.sky_basis
 
 
 def _eclipse_keys_near(local_day):
@@ -5845,6 +5841,13 @@ def _compose_sphere(r):
 
     return dict(
         place=p.name, lat=p.lat, lon=p.lon, tz_offset=r.tz,
+        # The IANA name, not just the offset. The welcome screen compares it
+        # against the phone's own zone to work out whether the reader is
+        # anywhere near the place being drawn, and the offset cannot answer
+        # that: Europe/Zurich and Europe/Madrid are both +02:00 in August,
+        # which is exactly the pair that got it wrong. A property of the
+        # place rather than of the visitor, so it caches like the rest.
+        zone=p.zone or "",
         when_utc=r.when_utc.isoformat() + "Z", when_local=r.when_local.isoformat(),
         sun_alt=round(sun_alt, 1), mag_limit=SPHERE_MAG_LIMIT, dso=r.dso,
         hours_to_dark=hours_to_dark,
@@ -7253,7 +7256,11 @@ def _event_art(e, r):
     if kind == "eclipse":
         key = _event_date(e).strftime("%Y-%m-%d")
         if "lunar" in (e.get("eclipse_type") or ""):
-            return eclipse_map.moon_art(key)
+            # Drawn for here, the same as the solar branch below: the shadow
+            # comes in from a different corner depending on where the Moon is
+            # in your sky, so a picture with no place in it is a picture of
+            # nobody's night.
+            return eclipse_map.moon_art(key, lat=r.place.lat, lon=r.place.lon)
         # Solar: drawn for here, not in general. The whole content of a
         # partial eclipse is how much of the Sun this place loses.
         return eclipse_map.disc_art(key, r.place.lat, r.place.lon)
@@ -9472,6 +9479,53 @@ SEARCH_HELP = (
     'catalog</a></div>')
 
 
+# First path segments that are pages rather than places. Only used to keep
+# _where_marker from asking the city list whether "stats" is a town.
+_NOT_A_PLACE = ("catalog", "help", "legend", "stats", "demo", "events",
+                "eclipse", "about", "sphere")
+
+
+def _where_marker(value):
+    """A hidden note of which place this page is about, and its real IANA
+    timezone, for the script that checks whether the reader is anywhere near
+    it.
+
+    The zone name and not the UTC offset, which is the whole point: a phone
+    roaming in Ibiza and a page rendered for Zurich are both UTC+2 in
+    August, so comparing offsets would have agreed with the bug. Europe/
+    Madrid against Europe/Zurich does not.
+
+    Resolved from `value` rather than passed in. value is already exactly
+    what follows skymap.sh/ on every page -- "Ibiza/", "Ibiza/Venus",
+    "Ibiza/events" -- so the place is right there, and reading it here keeps
+    twelve PAGE.format() call sites from having to learn a new argument for
+    something only this one script reads.
+
+    The slash is what makes that safe, and it is not decoration. A place is
+    always a FIRST segment with something after it: "Ibiza/" on a chart,
+    "Ibiza/Venus" on an object seen from there. A page about an object with
+    no place is the bare name, "Venus" -- and there is a town called Venus in
+    Texas, one called Jupiter in Florida, and an Orion in the Philippines.
+    Without this test /Venus shipped data-place="Venus" with a Chicago
+    timezone and the script cheerfully told most of the planet it looked like
+    they were not in Venus. Fifteen of the object pages linked from /catalog
+    did it.
+    """
+    if "/" not in (value or ""):
+        return ""
+    first = (value or "").split("/")[0].strip()
+    if not first or first.lower() in _NOT_A_PLACE:
+        return ""
+    try:
+        p = lookup_place(first)
+    except Exception:
+        return ""
+    if p is None or not p.zone:
+        return ""
+    return (f'<div id="where" hidden data-zone="{html.escape(p.zone, quote=True)}" '
+            f'data-place="{html.escape(p.name, quote=True)}"></div>')
+
+
 def header_html(value="", pill="", crossing=""):
     """The command bar + nav, identical on every page -- one function so the
     nav can never drift or reorder between routes the way six separate
@@ -9526,7 +9580,7 @@ def header_html(value="", pill="", crossing=""):
     twelve call sites and giving it a new key would mean teaching all twelve
     -- the same reason _object_page_template exists rather than a second
     copy of the shell. Pages with no place pass nothing and arm nothing."""
-    return (f'{crossing}<div class="header-row">'
+    return (f'{crossing}{_where_marker(value)}<div class="header-row">'
             f'<div class="bar-wrap">'
             f'<form class="cmdbar" id="bar" method="get" action="/">'
             f'<span class="prompt" aria-hidden="true">$</span>'
@@ -9730,6 +9784,21 @@ document.documentElement.classList.add('js');
  a{{color:#87d7ff}}
  .chart-pre a{{color:#87d7ff;text-decoration:none}}
  .chart-pre a:hover{{text-decoration:underline}}
+ /* "Looks like you're not in Zurich" -- inserted at the top of .w by the
+    locate script when the device's timezone disagrees with the page's.
+    Amber rather than red: being somewhere else is not an error, and the
+    most likely reader of this line is someone deliberately looking up a
+    city they are not standing in. */
+ .where-note{{margin:0 0 14px;padding:9px 12px;border:1px solid #6b5320;
+             border-radius:4px;background:#1a1408;color:#e3c77a;
+             font-size:13px;line-height:1.5}}
+ .where-note b{{color:#ffd700;font-weight:600}}
+ .where-note button{{background:none;border:0;padding:0;margin:0 0 0 8px;
+                    font:inherit;color:#87d7ff;text-decoration:underline;
+                    cursor:pointer}}
+ .where-note button:hover{{color:#fff}}
+ .where-note .where-no{{color:#8b949e;text-decoration:none;float:right;
+                       margin-left:12px}}
  /* Drawer (SPEC-command-bar.md #9, adapted: slide in from the right, no
     backdrop, opened via header_html's #drawer-trigger next to the social
     icons). The base rules here are deliberately just a plain, always-
@@ -11445,6 +11514,59 @@ function skymapTakeover(frames,labels,opts){{
   timer=setInterval(tick,5000);
   tick();
 }})();
+/*LOCATE_JS*/
+/*WHERE_RULE*/
+(function(){{
+  // The "you are probably not here" line.
+  //
+  // Three things have to be true before this says a word, and the first is
+  // the one that matters: the SERVER picked this place, not the reader.
+  // Looking up another city is a completely ordinary thing to do, and a
+  // page that answers "are you sure you're there?" every time somebody
+  // types a city name is a page that has misunderstood what it was asked.
+  // Only the bare-domain landing is a guess, and server.py marks that
+  // landing with #ip on the way here.
+  //
+  // The second is a zone mismatch, by name and not by UTC offset:
+  // Europe/Zurich and Europe/Madrid are both +02:00 in August, so an offset
+  // comparison would have nodded along with the exact bug this exists to
+  // catch. A zone is coarse -- it cannot tell Ibiza from Madrid -- and that
+  // is the right grain. A wrong *country* is what people actually hit while
+  // travelling.
+  //
+  // The third is that they have not already waved this exact situation off.
+  var where=document.getElementById('where');
+  if(!where)return;
+  if(!skymapWasGuessed())return;
+  var pageZone=where.getAttribute('data-zone');
+  var pageName=where.getAttribute('data-place');
+  var mine=null;
+  try{{mine=Intl.DateTimeFormat().resolvedOptions().timeZone;}}catch(e){{}}
+  // No answer, or the same answer, or a page with no zone: say nothing. An
+  // old browser that cannot name its zone is not evidence of anything.
+  if(!mine||!pageZone||mine===pageZone)return;
+  if(skymapWavedOff(mine,pageZone))return;
+  var note=document.createElement('p');
+  note.className='where-note';
+  note.setAttribute('role','status');
+  note.innerHTML='Looks like you\\'re not in '+pageName
+    +' &mdash; your device says <b>'+mine.replace(/_/g,' ')+'</b>. '
+    +'<button type="button" class="where-fix">use my location</button>'
+    +'<button type="button" class="where-no" aria-label="Dismiss">✕</button>';
+  var host=document.querySelector('.w')||document.body;
+  host.insertBefore(note,host.firstChild);
+  note.querySelector('.where-fix').addEventListener('click',function(){{
+    var f=note.querySelector('.where-fix');
+    f.textContent='locating…';
+    window.skymapLocate(function(msg){{f.textContent=msg;}});
+  }});
+  // Remembered against the pair of zones, not the place -- see
+  // WHERE_RULE_JS. One dismissal covers the trip and expires with it.
+  note.querySelector('.where-no').addEventListener('click',function(){{
+    window.skymapWaveOff(mine,pageZone);
+    note.remove();
+  }});
+}})();
 /*CMDBAR_JS*/
 (function(){{
   // Drawer (SPEC-command-bar.md #9) -- present on every page (see
@@ -11704,20 +11826,13 @@ function skymapTakeover(frames,labels,opts){{
     // find field for it to jump to -- tab reaches the one bar that replaced
     // it. Keeping f as a second key for the same input would have spent a
     // single letter on a duplicate, and single letters are scarce here.
+    // m is real GPS. The work moved to window.skymapLocate so the drawer's
+    // "use my location" button and the wrong-place notice run the same
+    // code: this used to be the only way to give the site a true position,
+    // which meant a phone -- no keyboard, no m -- could never do it at all.
     if(e.key==='m'){{
       e.preventDefault();
-      if(!navigator.geolocation){{
-        flashHint('Geolocation is not available in this browser.');
-        return;
-      }}
-      flashHint('Locating…',15000);
-      navigator.geolocation.getCurrentPosition(function(pos){{
-        var lat=pos.coords.latitude.toFixed(4);
-        var lon=pos.coords.longitude.toFixed(4);
-        location.href='/'+lat+','+lon;
-      }},function(err){{
-        flashHint('Could not get your location'+(err&&err.message?': '+err.message:'')+'.');
-      }},{{timeout:10000}});
+      window.skymapLocate(flashHint);
       return;
     }}
     // Space starts it. Once it is running the block further up owns space
@@ -12211,6 +12326,9 @@ CMDBAR_JS = CMDBAR_JS.replace("/*PAGES*/", json.dumps(list(SEARCH_PAGES)))
 
 PAGE = PAGE.replace("/*CMDBAR_CSS*/", CMDBAR_CSS)
 PAGE = PAGE.replace("/*CMDBAR_JS*/", CMDBAR_JS)
+# Into both pages, from one string. A phone only ever sees the sphere and a
+# desktop only ever sees the chart, so a rule that lived in one of them
+# would be a rule half the visitors were exempt from.
 # Substituted here rather than left as a format field: PAGE is .format()ed
 # per request with named arguments, and a stray {BOX_GAP} would be looked up
 # among them and raise. Done once at import, so every gap on the page comes
@@ -12250,6 +12368,119 @@ PAGE = PAGE.replace("{CROSSING_ARM_H_MS}", str(int(CROSSING_ARM_H * 3600_000)))
 # chosen against: tab rather than p (both focus the place field, tab is the
 # one people try), and no g, since "Share as a GIF" is a button sitting
 # right there in the drawer with its own label.
+# When the site is allowed to say "looks like you're not in Zurich", written
+# once and spliced into both the chart page and the 3D sphere. Two documents
+# share no script, and this is a rule rather than a helper -- two copies of a
+# rule drift, and the half that drifts is the half nobody is looking at.
+#
+# The rule, in full:
+#
+#   1. The server picked the place. Looking up another city is an ordinary
+#      thing to do and the site must not query it. Only the bare-domain
+#      landing is a guess, and server.py marks that arrival with #ip.
+#   2. The device's zone differs from the place's, by NAME. Europe/Zurich
+#      and Europe/Madrid are both +02:00 in August, which is the pair that
+#      shipped wrong.
+#   3. They have not already waved off this same situation.
+#
+# What "this same situation" means is the part worth getting right. Keyed on
+# the PAIR -- the device's zone and the guessed place's zone -- rather than
+# on the place alone, which goes stale: dismissing "you're not in Zurich"
+# while in Ibiza should not silence the same warning on a different trip a
+# year later. Keyed on the pair it silences the trip you are on and nothing
+# else. Flying home changes the device zone, so the pair no longer matches;
+# a new trip is a new pair and asks once more.
+#
+# Thirty days on top of that, so a dismissal cannot outlive the trip that
+# caused it even if the pair somehow recurs.
+# Asking the device where it is, and wiring the one button that does it.
+#
+# Its own constant, spliced rather than inlined, because it has two homes:
+# api.PAGE and the pre-rendered demo that build_sky_html.py writes out to
+# sky_demo.html. controls_html puts a "use my location" button in the drawer
+# of EVERY page, the demo included, so a handler living only in PAGE shipped
+# the demo a button that did nothing when tapped -- worse than no button,
+# since a control that looks live and is not reads as the site being broken.
+#
+# Deliberately free of any dependency on WHERE_RULE_JS. This half only has
+# to answer "where am I"; deciding whether to ask the question unprompted is
+# a separate job with a separate rule, and the demo wants the first without
+# the second.
+LOCATE_JS = """(function(){{
+  // The site locates by IP when nobody says otherwise, which is right for
+  // most visits and badly wrong for exactly the visits where it matters
+  // most: a roaming SIM reports the carrier's home gateway, so a phone in
+  // Ibiza rendered Zurich, and hotel wifi reports wherever the ISP
+  // registered the address block, so the same phone on the same island
+  // rendered mainland Spain. Neither said it was guessing.
+  window.skymapLocate=function(status){{
+    var say=status||function(){{}};
+    if(!navigator.geolocation){{
+      say('Geolocation is not available in this browser.');
+      return;
+    }}
+    say('Locating…',15000);
+    navigator.geolocation.getCurrentPosition(function(pos){{
+      // Four decimals is about 11 m. The server rounds this to a city name
+      // when it can (see _nearby_city_for_redirect), so what ends up in the
+      // URL bar is usually "Ibiza" rather than the coordinates -- which is
+      // also why nothing here has to worry about pinning someone's street
+      // into a shareable link.
+      location.href='/'+pos.coords.latitude.toFixed(4)+','
+                       +pos.coords.longitude.toFixed(4);
+    }},function(err){{
+      say('Could not get your location'
+          +(err&&err.message?': '+err.message:'')+'.');
+    }},{{timeout:10000,maximumAge:60000}});
+  }};
+  var btn=document.getElementById('locate-btn');
+  if(btn)btn.addEventListener('click',function(){{
+    btn.textContent='⌖ locating…';
+    window.skymapLocate(function(msg){{btn.textContent='⌖ '+msg;}});
+  }});
+}})();
+"""
+
+WHERE_RULE_JS = """
+// Read and stripped here, as this script parses, NOT lazily on first ask.
+// The mark is not part of what the link means, so it must not survive a
+// reload, a bookmark or a share -- any of which would otherwise bring the
+// notice back on a page the reader had chosen for themselves.
+//
+// Eager because doing it inside skymapWasGuessed() made the strip hostage
+// to every early return in front of the call. On the sphere the zone guard
+// ran first, so a place with no nearest city (zone: "") or a sphere.json
+// that simply failed left #ip sitting in the address bar, ready to be
+// copied to somebody else.
+var _skymapGuessed=(location.hash==='#ip');
+if(_skymapGuessed){{
+  try{{history.replaceState(null,'',location.pathname+location.search);}}
+  catch(e){{}}
+}}
+window.skymapWasGuessed=function(){{return _skymapGuessed;}};
+var SKYMAP_WAVE_KEY='skymap.notHere', SKYMAP_WAVE_DAYS=30;
+function _skymapPair(mine,theirs){{return mine+'>'+theirs;}}
+function _skymapWaves(){{
+  try{{return JSON.parse(localStorage.getItem(SKYMAP_WAVE_KEY)||'{{}}');}}
+  catch(e){{return {{}};}}
+}}
+window.skymapWavedOff=function(mine,theirs){{
+  var m=_skymapWaves(), at=m[_skymapPair(mine,theirs)];
+  if(!at)return false;
+  if(Date.now()-at>SKYMAP_WAVE_DAYS*864e5){{
+    delete m[_skymapPair(mine,theirs)];
+    try{{localStorage.setItem(SKYMAP_WAVE_KEY,JSON.stringify(m));}}catch(e){{}}
+    return false;
+  }}
+  return true;
+}};
+window.skymapWaveOff=function(mine,theirs){{
+  var m=_skymapWaves();
+  m[_skymapPair(mine,theirs)]=Date.now();
+  try{{localStorage.setItem(SKYMAP_WAVE_KEY,JSON.stringify(m));}}catch(e){{}}
+}};
+"""
+
 # The planes item, and what stands in for it where the key does nothing.
 # Kept beside SHORTCUTS_HINT so the two cannot drift.
 PLANES_HINT = '<kbd>p</kbd> planes &middot; '
@@ -12377,6 +12608,21 @@ EXAMPLES_HTML = """<p class="tries tries-ex">Examples:
 # "start over" is just as meaningful from /catalog or /help.
 RESET_HTML = '<a class="animate-btn" href="/">↺ reset skymap</a>'
 
+# Real GPS, reachable without a keyboard. The `m` shortcut has done this
+# since the beginning, and on a phone `m` cannot be pressed -- so the only
+# location a phone could ever give us was the one the network guessed, which
+# is exactly the one that is wrong when you are travelling. A roaming SIM
+# geolocates to the carrier's home gateway and hotel wifi to wherever the
+# ISP registered the block: a week in Ibiza rendered as Zurich, then as
+# mainland Spain, and nothing on the page suggested either was a guess.
+#
+# A button rather than asking on load. An unprompted permission sheet on
+# first visit is the thing people say no to once and then cannot easily say
+# yes to again, and the IP guess is right for most visitors most of the
+# time. This is here for the ones it is wrong for.
+LOCATE_HTML = ('<button type="button" class="animate-btn" id="locate-btn">'
+               '⌖ use my location</button>')
+
 
 # Mobile-only, additive 3D view of the current sky -- reached from PAGE's
 # {{sphere_btn}} link, never linked from curl/terminal output. The only
@@ -12435,6 +12681,30 @@ SPHERE_PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
  #status{{color:#8b949e;font-size:12.5px;max-width:340px;line-height:1.5;margin:0;
           white-space:pre-line}}
  #status b{{color:#c9d1d9;font-weight:normal}}
+ /* The wrong-place offer. Amber, not red: landing somewhere you are not is
+    ordinary, and half the people who see this are deliberately looking at
+    another city's sky. It sits under the tally and above nothing, so it
+    reads as a question about what is on screen rather than as an error the
+    page has thrown. */
+ /* Fixed and above #overlay (1001), not a child of it -- see the markup for
+    why. Pinned under the HUD row rather than centred, so on iOS it sits
+    clear of the "Look around you" button in the middle of the welcome
+    screen instead of on top of it. */
+ #where-off{{position:fixed;top:38px;left:50%;transform:translateX(-50%);
+            z-index:1002;width:min(360px,92vw);box-sizing:border-box;
+            padding:11px 13px;border:1px solid #6b5320;
+            border-radius:6px;background:rgba(26,20,8,.96);color:#e3c77a;
+            font-size:12.5px;line-height:1.5;text-align:center}}
+ #where-off[hidden]{{display:none}}
+ #where-off p{{margin:0 0 9px}}
+ #where-off b{{color:#ffd700;font-weight:600}}
+ /* Tap targets, not links. This is a phone screen and the whole point of
+    the panel is that it can be acted on with a thumb. */
+ #where-off button{{font:inherit;font-size:13px;padding:9px 13px;margin:0 5px;
+                   border-radius:6px;cursor:pointer;border:0}}
+ #where-off-fix{{background:#238636;color:#fff}}
+ #where-off-no{{background:transparent;color:#8b949e;
+               border:1px solid #30363d !important}}
  #place-form{{display:flex;gap:6px}}
  #place-form[hidden]{{display:none}}
  #place-input{{background:#0d1117;border:1px solid #30363d;color:#c9d1d9;
@@ -12733,6 +13003,28 @@ SPHERE_PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
 <p id="status">{place_name} &mdash; the current sky, in 3D. On a phone this follows the way
 you're holding it; anywhere else, drag to look around.</p>
 </div>
+<!-- "Looks like you're not in Zurich." A phone actually lands here:
+     skymap.sh on a phone redirects straight to this view, so the chart
+     page's own version of this check is one a phone never sees.
+
+     OUTSIDE #overlay, and that is not a detail. The welcome overlay only
+     waits for a tap on iOS Safari, which is the one browser that makes you
+     ask for motion permission inside a gesture. Android and desktop call
+     startGyro()/startDrag() the moment the page loads, and both set
+     overlay.hidden = true straight away -- so a panel nested in there was
+     un-hidden by checkWhere into an already display:none parent and never
+     appeared on anything but an iPhone. Exactly backwards for a check whose
+     whole reason to exist is phones.
+
+     Sitting above the overlay rather than beneath it, so on iOS it is
+     readable on the welcome screen itself, and pinned near the top so it
+     misses the centred "Look around you" button. Revealed by the script
+     only when the device's timezone disagrees with the place's. -->
+<div id="where-off" hidden>
+<p id="where-off-msg"></p>
+<button type="button" id="where-off-fix">&#8982; Use my location</button>
+<button type="button" id="where-off-no">Stay here</button>
+</div>
 <div id="toolbar">
 <form id="place-form" autocomplete="off" hidden>
 <input id="place-input" type="text" placeholder="city or lat,lon">
@@ -12803,6 +13095,70 @@ function paintWelcome() {{
   }});
   statusEl.textContent = out.join('\\n');
 }}
+/*WHERE_RULE*/
+// Whether the sky on screen is the sky the reader is standing under.
+//
+// A phone's own location is the one thing this page has that the server
+// does not, and until now it never asked. Everything about where a phone
+// visitor is came from the CDN's IP headers, which is right at home and
+// wrong exactly when travelling: a roaming SIM answers with the carrier's
+// home gateway (a phone on Ibiza rendered Zurich) and hotel wifi answers
+// with wherever the ISP registered the address block (the same phone, the
+// same island, rendered mainland Spain).
+//
+// Zone names, not UTC offsets. Europe/Zurich and Europe/Madrid are both
+// +02:00 in August, so an offset check would have agreed with the bug it
+// is here to catch.
+//
+// This is a second getCurrentPosition call -- the chart page has its own in
+// window.skymapLocate -- and it stays a second one. The two pages are
+// separate documents sharing no script, and importing one for six lines
+// would cost more than it saved. If a third ever appears, that is the point
+// to extract it.
+function checkWhere(data) {{
+  var box = document.getElementById('where-off');
+  if (!box || !data || !data.zone) return;
+  // Only when the server picked this place. A phone that tapped through to
+  // /Tokyo/sphere is looking at Tokyo because somebody asked for Tokyo, and
+  // being asked "are you sure you're there?" every time is the thing that
+  // makes a warning worth ignoring when it is finally right.
+  if (!window.skymapWasGuessed()) return;
+  var mine = null;
+  try {{ mine = Intl.DateTimeFormat().resolvedOptions().timeZone; }} catch (e) {{}}
+  // No answer, or the same answer: say nothing. A browser too old to name
+  // its own zone is not evidence that the reader is somewhere else.
+  if (!mine || mine === data.zone) return;
+  if (window.skymapWavedOff(mine, data.zone)) return;
+  document.getElementById('where-off-msg').innerHTML =
+    "Looks like you're not in <b>" + data.place + "</b> \\u2014 your phone says <b>"
+    + mine.replace(/_/g, ' ') + "</b>. This sky is drawn for " + data.place + '.';
+  box.hidden = false;
+  document.getElementById('where-off-fix').addEventListener('click', function () {{
+    var b = document.getElementById('where-off-fix');
+    if (!navigator.geolocation) {{ b.textContent = 'Not available here'; return; }}
+    b.textContent = 'Locating\\u2026';
+    navigator.geolocation.getCurrentPosition(function (pos) {{
+      // Back to the sphere, not to the chart. Someone who arrived in 3D and
+      // asked to be put in the right place wants the right place in 3D --
+      // dropping them into the text view would be answering a different
+      // question. The server turns the coordinates into a city name on the
+      // way (see /{{place}}/sphere's own redirect), so the address ends up
+      // reading "/Ibiza/sphere" rather than a pin on someone's street.
+      location.href = '/' + pos.coords.latitude.toFixed(4) + ','
+                          + pos.coords.longitude.toFixed(4) + '/sphere';
+    }}, function (err) {{
+      b.textContent = err && err.message ? err.message : 'Could not locate you';
+    }}, {{timeout: 10000, maximumAge: 60000}});
+  }});
+  // "Stay here" hides the panel and leaves the sky alone, and is remembered
+  // against this pair of zones for thirty days -- see WHERE_RULE_JS. One
+  // tap covers the rest of the trip.
+  document.getElementById('where-off-no').addEventListener('click', function () {{
+    window.skymapWaveOff(mine, data.zone);
+    box.hidden = true;
+  }});
+}}
+
 var overlay = document.getElementById('overlay');
 var enableBtn = document.getElementById('enable');
 var modeLabel = document.getElementById('mode-label');
@@ -13951,6 +14307,7 @@ fetch('/' + PLACE + '/sphere.json' + window.location.search).then(function(r) {{
     return b.alt > 0 && b.name !== 'Sun' && b.name !== 'Moon';
   }}).length;
   welcomeLines.place = data.place;
+  checkWhere(data);
   // The glyphs are the ones the site already draws these things with --
   // a diamond for a planet, a dot for a star -- rather than a second
   // vocabulary invented for the welcome screen.
@@ -14802,6 +15159,19 @@ animate();
 #
 # Safe to run before .format(): only comment text is removed, and a format
 # field inside a comment was never going to be read.
+# Into both pages, from one string, and here rather than up with the CMDBAR
+# splices because SPHERE_PAGE is not defined until further down this file.
+# A phone only ever sees the sphere and a desktop only ever sees the chart,
+# so a rule that lived in one of them would be a rule half the visitors were
+# exempt from.
+PAGE = PAGE.replace("/*WHERE_RULE*/", WHERE_RULE_JS)
+SPHERE_PAGE = SPHERE_PAGE.replace("/*WHERE_RULE*/", WHERE_RULE_JS)
+# The button's own handler. Not spliced into SPHERE_PAGE: the 3D view has no
+# drawer and no #locate-btn -- its way to ask is the "Use my location" button
+# on the wrong-place panel, which calls getCurrentPosition itself because it
+# has somewhere different to go afterwards (back into /sphere, not the chart).
+PAGE = PAGE.replace("/*LOCATE_JS*/", LOCATE_JS)
+
 PAGE = minify.strip_page(PAGE)
 SPHERE_PAGE = minify.strip_page(SPHERE_PAGE)
 OBJECT_CSS = minify.strip_page(OBJECT_CSS)
@@ -14820,7 +15190,7 @@ def _controls_inner(explore, animate_btn, quadrant_btn, sphere_btn, extra):
     return (f'<div class="drawer-section">{DRAWER_LINKS_HTML}</div>'
             f'<div class="drawer-section">{explore}</div>'
             f'<div class="drawer-section">{animate_btn}{quadrant_btn}{sphere_btn}{extra}'
-            f'{RESET_HTML}</div>'
+            f'{LOCATE_HTML}{RESET_HTML}</div>'
             f'<div class="drawer-section">{EXAMPLES_HTML}</div>')
 
 

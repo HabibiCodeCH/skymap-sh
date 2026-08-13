@@ -5,10 +5,13 @@ published picture, so what these check is that the picture agrees with the
 numbers: the track lands on the right countries, it is the right width, and
 nothing on the map contradicts what the page will print in words.
 """
+import math
 import unittest
 
 import besselian
 import eclipse
+import eclipse_page
+import sky
 
 KEY = "2026-08-12"
 
@@ -230,6 +233,158 @@ class TheSunIsDrawnAsItLooks(unittest.TestCase):
 
     def test_an_eclipse_with_no_elements_draws_nothing(self):
         self.assertEqual(eclipse.disc_art("2026-08-28", 47.37, 8.54), [])
+
+
+def _bite_corner(rows):
+    """Which corner of the drawn Sun the Moon has taken, as (h, v).
+
+    Reads the picture rather than the geometry, which is the point: the
+    geometry was right all along and the drawing still came out in the
+    wrong quadrant.
+    """
+    filled = [(r, c) for r, row in enumerate(rows)
+              for c, ch in enumerate(row) if ch != " "]
+    if not filled:
+        return None
+    r0, r1 = min(r for r, _ in filled), max(r for r, _ in filled)
+    c0, c1 = min(c for _, c in filled), max(c for _, c in filled)
+    mid_r, mid_c = (r0 + r1) / 2.0, (c0 + c1) / 2.0
+    # Where the Sun is missing: inside its own bounding box and blank. The
+    # bite is the only thing that can do that, the disc being otherwise
+    # solid. The box's four corners are blank as well -- a circle does not
+    # fill a rectangle -- but those are symmetric about the centre and the
+    # bite is not, so a centre of mass still lands on the bite.
+    gaps = [(r, c) for r in range(r0, r1 + 1) for c in range(c0, c1 + 1)
+            if rows[r][c] == " "]
+    gr = sum(r for r, _ in gaps) / len(gaps)
+    gc = sum(c for _, c in gaps) / len(gaps)
+    return ("right" if gc > mid_c else "left",
+            "bottom" if gr > mid_r else "top")
+
+
+class TheSunIsDrawnTheWayYouSeeIt(unittest.TestCase):
+    """The disc is rotated to the observer's sky rather than left in the
+    celestial frame.
+
+    This is the bug that shipped. 12 August 2026 was drawn celestial north
+    up, so over Ibiza the Moon took its first bite out of the top right of
+    the Sun; anybody standing there watched it start bottom right. The Sun
+    is 13 degrees up in the west from there at first contact, which leaves
+    celestial north 53 degrees off vertical -- more than enough to move the
+    bite a whole quadrant.
+    """
+
+    IBIZA = (38.91, 1.43)
+    # Everywhere the shadow crosses Spain, so a sign error cannot hide
+    # behind one lucky place.
+    LANDFALL = {"Ibiza": (38.91, 1.43), "Palma": (39.57, 2.65),
+                "Castellon": (39.99, -0.04), "Reus": (41.15, 1.10),
+                "Zaragoza": (41.65, -0.89)}
+
+    def _early(self, lat, lon, frac=0.08):
+        """A frame just after first contact, where the bite is a clear notch
+        on one side rather than most of the Sun gone."""
+        circ = besselian.local(KEY, lat, lon)
+        t = circ["first"] + (circ["last"] - circ["first"]) * frac
+        return eclipse.disc_art(KEY, lat, lon, at=t, color=False,
+                                sun_r=eclipse.SUN_R_PARTIAL)
+
+    def test_the_bite_starts_bottom_right_over_ibiza(self):
+        self.assertEqual(_bite_corner(self._early(*self.IBIZA)),
+                         ("right", "bottom"),
+                         "the Moon comes in from the wrong corner")
+
+    def test_the_whole_landfall_agrees_on_the_corner(self):
+        for name, (lat, lon) in self.LANDFALL.items():
+            self.assertEqual(_bite_corner(self._early(lat, lon)),
+                             ("right", "bottom"), name)
+
+    def test_the_rotation_is_measured_not_assumed(self):
+        """The two frames really do differ here, by enough to matter.
+        Without this a rotation that quietly did nothing would sail through
+        every test above."""
+        circ = besselian.local(KEY, *self.IBIZA)
+        t = circ["first"]
+        el = besselian.ELEMENTS[KEY]
+        rho_sin, rho_cos = besselian._observer(*self.IBIZA)
+        s = besselian._state(el, t + el.dT / 3600.0 - el.t0,
+                             rho_sin, rho_cos, self.IBIZA[1])
+        when = eclipse._utc_at(KEY, t)
+        su = sky.sun(sky.julian(when))
+        dx, dy = eclipse._as_seen(s["u"], s["v"], su["ra"], su["dec"],
+                                  self.IBIZA[0], self.IBIZA[1], when)
+        n = math.hypot(s["u"], s["v"])
+        cx, cy = -s["u"] / n, -s["v"] / n        # what used to be drawn
+        turned = math.degrees(
+            math.acos(max(-1.0, min(1.0, dx * cx + dy * cy))))
+        self.assertGreater(turned, 30, "the drawing is barely rotated")
+        self.assertLess(turned, 80)
+        # Same side, opposite half -- which is exactly the symptom reported.
+        self.assertGreater(dx, 0)
+        self.assertGreater(cx, 0)
+        self.assertGreater(dy, 0)                # y counts down: bottom
+        self.assertLess(cy, 0)                   # the old drawing said top
+
+    def test_the_caption_no_longer_promises_celestial_north(self):
+        """The caption was honest about the old frame. Left alone it would
+        be honest about a frame the drawing has stopped using, which is
+        worse than either."""
+        cap = eclipse_page.disc_caption({"kind": "total", "maximum": "20:31"})
+        self.assertNotIn("North up", cap)
+        self.assertIn("zenith up", cap)
+
+
+class TheMoonIsDrawnTheWayYouSeeItToo(unittest.TestCase):
+    """A lunar eclipse has the same problem and the same fix: the Earth's
+    shadow arrives from a different corner depending on where the Moon is in
+    your sky. Without a place the drawing stays celestial, which is what the
+    shared social card wants -- it is fetched once and shown to everybody,
+    so there is no "you" to draw it for."""
+
+    # The total on 3 March 2026, which lunar.json has full circumstances for.
+    LUNAR = "2026-03-03"
+    # Partway into the umbra, not greatest eclipse. At greatest the umbra is
+    # 2.7 Moon radii across and swallows the disc whole, so every rotation
+    # draws the same solid copper circle and the test could not fail.
+    PARTIAL_UT = 10.4
+
+    def test_a_place_changes_the_drawing(self):
+        plain = eclipse.moon_art(self.LUNAR, at=self.PARTIAL_UT, color=False)
+        here = eclipse.moon_art(self.LUNAR, at=self.PARTIAL_UT, color=False,
+                                lat=48.85, lon=2.35)
+        self.assertTrue(plain)
+        self.assertNotEqual(plain, here)
+
+    def test_two_places_at_once_see_it_differently(self):
+        """Sydney and Cape Town watch the same shadow at the same instant
+        with the Moon on opposite sides of their skies."""
+        a = eclipse.moon_art(self.LUNAR, at=self.PARTIAL_UT, color=False,
+                             lat=-33.87, lon=151.21)
+        b = eclipse.moon_art(self.LUNAR, at=self.PARTIAL_UT, color=False,
+                             lat=-33.92, lon=18.42)
+        self.assertTrue(a)
+        self.assertNotEqual(a, b)
+
+    def test_the_shadow_keeps_its_size(self):
+        """Rotation moves the shadow, it does not resize it. The same number
+        of cells has to be in umbra either way, or the rotation has eaten
+        the distance along with the direction."""
+        def shaded(rows):
+            return sum(ch == eclipse.SHADE_GLYPH["umbra"]
+                       for r in rows for ch in r)
+        plain = eclipse.moon_art(self.LUNAR, at=self.PARTIAL_UT, color=False)
+        here = eclipse.moon_art(self.LUNAR, at=self.PARTIAL_UT, color=False,
+                                lat=48.85, lon=2.35)
+        self.assertGreater(shaded(plain), 0)
+        # Not exactly equal: the shadow's edge lands on different cells at a
+        # different angle, and the grid is 17 rows. Within a few percent.
+        self.assertLess(abs(shaded(plain) - shaded(here)),
+                        0.15 * shaded(plain))
+
+    def test_no_place_keeps_the_shared_card_as_it_was(self):
+        """The card path passes no place and must keep working unchanged."""
+        rows = eclipse.moon_art(self.LUNAR, color=False)
+        self.assertEqual(len(rows), eclipse.ART_ROWS)
 
 
 class TheTrackIsWhereTheTotalityIs(unittest.TestCase):

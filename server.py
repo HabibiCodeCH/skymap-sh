@@ -2379,7 +2379,19 @@ def _respond(request: Req, place: str | None):
         # redirect is keyed off *this visitor's* IP, so caching it at all
         # would bounce every later visitor sharing that edge cache entry to
         # Geneva regardless of where they actually are.
-        return RedirectResponse(f"/{quote(city)}{qs}", status_code=302,
+        # #ip when the server chose this place, nothing when the reader did.
+        # The whole "looks like you're not in Zurich" notice hangs off this
+        # one bit: a place somebody typed, clicked or bookmarked is their
+        # decision and must never be second-guessed, and only the bare-domain
+        # landing (place is None) is the site guessing from an IP.
+        #
+        # A fragment rather than a query parameter, for three reasons: it
+        # never reaches the server, so it cannot split a cache entry; it is
+        # not part of what a shared link means; and the page strips it from
+        # the address bar as soon as it has read it, so a reload does not
+        # bring the notice back.
+        mark = "#ip" if not place else ""
+        return RedirectResponse(f"/{quote(city)}{qs}{mark}", status_code=302,
                                headers={"Cache-Control": "no-store"})
     if place and api.lookup_place(place) is None:
         near = api.suggest(place)
@@ -3957,7 +3969,22 @@ def _mobile_sphere_redirect(request, place):
     # response is marked private above; without the same treatment here a
     # cached 302 would bounce desktop visitors to the sphere, which is the
     # identical bug pointing the other way.
-    return RedirectResponse(f"/{r.place.slug}/sphere{qs}", status_code=302,
+    # Same #ip mark as the chart redirect above, and the same rule: only the
+    # bare-domain landing is the site guessing. A phone that tapped a link to
+    # /Tokyo/sphere is being shown Tokyo because somebody asked for Tokyo.
+    #
+    # This mark usually has one more hop to survive. A phone on the bare
+    # domain lands here with coordinates, so the chain is / ->
+    # /38.90,1.40/sphere#ip -> /Ibiza/sphere, and the second hop is issued by
+    # sphere_page, which cannot see the fragment: fragments are never sent to
+    # a server. What carries it across is the user agent -- RFC 7231 7.1.2
+    # says a redirect whose Location has no fragment of its own MUST inherit
+    # the one from the URL it came from. So the rule for anything adding a
+    # redirect on this path is: do not put a fragment on it, and #ip arrives
+    # intact. Put one on, and the mark is silently dropped and the welcome
+    # screen goes quiet on exactly the visitors it is for.
+    mark = "#ip" if not place else ""
+    return RedirectResponse(f"/{r.place.slug}/sphere{qs}{mark}", status_code=302,
                             headers={"Cache-Control": "private, no-store"})
 
 

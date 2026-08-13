@@ -219,6 +219,7 @@ document.documentElement.classList.add('js');
 </div>
 <script>
 /*CMDBAR_JS*/
+/*LOCATE_JS*/
 (function(){{
   // Drawer -- literal copy of api.py's IIFE (see its own comments there).
   var trigger=document.getElementById('drawer-trigger');
@@ -282,6 +283,12 @@ for i, (title, sub, kwargs, cap) in enumerate(CASES, 1):
 # the point of taking them verbatim rather than reformatting them here.
 PAGE = PAGE.replace("/*CMDBAR_CSS*/", api.CMDBAR_CSS)
 PAGE = PAGE.replace("/*CMDBAR_JS*/", api.CMDBAR_JS)
+# controls_html puts a "use my location" button in the drawer on every page,
+# this one included, and the handler for it lives in api.PAGE's own script
+# rather than in CMDBAR_JS. Without this the demo ships a button that does
+# nothing when tapped -- worse than not having one, because a control that
+# looks live and is not reads as the site being broken.
+PAGE = PAGE.replace("/*LOCATE_JS*/", api.LOCATE_JS)
 
 open("sky_demo.html", "w").write(
     PAGE.format(header=api.header_html("demo"), controls=api.controls_html(api.EXPLORE),

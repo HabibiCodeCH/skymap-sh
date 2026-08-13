@@ -96,17 +96,39 @@ def upcoming(now_utc, count=LIST_COUNT):
     return ahead if count is None else ahead[:count]
 
 
+def is_computable(entry):
+    """Whether this page can work the eclipse out for a place, rather than
+    only repeat what the table says about it.
+
+    Two tables, because there are two kinds of eclipse and they are solved
+    by completely different machinery: solar from Besselian elements,
+    lunar from published contact times. Asking only besselian.ELEMENTS --
+    which is what this used to do -- silently classed every lunar eclipse
+    as not computable, even the ones lunar.py has full circumstances for.
+    """
+    key = key_of(entry)
+    if is_solar(entry):
+        return key in besselian.ELEMENTS
+    return lunar.elements(key) is not None
+
+
 def next_computable(now_utc):
     """The next eclipse we can actually work out, else the next one at all.
 
     /eclipse lands here. Preferring a computable one is the whole point of
     the page: a reader arriving with no date in mind should get the one that
     can tell them something about where they are standing.
+
+    "Next" has to mean next. On 13 August 2026 this answered "annular solar,
+    6 February 2027" and walked straight past the partial lunar eclipse on
+    28 August -- eleven days away, visible across Europe, and sitting in
+    lunar.json with every contact time in it. The reader was being sent six
+    months into the future to look at something happening over Argentina.
     """
     ahead = [e for e in _entries()
              if dt.datetime.fromisoformat(e["when_utc"]) >= now_utc]
     for e in ahead:
-        if key_of(e) in besselian.ELEMENTS:
+        if is_computable(e):
             return e
     return ahead[0] if ahead else _entries()[-1]
 
@@ -626,7 +648,12 @@ def sidebar_html(entry, now_utc, disc=None, disc_html='',
 
     out.append('<div class="ecl-intro">')
     out.append(f'<p class="obj-lede">{escape(_blurb(entry, f))}</p>')
-    if key_of(entry) not in besselian.ELEMENTS:
+    # is_computable, not "is it in besselian.ELEMENTS". Lunar eclipses never
+    # are and never will be -- Besselian elements are a solar construction --
+    # so this printed "no computed local circumstances" at the top of every
+    # lunar page, directly above the contact times, the percentage in shadow
+    # and a drawing of the Moon, all computed, all local.
+    if not is_computable(entry):
         out.append('<p class="obj-src">No computed local circumstances for '
                    'this one yet, so this page gives the date and the '
                    'geography and stops there.</p>')
@@ -857,11 +884,13 @@ def picker_html(entry, now_utc, place=None, escape=html.escape):
         d = dt.datetime.fromisoformat(e["when_utc"])
         # The Sun and the Moon, the same glyphs the sky chart draws them
         # with, so the list says what kind of eclipse each one is at a
-        # glance. That happens to be the same distinction the plain dots
-        # used to make: a solar eclipse has Besselian elements and can
-        # answer "what about from here", a lunar one has none and never
-        # will, because the elements are a solar construction.
-        solar = k in besselian.ELEMENTS
+        # glance. Asked of the entry rather than of besselian.ELEMENTS,
+        # which gives the same answer today only because every solar
+        # eclipse in the table happens to have elements: the glyph is
+        # about which body is being eclipsed, not about which table the
+        # numbers came out of. Both kinds can answer "what about from
+        # here" now -- see is_computable.
+        solar = is_solar(e)
         precise = ('<span class="ecl-sun">&#9728;</span>' if solar
                    else '<span class="ecl-moon">&#9789;</span>')
         lbl = escape(d.strftime("%d %b %Y").lstrip("0"))
@@ -1348,23 +1377,56 @@ def safety_html(f, escape=html.escape):
     return f'<p class="ecl-safety"><b>Your eyes.</b> {escape(safety)}</p>'
 
 
+def seen_from_here(f):
+    """Whether this eclipse actually happens in this place's sky.
+
+    The two halves say it differently and neither says it both ways. A lunar
+    eclipse carries an explicit `visible`, because the only question is
+    whether the Moon is up. A solar one has no such key -- what it has is
+    kind == "none", straight out of the solver, meaning the Moon's shadow
+    never touches the Sun from here.
+
+    One function because two callers need the same answer and got different
+    ones: reading `visible` alone called every solar eclipse invisible, so
+    the caption under a perfectly good drawing of totality over Oviedo said
+    "not visible from here".
+    """
+    return f.get("visible", True) and f.get("kind") != "none"
+
+
 def disc_caption(f):
     """What the drawing shows, in one line.
 
-    Names the moment and the orientation. The picture is drawn with
-    celestial north up and east left, which is not the same as what you see
-    standing outside -- turning it into zenith-up needs the parallactic
-    angle -- and a drawing that quietly implied the wrong one would be worse
-    than one that says.
+    Names the moment and the orientation. Where the eclipse is visible the
+    picture is rotated to this place's sky -- up on screen is up over your
+    head -- and the caption says so. It used to read "North up, east left",
+    which was true of the picture and useless to anybody holding a phone up
+    at the Sun: on 12 August 2026 over Ibiza the two are 53 degrees apart,
+    which put the bite in the wrong corner for everyone who checked.
+
+    Where it is NOT visible there is no such rotation to describe, and the
+    caption must not claim one. /Zurich/eclipse/2026-03-03 says "not visible
+    from Zürich" at the top of the page; a line underneath promising the
+    drawing showed what you would see from there contradicted it in the same
+    breath. The drawing is left in the celestial frame in that case (see
+    compose_eclipse) and this says which frame it is.
     """
     when = f.get("maximum")
     if f.get("kind") == "total":
-        what = "At totality, with the corona"
+        # The corona belongs to a solar eclipse. A total LUNAR eclipse is
+        # also kind == "total" and has no corona to show -- what it has is a
+        # copper Moon, which is the thing worth naming.
+        what = ("At totality, with the corona" if "solar" in (f.get("type") or "")
+                else "At totality, the Moon in full shadow")
     elif f.get("obscuration"):
         what = f"At maximum, {covered_pct(f)} covered"
     else:
         what = "At maximum"
-    return f"{what}{' around ' + when if when else ''}. North up, east left."
+    where = ("Drawn as you'd see it from here, zenith up."
+             if seen_from_here(f) else
+             "Not visible from here, so this is the geometry: north up, "
+             "east left.")
+    return f"{what}{' around ' + when if when else ''}. {where}"
 
 
 def text(f, rows, legend, disc=None, color=True):

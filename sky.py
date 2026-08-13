@@ -245,6 +245,41 @@ def altaz(ra_h, dec_d, lat, lst_h):
                     math.sin(dec) * math.cos(la) - math.cos(dec) * math.sin(la) * math.cos(ha))
     return alt / D, (az / D) % 360
 
+def sky_basis(ra_h, dec_d, lat, lst_h, eps=1e-3):
+    """How celestial east and north lie in the observer's sky, at a point.
+
+    Returns two (along-azimuth, altitude) pairs, in degrees per degree.
+    Along-azimuth is positive to the right as you face the point, altitude
+    is positive up, so a drawing can go straight from these to screen x and
+    y without another convention in between.
+
+    Measured off altaz rather than derived from the parallactic angle. The
+    angle itself is three lines of trigonometry, but every one of its sign
+    conventions is a coin flip, and getting the rotation silently wrong
+    turns a picture of the sky into a picture of a different sky. Stepping
+    the real function east and north and seeing where the answers land has
+    no convention left in it.
+
+    Lives here rather than beside either caller: the horizon chart's sunset
+    crossing and the eclipse page's disc both need the same rotation, and
+    two copies of it would be two places for the same eclipse to lean the
+    wrong way.
+    """
+    alt0, az0 = altaz(ra_h, dec_d, lat, lst_h)
+    # Along-azimuth degrees shrink with altitude, and a Sun on the horizon
+    # is the whole point of this, so the cosine cannot be dropped.
+    ca = math.cos(math.radians(alt0))
+    d_ra = eps / max(1e-6, math.cos(math.radians(dec_d))) / 15.0
+    alt_e, az_e = altaz(ra_h + d_ra, dec_d, lat, lst_h)
+    alt_n, az_n = altaz(ra_h, dec_d + eps, lat, lst_h)
+
+    def step(alt_b, az_b):
+        d_az = ((az_b - az0 + 180) % 360) - 180
+        return (d_az * ca / eps, (alt_b - alt0) / eps)
+
+    return step(alt_e, az_e), step(alt_n, az_n)
+
+
 def ecl_to_eq(lon, lat_ec, jd):
     eps = (23.439291 - 0.0000004 * (jd - 2451545.0)) * D
     lo, la = lon * D, lat_ec * D

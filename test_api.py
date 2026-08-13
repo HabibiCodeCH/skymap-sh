@@ -420,14 +420,69 @@ class SearchBarIsThePath(unittest.TestCase):
     the command it displays is the command it runs. No side-channel saying
     which place is really meant."""
 
+    @staticmethod
+    def _form(html_out):
+        """Just the command bar's <form>, which is the thing this class is
+        about. What the bar submits is what the bar shows; markup elsewhere
+        on the page cannot reach the server on Enter."""
+        start = html_out.index("<form")
+        return html_out[start:html_out.index("</form>", start)]
+
     def test_no_hidden_place_state(self):
         # An earlier version carried the place beside the query so the
         # server could recombine them, which let the bar read
         # "skymap.sh/venus" while the destination was /Tokyo/Venus.
+        #
+        # Scoped to the form rather than the whole header: header_html also
+        # emits #where, a hidden read-only note of the page's place and IANA
+        # timezone that the "looks like you're not in Zurich" script reads.
+        # That is not place state -- nothing submits it, nothing recombines
+        # it, and the assertion below is what keeps the two apart.
         for value in ("Tokyo/", "Tokyo/Venus", "catalog"):
-            html_out = api.header_html(value)
-            self.assertNotIn("data-place", html_out)
-            self.assertNotIn('name="from"', html_out)
+            form = self._form(api.header_html(value))
+            self.assertNotIn("data-place", form)
+            self.assertNotIn('name="from"', form)
+            # One named field in the form, full stop. A second one is how a
+            # side channel would arrive whatever it was called.
+            self.assertEqual(form.count("name="), 1, value)
+
+    def test_the_where_marker_is_outside_the_form_and_says_nothing_new(self):
+        """#where exists and is inert: outside the form, hidden, carrying
+        only what the page already prints in words -- which place it is
+        about and what time zone that place keeps."""
+        html_out = api.header_html("Tokyo/")
+        self.assertIn('id="where"', html_out)
+        self.assertIn('data-zone="Asia/Tokyo"', html_out)
+        self.assertNotIn('id="where"', self._form(html_out))
+        # Hidden, in its own tag. Sliced from the tag's own start rather
+        # than from a window around the id, which ran off the front of the
+        # string -- the marker is the first thing in the header.
+        tag = html_out[html_out.index("<div id=\"where\""):]
+        self.assertIn("hidden", tag[:tag.index(">")])
+
+    def test_pages_that_are_not_places_get_no_marker(self):
+        for value in ("catalog", "help", "stats", "stats/hourly", "legend"):
+            self.assertNotIn('id="where"', api.header_html(value), value)
+
+    def test_an_object_page_is_not_mistaken_for_a_town(self):
+        """There is a Venus in Texas, a Jupiter in Florida and an Orion in
+        the Philippines. /Venus is a page about the planet, and it shipped
+        carrying data-place="Venus" on an America/Chicago timezone -- which
+        the wrong-place script read as grounds for telling most of the
+        planet it looked like they were not in Venus.
+
+        A place is always a first segment with something after it. The bare
+        name never is one."""
+        for value in ("Venus", "Jupiter", "Neptune", "Moon", "Orion",
+                      "Vega", "M31"):
+            self.assertNotIn('id="where"', api.header_html(value), value)
+
+    def test_a_place_before_an_object_still_gets_one(self):
+        """The other half: /Tokyo/Venus is about Venus seen from Tokyo, and
+        Tokyo is a real place the reader may or may not be in."""
+        for value in ("Tokyo/", "Tokyo/Venus", "Tokyo/events"):
+            self.assertIn('data-zone="Asia/Tokyo"', api.header_html(value),
+                          value)
 
     def test_the_value_is_rendered_verbatim(self):
         for value in ("Tokyo/", "Tokyo/Venus", "Venus", "catalog"):
