@@ -607,10 +607,10 @@ def test_facts_reach_the_page(client, name, label, fragment):
     ("Andromeda Galaxy", "First photographed", "Isaac Roberts"),
     ("Algol", "Discovered", "Goodricke"),
 ])
-def test_history_facts_reach_the_history_page(client, name, label, fragment):
-    """And what happened TO it is one click away, on /{object}/history. These
+def test_about_facts_reach_the_about_page(client, name, label, fragment):
+    """And what happened TO it is one click away, on /{object}/about. These
     four used to be at the bottom of the object page's infobox."""
-    t = body(client.get(f"/{name}/history", headers=CURL))
+    t = body(client.get(f"/{name}/about", headers=CURL))
     assert label in t and fragment in t
 
 
@@ -750,11 +750,14 @@ def test_the_static_half_holds_the_durable_facts(client):
     for live in ("Tonight from", "Next chance"):
         assert live not in static, f"{live} should not be in the static half"
     # Discovered and Missions are durable too, and they are now a click away
-    # rather than at the bottom of this column. The link is what replaced
-    # them.
+    # rather than at the bottom of this column.
     for moved in ("Discovered", "Missions"):
-        assert moved not in static, f"{moved} moved to /Saturn/history"
-    assert 'href="/Saturn/history"' in static
+        assert moved not in static, f"{moved} moved to /Saturn/about"
+    # The way to them is the tab beside the title, not a line under this
+    # column: the aside used to carry its own link and no longer does, so
+    # look for the crossing where a reader looks for it.
+    assert 'href="/Saturn/about"' in h
+    assert 'href="/Saturn/about"' not in static
 
 
 def test_the_live_half_holds_tonights_sky(client):
@@ -1784,9 +1787,9 @@ def test_the_band_is_described_by_how_much_of_it_shows(client):
     assert "too bright" in seen["Zurich"]
 
 
-# ------------------------------------------------------- /{object}/history
+# ------------------------------------------------------- /{object}/about
 def test_history_is_reserved_so_nothing_can_claim_the_path(client):
-    """The route is /{obj}/history, and /{place}/{obj} would happily read
+    """The route is /{obj}/about, and /{place}/{obj} would happily read
     "history" as an object name. RESERVED is what stops a catalogue entry
     ever taking the segment back."""
     assert "history" in objects.RESERVED
@@ -1794,8 +1797,8 @@ def test_history_is_reserved_so_nothing_can_claim_the_path(client):
 
 
 @pytest.mark.parametrize("path", [
-    "/Betelgeuse/history", "/Venus/history", "/M31/history",
-    "/Crab%20Nebula/history", "/Perseids/history", "/NGC1980/history",
+    "/Betelgeuse/about", "/Venus/about", "/M31/about",
+    "/Crab%20Nebula/about", "/Perseids/about", "/NGC1980/about",
 ])
 def test_history_answers_for_every_kind_of_object(client, path):
     r = client.get(path, headers=CURL)
@@ -1805,7 +1808,7 @@ def test_history_answers_for_every_kind_of_object(client, path):
 
 
 def test_history_404s_for_a_name_that_is_not_an_object(client):
-    r = client.get("/wombat/history", headers=CURL)
+    r = client.get("/wombat/about", headers=CURL)
     assert r.status_code == 404
     assert "wombat" in body(r)
 
@@ -1813,26 +1816,28 @@ def test_history_404s_for_a_name_that_is_not_an_object(client):
 def test_history_is_cached_hard_because_nothing_in_it_moves(client):
     """The one object route with no place and no moment in it, which is what
     lets it be cached in a way the object pages themselves never can."""
-    cc = client.get("/Vega/history", headers=CURL).headers["cache-control"]
+    cc = client.get("/Vega/about", headers=CURL).headers["cache-control"]
     assert "public" in cc
     assert "max-age=604800" in cc
 
 
 def test_history_takes_no_place_segment(client):
     """Where you stand does not change what a thing is called. /Zurich/Vega
-    is a page; /Zurich/Vega/history is not, and must not quietly become one.
+    is a page; /Zurich/Vega/about is not, and must not quietly become one.
     """
-    assert client.get("/Zurich/Vega/history", headers=CURL).status_code == 404
+    assert client.get("/Zurich/Vega/about", headers=CURL).status_code == 404
 
 
 def test_the_terminal_and_the_browser_carry_the_same_rows(client):
     """One set of facts, two renderings. Two sets drift, which is the whole
     argument infobox_text and infobox_html were split for."""
-    txt = body(client.get("/Betelgeuse/history", headers=CURL))
-    html_ = client.get("/Betelgeuse/history", headers=BROWSER).text
-    for key, _val in server.api.designations("Betelgeuse"):
-        assert key in txt, key
-        assert key in html_, key
+    txt = body(client.get("/Betelgeuse/about", headers=CURL))
+    html_ = client.get("/Betelgeuse/about", headers=BROWSER).text
+    for label, value, _note in server.api.designations("Betelgeuse"):
+        assert label in txt, label
+        assert label in html_, label
+        assert value in txt, value
+        assert value in html_, value
 
 
 def test_every_canonical_for_one_object_gets_the_same_history(client):
@@ -1842,7 +1847,7 @@ def test_every_canonical_for_one_object_gets_the_same_history(client):
     pages = [server.api.history_blocks(n)
              for n in ("M31", "NGC224", "Andromeda Galaxy")]
     assert all(p == pages[0] for p in pages), pages
-    assert [t for t, _r in pages[0]] == ["Known as", "History"]
+    assert [t for t, _r in pages[0]] == ["Known as", "Etymology", "History"]
 
 
 def test_the_ladder_is_derived_so_it_covers_the_whole_catalogue():
@@ -1854,9 +1859,11 @@ def test_the_ladder_is_derived_so_it_covers_the_whole_catalogue():
     missing = [n for n in names if not server.api.history_blocks(n)]
     # Asterisms and the Milky Way carry no catalogue number and no written
     # history yet, and that is honest rather than broken. Everything else
-    # must say something.
+    # must say something. The bound moved when 29 constellation figures were
+    # added to asterisms.json: every asterism name is also an object name, so
+    # each new figure is also a new page with nothing written for it.
     assert all(objects.resolve_name(n) == n for n in missing)
-    assert len(missing) < 60, sorted(missing)[:20]
+    assert len(missing) < 80, sorted(missing)[:20]
 
 
 def test_the_history_rows_left_the_object_page(client):
@@ -1865,7 +1872,7 @@ def test_the_history_rows_left_the_object_page(client):
     page = body(client.get("/Venus", headers=CURL))
     assert "Venera" not in page          # Missions
     assert "Mariner 2" not in page       # First visited
-    hist = body(client.get("/Venus/history", headers=CURL))
+    hist = body(client.get("/Venus/about", headers=CURL))
     assert "Venera" in hist
     assert "Mariner 2" in hist
 
@@ -1875,25 +1882,25 @@ def test_the_object_page_links_on_only_where_there_is_something_to_read(client):
     tell them there was nothing to click for. "Has any rows" was the wrong
     test: it put this link on 629 pages whose history is a single NGC entry.
     """
-    assert "Betelgeuse/history" in body(client.get("/Betelgeuse", headers=CURL))
+    assert "Betelgeuse/about" in body(client.get("/Betelgeuse", headers=CURL))
     # A bare NGC number used to fail this: one row of citation and nothing
     # else. It passes now because the page explains what Dreyer's catalogue
     # is, which is worth knowing once.
-    assert server.api.history_is_worth_reading("NGC1980")
+    assert server.api.about_is_worth_reading("NGC1980")
     # An asterism has no catalogue name at all, so there is still nothing to
     # send anyone to.
-    assert not server.api.history_is_worth_reading("Big Dipper")
-    assert "Big Dipper/history" not in body(
+    assert not server.api.about_is_worth_reading("Big Dipper")
+    assert "Big Dipper/about" not in body(
         client.get("/Big%20Dipper", headers=CURL))
 
 
 def test_a_standing_sentence_explains_the_catalogue_it_cites(client):
     """Three sentences written once, reaching 109, 749 and 2,887 pages. A
     note may only appear where the ladder above it cites that catalogue."""
-    crab = body(client.get("/Crab Nebula/history", headers=CURL))
+    crab = body(client.get("/Crab Nebula/about", headers=CURL))
     assert "hunting comets" in crab            # Messier, via the M1 row
     assert "Herschel" in crab                  # Dreyer, via the NGC row
-    star = body(client.get("/Betelgeuse/history", headers=CURL))
+    star = body(client.get("/Betelgeuse/about", headers=CURL))
     assert "Uranometria" in star               # Bayer, via the alpha Ori row
     assert "hunting comets" not in star        # no Messier row, no Messier note
 
@@ -1903,7 +1910,7 @@ def test_one_written_row_is_enough_to_earn_the_link():
     worked out where they come from. A flat row count would have dropped it
     alongside the bare catalogue entries, which is why the rule asks what
     kind of row rather than how many."""
-    assert server.api.history_is_worth_reading("Perseids")
+    assert server.api.about_is_worth_reading("Perseids")
     assert sum(len(r) for _t, r in server.api.history_blocks("Perseids")) == 1
 
 
@@ -1911,9 +1918,9 @@ def test_both_renderings_use_one_threshold(client):
     """Two thresholds would put the link on the browser page and not the curl
     one, or the other way round."""
     for name in ("Betelgeuse", "Big Dipper", "Perseids"):
-        want = server.api.history_is_worth_reading(name)
-        in_txt = f"{name}/history" in body(client.get(f"/{name}", headers=CURL))
-        in_html = f'"/{name}/history"' in client.get(f"/{name}",
+        want = server.api.about_is_worth_reading(name)
+        in_txt = f"{name}/about" in body(client.get(f"/{name}", headers=CURL))
+        in_html = f'"/{name}/about"' in client.get(f"/{name}",
                                                      headers=BROWSER).text
         assert in_txt == want, name
         assert in_html == want, name
@@ -1921,10 +1928,176 @@ def test_both_renderings_use_one_threshold(client):
 
 def test_the_page_is_counted_apart_from_the_object_pages(client):
     """Every new route ships its counter in the same change. Reading
-    /Betelgeuse/history is a different act from reading /Betelgeuse."""
-    before = server._stat["history"]
-    client.get("/Rigel/history", headers=CURL)
-    assert server._stat["history"] == before + 1
+    /Betelgeuse/about is a different act from reading /Betelgeuse."""
+    before = server._stat["about"]
+    client.get("/Rigel/about", headers=CURL)
+    assert server._stat["about"] == before + 1
     # A 404 is not a page view.
-    client.get("/notathing/history", headers=CURL)
-    assert server._stat["history"] == before + 1
+    client.get("/notathing/about", headers=CURL)
+    assert server._stat["about"] == before + 1
+
+
+def test_etymology_is_its_own_block(client):
+    """Between what it is called and what happened to it, because it
+    explains the first and predates the second."""
+    t = body(client.get("/Betelgeuse/about", headers=CURL))
+    assert "Etymology" in t
+    assert "hand of Jawza" in t
+    assert t.index("Known as") < t.index("Etymology") < t.index("History")
+
+
+def test_a_contested_etymology_says_so_rather_than_picking(client):
+    """facts.py leaves a disputed claim out. Here the disagreement IS the
+    interesting answer, so it is printed and labelled."""
+    # Algol used to be here. Its paragraph now hedges the same claim inline
+    # ("suggest people noticed"), so a separate Not-settled line said it
+    # twice. Where the prose carries the doubt, the field comes off.
+    for name in ("Mars", "Neptune", "Saturn", "Pleiades"):
+        assert "Not settled" in body(
+            client.get(f"/{name}/about", headers=CURL)), name
+
+
+def test_the_original_script_never_leads_a_column(client):
+    """A non-Latin run falls back to a proportional face, so it sits at the
+    end of a value and never where something has to line up after it."""
+    import etymology
+    for name, rec in etymology.ETYMOLOGY.items():
+        reading = rec.get("reading", "")
+        if any(ord(c) > 0x300 for c in reading):
+            assert "·" in reading, name
+            head = reading.split("·")[0]
+            assert all(ord(c) < 0x300 for c in head), name
+
+
+def test_missions_are_dated_one_per_line(client):
+    """A run-on line of seven programme names says which went there and
+    nothing about when, and when is most of what makes the row worth
+    reading."""
+    t = body(client.get("/Venus/about", headers=CURL))
+    for prog, when in (("Venera", "1961-1984"), ("Magellan", "1990-1994")):
+        assert prog in t and when in t
+    # One visitor, once. The shape of the row should say so.
+    u = body(client.get("/Uranus/about", headers=CURL))
+    assert "Voyager 2" in u and "1986" in u
+
+
+def test_the_constellation_row_links_when_there_is_a_page(client):
+    """A star names its constellation, and 57 of the 88 are drawn here, so
+    that name is a page more often than not. Plain text where it is not:
+    Leo has no figure, and a link that 404s is worse than no link.
+
+    The terminal keeps the bare word either way. Same rows, two renderings."""
+    about = client.get("/Betelgeuse/about", headers=BROWSER).text
+    assert '<dt>Constellation</dt><dd><a href="/Orion">Orion</a></dd>' in about
+    plain = client.get("/Regulus/about", headers=BROWSER).text
+    assert "<dt>Constellation</dt><dd>Leo</dd>" in plain
+    for obj in ("Betelgeuse", "Regulus"):
+        txt = client.get(f"/{obj}/about").text
+        assert "[[" not in txt and "]]" not in txt, obj
+
+
+def _every_written_string():
+    """(where it lives, the string) for everything hand-written a reader sees.
+
+    Blurbs were missing from this sweep, which is how a pair of curly quotes
+    reached Betelgeuse: the rule was checked on the etymology entries only,
+    and the blurbs are where most of the prose actually is."""
+    import blurbs, etymology
+    for name, (glyph, blurb) in blurbs.BLURBS.items():
+        yield f"blurbs[{name}].glyph", glyph
+        yield f"blurbs[{name}].blurb", blurb
+    for name, rec in etymology.ETYMOLOGY.items():
+        for k, v in rec.items():
+            yield f"etymology[{name}][{k}]", v
+    for name, spec in etymology.STAGES.items():
+        yield f"stages[{name}]", str(spec)
+    for k, v in server.api.CATALOGUE_NOTES.items():
+        yield f"note[{k}]", v
+
+
+def test_no_dashes_anywhere_in_the_copy():
+    """House style, and it kept coming back because nothing checked."""
+    bad = [where for where, s in _every_written_string()
+           if any(d in s for d in ("--", "—", "–"))]
+    assert not bad, bad
+
+
+def test_quotes_in_the_copy_are_straight():
+    """A curly quote pasted in from a document looks identical on the page
+    and is a different character to every search. One shape, so that
+    quoting a name reads the same everywhere it is done."""
+    bad = [where for where, s in _every_written_string()
+           if any(q in s for q in ("“", "”", "‘", "’"))]
+    assert not bad, bad
+
+
+def test_both_halves_are_reachable_from_either(client):
+    """One object, two questions, and a way across from both sides. The
+    history page used to have no way back except the browser button."""
+    where = client.get("/Betelgeuse", headers=BROWSER).text
+    about = client.get("/Betelgeuse/about", headers=BROWSER).text
+    for page in (where, about):
+        assert 'href="/Betelgeuse"' in page
+        assert 'href="/Betelgeuse/about"' in page
+    # The current one is marked rather than dropped, so the pair reads as a
+    # choice and not as a button that changes.
+    assert 'aria-current="page">where<' in where
+    assert 'aria-current="page">about<' in about
+
+
+def test_the_left_column_is_the_same_on_both(client):
+    """Same portrait, same lede, same rows. They are built by one function
+    now, which is what stops them drifting apart again."""
+    import re
+    def static(h):
+        return re.search(r'<aside class="obj-static">(.*?)</aside>',
+                         h, re.S).group(1)
+    where = static(client.get("/Betelgeuse", headers=BROWSER).text)
+    about = static(client.get("/Betelgeuse/about", headers=BROWSER).text)
+    for probe in ("Red supergiant", "Spectral type", "Known as", "HR 2061"):
+        assert probe in where, probe
+        assert probe in about, probe
+    # There used to be a second difference: a "What Betelgeuse has been
+    # called" link at the foot of the where page only. It went when the
+    # where/about tabs took that job over, beside the title rather than at
+    # the bottom of a column.
+    assert "obj-history-link" not in where and "obj-history-link" not in about
+    # What is left is one row, and it is the point of the about page rather
+    # than an oversight: "You need" is answered against the reader's own sky
+    # on the where page and against nobody's in particular on the about one,
+    # which is what lets that page be cached for a week.
+    strip = lambda h: re.sub(r"<dd>naked eye[^<]*</dd>", "<dd>NEED</dd>", h)
+    assert strip(where) == strip(about)
+
+
+def test_the_about_page_says_nothing_about_tonight(client):
+    """It is drawn for no moment and no place, which is what lets it be
+    cached for a week. An events list would be claiming a night it was not
+    drawn for."""
+    t = body(client.get("/Venus/about", headers=CURL))
+    assert "The same night" not in t
+    # And the one row that really is about where you stand falls back to the
+    # wording that is true everywhere.
+    assert "from here" not in t
+
+
+def test_copy_can_carry_a_link_and_a_script(client):
+    """Two things a plain paragraph cannot do, both written into the sentence
+    rather than bolted beside it."""
+    import re
+    h = client.get("/Altair/about", headers=BROWSER).text
+    # Scoped to the paragraph: the page's own scripts contain [[ in an array
+    # literal, which is not the marker this is about.
+    para = re.search(r'<p class="hist-lede">(.*?)</p>', h, re.S).group(1)
+    assert 'href="/Vega"' in para                  # [[Vega]] became a link
+    assert "[[" not in para                        # and the marker is gone
+    assert 'dir="rtl"' in para                     # the Arabic is isolated
+    t = body(client.get("/Altair/about", headers=CURL))
+    assert "[[" not in t and "Vega" in t           # terminal drops the marker
+    assert "النسر" in t                             # and keeps the script
+
+
+def test_a_script_run_does_not_eat_the_space_after_it():
+    """Swallowed into the span, the next word ran straight on."""
+    out = server.api.copy_html("from al-nasr النسر the eagle")
+    assert "</span> the eagle" in out

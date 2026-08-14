@@ -103,55 +103,70 @@ FACTS = {
     # ------------------------------------------------------- solar system
     "Sun": {
         "first_visit": "Pioneer 5, 1960",
-        "missions": "Parker Solar Probe, Solar Orbiter, SOHO, Ulysses",
+        "missions": [("SOHO", "1996-"), ("Ulysses", "1990-2009"),
+                     ("Parker Solar Probe", "2018-"),
+                     ("Solar Orbiter", "2020-")],
     },
     "Moon": {
         "first_visit": "Luna 2, 1959",
         "first_photo": "the far side, Luna 3, 1959",
-        "missions": "Luna, Apollo, Chang'e, Chandrayaan",
+        "missions": [("Luna", "1959-1976"), ("Apollo", "1968-1972"),
+                     ("Chang'e", "2007-"), ("Chandrayaan", "2008-")],
     },
     "Mercury": {
         "moons": "none",
         "discovered": "known since antiquity",
         "first_visit": "Mariner 10, 1974",
-        "missions": "Mariner 10, MESSENGER, BepiColombo",
+        "missions": [("Mariner 10", "1974-1975"),
+                     ("MESSENGER", "2008-2015"),
+                     ("BepiColombo", "2021-")],
     },
     "Venus": {
         "moons": "none",
         "discovered": "known since antiquity",
         "first_visit": "Mariner 2, 1962, the first flyby of any planet",
-        "missions": "Venera, Mariner, Magellan, Venus Express, Akatsuki",
+        "missions": [("Venera", "1961-1984"), ("Mariner", "1962-1974"),
+                     ("Magellan", "1990-1994"),
+                     ("Venus Express", "2006-2014"),
+                     ("Akatsuki", "2015-2024")],
     },
     "Mars": {
         "moons": "2, Phobos and Deimos",
         "discovered": "known since antiquity",
         "first_visit": "Mariner 4, 1965",
-        "missions": "Viking, Pathfinder, Spirit, Opportunity, Curiosity, "
-                    "Perseverance, InSight",
+        "missions": [("Viking", "1976-1982"), ("Pathfinder", "1997"),
+                     ("Spirit", "2004-2010"), ("Opportunity", "2004-2018"),
+                     ("Curiosity", "2012-"), ("InSight", "2018-2022"),
+                     ("Perseverance", "2021-")],
     },
     "Jupiter": {
         "moons": "95 confirmed",
         "discovered": "known since antiquity; its moons by Galileo, 1610",
         "first_visit": "Pioneer 10, 1973",
-        "missions": "Pioneer, Voyager, Galileo, Juno, Europa Clipper",
+        "missions": [("Pioneer 10 and 11", "1973-1974"),
+                     ("Voyager 1 and 2", "1979"),
+                     ("Galileo", "1995-2003"), ("Juno", "2016-"),
+                     ("Europa Clipper", "arrives 2030")],
     },
     "Saturn": {
         "moons": "274 confirmed, more than every other planet together",
         "discovered": "known since antiquity; the rings by Huygens, 1655",
         "first_visit": "Pioneer 11, 1979",
-        "missions": "Pioneer 11, Voyager 1 and 2, Cassini-Huygens",
+        "missions": [("Pioneer 11", "1979"),
+                     ("Voyager 1 and 2", "1980-1981"),
+                     ("Cassini-Huygens", "2004-2017")],
     },
     "Uranus": {
         "moons": "28",
         "discovered": "1781, William Herschel, the first planet ever found",
         "first_visit": "Voyager 2, 1986, and nothing since",
-        "missions": "Voyager 2",
+        "missions": [("Voyager 2", "1986")],
     },
     "Neptune": {
         "moons": "16",
         "discovered": "1846, Le Verrier and Galle, predicted before it was seen",
         "first_visit": "Voyager 2, 1989, and nothing since",
-        "missions": "Voyager 2",
+        "missions": [("Voyager 2", "1989")],
     },
 
     # ------------------------------------------------------------ deep sky
@@ -286,7 +301,17 @@ FACTS = {
 # The order fields print in, and what each is called on the page. Anything a
 # type does not carry is skipped, so one order serves every type.
 #
-# Split in two, and the split is the whole point of /{object}/history. What a
+# A value is normally a string. "missions" is a list of (name, when) pairs
+# instead, because a run-on line of seven programme names says which ones
+# went there and nothing about when, and when is most of what makes the list
+# worth reading: Uranus has had one visitor, in 1986, and the shape of the
+# row should say so before the words do.
+#
+# Dates are the years the spacecraft was AT this object, not its launch.
+# On a page about Saturn, Cassini's 1997 launch is trivia and its 2004-2017
+# tour is the fact. Anything that has not arrived says so.
+#
+# Split in two, and the split is the whole point of /{object}/about. What a
 # thing IS stays on the object page next to where it is tonight; what
 # happened TO it -- who found it, who photographed it first, what we have
 # sent to look at it -- is a different question asked by a different reader,
@@ -331,7 +356,7 @@ def for_object(name):
 
 
 def history_for(name):
-    """The hand-written history, in print order, for /{object}/history.
+    """The hand-written history, in print order, for /{object}/about.
 
     Same shape and the same emptiness rule as for_object(). This is what
     gives the history page something to say on day one, before a word of

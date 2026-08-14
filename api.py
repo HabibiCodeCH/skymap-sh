@@ -17,6 +17,8 @@ import minify
 import eclipse_page
 import sky
 import brand
+import blurbs
+import etymology
 import facts as facts_table
 import motion
 import objects
@@ -1893,6 +1895,16 @@ def object_prose(facts, tgt, r, width=76):
     return "\n".join(out).rstrip()
 
 
+def _linked(name):
+    """[[name]] when there is a page to point at, the bare name otherwise.
+
+    Fifty-seven constellations are drawn here, not all eighty-eight, so
+    Betelgeuse's Orion becomes a link and a star in Lacerta keeps plain
+    text. A link that 404s is worse than no link at all.
+    """
+    return f"[[{name}]]" if name and objects.resolve_name(name) else name
+
+
 def object_infobox(facts, tgt, width=76):
     """The stats block, as aligned rows.
 
@@ -1923,10 +1935,12 @@ def object_infobox(facts, tgt, width=76):
     add("Type", (star_kind.capitalize() if star_kind else
                  f"{gal_kind.capitalize()} galaxy" if gal_kind else
                  _KIND_WORD.get(facts.get("kind"), "").capitalize() or None))
-    add("Symbol", PLANET_SYMBOLS.get(facts.get("object")))
+    # The symbol used to sit here. It is a designation, so it moved into the
+    # "Known as" block below with the Bayer letters and catalogue numbers,
+    # and leaving a copy here printed it twice on every planet page.
     # Same reasoning as the intro line: durable for a star, live for a planet.
     if not _MOVES_AGAINST_THE_SKY(facts):
-        add("Constellation", facts.get("constellation"))
+        add("Constellation", _linked(facts.get("constellation")))
     # Not for asterisms (a shape has no single brightness) and not for
     # meteor radiants, whose "magnitude" is a stand-in resolve_target sets so
     # dark_enough() picks the nautical-dark threshold. It is not a brightness
@@ -1997,7 +2011,7 @@ def object_infobox(facts, tgt, width=76):
     # so an object never carries two answers to one label.
     #
     # The hand-written HISTORY -- who found it, what we sent -- is no longer
-    # here. It moved to /{object}/history, which is why facts_table now has
+    # here. It moved to /{object}/about, which is why facts_table now has
     # two orders rather than one. This page is about where to find the thing;
     # the four rows that were least to do with that have a page of their own.
     have = {k for k, _v in rows}
@@ -2029,7 +2043,16 @@ def object_infobox(facts, tgt, width=76):
     # stars and deep sky that JPL knows nothing about -- and both answer the
     # same question, which is what the thing physically is. They were only
     # ever separate because the second list also carried the history.
+    # Every catalogue name the object answers to, above the physical numbers
+    # and below what it looks like from here. Durable, so it belongs in this
+    # column on both pages that use it: the object page and its history.
+    # Two-tuples here, because this box is (label, value) throughout; the
+    # history page's own renderer is what adds the note behind an (i).
+    known = [(label, value) for label, value, _note in designations(
+        facts.get("object") or "")]
+
     blocks = [(None, rows), (TONIGHT_BLOCK, tonight),
+              (HISTORY_KNOWN_AS, known),
               ("Physical", measured + written)]
     return [(t, r) for t, r in blocks if r]
 
@@ -2216,7 +2239,10 @@ def infobox_text(blocks, indent="  "):
     for title, rws in blocks:
         if title:
             out += ["", f"{indent}{title}"]
-        out += [f"{indent}{k.ljust(pad)}   {v}" for k, v in rws]
+        # copy_text, so a row that names something with a page of its own
+        # loses its [[markers]] here and becomes a link in the browser. One
+        # set of rows, two renderings, same as every other pair on this page.
+        out += [f"{indent}{k.ljust(pad)}   {copy_text(v)}" for k, v in rws]
     return "\n".join(out)
 
 
@@ -2258,6 +2284,11 @@ def infobox_html(blocks):
             val = html.escape(head)
             if sep:
                 val += f'<span class="sec">{html.escape(tail)}</span>'
+            # Escaped first, linked second: html.escape leaves [[ and ]]
+            # alone, so the markers survive to be turned into anchors here
+            # and the name inside one is escaped like any other text.
+            val = _COPY_LINK.sub(
+                lambda m: f'<a href="/{quote(m.group(1))}">{m.group(1)}</a>', val)
             out.append(f"<dt>{html.escape(str(k))}</dt><dd>{val}</dd>")
     out.append("</dl>")
     return "".join(out)
@@ -2553,7 +2584,7 @@ def object_sources(facts):
     return "; ".join(out) + "."
 
 
-# --------------------------------------------------------- /{object}/history
+# --------------------------------------------------------- /{object}/about
 #
 # The durable page. No place in the path and no moment in it: where you stand
 # changes nothing about who found a thing or what it has been called. That is
@@ -2595,55 +2626,51 @@ def _designation_index():
 
 
 def designations(canonical):
-    """Every catalogue name this object answers to, as (name, where from).
+    """Every catalogue name this object answers to.
 
     Derived entirely from columns already on disk, which is what makes this
     the one part of the history page covering all 1,220 objects rather than
     the 36 that have hand-written entries.
 
-    "Roughly" in the Bayer gloss is doing real work and is not hedging: Bayer
-    worked from Tycho's magnitudes by eye in 1603, and the letters are out of
-    brightness order often enough that stating it as a rule would be wrong.
+    Rows are (who catalogued it, what they called it, which note explains
+    the catalogue). The person goes in the label column and the designation
+    in the value column, because the designation is the thing being looked
+    up -- "NGC 1980" is the answer and "Dreyer" is the filing system.
+
+    No row for the common name. It used to lead this list as "Betelgeuse,
+    the name in common use", directly under an h1 reading Betelgeuse at
+    30px. The heading is the common name.
     """
     rows = []
     sym = PLANET_SYMBOLS.get(canonical)
     if sym:
         # The solar-system bodies have no catalogue number to ladder. The
-        # symbol is the one durable designation they carry, and it is already
-        # on the object page's infobox, so this is the same fact in the place
-        # that now explains it.
-        rows.append((sym, "the astronomical symbol"))
-        return rows
+        # symbol is the one durable designation they carry.
+        return [("Symbol", sym, None)]
     kind_rec = _designation_index().get(canonical)
     if not kind_rec:
         return rows
     kind, rec = kind_rec
     if kind == "star":
-        if rec.get("n"):
-            rows.append((rec["n"], "the name in common use"))
         if rec.get("b") and rec.get("c"):
-            const = objects.CONSTELLATION_NAMES.get(rec["c"], rec["c"])
-            rows.append((f'{rec["b"]} {rec["c"]}',
-                         f"Bayer's letter for {const}, assigned 1603"))
+            rows.append(("Bayer", f'{rec["b"]} {rec["c"]}', "Bayer"))
         if rec.get("hr"):
-            rows.append((f'HR {rec["hr"]}', "Yale Bright Star Catalogue"))
+            rows.append(("Yale", f'HR {rec["hr"]}', "Yale"))
         return rows
-    if rec.get("cn"):
-        rows.append((rec["cn"], "the name in common use"))
     n = rec.get("n") or ""
     if n.startswith("M") and n[1:].isdigit():
-        rows.append((n, "Messier's catalogue, 1781"))
+        rows.append(("Messier", n, "Messier"))
     ident = rec.get("id") or ""
     if ident.startswith("NGC") and ident[3:].isdigit():
         # Stored without a space, printed with one: NGC224 is a key and
         # "NGC 224" is how the catalogue writes it.
-        rows.append((f"NGC {ident[3:]}",
-                     "Dreyer's New General Catalogue, 1888"))
+        rows.append(("Dreyer", f"NGC {ident[3:]}", "Dreyer"))
     return rows
 
 
 HISTORY_KNOWN_AS = "Known as"
 HISTORY_BLOCK = "History"
+HISTORY_ETYMOLOGY = "Etymology"
 
 # One sentence per catalogue, written once and shown wherever that catalogue
 # gave the object a name. This is the cheapest content on the site by a wide
@@ -2659,23 +2686,23 @@ HISTORY_BLOCK = "History"
 # really is only roughly by brightness, and saying so is more useful than
 # the tidy version.
 CATALOGUE_NOTES = {
-    "Messier's catalogue, 1781": (
-        "Messier was hunting comets. He compiled this list between 1758 and "
-        "1781 as a register of the things that look like comets and are not, "
-        "which is why the objects on it have nothing in common beyond being "
-        "fuzzy and staying put."),
-    "Dreyer's New General Catalogue, 1888": (
+    "Messier": (
+        "Messier was hunting comets. He compiled his list between 1758 and "
+        "1781 as a register of things that look like comets but are "
+        "not. That's why the objects on it have nothing in common "
+        "beyond being fuzzy and staying put."),
+    "Dreyer": (
         "Dreyer compiled the New General Catalogue in 1888, mostly from the "
         "sweeps William and John Herschel made of the sky, and numbered its "
         "7,840 objects in order of right ascension."),
-    "Bayer's letters": (
+    "Bayer": (
         "Bayer lettered the stars of each constellation in his Uranometria "
-        "of 1603, roughly in order of brightness. Roughly: he was working "
-        "from Tycho's magnitudes by eye, and the order is often wrong."),
-    "Yale Bright Star Catalogue": (
-        "The Bright Star Catalogue lists every star down to magnitude 6.5, "
-        "which is about as faint as an unaided eye can go. There are 9,110 "
-        "of them."),
+        "of 1603, in order of brightness. He was working from Tycho's "
+        "magnitudes by eye, and the order he recorded is often wrong."),
+    "Yale": (
+        "First published in 1930 by Yale astronomer Frank Schlesinger, and "
+        "maintained since, the Yale Bright Star Catalogue lists every "
+        "star down to magnitude 6.5. It contains 9,110 stars."),
 }
 
 
@@ -2686,11 +2713,7 @@ def catalogue_notes(canonical):
     explain a catalogue it did not just cite.
     """
     out = []
-    for _name, source in designations(canonical):
-        # The Bayer row carries the constellation in its text ("Bayer's
-        # letter for Orion, assigned 1603"), so it is matched by prefix
-        # rather than whole string.
-        key = "Bayer's letters" if source.startswith("Bayer") else source
+    for _label, _value, key in designations(canonical):
         note = CATALOGUE_NOTES.get(key)
         if note and note not in out:
             out.append(note)
@@ -2714,20 +2737,37 @@ def _facts_key(canonical):
 
 
 def history_blocks(canonical):
-    """The history page's rows, in the same (title, rows) shape the object
-    page's infobox uses -- so both renderers are reused rather than a second
-    pair written for a second page."""
+    """The history page's rows, as (title, rows) blocks.
+
+    Rows are (label, value, note-key) throughout. The written history has no
+    catalogue behind it, so its third element is always None -- one shape for
+    both blocks means one renderer each rather than one per block per
+    surface.
+    """
     blocks = []
     desig = designations(canonical)
     if desig:
         blocks.append((HISTORY_KNOWN_AS, desig))
+    # Etymology sits between what it is called and what happened to it,
+    # because it explains the first and predates the second.
+    etym = etymology.rows_for(_facts_key(canonical))
+    if etym:
+        blocks.append((HISTORY_ETYMOLOGY, [(k, v, None) for k, v in etym]))
     written = facts_table.history_for(_facts_key(canonical))
     if written:
-        blocks.append((HISTORY_BLOCK, written))
+        blocks.append((HISTORY_BLOCK, [(k, v, None) for k, v in written]))
     return blocks
 
 
-def history_is_worth_reading(canonical):
+def history_prose(canonical):
+    """Everything on this page that is a sentence rather than a row: the
+    etymology's own story first, then the standing note for each catalogue
+    the ladder cites."""
+    return (etymology.prose_for(_facts_key(canonical))
+            + catalogue_notes(canonical))
+
+
+def about_is_worth_reading(canonical):
     """Whether to point a reader at this object's history page.
 
     Not the same question as whether the page exists -- every object has one,
@@ -2761,7 +2801,252 @@ def history_is_worth_reading(canonical):
     return bool(catalogue_notes(canonical))
 
 
-def history_title(canonical):
+def about_heading_html(canonical):
+    """The same coloured mark and title the object page carries.
+
+    Built through object_glyph rather than written again here, so a star's
+    dot takes its colour from the same spectral table the chart uses and a
+    planet gets the same diamond. The history page had a plain white h1 and
+    read as a different site one click from the object page.
+
+    Only the kind matters: object_glyph looks the rest up itself, and none of
+    what it needs from a target depends on where or when anybody is.
+    """
+    kind = "star"
+    if canonical in PLANET_SYMBOLS:
+        kind = {"Sun": "sun", "Moon": "moon"}.get(canonical, "planet")
+    elif any(a["name"] == canonical for a in sky._load("asterisms.json")):
+        kind = "asterism"
+    elif any(s["name"] == canonical for s in sky._load("showers.json")):
+        kind = "radiant"
+    elif (_designation_index().get(canonical) or ("",))[0] == "dso":
+        kind = "dso"
+    glyph, ansi = object_glyph({"kind": kind, "name": canonical}, julian(
+        dt.datetime.now(dt.timezone.utc).replace(tzinfo=None)))
+    mark = (f'<span style="color:{_ansi_hex(ansi)}">{html.escape(glyph)}</span>'
+            if glyph else "")
+    return (f'<h1 class="obj-title">{mark}'
+            f'<span style="color:{_ansi_hex(ansi)}">'
+            f'{html.escape(canonical)}</span></h1>')
+
+
+# The history page's left column is the object page's, and that column comes
+# out of the render pipeline, which wants a place and a moment. Both are fixed
+# here on purpose: the page must be byte-identical for every visitor or it
+# cannot be cached, and measurement says it very nearly is anyway. Between
+# Zurich and the Atacama not one row of Betelgeuse's column differs, and
+# Saturn's differs only in the second decimal of its distance, which is the
+# Earth moving rather than the reader.
+#
+# The two rows that genuinely do vary are handled rather than ignored: "The
+# same night" is dropped, since tonight belongs on the page with the chart,
+# and "You need" falls back to its location-free wording.
+HISTORY_PLACE = "Zurich"
+
+
+def about_facts(canonical, now=None):
+    """(facts, static text) for the history page, fixed so it can be cached.
+
+    The moment is snapped to midnight UTC, so a planet's distance and phase
+    move once a day rather than once a request, and every visitor on a given
+    day is served the same bytes.
+    """
+    day = (now or dt.datetime.utcnow()).replace(hour=0, minute=0, second=0,
+                                                microsecond=0)
+    # color=True because the portrait is only drawn on a coloured render
+    # (art_for is gated on it), and this column is the object page's.
+    r = Request(place=HISTORY_PLACE, when=day, find=canonical, color=True)
+    res = compose_object(r, canonical)
+    data = dict(res.data)
+    # Tonight is the object page's job. A history page that opened with an
+    # events list would be claiming to know a night it was not drawn for.
+    data["infobox"] = [(t, rows) for t, rows in (data.get("infobox") or [])
+                       if t != TONIGHT_BLOCK]
+    data["tonight_events"] = []
+    # And the one row that is really about where the reader is standing goes
+    # back to the wording that is true everywhere. objects.what_you_need()
+    # already has that form: no Bortle, no "from here".
+    was = data.get("need")
+    mag = data.get("mag")
+    static, _, _live = res.text.partition(OBJECT_SLOT)
+    if mag is not None:
+        neutral = objects.what_you_need(mag)
+        data["need"] = neutral
+        data["infobox"] = [
+            (t, [(k, neutral if k == "You need" else v) for k, v in rows])
+            for t, rows in data["infobox"]]
+        # The rows and the text are two renderings of one fact, so the
+        # substitution has to reach both or a terminal keeps saying "from
+        # here" on a page that has no idea where here is.
+        if was and was != neutral:
+            static = static.replace(was, neutral)
+    # And the way onward points at this page, so drop it here.
+    static = "\n".join(l for l in static.split("\n")
+                       if "/about" not in l)
+    return data, static
+
+
+# Copy may carry two things plain text cannot: a link to another object, and
+# a run of original script. Both are written into the sentence rather than
+# bolted beside it, because that is how they read.
+#
+#   [[Vega]]   a link to /Vega, and just the word in a terminal
+#   العربية     any right-to-left run, isolated so it cannot reorder the
+#              punctuation around it
+#
+# Kept deliberately small. This is a house convention for forty paragraphs,
+# not a markup language, and anything more would need a parser and a spec.
+_COPY_LINK = re.compile(r"\[\[([^\]|]+)\]\]")
+# Arabic and Hebrew. Greek and CJK render left to right and need no isolating,
+# only the no-break treatment every non-Latin run gets.
+_RTL_RUN = re.compile(r"[\u0590-\u06FF\u0750-\u077F][\u0590-\u06FF"
+                      r"\u0750-\u077F\s\u200f]*")
+
+
+def copy_html(text):
+    """A paragraph of hand-written copy, as markup."""
+    out, last = [], 0
+    for m in _RTL_RUN.finditer(text):
+        out.append(html.escape(text[last:m.start()]))
+        run = m.group(0)
+        # Trailing space belongs to the sentence, not to the run: swallowed
+        # into the span it disappeared and the next word ran on.
+        tail = run[len(run.rstrip()):]
+        out.append(f'<span class="obj-run" dir="rtl">'
+                   f'{html.escape(run.strip())}</span>{tail}')
+        last = m.end()
+    out.append(html.escape(text[last:]))
+    joined = "".join(out)
+    return _COPY_LINK.sub(
+        lambda m: f'<a href="/{quote(m.group(1))}">{html.escape(m.group(1))}</a>',
+        joined)
+
+
+def copy_text(text):
+    """The same paragraph for a terminal: the link markers come off and the
+    script stays, exactly as every other symbol on this site does."""
+    return _COPY_LINK.sub(lambda m: m.group(1), text)
+
+
+def object_nav_html(canonical, current):
+    """The two halves of an object, as a pair of tabs beside its name.
+
+    One thing, two questions: where it is, and what it is. They were a
+    sentence buried at the foot of the left column, which is not where anyone
+    looks for a way across, and the history page had no way back at all
+    except the browser button.
+
+    Real links, not script. Both are pages that exist on their own, and the
+    current one is marked rather than removed so the pair reads as a choice
+    rather than as a single button that changes.
+    """
+    obj = quote(canonical)
+    tabs = [("where", f"/{obj}", current == "where"),
+            ("about", f"/{obj}/about", current == "about")]
+    out = []
+    for label, href, here in tabs:
+        cls = "obj-tab obj-tab-on" if here else "obj-tab"
+        aria = ' aria-current="page"' if here else ""
+        out.append(f'<a class="{cls}" href="{href}"{aria}>{label}</a>')
+    return f'<nav class="obj-tabs">{"".join(out)}</nav>'
+
+
+def object_static_html(data, static_text, canonical):
+    """The durable left column: portrait, lede, fact rows, way onward, credit.
+
+    Shared by the object page and its history page, which is the whole point
+    of it being a function. The history page used to build its own and drifted
+    from this one three separate times -- the coloured heading, the page
+    width, the missing figures all came from the same habit of writing a
+    second version beside a working one.
+
+    No way-onward line at the foot of it any more: the where/about tabs sit
+    beside the title on both pages and say the same thing in the place people
+    look for it. A second link at the bottom, on only one of the two, was the
+    old answer from before the tabs existed.
+    """
+    intro_txt = strip_ansi(_first_para(static_text)).strip()
+    src = object_sources(data)
+    # The portrait gets its own <pre> rather than riding along in the static
+    # text, because it is the one thing on this column that must not reflow:
+    # .obj-art pins the line-height the drawing is built for (see art.CELL),
+    # and text set at any other line-height would squash every circle back
+    # into an ellipse.
+    picture = data.get("art") or []
+    art_html = (art_plate(picture, frame_cls="obj-art-frame",
+                          plate_cls="obj-art", centre_ink=True)
+                if picture else "")
+    return (art_html
+            + (f'<p class="obj-lede">{html.escape(intro_txt)}</p>'
+               if intro_txt else "")
+            + infobox_html(data.get("infobox"))
+            + (f'<p class="obj-src">{html.escape(src)}</p>' if src else ""))
+
+
+def about_rows_html(blocks):
+    """The rows as a description list, with the catalogue note behind an (i).
+
+    Same <dl> grid the object page's infobox uses, and deliberately the same
+    class so one set of rules styles both. What differs is which column
+    carries the weight: here the designation is the answer somebody came for
+    and the cataloguer is the filing system, so the value is bright and the
+    label is dim -- the reverse of a fact row, where the label is the
+    question.
+
+    The note is a real sibling element rather than a title attribute. A
+    title tooltip cannot be styled, cannot be reached by touch at all, and
+    waits a second before appearing. This one opens on hover and on focus,
+    so a keyboard and a phone can both get at it.
+    """
+    out = ['<div class="hist-blocks">']
+    for title, rows in blocks:
+        # One list per block, not one list with headings inside it. That is
+        # what lets the three sit side by side on a wide screen and stack on
+        # a narrow one -- a single grid can only ever be one column of pairs.
+        out.append('<dl class="obj-facts obj-known">')
+        if title:
+            out.append(f'<dt class="obj-sec" role="presentation">'
+                       f'{html.escape(title)}</dt><dd class="obj-sec"></dd>')
+        for label, value, note_key in rows:
+            note = CATALOGUE_NOTES.get(note_key)
+            tip = ""
+            if note:
+                tip = ('<span class="obj-i" tabindex="0" role="button"'
+                       f' aria-label="What the {html.escape(label)} catalogue'
+                       ' is">i<span class="obj-tip" role="tooltip">'
+                       f'{html.escape(note)}</span></span>')
+            if isinstance(value, list):
+                inner = "".join(
+                    f'<span class="obj-mn">{html.escape(n)}</span>'
+                    f'<span class="obj-md">{html.escape(w)}</span>'
+                    for n, w in value)
+                out.append(f'<dt>{html.escape(label)}{tip}</dt>'
+                           f'<dd class="obj-missions">{inner}</dd>')
+                continue
+            out.append(f'<dt>{html.escape(label)}{tip}</dt>'
+                       f'<dd>{_unbreakable(value)}</dd>')
+        out.append("</dl>")
+    out.append("</div>")
+    return "".join(out)
+
+
+def _unbreakable(value):
+    """A value whose parts will not be split across lines.
+
+    "Yad al-Jawza' · يد الجوزاء" wrapped mid-word, leaving two Arabic letters
+    stranded on the line below -- which in a right-to-left script is not
+    merely ugly, it reorders what a reader sees. Each part around the
+    separator becomes its own non-breaking run, so the line breaks between
+    them or not at all.
+    """
+    parts = [p.strip() for p in value.split("·")]
+    if len(parts) == 1:
+        return html.escape(value)
+    return '<span class="obj-sep">·</span>'.join(
+        f'<span class="obj-run">{html.escape(p)}</span>' for p in parts)
+
+
+def about_title(canonical):
     return f"skymap.sh: {canonical}, history"
 
 
@@ -2779,34 +3064,58 @@ def _wrap_note(text, width=72, indent="  "):
     return out
 
 
-def history_text(canonical):
-    """The terminal rendering. Same rows, same order as the browser gets."""
-    blocks = history_blocks(canonical)
-    out = [f"history of {canonical}"]
+def about_text(canonical):
+    """The terminal rendering: the object page's own static half, then the
+    history where the chart would be. Same rows in the same order as the
+    browser gets, which is the rule infobox_text and infobox_html exist for.
+    """
+    key = _facts_key(canonical)
+    data, static_text = about_facts(canonical)
+    out = [strip_ansi(static_text).rstrip(), "",
+           f"  More information about {canonical}"]
+
+    blurb = (blurbs.BLURBS.get(key) or ("", ""))[1]
+    for para in ([blurb] if blurb else []) + etymology.prose_for(key):
+        out += [""] + _wrap_note(copy_text(para))
+
+    blocks = [b for b in history_blocks(canonical)
+              if b[0] != HISTORY_KNOWN_AS]
     if blocks:
-        out.append(infobox_text(blocks))
-        for note in catalogue_notes(canonical):
-            out.append("")
-            out += _wrap_note(note)
-    else:
-        # True rather than apologetic, and it names the page that does have
-        # something to say -- an empty page with no way onward is a dead end.
-        out += ["", "  Nothing recorded here yet."]
+        pad = max(len(k) for _t, r in blocks for k, _v, _n in r)
+        for title, rows in blocks:
+            out += ["", f"  {title}"]
+            for k, v, _n in rows:
+                if not isinstance(v, list):
+                    out.append(f"  {k.ljust(pad)}   {v}")
+                    continue
+                w = max(len(nm) for nm, _when in v)
+                for i, (nm, when) in enumerate(v):
+                    lead = k.ljust(pad) if i == 0 else " " * pad
+                    out.append(f"  {lead}   {nm.ljust(w)}   {when}")
+
+    fig = etymology.figure_lines(key)
+    if fig:
+        out += [""] + ["  " + l for l in fig]
+    # A terminal has no hover, so the notes the browser keeps behind an (i)
+    # print in full here.
+    for note in catalogue_notes(canonical):
+        out.append("")
+        out += _wrap_note(note)
     out += ["", f"  where it is tonight:  skymap.sh/{canonical}", ""]
     return "\n".join(out)
 
 
-def history_head(canonical, base_url):
+def about_head(canonical, base_url):
     """Title, description and canonical for the history page.
 
     No og:image. The card is drawn per object by /{obj}/og.png and is a chart
     of tonight's sky, which is precisely what this page is not about; pointing
     at it would unfurl a link about naming as a picture of an altitude.
     """
-    title = html.escape(history_title(canonical))
+    title = html.escape(about_title(canonical))
     desc = html.escape(f"What {canonical} has been called, and what is known "
-                       f"about it. curl skymap.sh/{canonical}/history")
-    url = canonical_url(f"/{quote(canonical)}/history")
+                       f"about it. curl skymap.sh/{canonical}/about")
+    url = canonical_url(f"/{quote(canonical)}/about")
     return "\n".join([
         f'<meta name="description" content="{desc}">',
         f'<link rel="canonical" href="{url}">',
@@ -2818,35 +3127,60 @@ def history_head(canonical, base_url):
     ])
 
 
-def history_body_html(canonical):
-    """The page body: the heading, the rows as a description list, and the
-    way back to the object itself."""
+def about_body_html(canonical):
+    """The page: the object page's own left column, and history in the right.
+
+    Deliberately the same two-column frame the object page uses, filled by
+    the same function on the left. Only the right half differs, which is the
+    whole idea -- one page about a thing, two things it can tell you about it.
+    """
+    key = _facts_key(canonical)
+    data, static_text = about_facts(canonical)
+    left = object_static_html(data, static_text, canonical)
+
     blocks = history_blocks(canonical)
-    obj = quote(canonical)
-    rows = (infobox_html(blocks) if blocks else
-            '<p class="obj-lede">Nothing recorded here yet.</p>')
-    rows += "".join(f'<p class="obj-note">{html.escape(n)}</p>'
-                    for n in catalogue_notes(canonical))
-    return (f'<h1 class="obj-title"><span>{html.escape(canonical)}</span></h1>'
-            f'<div class="obj-cols"><aside class="obj-static">{rows}'
-            f'<p class="obj-src">'
-            f'<a href="/{obj}">Where {html.escape(canonical)} is tonight</a>'
-            f'</p></aside></div>')
+    # Known as already sits in the left column now, with the physical rows.
+    rest = [b for b in blocks if b[0] != HISTORY_KNOWN_AS]
+    blurb = (blurbs.BLURBS.get(key) or ("", ""))[1]
+    paras = ([blurb] if blurb else []) + etymology.prose_for(key)
+    lede = "".join(f'<p class="hist-lede">{copy_html(p)}</p>' for p in paras)
+    rows = about_rows_html(rest) if rest else ""
+    fig = etymology.figure_rows(key)
+    figure = ""
+    if fig:
+        art = "\n".join(
+            (f'<span class="obj-run">{html.escape(t)}</span>' if s
+             else html.escape(t))
+            for t, s in fig)
+        figure = f'<div class="hist-lower"><pre class="hist-fig">{art}</pre></div>'
+    if not (lede or rows or figure):
+        lede = '<p class="hist-lede">Nothing recorded here yet.</p>'
+    right = (f'<p class="obj-lede obj-live-head">'
+             f'More information about {html.escape(canonical)}</p>'
+             f'{lede}{rows}{figure}'
+             f'<p class="obj-src"><a href="/{quote(canonical)}">'
+             f'Where {html.escape(canonical)} is tonight</a></p>')
+    return (f'<div class="obj-head-row">{about_heading_html(canonical)}'
+            f'{object_nav_html(canonical, "about")}</div>'
+            + '<div class="obj-cols">'
+            + f'<aside class="obj-static">{left}</aside>'
+            + f'<div class="obj-live hist-page">{right}</div>'
+            + '</div>')
 
 
-def history_page(canonical, base_url):
+def about_page(canonical, base_url):
     """The whole HTML page. Assembled here rather than in the route for the
     same reason the object page is: the head tags, the CSS and the body have
     to agree, and splitting them across two files is how they stop agreeing.
     """
     return _object_page_template().format(
-        title=html.escape(history_title(canonical)),
-        head_extra=history_head(canonical, base_url) + OBJECT_CSS,
-        header=header_html(f"{canonical}/history"),
+        title=html.escape(about_title(canonical)),
+        head_extra=about_head(canonical, base_url) + OBJECT_CSS,
+        header=header_html(f"{canonical}/about"),
         controls=controls_html(EXPLORE),
-        wide_class="", coming_up_card="",
+        wide_class=" w-wide", coming_up_card="",
         kbd_urls="{}", shortcuts_hint="",
-        body=history_body_html(canonical))
+        body=about_body_html(canonical))
 
 
 def object_intro(facts, canonical, width=76):
@@ -3133,9 +3467,9 @@ def compose_object(r, canonical):
     # The way to the history page, and only where following it repays the
     # click. "Has any rows at all" was the wrong test and put this link on
     # 629 pages whose history is one line of bare catalogue number.
-    if history_is_worth_reading(canonical):
+    if about_is_worth_reading(canonical):
         parts += ["", paint(f"  what it has been called:  "
-                            f"skymap.sh/{canonical}/history", C.MUTE, c)]
+                            f"skymap.sh/{canonical}/about", C.MUTE, c)]
     # The find view opens with its own header line ("Zurich 06 Aug 2026,
     # finding Saturn, full panorama"), which directly under "Tonight from
     # Zurich" says the place and the object twice in two lines.
@@ -3489,7 +3823,25 @@ OBJECT_CSS = """
    which shares .obj-live-head and lays its times out its own way. */
 .obj-live .obj-lede:not(.ecl-head),
 .obj-live .obj-subhead,.obj-live .obj-what{padding-left:14.4px}
+/* That indent is the chart's own two-character gutter, so a heading above it
+   starts in the same column as the altitude labels. The history page has no
+   chart, so there is nothing to line up with and the heading was simply
+   sitting further right than its own paragraphs. */
+.obj-live.hist-page .obj-lede{padding-left:0}
+/* A link inside a paragraph reads as part of the sentence, so it carries the
+   colour the rest of the site only gives on hover. The dim default is for
+   links in a drawing, where seven of them would turn a chart into a list. */
+/* More specific than .obj-live a[href^="/"] above, which was winning and
+   painting these the dim grey meant for star labels on a drawing. A link in
+   a sentence is part of the sentence and reads blue from the start. */
+.obj-live .hist-lede a[href^="/"]{color:#87d7ff;text-decoration:none}
+.obj-live .hist-lede a[href^="/"]:hover{text-decoration:underline}
 .obj-cols>*{margin-top:0}
+/* Same treatment as the inline links in the copy. A row that names a page
+   was already an anchor and looked exactly like the plain values around it,
+   which is a link nobody can see and so is not a link. */
+.obj-facts a[href^="/"]{color:#87d7ff;text-decoration:none}
+.obj-facts a[href^="/"]:hover{text-decoration:underline}
 .obj-facts{display:grid;grid-template-columns:auto 1fr;gap:.42rem .95rem;
   margin:0;font-size:13.5px;line-height:1.45}
 .obj-facts dt{color:#7d8694;white-space:nowrap;align-self:start}
@@ -3503,18 +3855,77 @@ OBJECT_CSS = """
 
 .obj-src{font-style:italic;font-size:11px;line-height:1.45;color:#666e7d;
   margin:1.4rem 0 0;padding-top:.7rem;border-top:1px solid #1c2027}
-/* The way through to /{object}/history. Sized with the fact rows above it
+/* The way through to /{object}/about. Sized with the fact rows above it
    rather than with the credit line below, because it is a way onward and
    the credit is a footnote -- they sat at the same size once and the link
    read as part of the attribution. */
-/* A standing sentence about a catalogue the ladder above just cited. Set as
-   prose rather than as another fact row, because it explains the rows and is
-   not one of them. */
-.obj-note{font-size:13px;line-height:1.55;color:#9aa7b4;margin:.9rem 0 0}
-.obj-history-link{font-size:13px;line-height:1.5;margin:1.1rem 0 0}
-.obj-history-link a{color:#9aa7b4;text-decoration:none;
-  border-bottom:1px solid #2a313b}
-.obj-history-link a:hover{color:#87d7ff;border-bottom-color:#87d7ff}
+/* The history page. Its own layout rather than the object page's, which is
+   a 390px sidebar beside a chart -- there is no chart here, and reusing it
+   put everything down one narrow strip. */
+.hist-page{margin-top:6px}
+/* The blurb, under the heading and above everything else. Sized with the
+   object page's own lede so the two pages open the same way. */
+.hist-lede{color:#c9d1d9;font-size:15px;line-height:1.55;max-width:68ch;
+  margin:.1rem 0 1.6rem}
+/* Blocks side by side while there is room, stacked when there is not. flex
+   with wrap rather than a fixed grid: the blocks are different heights and
+   there are two or three of them depending on the object, so a column count
+   fixed in advance is wrong for most pages. */
+.hist-blocks{display:flex;flex-wrap:wrap;gap:0 52px;align-items:flex-start}
+.hist-blocks>dl{margin:0 0 1.5rem}
+/* The figure stands on its own now that its story reads at the top, so it
+   takes its natural width instead of holding a column open beside it. */
+.hist-lower{margin:.4rem 0 0}
+/* The figure sets the line-height it is drawn for: the rails are box
+   characters and any other leading opens gaps in what should be one line. */
+.hist-fig{margin:0;font-size:12px;line-height:1.35;white-space:pre;
+  overflow-x:auto;color:#c9d1d9}
+@media (max-width:820px){.hist-blocks{gap:0 30px}}
+
+/* A value part that must not be split across lines. Arabic broken mid-word
+   does not merely look wrong -- in a right-to-left run it reorders what is
+   read. */
+.obj-run{white-space:nowrap;unicode-bidi:isolate}
+.obj-sep{color:#5b6472;padding:0 .45em}
+
+/* The history page's own list. A fact row asks a question on the left and
+   answers on the right, so the label is dim and the value bright. This one
+   is the other way round: the designation is what somebody came to find and
+   the cataloguer is only where it is filed. */
+.obj-known dt{color:#7d8694}
+.obj-known dd{color:#e6ebf2}
+
+/* Missions, one per line with the years in their own column. Its own grid
+   inside the dd rather than more rows in the outer one, so the dates line up
+   with each other and not with the fact values above them. */
+.obj-missions{display:grid;grid-template-columns:auto auto;
+  justify-content:start;gap:.2rem .9rem}
+.obj-md{color:#7d8694;font-variant-numeric:tabular-nums}
+
+/* The (i). Drawn rather than set as a character, because U+24D8 is missing
+   from plenty of monospace faces and a tofu box beside every row would be
+   worse than no affordance at all -- the same reasoning gif.py applies to
+   braille, one layer up. */
+.obj-i{display:inline-flex;align-items:center;justify-content:center;
+  width:13px;height:13px;margin-left:.4em;border-radius:50%;
+  border:1px solid #3d4757;color:#8b93a3;
+  font-size:9.5px;font-style:italic;line-height:1;cursor:help;
+  position:relative;vertical-align:baseline;user-select:none}
+.obj-i:hover,.obj-i:focus-visible{border-color:#87d7ff;color:#87d7ff;
+  outline:none}
+.obj-tip{position:absolute;left:50%;top:calc(100% + 8px);
+  transform:translateX(-50%);z-index:30;
+  width:max-content;max-width:270px;padding:9px 11px;
+  border-radius:7px;background:#12151a;border:1px solid #2a313b;
+  box-shadow:0 4px 18px rgba(0,0,0,.55);
+  font-size:12px;font-style:normal;line-height:1.5;color:#c9d1d9;
+  text-align:left;white-space:normal;
+  opacity:0;visibility:hidden;transition:opacity .12s ease}
+.obj-i:hover .obj-tip,.obj-i:focus-visible .obj-tip,
+.obj-i:focus .obj-tip{opacity:1;visibility:visible}
+/* Near the left edge of a 390px column the balloon would hang off the page,
+   so the first column's tip anchors left instead of centring. */
+.obj-known dt .obj-tip{left:0;transform:none}
 /* The live half's prose, above its chart, in the chart's own face and size
    so the two read as one block. */
 .obj-prose{font-size:12px;line-height:1.45;color:#adb6c4;margin:0 0 .7rem;
@@ -3535,6 +3946,12 @@ OBJECT_CSS = """
 .obj-head-row{display:flex;align-items:center;gap:14px;flex-wrap:wrap;
   margin:1.5rem 0 26px}
 .obj-head-row .obj-title{margin:0}
+.obj-tabs{display:inline-flex;gap:4px;padding:3px;border-radius:8px;
+  background:#0d1117;border:1px solid #262c35}
+.obj-tab{display:inline-block;padding:4px 12px;border-radius:6px;
+  font-size:13px;color:#8b93a3;text-decoration:none;line-height:1.5}
+.obj-tab:hover{color:#c9d1d9}
+.obj-tab-on{background:#1c2027;color:#e6ebf2}
 .obj-picker{position:relative;margin:0}
 .obj-picker summary{cursor:pointer;color:#c9d1d9;font-size:13px;
   list-style:none;display:inline-flex;align-items:center;gap:10px;
@@ -3739,7 +4156,8 @@ def object_html(r, canonical, text, data, place=None, base_url="",
     share = object_share_html(r, canonical)
     if title_html and (picker or share):
         title_html = (f'<div class="obj-head-row">'
-                      f'{title_html}{picker}{share}</div>')
+                      f'{title_html}{object_nav_html(canonical, "where")}'
+                      f'{picker}{share}</div>')
     fallback_static, _, live = rest.partition(OBJECT_SLOT)
     if rungs:
         # The live half through the same ladder the place page uses: every
@@ -3750,33 +4168,7 @@ def object_html(r, canonical, text, data, place=None, base_url="",
         # <pre> can only scroll and this column has to wrap: Saturn's moon
         # count ran off the side of the sidebar with no way to read the rest
         # of it.
-        intro_txt = strip_ansi(_first_para(static)).strip()
-        src = object_sources(data)
-        # The portrait gets its own <pre> rather than riding along in the
-        # static text, because it is the one thing on this column that must
-        # not reflow: .obj-art pins the line-height the drawing is built for
-        # (see art.CELL), and text set at any other line-height would squash
-        # every circle back into an ellipse.
-        picture = data.get("art") or []
-        art_html = (art_plate(picture, frame_cls="obj-art-frame",
-                              plate_cls="obj-art", centre_ink=True)
-                    if picture else "")
-        # Same guard as the terminal's line, and it has to stay the same one:
-        # two thresholds would put the link on the browser page and not the
-        # curl one, or the other way round.
-        hist_html = ""
-        if history_is_worth_reading(canonical):
-            hist_html = (f'<p class="obj-history-link">'
-                         f'<a href="/{quote(canonical)}/history">'
-                         f'What {html.escape(canonical)} has been called</a>'
-                         f'</p>')
-        static_html = (art_html
-                       + (f'<p class="obj-lede">{html.escape(intro_txt)}</p>'
-                          if intro_txt else "")
-                       + infobox_html(data.get("infobox"))
-                       + hist_html
-                       + (f'<p class="obj-src">{html.escape(src)}</p>'
-                          if src else ""))
+        static_html = object_static_html(data, static, canonical)
         live_html = ((f'<p class="obj-lede obj-live-head">{live_head}</p>'
                       if live_head else "")
                      + (f'<p class="obj-subhead">{_link_best_date(live_sub, canonical, data)}</p>'
@@ -9212,6 +9604,22 @@ def legend_text(color=True):
     return "\n".join(L)
 
 
+def _grid(items, target=88):
+    """(column width, columns per row) that fit the longest item there is.
+
+    Measured rather than guessed. The constellation list was 18 wide and five
+    across, which held until Triangulum Australe arrived at nineteen
+    characters: it ran into Vela with no gutter at all and knocked that one
+    row out of line with the eleven above it.
+
+    Returned as a pair because the text list and the HTML list are two
+    renderings of one shape, and a number typed into only one of them is a
+    misalignment waiting for the next long name.
+    """
+    w = max((len(s) for s in items), default=0) + 2
+    return w, max(1, (target - 2) // w)
+
+
 def _columns(items, col_width, per_row):
     L = []
     for i in range(0, len(items), per_row):
@@ -9344,7 +9752,7 @@ def catalog_text(color=True):
     L.append(f"  {'':2} curl skymap.sh/eclipse for the next one")
     L.append("")
     L.append(head(f"CONSTELLATIONS ({len(d['asterisms'])})"))
-    L += _columns(d["asterisms"], 18, 5)
+    L += _columns(d["asterisms"], *_grid(d["asterisms"]))
     L.append("")
     L.append(head(f"NAMED STARS ({len(d['named_stars'])}) -- brightest first"))
     for s in d["named_stars"]:
@@ -9453,9 +9861,10 @@ def catalog_html():
     L.append(f"    {col(eclipse_page.table_span(), C.LABEL)}")
     L.append("")
     L.append(head(f"CONSTELLATIONS ({len(d['asterisms'])})"))
-    for i in range(0, len(d["asterisms"]), 5):
-        row = d["asterisms"][i:i + 5]
-        line = "  " + "".join(link(nm) + _pad_html(len(nm), 18) for nm in row)
+    _cw, _per = _grid(d["asterisms"])
+    for i in range(0, len(d["asterisms"]), _per):
+        row = d["asterisms"][i:i + _per]
+        line = "  " + "".join(link(nm) + _pad_html(len(nm), _cw) for nm in row)
         L.append(line.rstrip())
     L.append("")
     L.append(head(f"NAMED STARS ({len(d['named_stars'])}) -- brightest first"))

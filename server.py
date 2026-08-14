@@ -1395,13 +1395,13 @@ def stats_text(n=50, map_slot=False):
         L.append("constellation evolution")
         L.append(f"  {'gif':12} {_stat['evolution_gif']:>8,}")
         L.append("")
-    if _stat["history"]:
+    if _stat["about"]:
         # Counted apart from the object pages it hangs off. Somebody reading
-        # /Betelgeuse/history came for what it is called, not for where to
+        # /Betelgeuse/about came for what it is called, not for where to
         # point, and folding the two together would hide which of the two
         # this site is actually being used for.
         L.append("object history")
-        L.append(f"  {'page':12} {_stat['history']:>8,}")
+        L.append(f"  {'page':12} {_stat['about']:>8,}")
         L.append("")
     if _stat["events"] or _stat["events.ics"] or _stat["events.rss"]:
         L.append("what's coming up")
@@ -1529,7 +1529,7 @@ def stats_json(n=50):
                      distinct=len(_eclipse_keys),
                      top=dict(_eclipse_keys.most_common(n))),
         evolution=dict(gif=_stat["evolution_gif"]),
-        history=dict(page=_stat["history"]),
+        about=dict(page=_stat["about"]),
         events=dict(page=_stat["events"], ics=_stat["events.ics"],
                     rss=_stat["events.rss"], via_nav=_stat["events_ip"],
                     places_distinct=len(_events_places),
@@ -4299,13 +4299,13 @@ def object_evolution_gif(request: Req, obj: str):
                                  f'-evolution.gif"'})
 
 
-@app.get("/{obj}/history", response_class=PlainTextResponse)
-def object_history(request: Req, obj: str):
+@app.get("/{obj}/about", response_class=PlainTextResponse)
+def object_about(request: Req, obj: str):
     """What an object has been called, and what is known about it.
 
     Registered ahead of /{place}/{obj} for the same reason /{obj}/og.png and
     /{obj}/evolution.gif are: otherwise "Venus" is read as a place and
-    "history" as an object. `history` is in objects.RESERVED so nothing in
+    "about" as an object. `about` is in objects.RESERVED so nothing in
     any catalogue can ever claim the second segment back.
 
     No place in the path and no moment, deliberately. Where you stand does
@@ -4317,9 +4317,9 @@ def object_history(request: Req, obj: str):
     if canonical is None:
         return PlainTextResponse(
             f"Don't know '{obj}'.\n\n"
-            "history is written for anything with a page:\n"
-            "  curl 'skymap.sh/Betelgeuse/history'\n", status_code=404)
-    _stat["history"] += 1
+            "about is written for anything with a page:\n"
+            "  curl 'skymap.sh/Betelgeuse/about'\n", status_code=404)
+    _stat["about"] += 1
     mode, _colour = _wants(request)
     # A week, and a month at the edge. Nothing on this page depends on the
     # reader or the hour, which is what earns a cache time the object pages
@@ -4327,9 +4327,9 @@ def object_history(request: Req, obj: str):
     headers = {"Cache-Control": "public, max-age=604800, s-maxage=2592000"}
     if mode == "html":
         base_url = str(request.base_url).rstrip("/")
-        return HTMLResponse(api.history_page(canonical, base_url),
+        return HTMLResponse(api.about_page(canonical, base_url),
                             headers=headers)
-    return PlainTextResponse(api.history_text(canonical), headers=headers)
+    return PlainTextResponse(api.about_text(canonical), headers=headers)
 
 
 @app.get("/{obj}/og.png")

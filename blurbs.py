@@ -113,11 +113,7 @@ BLURBS = {
 
     "Betelgeuse": (
         "a red supergiant near the end of its life",
-        "Betelgeuse is so large that if it replaced the Sun its surface would "
-        "reach past the orbit of Mars. It will explode as a supernova at some "
-        "point in the next hundred thousand years, and when it does it will be "
-        "bright enough to read by. It visibly dimmed in 2019 and 2020, which "
-        "turned out to be dust rather than the end."),
+        "Betelgeuse is so large that, if it replaced the Sun, its surface would reach past the orbit of Mars. It will explode as a supernova at some point in the next hundred thousand years, and when it does it will be bright enough to read by. It is also the most famous typo in the sky. The initial \"ya\" was read as \"ba\" by medieval monks who could not read Arabic properly (the two letters look alike), giving Bat al-Jawza', which means nothing in any language, and then Bedalgeuze in the Alfonsine Tables of about 1250."),
 
     "Rigel": (
         "a blue supergiant, and the brightest star in Orion",
@@ -143,56 +139,51 @@ BLURBS = {
 
     "Arcturus": (
         "an orange giant, and the brightest star north of the equator",
-        "Arcturus is an old star that has already left the main sequence and "
-        "swollen to 25 times the Sun's width. It is moving through the galaxy "
-        "at a steep angle to everything around it, which suggests it arrived "
-        "with a small galaxy the Milky Way absorbed long ago."),
+        "Arcturus is an old star that has already left the main sequence and swollen to 25 times the Sun's width. It is moving through the galaxy at a steep angle to everything around it, which suggests it arrived with a small galaxy the Milky Way absorbed long ago. Its name means the bear guard, and it follows the Great Bear around the pole. One of the very few star names that has come down unchanged from Greek without passing through Arabic on the way."),
 
     "Antares": (
         "the heart of the scorpion, and a rival to Mars",
-        "The name means \"rival of Mars\", which is what it looks like: a red "
-        "supergiant low in the summer sky, close enough in colour to be "
-        "mistaken for the planet. It is roughly 700 times the Sun's width. "
-        "Like Betelgeuse it will end as a supernova."),
+        "The name means \"rival of Mars\", which is what it looks like: a red supergiant sitting on the ecliptic sky, close enough in colour to be mistaken for the planet. You can tell them apart only by watching which one is moving. It is roughly 700 times the Sun's width. Like Betelgeuse it will end as a supernova. Named for its colour."),
+
+    "Altair": (
+        "the flying eagle, and one half of a Chinese love story",
+        "From an-nasr at-ta'ir \u0627\u0644\u0646\u0633\u0631 \u0627\u0644\u0637\u0627\u0626\u0631 "
+        "the flying eagle, against [[Vega]]'s falling one. In Chinese the "
+        "same star is the Cowherd, kept apart from the Weaver Girl by the "
+        "Milky Way and allowed across it one night a year."),
 
     "Aldebaran": (
         "the eye of the bull, and not part of the cluster behind it",
-        "Aldebaran appears to sit in the Hyades cluster but is less than half "
-        "as far away, in front of it by chance. It is an orange giant 44 times "
-        "the Sun's width. Pioneer 10 is heading roughly in its direction and "
-        "will pass it in about two million years."),
+        "Aldebaran appears to sit in the Hyades cluster but is less than "
+        "half as far away, in front of it by chance. It is an orange "
+        "giant 44 times the Sun's width. Pioneer 10 is heading "
+        "roughly in its direction and will pass it in about two "
+        "million years. Its name is really an instruction for finding "
+        "it: It follows the Pleiades across the sky all night."),
 
     "Algol": (
         "the demon star, and the first variable anyone explained",
-        "Every 2.87 days Algol fades by more than a magnitude for about ten "
-        "hours, because a dimmer companion passes in front of it. The pattern "
-        "is regular enough that ancient names for it across several cultures "
-        "suggest people noticed long before John Goodricke worked out why in "
-        "1783. You can watch a minimum happen in one evening with no "
-        "equipment at all."),
+        "Every 2.87 days, Algol fades by more than a magnitude for about "
+        "ten hours, because a dimmer companion passes in front of it. "
+        "The pattern is regular enough that ancient names for it "
+        "across several cultures suggest people noticed long before "
+        "John Goodricke worked out why in 1783. You can watch a "
+        "minimum happen with no equipment at all. The head of the "
+        "ghoul or the severed head of Medusa, its name carries a dark "
+        "meaning. Fitting for a darkening star."),
 
     "Capella": (
         "the sixth brightest star, and actually four",
-        "Capella looks like one star and is two pairs: two yellow giants "
-        "orbiting each other in 104 days, and a distant pair of red dwarfs. It "
-        "is far enough north to be circumpolar from most of Europe and North "
-        "America, so it never sets."),
+        "Capella looks like one star but is in fact a four-star system: two yellow giants orbiting each other in 104 days, and a distant pair of red dwarfs. It is far enough north to be circumpolar from most of Europe and North America, so it never sets. Its name comes from the goat Amalthea, who suckled the infant Zeus. One of the few bright stars whose name is an animal."),
 
     "Deneb": (
         "one of the most luminous stars we can see",
-        "Deneb is faint compared with Sirius and vastly brighter in reality: "
-        "somewhere around 200,000 times the Sun's output, seen from a distance "
-        "nobody has pinned down better than roughly 2,600 light years. If it "
-        "sat where Sirius does it would cast shadows at noon."),
+        "Deneb is faint compared to Sirius, but vastly brighter in reality: somewhere around 200,000 times the Sun's output, seen from a distance of approximately 2,600 light years. If it sat where Sirius does it would cast shadows at noon. Its name (the tail) is the most productive root in the sky. The same word gives Denebola, the lion's tail, Deneb Algedi, the goat's tail, and Deneb Kaitos, the sea monster's tail."),
 
     # -------------------------------------------------------------- deep sky
     "Andromeda Galaxy": (
         "the furthest thing you can see without a telescope",
-        "It is 2.5 million light years away, which makes the light reaching "
-        "your eye older than our species. It spans six times the width of the "
-        "full Moon, though only the bright core shows without optics. It is "
-        "heading towards us and will merge with the Milky Way in about four "
-        "billion years."),
+        "Andromeda is 2.5 million light years away. It spans six times the width of the full Moon, though only the bright core shows without optics. It is heading towards us and will merge with the Milky Way in about four billion years. Named for the constellation it sits in. Al-Sufi recorded it in 964 as a little cloud, which is the oldest surviving description of anything outside our own galaxy, written a thousand years before anyone knew what it was."),
 
     "Orion Nebula": (
         "a star nursery visible to the naked eye",
@@ -236,7 +227,7 @@ BLURBS = {
         "the brightest planetary nebula in the sky",
         "It is the same kind of object as the Ring Nebula but eight times larger "
         "and much easier: binoculars from a dark site will show it. The name "
-        "\"planetary nebula\" is a historical mistake -- they looked like "
+        "\"planetary nebula\" is a historical mistake: they looked like "
         "planetary discs in early telescopes and have nothing to do with "
         "planets."),
 
@@ -256,10 +247,7 @@ BLURBS = {
 
     "Crab Nebula": (
         "the wreckage of a star that exploded in 1054",
-        "Chinese and Japanese astronomers recorded a new star in Taurus in "
-        "July 1054, bright enough to see in daylight for three weeks. What is "
-        "left is still expanding at 1,500 kilometres a second, with a "
-        "neutron star at the centre spinning 30 times a second."),
+        "Chinese and Japanese astronomers recorded a new star in Taurus in July 1054, bright enough to see in daylight for three weeks. What is left of this supernova is the Crab Nebula. It still expanding at 1,500 kilometres a second, with a neutron star at the centre spinning 30 times a second. Its name comes from a sketch Lord Rosse made in 1844 through the telescope at Birr Castle. The drawing looks like a crab and, even if the later photographs do not, the name survived."),
 
     "Triangulum Galaxy": (
         "the third galaxy in our local group, and a test of dark skies",
@@ -270,10 +258,7 @@ BLURBS = {
 
     "Double Cluster": (
         "two open clusters side by side",
-        "The two clusters sit close enough together to share one field of view "
-        "and were catalogued as a pair by Hipparchus. Both are young, around "
-        "12 million years, and physically associated rather than a line-of-"
-        "sight coincidence. Best in binoculars."),
+        "The two clusters sit close enough together to share one field of view and were catalogued as a pair by Hipparchus. Both are young, around 12 million years, and actually physically associated rather than a line-of-sight coincidence."),
 
     # --------------------------------------------------------- meteor showers
     "Perseids": (
@@ -281,8 +266,8 @@ BLURBS = {
         "Earth passes through the dust of comet Swift-Tuttle every August, "
         "and the Perseids arrive in warm weather at a comfortable hour, which "
         "is why they are the shower most people have seen. Around 100 an hour "
-        "at the peak from a dark site. You do not need to look at the radiant "
-        "-- meteors appear all over the sky."),
+        "at the peak from a dark site. You do not need to look at the radiant: "
+        "meteors appear all over the sky."),
 
     "Geminids": (
         "the best shower of the year, if you can stand the cold",
@@ -308,11 +293,7 @@ BLURBS = {
     # -------------------------------------------------------------- asterisms
     "Big Dipper": (
         "seven stars that point at the pole",
-        "Not a constellation but part of Ursa Major, and probably the most "
-        "widely recognised shape in the northern sky. The two stars at the end "
-        "of the bowl point at Polaris. The middle star of the handle, Mizar, "
-        "has a companion visible to good eyesight, which was used as a vision "
-        "test for centuries."),
+        "It is not a constellation, but a part of Ursa Major, and probably the most widely recognised shape in the northern sky. The two stars at the end of the bowl point at Polaris. The middle star of the handle, Mizar, has a companion visible to good eyesight, which was used as a vision test for centuries."),
 
     "Orion's Belt": (
         "three stars in a row, and the easiest signpost in the sky",
