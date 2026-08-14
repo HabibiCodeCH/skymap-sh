@@ -2378,6 +2378,38 @@ class TheSphereWelcomeChecksWhereYouAre(unittest.TestCase):
         self.assertIn('id="where-off-no"', resp.text)
         self.assertIn("Looks like you", resp.text)
 
+    def test_a_guess_in_the_right_zone_still_says_it_guessed(self):
+        """The failure the zone test cannot see. A phone leaving wifi for
+        mobile data reports the carrier's gateway, which is usually the next
+        city over and always in the same zone: Geneva became Lausanne, 40 km
+        off, and both are Europe/Zurich. The zone rule waved it through and
+        the page named the wrong city with no hedge on it at all.
+
+        Travelling is the loud failure and keeps the strong wording. This is
+        the quiet one and gets its own, quieter line."""
+        for path in ("/Zurich/sphere", "/Zurich"):
+            resp = self.client.get(path, headers=BROWSER)
+            self.assertIn("guessed from your network", resp.text, path)
+            self.assertIn("Looks like you", resp.text, path)
+
+    def test_a_position_already_granted_is_used_without_asking(self):
+        """Never a new permission sheet, which is the rule that made this a
+        button in the first place. "granted" means the sheet was already
+        answered yes, so there is none left to raise, and the only reason
+        every visit still fell back to the IP guess was that nothing ever
+        went and looked.
+
+        Both other states do nothing: the check is for 'granted' exactly."""
+        for path in ("/Zurich/sphere", "/Zurich"):
+            body = self.client.get(path, headers=BROWSER).text
+            self.assertIn("navigator.permissions.query", body, path)
+            self.assertIn("state==='granted'", body, path)
+            self.assertIn("skymapAutoLocate", body, path)
+        # And it decides only: the page hands it the locating code it already
+        # has, so neither document grows a second getCurrentPosition.
+        self.assertIn("skymapAutoLocate(sphereLocate)",
+                      self.client.get("/Zurich/sphere", headers=BROWSER).text)
+
     def test_it_compares_zones_and_not_offsets(self):
         resp = self.client.get("/Zurich/sphere", headers=BROWSER)
         self.assertIn("resolvedOptions().timeZone", resp.text)
