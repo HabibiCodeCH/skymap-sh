@@ -164,7 +164,7 @@ class ConfidentNearbyCity(unittest.TestCase):
     """_confident_nearby_city backs the browser-only redirect from raw
     coordinates to a city name (server.py's _respond) -- unlike
     _nearest_city's own up-to-~550 km fallback (a soft "near X" hint, never
-    an identity claim), this only ever returns a city close enough (~55 km)
+    an identity claim), this only ever returns a city near enough (~11 km)
     that swapping the coordinates for its name is still an honest thing to
     show in the URL bar and search field."""
 
@@ -181,6 +181,30 @@ class ConfidentNearbyCity(unittest.TestCase):
 
     def test_none_at_the_pole(self):
         self.assertIsNone(api._confident_nearby_city(90.0, 0.0))
+
+    def test_the_nearby_city_wins_over_the_populous_one(self):
+        """A phone in Geneva reported the middle of Lake Geneva. The search
+        radius was 0.5 deg, and _nearest_city returns the most POPULOUS city
+        in that band before the nearest one, so it handed back Geneva 48 km
+        away rather than Lausanne 4.5 km away. The reach test then rightly
+        refused a city two hours' drive off, and the reader was shown the
+        lake they were not standing in.
+        """
+        self.assertEqual(api._confident_nearby_city(46.5, 6.6), "Lausanne")
+
+    def test_a_big_city_still_claims_its_own_outskirts(self):
+        """The other half of the same rule, and the reason "nearest city"
+        is not the fix. 30 km out from the middle of London the closest
+        city is a suburb whose own footprint is about 5 km wide, so the
+        point is inside London and inside nothing else."""
+        self.assertEqual(api._confident_nearby_city(51.75, -0.35), "London")
+
+    def test_a_city_cannot_claim_past_its_own_footprint(self):
+        """Containment, not proximity. Geneva reaches ~8 km from its middle
+        and the lake reading was 48 km out, so Geneva is not an answer there
+        however large it is next to Lausanne."""
+        self.assertNotEqual(api._confident_nearby_city(46.5, 6.6), "Geneva")
+        self.assertIsNone(api._confident_nearby_city(46.42, 5.90))
 
 
 class CoordinatesOnlyClaimACityTheyAreActuallyIn(unittest.TestCase):

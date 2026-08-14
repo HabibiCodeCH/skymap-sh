@@ -484,17 +484,66 @@ def _confident_nearby_city(lat, lon):
     Distinct from _nearest_city's own up-to-550 km fallback, which only ever
     backs a soft "near X" hint -- this one replaces the coordinates in the
     URL and in everything computed from them, so it has to be a claim worth
-    making rather than the closest thing on the list."""
-    hit = _nearest_city(lat, lon, prefer_radius_deg=0.5, max_radius_deg=1.0)
-    if not hit:
-        return None
-    dy = (hit[0] - lat) * 111.32
-    dx = (hit[1] - lon) * 111.32 * math.cos(math.radians(lat))
-    reach = max(_city_radius_km(hit[6]) * _CITY_CLAIM_MARGIN, _CITY_CLAIM_MIN_KM)
-    return hit[7] if math.hypot(dy, dx) <= reach else None
+    making rather than the closest thing on the list.
+
+    The question asked here is "whose footprint is this point inside", which
+    is neither "nearest" nor "biggest nearby", and both of those are wrong in
+    a way that shipped:
+
+      biggest nearby -- what this used to do, via _nearest_city's populous
+      preference over a 0.5 degree band. A phone in Geneva reporting the
+      middle of Lake Geneva was handed Geneva, 48 km off, because Geneva
+      outweighs Lausanne 4.5 km off. The reach test then rightly refused a
+      city two hours' drive away and the reader fell through to raw
+      coordinates, shown a lake they were not standing in, never offered the
+      city they were beside.
+
+      nearest -- what fixes the lake and breaks London. 30 km out from the
+      middle of London the closest city is some suburb whose own footprint
+      is 5 km wide, so the point is inside London and inside nothing else,
+      and answering with the suburb is the case the populous preference was
+      introduced to prevent in the first place.
+
+    Testing containment instead settles both, because the radius is the
+    city's own: every city whose footprint covers the point is a true
+    answer, and the most populous of those is the one a person would say.
+    London reaches 58 km and its suburbs reach five, so London wins the
+    outskirts without being able to claim the next county.
+    """
+    key = (round(lat, 1), round(lon, 1))
+    cached = _CONFIDENT_CACHE.get(key)
+    if cached is not None:
+        return cached or None
+    coslat = math.cos(math.radians(lat))
+    best, best_pop = None, -1
+    for hits in _cities().values():
+        for h in hits:
+            # Cheap box first. Nothing on the list reaches further than about
+            # 85 km even at Shanghai's population, so a 1.5 degree window is
+            # slack enough to be a pure optimisation rather than a second,
+            # quieter radius rule.
+            if abs(h[0] - lat) > 1.5 or abs(h[1] - lon) * coslat > 1.5:
+                continue
+            if h[6] <= best_pop:
+                continue
+            dy = (h[0] - lat) * 111.32
+            dx = (h[1] - lon) * 111.32 * coslat
+            reach = max(_city_radius_km(h[6]) * _CITY_CLAIM_MARGIN,
+                        _CITY_CLAIM_MIN_KM)
+            if dy * dy + dx * dx <= reach * reach:
+                best, best_pop = h[7], h[6]
+    if len(_CONFIDENT_CACHE) >= _NEAREST_MAX:
+        _CONFIDENT_CACHE.clear()
+    _CONFIDENT_CACHE[key] = best or ""
+    return best
 
 
 _NEAREST_CACHE = {}
+# _confident_nearby_city's own, keyed on the same 0.1 degree cell _geo()
+# already rounds to. Separate from _NEAREST_CACHE because it answers a
+# different question over the same scan, and sharing a cache between the two
+# is how one of them silently starts returning the other's answer.
+_CONFIDENT_CACHE = {}
 _NEAREST_MAX = 4000
 
 LATLON = re.compile(r"^\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*$")
