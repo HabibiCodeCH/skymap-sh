@@ -1992,9 +1992,14 @@ def object_infobox(facts, tgt, width=76):
         if b.get("zhr"):
             add("Rate at peak", f"up to {b['zhr']} an hour")
 
-    # Measured values from JPL Horizons, then the hand-written history.
+    # Measured values from JPL Horizons, then the hand-written physical ones.
     # Each skipped where an earlier block already answered the same question,
     # so an object never carries two answers to one label.
+    #
+    # The hand-written HISTORY -- who found it, what we sent -- is no longer
+    # here. It moved to /{object}/history, which is why facts_table now has
+    # two orders rather than one. This page is about where to find the thing;
+    # the four rows that were least to do with that have a page of their own.
     have = {k for k, _v in rows}
     measured = [(k, v) for k, v in facts_table.measured(facts["object"])
                 if k not in have]
@@ -2019,8 +2024,13 @@ def object_infobox(facts, tgt, width=76):
     tonight = [(e["name"], _event_stamp(e))
                for e in (facts.get("tonight_events") or [])[1:]]
 
+    # measured and written share one heading now. They never overlap -- JPL
+    # covers the nine solar-system bodies and the hand-written rows cover the
+    # stars and deep sky that JPL knows nothing about -- and both answer the
+    # same question, which is what the thing physically is. They were only
+    # ever separate because the second list also carried the history.
     blocks = [(None, rows), (TONIGHT_BLOCK, tonight),
-              ("Physical", measured), ("History", written)]
+              ("Physical", measured + written)]
     return [(t, r) for t, r in blocks if r]
 
 
@@ -2543,6 +2553,219 @@ def object_sources(facts):
     return "; ".join(out) + "."
 
 
+# --------------------------------------------------------- /{object}/history
+#
+# The durable page. No place in the path and no moment in it: where you stand
+# changes nothing about who found a thing or what it has been called. That is
+# the same argument /{object}/evolution.gif makes, and it is what lets this
+# one be cached hard and served identically to everybody.
+#
+# Deliberately prose-free at this stage. Everything here is either derived
+# from catalogue columns already on disk or lifted from the four history rows
+# facts.py already carried, so the page exists and says something true before
+# a word of it is written by hand.
+
+_DESIG_INDEX = None
+
+
+def _designation_index():
+    """Canonical object name -> the catalogue row it came from.
+
+    objects._index() maps a name somebody typed to a canonical one; this maps
+    that canonical back to the record, which is what the designations need. A
+    deep-sky object answers to as many as three canonicals -- M31, NGC224 and
+    Andromeda Galaxy are all real paths -- and all three land on one row.
+    """
+    global _DESIG_INDEX
+    if _DESIG_INDEX is not None:
+        return _DESIG_INDEX
+    idx = {}
+    for s in sky._load("stars.json"):
+        if s.get("n"):
+            idx[s["n"]] = ("star", s)
+    # Brightest first and first writer wins, matching objects._index()'s own
+    # rule. Without it a faint NGC entry sharing a name takes the row off the
+    # bright object that owns the path.
+    for o in sorted(sky._load("deepsky.json"), key=lambda o: o["m"]):
+        for key in (o.get("cn"), o.get("n"), o.get("id")):
+            if key and key not in idx:
+                idx[key] = ("dso", o)
+    _DESIG_INDEX = idx
+    return idx
+
+
+def designations(canonical):
+    """Every catalogue name this object answers to, as (name, where from).
+
+    Derived entirely from columns already on disk, which is what makes this
+    the one part of the history page covering all 1,220 objects rather than
+    the 36 that have hand-written entries.
+
+    "Roughly" in the Bayer gloss is doing real work and is not hedging: Bayer
+    worked from Tycho's magnitudes by eye in 1603, and the letters are out of
+    brightness order often enough that stating it as a rule would be wrong.
+    """
+    rows = []
+    sym = PLANET_SYMBOLS.get(canonical)
+    if sym:
+        # The solar-system bodies have no catalogue number to ladder. The
+        # symbol is the one durable designation they carry, and it is already
+        # on the object page's infobox, so this is the same fact in the place
+        # that now explains it.
+        rows.append((sym, "the astronomical symbol"))
+        return rows
+    kind_rec = _designation_index().get(canonical)
+    if not kind_rec:
+        return rows
+    kind, rec = kind_rec
+    if kind == "star":
+        if rec.get("n"):
+            rows.append((rec["n"], "the name in common use"))
+        if rec.get("b") and rec.get("c"):
+            const = objects.CONSTELLATION_NAMES.get(rec["c"], rec["c"])
+            rows.append((f'{rec["b"]} {rec["c"]}',
+                         f"Bayer's letter for {const}, assigned 1603"))
+        if rec.get("hr"):
+            rows.append((f'HR {rec["hr"]}', "Yale Bright Star Catalogue"))
+        return rows
+    if rec.get("cn"):
+        rows.append((rec["cn"], "the name in common use"))
+    n = rec.get("n") or ""
+    if n.startswith("M") and n[1:].isdigit():
+        rows.append((n, "Messier's catalogue, 1781"))
+    ident = rec.get("id") or ""
+    if ident.startswith("NGC") and ident[3:].isdigit():
+        # Stored without a space, printed with one: NGC224 is a key and
+        # "NGC 224" is how the catalogue writes it.
+        rows.append((f"NGC {ident[3:]}",
+                     "Dreyer's New General Catalogue, 1888"))
+    return rows
+
+
+HISTORY_KNOWN_AS = "Known as"
+HISTORY_BLOCK = "History"
+
+
+def _facts_key(canonical):
+    """The name facts.py files this object under.
+
+    A deep-sky object answers to three canonicals and FACTS is keyed on only
+    one of them -- the common name. So /M31 and /NGC224 came back with the
+    designations but no history at all, while /Andromeda Galaxy, the same
+    object, had both. Three URLs for one thing and only one of them any good.
+    """
+    if facts_table.FACTS.get(canonical):
+        return canonical
+    kind_rec = _designation_index().get(canonical)
+    if kind_rec and kind_rec[0] == "dso":
+        return kind_rec[1].get("cn") or canonical
+    return canonical
+
+
+def history_blocks(canonical):
+    """The history page's rows, in the same (title, rows) shape the object
+    page's infobox uses -- so both renderers are reused rather than a second
+    pair written for a second page."""
+    blocks = []
+    desig = designations(canonical)
+    if desig:
+        blocks.append((HISTORY_KNOWN_AS, desig))
+    written = facts_table.history_for(_facts_key(canonical))
+    if written:
+        blocks.append((HISTORY_BLOCK, written))
+    return blocks
+
+
+def history_is_worth_reading(canonical):
+    """Whether to point a reader at this object's history page.
+
+    Not the same question as whether the page exists -- every object has one,
+    the same way every object has a page at all. This asks whether following
+    the link repays the click, and for most of the catalogue it does not:
+    629 of the 1,244 objects have exactly one row, a bare NGC number, and a
+    link to that is worse than no link.
+
+    Two things earn it. Any written history, however short -- the Perseids
+    carry one row and it is the year somebody worked out where they come
+    from, which is worth reading. Or more than one designation, which means
+    the object has a name people use or a Messier number beside its
+    catalogue entry, rather than only the entry.
+    """
+    blocks = dict(history_blocks(canonical))
+    if blocks.get(HISTORY_BLOCK):
+        return True
+    return len(blocks.get(HISTORY_KNOWN_AS) or ()) > 1
+
+
+def history_title(canonical):
+    return f"skymap.sh: {canonical}, history"
+
+
+def history_text(canonical):
+    """The terminal rendering. Same rows, same order as the browser gets."""
+    blocks = history_blocks(canonical)
+    out = [f"history of {canonical}"]
+    if blocks:
+        out.append(infobox_text(blocks))
+    else:
+        # True rather than apologetic, and it names the page that does have
+        # something to say -- an empty page with no way onward is a dead end.
+        out += ["", "  Nothing recorded here yet."]
+    out += ["", f"  where it is tonight:  skymap.sh/{canonical}", ""]
+    return "\n".join(out)
+
+
+def history_head(canonical, base_url):
+    """Title, description and canonical for the history page.
+
+    No og:image. The card is drawn per object by /{obj}/og.png and is a chart
+    of tonight's sky, which is precisely what this page is not about; pointing
+    at it would unfurl a link about naming as a picture of an altitude.
+    """
+    title = html.escape(history_title(canonical))
+    desc = html.escape(f"What {canonical} has been called, and what is known "
+                       f"about it. curl skymap.sh/{canonical}/history")
+    url = canonical_url(f"/{quote(canonical)}/history")
+    return "\n".join([
+        f'<meta name="description" content="{desc}">',
+        f'<link rel="canonical" href="{url}">',
+        '<meta property="og:type" content="article">',
+        f'<meta property="og:title" content="{title}">',
+        f'<meta property="og:description" content="{desc}">',
+        f'<meta property="og:url" content="{url}">',
+        '<meta property="og:site_name" content="skymap.sh">',
+    ])
+
+
+def history_body_html(canonical):
+    """The page body: the heading, the rows as a description list, and the
+    way back to the object itself."""
+    blocks = history_blocks(canonical)
+    obj = quote(canonical)
+    rows = (infobox_html(blocks) if blocks else
+            '<p class="obj-lede">Nothing recorded here yet.</p>')
+    return (f'<h1 class="obj-title"><span>{html.escape(canonical)}</span></h1>'
+            f'<div class="obj-cols"><aside class="obj-static">{rows}'
+            f'<p class="obj-src">'
+            f'<a href="/{obj}">Where {html.escape(canonical)} is tonight</a>'
+            f'</p></aside></div>')
+
+
+def history_page(canonical, base_url):
+    """The whole HTML page. Assembled here rather than in the route for the
+    same reason the object page is: the head tags, the CSS and the body have
+    to agree, and splitting them across two files is how they stop agreeing.
+    """
+    return _object_page_template().format(
+        title=html.escape(history_title(canonical)),
+        head_extra=history_head(canonical, base_url) + OBJECT_CSS,
+        header=header_html(f"{canonical}/history"),
+        controls=controls_html(EXPLORE),
+        wide_class="", coming_up_card="",
+        kbd_urls="{}", shortcuts_hint="",
+        body=history_body_html(canonical))
+
+
 def object_intro(facts, canonical, width=76):
     """Title, one-line gloss and the paragraph under it.
 
@@ -2824,6 +3047,12 @@ def compose_object(r, canonical):
         parts += [""] + ["  " + l for l in picture]
     if box:
         parts += ["", box]
+    # The way to the history page, and only where following it repays the
+    # click. "Has any rows at all" was the wrong test and put this link on
+    # 629 pages whose history is one line of bare catalogue number.
+    if history_is_worth_reading(canonical):
+        parts += ["", paint(f"  what it has been called:  "
+                            f"skymap.sh/{canonical}/history", C.MUTE, c)]
     # The find view opens with its own header line ("Zurich 06 Aug 2026,
     # finding Saturn, full panorama"), which directly under "Tonight from
     # Zurich" says the place and the object twice in two lines.
@@ -3191,6 +3420,14 @@ OBJECT_CSS = """
 
 .obj-src{font-style:italic;font-size:11px;line-height:1.45;color:#666e7d;
   margin:1.4rem 0 0;padding-top:.7rem;border-top:1px solid #1c2027}
+/* The way through to /{object}/history. Sized with the fact rows above it
+   rather than with the credit line below, because it is a way onward and
+   the credit is a footnote -- they sat at the same size once and the link
+   read as part of the attribution. */
+.obj-history-link{font-size:13px;line-height:1.5;margin:1.1rem 0 0}
+.obj-history-link a{color:#9aa7b4;text-decoration:none;
+  border-bottom:1px solid #2a313b}
+.obj-history-link a:hover{color:#87d7ff;border-bottom-color:#87d7ff}
 /* The live half's prose, above its chart, in the chart's own face and size
    so the two read as one block. */
 .obj-prose{font-size:12px;line-height:1.45;color:#adb6c4;margin:0 0 .7rem;
@@ -3437,10 +3674,20 @@ def object_html(r, canonical, text, data, place=None, base_url="",
         art_html = (art_plate(picture, frame_cls="obj-art-frame",
                               plate_cls="obj-art", centre_ink=True)
                     if picture else "")
+        # Same guard as the terminal's line, and it has to stay the same one:
+        # two thresholds would put the link on the browser page and not the
+        # curl one, or the other way round.
+        hist_html = ""
+        if history_is_worth_reading(canonical):
+            hist_html = (f'<p class="obj-history-link">'
+                         f'<a href="/{quote(canonical)}/history">'
+                         f'What {html.escape(canonical)} has been called</a>'
+                         f'</p>')
         static_html = (art_html
                        + (f'<p class="obj-lede">{html.escape(intro_txt)}</p>'
                           if intro_txt else "")
                        + infobox_html(data.get("infobox"))
+                       + hist_html
                        + (f'<p class="obj-src">{html.escape(src)}</p>'
                           if src else ""))
         live_html = ((f'<p class="obj-lede obj-live-head">{live_head}</p>'

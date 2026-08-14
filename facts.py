@@ -285,6 +285,13 @@ FACTS = {
 
 # The order fields print in, and what each is called on the page. Anything a
 # type does not carry is skipped, so one order serves every type.
+#
+# Split in two, and the split is the whole point of /{object}/history. What a
+# thing IS stays on the object page next to where it is tonight; what
+# happened TO it -- who found it, who photographed it first, what we have
+# sent to look at it -- is a different question asked by a different reader,
+# and it now has its own page. Neither list may contain a key from the other:
+# a fact printed twice under two headings is the bug this ordering prevents.
 FIELD_ORDER = [
     ("radius", "Radius"),
     ("mass", "Mass"),
@@ -296,6 +303,12 @@ FIELD_ORDER = [
     ("year", "Year"),
     ("age", "Age"),
     ("parent", "Debris from"),
+]
+
+# The history half. These four used to sit at the bottom of the object
+# page's infobox under a "History" heading, in a box already carrying twenty
+# rows, and they are the ones least to do with finding the thing tonight.
+HISTORY_ORDER = [
     ("discovered", "Discovered"),
     ("first_photo", "First photographed"),
     ("first_visit", "First visited"),
@@ -303,11 +316,24 @@ FIELD_ORDER = [
 ]
 
 
-def for_object(name):
-    """Every hand-written fact for this object, in print order. Empty when we
-    have nothing, which is the common case: 40-odd objects have entries and
-    the other 1,180 fall back to what the catalogues can compute."""
+def _rows(name, order):
     rec = FACTS.get(name)
     if not rec:
         return []
-    return [(label, rec[key]) for key, label in FIELD_ORDER if rec.get(key)]
+    return [(label, rec[key]) for key, label in order if rec.get(key)]
+
+
+def for_object(name):
+    """The hand-written physical facts, in print order. Empty when we have
+    nothing, which is the common case: 40-odd objects have entries and the
+    other 1,180 fall back to what the catalogues can compute."""
+    return _rows(name, FIELD_ORDER)
+
+
+def history_for(name):
+    """The hand-written history, in print order, for /{object}/history.
+
+    Same shape and the same emptiness rule as for_object(). This is what
+    gives the history page something to say on day one, before a word of
+    etymology is written: the 36 objects in FACTS already carry it."""
+    return _rows(name, HISTORY_ORDER)

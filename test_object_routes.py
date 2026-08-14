@@ -574,24 +574,43 @@ def test_facts_carry_no_em_dashes():
 
 
 def test_every_fact_field_has_a_label():
-    """A field with no entry in FIELD_ORDER is written and never printed,
-    which is the quiet kind of wrong."""
+    """A field in neither order is written and never printed, which is the
+    quiet kind of wrong. Two orders since the history moved to its own page,
+    so this has to check the union rather than one of them."""
     import facts
-    known = {k for k, _label in facts.FIELD_ORDER}
+    known = {k for k, _label in facts.FIELD_ORDER + facts.HISTORY_ORDER}
     used = {f for rec in facts.FACTS.values() for f in rec}
     assert used <= known, f"fields that would never print: {sorted(used - known)}"
 
 
+def test_the_two_field_orders_never_overlap():
+    """A key in both lists prints on both pages under two headings, and the
+    two would drift. The split is only safe while it is a partition."""
+    import facts
+    assert not ({k for k, _l in facts.FIELD_ORDER}
+                & {k for k, _l in facts.HISTORY_ORDER})
+
+
 @pytest.mark.parametrize("name, label, fragment", [
     ("Saturn", "Moons", "274"),
+    ("Perseids", "Debris from", "Swift-Tuttle"),
+])
+def test_facts_reach_the_page(client, name, label, fragment):
+    """What the thing IS stays on the object page, next to where to find it."""
+    t = body(client.get(f"/{name}", headers=CURL))
+    assert label in t and fragment in t
+
+
+@pytest.mark.parametrize("name, label, fragment", [
     ("Saturn", "Missions", "Cassini"),
     ("Uranus", "Discovered", "Herschel"),
     ("Andromeda Galaxy", "First photographed", "Isaac Roberts"),
-    ("Perseids", "Debris from", "Swift-Tuttle"),
     ("Algol", "Discovered", "Goodricke"),
 ])
-def test_facts_reach_the_page(client, name, label, fragment):
-    t = body(client.get(f"/{name}", headers=CURL))
+def test_history_facts_reach_the_history_page(client, name, label, fragment):
+    """And what happened TO it is one click away, on /{object}/history. These
+    four used to be at the bottom of the object page's infobox."""
+    t = body(client.get(f"/{name}/history", headers=CURL))
     assert label in t and fragment in t
 
 
@@ -726,10 +745,16 @@ def test_the_static_half_holds_the_durable_facts(client):
     import re
     h = client.get("/Saturn", headers=BROWSER).text
     static = re.search(r'<aside class="obj-static">(.*?)</aside>', h, re.S).group(1)
-    for durable in ("Radius", "Escape velocity", "Discovered", "Missions"):
+    for durable in ("Radius", "Escape velocity"):
         assert durable in static, f"{durable} should be in the static half"
     for live in ("Tonight from", "Next chance"):
         assert live not in static, f"{live} should not be in the static half"
+    # Discovered and Missions are durable too, and they are now a click away
+    # rather than at the bottom of this column. The link is what replaced
+    # them.
+    for moved in ("Discovered", "Missions"):
+        assert moved not in static, f"{moved} moved to /Saturn/history"
+    assert 'href="/Saturn/history"' in static
 
 
 def test_the_live_half_holds_tonights_sky(client):
@@ -1227,7 +1252,14 @@ def test_the_infobox_rows_reach_json(client):
     d = client.get("/Saturn?format=json").json()
     blocks = d["infobox"]
     titles = [t for t, _r in blocks]
-    assert "Physical" in titles and "History" in titles
+    assert "Physical" in titles
+    # "History" is not a block here any more. Those rows are the history
+    # page's, and a JSON consumer that still saw them here would be reading
+    # a copy that no longer gets updated.
+    assert "History" not in titles
+    physical = dict(next(r for t, r in blocks if t == "Physical"))
+    assert "Radius" in physical
+    assert "Missions" not in physical
 
 
 def test_no_raw_ansi_reaches_the_browser(client):
@@ -1750,3 +1782,133 @@ def test_the_band_is_described_by_how_much_of_it_shows(client):
     assert seen["Zurich"] != seen["Atacama"]
     assert "whole band" in seen["Atacama"]
     assert "too bright" in seen["Zurich"]
+
+
+# ------------------------------------------------------- /{object}/history
+def test_history_is_reserved_so_nothing_can_claim_the_path(client):
+    """The route is /{obj}/history, and /{place}/{obj} would happily read
+    "history" as an object name. RESERVED is what stops a catalogue entry
+    ever taking the segment back."""
+    assert "history" in objects.RESERVED
+    assert objects.resolve_name("history") is None
+
+
+@pytest.mark.parametrize("path", [
+    "/Betelgeuse/history", "/Venus/history", "/M31/history",
+    "/Crab%20Nebula/history", "/Perseids/history", "/NGC1980/history",
+])
+def test_history_answers_for_every_kind_of_object(client, path):
+    r = client.get(path, headers=CURL)
+    assert r.status_code == 200, path
+    # Never blank: even an object with nothing written says so in words.
+    assert body(r).strip()
+
+
+def test_history_404s_for_a_name_that_is_not_an_object(client):
+    r = client.get("/wombat/history", headers=CURL)
+    assert r.status_code == 404
+    assert "wombat" in body(r)
+
+
+def test_history_is_cached_hard_because_nothing_in_it_moves(client):
+    """The one object route with no place and no moment in it, which is what
+    lets it be cached in a way the object pages themselves never can."""
+    cc = client.get("/Vega/history", headers=CURL).headers["cache-control"]
+    assert "public" in cc
+    assert "max-age=604800" in cc
+
+
+def test_history_takes_no_place_segment(client):
+    """Where you stand does not change what a thing is called. /Zurich/Vega
+    is a page; /Zurich/Vega/history is not, and must not quietly become one.
+    """
+    assert client.get("/Zurich/Vega/history", headers=CURL).status_code == 404
+
+
+def test_the_terminal_and_the_browser_carry_the_same_rows(client):
+    """One set of facts, two renderings. Two sets drift, which is the whole
+    argument infobox_text and infobox_html were split for."""
+    txt = body(client.get("/Betelgeuse/history", headers=CURL))
+    html_ = client.get("/Betelgeuse/history", headers=BROWSER).text
+    for key, _val in server.api.designations("Betelgeuse"):
+        assert key in txt, key
+        assert key in html_, key
+
+
+def test_every_canonical_for_one_object_gets_the_same_history(client):
+    """M31, NGC224 and Andromeda Galaxy are three paths to one object, and
+    FACTS is keyed on only one of them. They came back with three different
+    pages -- designations on all three, the written history on one."""
+    pages = [server.api.history_blocks(n)
+             for n in ("M31", "NGC224", "Andromeda Galaxy")]
+    assert all(p == pages[0] for p in pages), pages
+    assert [t for t, _r in pages[0]] == ["Known as", "History"]
+
+
+def test_the_ladder_is_derived_so_it_covers_the_whole_catalogue():
+    """Tier 0: no prose written, and still a real row for every star and
+    deep-sky object in the catalogue. This is what keeps the page from being
+    empty for the 1,180 objects with no hand-written entry."""
+    names = objects.all_names()
+    assert len(names) > 1_000
+    missing = [n for n in names if not server.api.history_blocks(n)]
+    # Asterisms and the Milky Way carry no catalogue number and no written
+    # history yet, and that is honest rather than broken. Everything else
+    # must say something.
+    assert all(objects.resolve_name(n) == n for n in missing)
+    assert len(missing) < 60, sorted(missing)[:20]
+
+
+def test_the_history_rows_left_the_object_page(client):
+    """They moved, rather than being copied. A fact printed on two pages
+    under two headings is the drift this split exists to prevent."""
+    page = body(client.get("/Venus", headers=CURL))
+    assert "Venera" not in page          # Missions
+    assert "Mariner 2" not in page       # First visited
+    hist = body(client.get("/Venus/history", headers=CURL))
+    assert "Venera" in hist
+    assert "Mariner 2" in hist
+
+
+def test_the_object_page_links_on_only_where_there_is_something_to_read(client):
+    """A link to one line of bare catalogue number spends a reader's click to
+    tell them there was nothing to click for. "Has any rows" was the wrong
+    test: it put this link on 629 pages whose history is a single NGC entry.
+    """
+    assert "Betelgeuse/history" in body(client.get("/Betelgeuse", headers=CURL))
+    # One row, and that row is the object's own catalogue number. Nothing
+    # points at it.
+    assert not server.api.history_is_worth_reading("NGC1980")
+    assert "NGC1980/history" not in body(client.get("/NGC1980", headers=CURL))
+
+
+def test_one_written_row_is_enough_to_earn_the_link():
+    """The Perseids carry a single history row and it is the year somebody
+    worked out where they come from. A flat row count would have dropped it
+    alongside the bare catalogue entries, which is why the rule asks what
+    kind of row rather than how many."""
+    assert server.api.history_is_worth_reading("Perseids")
+    assert sum(len(r) for _t, r in server.api.history_blocks("Perseids")) == 1
+
+
+def test_both_renderings_use_one_threshold(client):
+    """Two thresholds would put the link on the browser page and not the curl
+    one, or the other way round."""
+    for name in ("Betelgeuse", "NGC1980", "Perseids"):
+        want = server.api.history_is_worth_reading(name)
+        in_txt = f"{name}/history" in body(client.get(f"/{name}", headers=CURL))
+        in_html = f'"/{name}/history"' in client.get(f"/{name}",
+                                                     headers=BROWSER).text
+        assert in_txt == want, name
+        assert in_html == want, name
+
+
+def test_the_page_is_counted_apart_from_the_object_pages(client):
+    """Every new route ships its counter in the same change. Reading
+    /Betelgeuse/history is a different act from reading /Betelgeuse."""
+    before = server._stat["history"]
+    client.get("/Rigel/history", headers=CURL)
+    assert server._stat["history"] == before + 1
+    # A 404 is not a page view.
+    client.get("/notathing/history", headers=CURL)
+    assert server._stat["history"] == before + 1

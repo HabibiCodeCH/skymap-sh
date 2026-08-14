@@ -42,7 +42,7 @@ _HORIZON = {"sun": -0.8333, "moon": 0.125}
 RESERVED = frozenset("""
     stats help usage catalog legend demo about complete healthz robots.txt
     sitemap.xml llms.txt favicon.ico animate beacon events sphere gif-capacity
-    objects eclipse
+    objects eclipse history
     milkyway.json apple-touch-icon.png vendor horizon.png animate.gif
 """.split())
 
