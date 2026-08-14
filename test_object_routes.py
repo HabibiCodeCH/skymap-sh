@@ -1876,10 +1876,26 @@ def test_the_object_page_links_on_only_where_there_is_something_to_read(client):
     test: it put this link on 629 pages whose history is a single NGC entry.
     """
     assert "Betelgeuse/history" in body(client.get("/Betelgeuse", headers=CURL))
-    # One row, and that row is the object's own catalogue number. Nothing
-    # points at it.
-    assert not server.api.history_is_worth_reading("NGC1980")
-    assert "NGC1980/history" not in body(client.get("/NGC1980", headers=CURL))
+    # A bare NGC number used to fail this: one row of citation and nothing
+    # else. It passes now because the page explains what Dreyer's catalogue
+    # is, which is worth knowing once.
+    assert server.api.history_is_worth_reading("NGC1980")
+    # An asterism has no catalogue name at all, so there is still nothing to
+    # send anyone to.
+    assert not server.api.history_is_worth_reading("Big Dipper")
+    assert "Big Dipper/history" not in body(
+        client.get("/Big%20Dipper", headers=CURL))
+
+
+def test_a_standing_sentence_explains_the_catalogue_it_cites(client):
+    """Three sentences written once, reaching 109, 749 and 2,887 pages. A
+    note may only appear where the ladder above it cites that catalogue."""
+    crab = body(client.get("/Crab Nebula/history", headers=CURL))
+    assert "hunting comets" in crab            # Messier, via the M1 row
+    assert "Herschel" in crab                  # Dreyer, via the NGC row
+    star = body(client.get("/Betelgeuse/history", headers=CURL))
+    assert "Uranometria" in star               # Bayer, via the alpha Ori row
+    assert "hunting comets" not in star        # no Messier row, no Messier note
 
 
 def test_one_written_row_is_enough_to_earn_the_link():
@@ -1894,7 +1910,7 @@ def test_one_written_row_is_enough_to_earn_the_link():
 def test_both_renderings_use_one_threshold(client):
     """Two thresholds would put the link on the browser page and not the curl
     one, or the other way round."""
-    for name in ("Betelgeuse", "NGC1980", "Perseids"):
+    for name in ("Betelgeuse", "Big Dipper", "Perseids"):
         want = server.api.history_is_worth_reading(name)
         in_txt = f"{name}/history" in body(client.get(f"/{name}", headers=CURL))
         in_html = f'"/{name}/history"' in client.get(f"/{name}",

@@ -2645,6 +2645,57 @@ def designations(canonical):
 HISTORY_KNOWN_AS = "Known as"
 HISTORY_BLOCK = "History"
 
+# One sentence per catalogue, written once and shown wherever that catalogue
+# gave the object a name. This is the cheapest content on the site by a wide
+# margin: three sentences reach 109, 749 and 2,887 pages, and they turn a row
+# that reads "NGC 1980, Dreyer's New General Catalogue, 1888" from a bare
+# citation into something with a reason behind it.
+#
+# Keyed on the phrase designations() already puts in the right-hand column,
+# so a note can never appear on a page whose ladder does not cite it.
+#
+# House style, following blurbs.py: plain statements with the numbers inside
+# them, and the hedge kept where the fact is genuinely hedged. Bayer's order
+# really is only roughly by brightness, and saying so is more useful than
+# the tidy version.
+CATALOGUE_NOTES = {
+    "Messier's catalogue, 1781": (
+        "Messier was hunting comets. He compiled this list between 1758 and "
+        "1781 as a register of the things that look like comets and are not, "
+        "which is why the objects on it have nothing in common beyond being "
+        "fuzzy and staying put."),
+    "Dreyer's New General Catalogue, 1888": (
+        "Dreyer compiled the New General Catalogue in 1888, mostly from the "
+        "sweeps William and John Herschel made of the sky, and numbered its "
+        "7,840 objects in order of right ascension."),
+    "Bayer's letters": (
+        "Bayer lettered the stars of each constellation in his Uranometria "
+        "of 1603, roughly in order of brightness. Roughly: he was working "
+        "from Tycho's magnitudes by eye, and the order is often wrong."),
+    "Yale Bright Star Catalogue": (
+        "The Bright Star Catalogue lists every star down to magnitude 6.5, "
+        "which is about as faint as an unaided eye can go. There are 9,110 "
+        "of them."),
+}
+
+
+def catalogue_notes(canonical):
+    """The standing sentences that apply to this object, in ladder order.
+
+    Matched against the ladder rather than recomputed, so the page can never
+    explain a catalogue it did not just cite.
+    """
+    out = []
+    for _name, source in designations(canonical):
+        # The Bayer row carries the constellation in its text ("Bayer's
+        # letter for Orion, assigned 1603"), so it is matched by prefix
+        # rather than whole string.
+        key = "Bayer's letters" if source.startswith("Bayer") else source
+        note = CATALOGUE_NOTES.get(key)
+        if note and note not in out:
+            out.append(note)
+    return out
+
 
 def _facts_key(canonical):
     """The name facts.py files this object under.
@@ -2685,20 +2736,47 @@ def history_is_worth_reading(canonical):
     629 of the 1,244 objects have exactly one row, a bare NGC number, and a
     link to that is worse than no link.
 
-    Two things earn it. Any written history, however short -- the Perseids
+    Three things earn it. Any written history, however short -- the Perseids
     carry one row and it is the year somebody worked out where they come
     from, which is worth reading. Or more than one designation, which means
     the object has a name people use or a Messier number beside its
     catalogue entry, rather than only the entry.
+
+    Or a standing sentence about the catalogue it came from, which is what
+    changed this rule. It used to refuse the 629 objects whose history was a
+    single bare NGC number, and it was right to: a link that leads to one
+    line of citation spends a click to say there was nothing to click for.
+    Those pages now explain what Dreyer's catalogue is and how the object
+    came to be numbered in it, which is a thing worth knowing once even
+    though the sentence is the same on all 749 of them. Being repeated is
+    what makes it cheap, not what makes it empty -- and it is the reason
+    these pages stay out of sitemap_names(), where repetition really would
+    count against them.
     """
     blocks = dict(history_blocks(canonical))
     if blocks.get(HISTORY_BLOCK):
         return True
-    return len(blocks.get(HISTORY_KNOWN_AS) or ()) > 1
+    if len(blocks.get(HISTORY_KNOWN_AS) or ()) > 1:
+        return True
+    return bool(catalogue_notes(canonical))
 
 
 def history_title(canonical):
     return f"skymap.sh: {canonical}, history"
+
+
+def _wrap_note(text, width=72, indent="  "):
+    """A standing sentence as wrapped terminal lines."""
+    words, line, out = text.split(), "", []
+    for w in words:
+        if line and len(line) + 1 + len(w) > width:
+            out.append(indent + line)
+            line = w
+        else:
+            line = f"{line} {w}" if line else w
+    if line:
+        out.append(indent + line)
+    return out
 
 
 def history_text(canonical):
@@ -2707,6 +2785,9 @@ def history_text(canonical):
     out = [f"history of {canonical}"]
     if blocks:
         out.append(infobox_text(blocks))
+        for note in catalogue_notes(canonical):
+            out.append("")
+            out += _wrap_note(note)
     else:
         # True rather than apologetic, and it names the page that does have
         # something to say -- an empty page with no way onward is a dead end.
@@ -2744,6 +2825,8 @@ def history_body_html(canonical):
     obj = quote(canonical)
     rows = (infobox_html(blocks) if blocks else
             '<p class="obj-lede">Nothing recorded here yet.</p>')
+    rows += "".join(f'<p class="obj-note">{html.escape(n)}</p>'
+                    for n in catalogue_notes(canonical))
     return (f'<h1 class="obj-title"><span>{html.escape(canonical)}</span></h1>'
             f'<div class="obj-cols"><aside class="obj-static">{rows}'
             f'<p class="obj-src">'
@@ -3424,6 +3507,10 @@ OBJECT_CSS = """
    rather than with the credit line below, because it is a way onward and
    the credit is a footnote -- they sat at the same size once and the link
    read as part of the attribution. */
+/* A standing sentence about a catalogue the ladder above just cited. Set as
+   prose rather than as another fact row, because it explains the rows and is
+   not one of them. */
+.obj-note{font-size:13px;line-height:1.55;color:#9aa7b4;margin:.9rem 0 0}
 .obj-history-link{font-size:13px;line-height:1.5;margin:1.1rem 0 0}
 .obj-history-link a{color:#9aa7b4;text-decoration:none;
   border-bottom:1px solid #2a313b}
