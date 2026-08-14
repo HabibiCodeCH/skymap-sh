@@ -169,12 +169,17 @@ class TheDataIsComplete(unittest.TestCase):
                 self.assertIn(str(hr), mots, f"{a['name']} HR {hr}")
 
     def test_almost_all_of_them_have_a_distance(self):
-        """One star (Izar) has no Hipparcos distance and falls back to flat
-        extrapolation. If that number ever grows, the fallback has stopped
-        being an exception."""
+        """Three stars have no Hipparcos distance and fall back to flat
+        extrapolation: Izar (HR 5506), zeta-2 Aquarii (HR 8559) and HR 2996
+        in Puppis. The first two are close binaries whose parallax Hipparcos
+        could not pin down; the third simply has no entry. All three are on
+        a constellation figure and cannot be dropped for it.
+
+        Pinned as a set rather than a count so a NEW one cannot slip in
+        while an old one leaves."""
         mots = motion._motions()
-        without = [hr for hr, m in mots.items() if not m.get("d")]
-        self.assertLessEqual(len(without), 1, without)
+        without = {hr for hr, m in mots.items() if not m.get("d")}
+        self.assertEqual(without, {"2996", "5506", "8559"})
 
     def test_the_star_without_a_distance_is_named_on_the_page(self):
         """A silent fallback is the kind of thing that becomes a wrong

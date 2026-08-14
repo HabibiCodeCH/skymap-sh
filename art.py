@@ -609,6 +609,15 @@ AST_ROWS = 15
 # end, which is what stops a diagonal turning into a staircase of hyphens.
 AST_SUBX, AST_SUBY = 2, 4
 
+# Drawn a tenth narrower than the projection says. The geometry going in is
+# right -- Triangulum Australe's apex projects at 68.8 degrees against 67.7 in
+# the sky -- but a braille row is four dots tall against two wide and the dots
+# do not tile across the gap between text lines, so a shape comes out of the
+# grid flatter than it went in. Ten per cent off the width puts the angles
+# back where the eye expects them, and shortens the near-level runs that
+# straddle a row boundary and read as a step.
+AST_SQUEEZE = 0.9
+
 # Two, because one of these really is two stars: The Pointers is Rigil
 # Kentaurus and Hadar and the line between them, which is the whole content
 # of the name -- it points at the Southern Cross. Drawn, it is a pair and a
@@ -754,11 +763,21 @@ def _ast_line(dots, a, b, w, h):
     """
     (x0, y0), (x1, y1) = a, b
     steps = int(max(abs(x1 - x0), abs(y1 - y0)) * 2) + 1
+    prev = None
     for i in range(steps + 1):
         t = i / steps
         x, y = int(round(x0 + (x1 - x0) * t)), int(round(y0 + (y1 - y0) * t))
+        # Four-connected, not eight. A diagonal step leaves the two dots
+        # touching only at a corner, and at a shallow vertex that reads as a
+        # hole: Triangulum Australe's base arrived one sub-pixel below where
+        # the right side left off and the corner looked open. Filling the
+        # step costs one dot and closes every join.
+        if prev and prev[0] != x and prev[1] != y:
+            if 0 <= prev[0] < w and 0 <= y < h:
+                dots.add((prev[0], y))
         if 0 <= x < w and 0 <= y < h:
             dots.add((x, y))
+        prev = (x, y)
 
 
 def asterism_art(name):
@@ -799,21 +818,81 @@ def asterism_art(name):
     # clipped even when the shape is complete.
     inner_w = (AST_COLS - 2) * AST_SUBX
     inner_h = (AST_ROWS - 2) * AST_SUBY
-    scale = min(inner_w / span_x if span_x > 1e-9 else 1e9,
-                inner_h / span_y if span_y > 1e-9 else 1e9)
+    # The minus one is load-bearing. Without it the extreme point lands
+    # exactly on the boundary sub-pixel, which floors into the LAST cell row
+    # rather than the last-but-one -- so a vertex sat on the outermost row and
+    # any near-horizontal edge leaving it stepped up a row and read as
+    # detached from its own star. Triangulum Australe showed it worst: three
+    # stars, and the base appeared to miss the corner.
+    scale = min((inner_w - 1) / span_x if span_x > 1e-9 else 1e9,
+                (inner_h - 1) / span_y if span_y > 1e-9 else 1e9)
     W, H = AST_COLS * AST_SUBX, AST_ROWS * AST_SUBY
     cx, cy = (max(xs) + min(xs)) / 2, (max(ys) + min(ys)) / 2
 
+    # Where the whole figure sits inside the cell grid, to the sub-pixel.
+    # Set below by trying every offset and keeping the crispest.
+    off_x = off_y = 0.0
+
     def place(hr):
         x, y = pos[hr]
-        return (W / 2 + (x - cx) * scale,
-                H / 2 - (y - cy) * scale)             # screen y grows downward
+        return (W / 2 + (x - cx) * scale * AST_SQUEEZE + off_x,
+                H / 2 - (y - cy) * scale + off_y)     # screen y grows downward
 
-    dots = set()
-    for poly in chains:
-        pts = [place(h) for h in poly if h in pos]
-        for a, b in zip(pts, pts[1:]):
-            _ast_line(dots, a, b, W, H)
+    def anchor(hr):
+        """Where a line meets a star: the middle of the cell the star's glyph
+        will occupy, not the star's own sub-pixel.
+
+        A star is a whole character but its position is a dot somewhere
+        inside that character, so segments arriving from different directions
+        used to stop at different sub-pixels and the corner came apart. Corvus
+        showed both halves of it: the spur down to Alchiba started half a cell
+        right of Minkar and read as detached, and the endpoint rounding up put
+        one stray dot in the cell PAST the star, a whisker on the outside of
+        the shape. Meeting at the cell centre fixes the join and cannot
+        overshoot, because the centre is inside the glyph by construction."""
+        x, y = place(hr)
+        c, r = int(x // AST_SUBX), int(y // AST_SUBY)
+        return (c * AST_SUBX + (AST_SUBX - 1) / 2,
+                r * AST_SUBY + (AST_SUBY - 1) / 2)
+
+    def draw():
+        """(all dots, one dot set per segment)."""
+        d, segs = set(), []
+        for poly in chains:
+            pts = [anchor(h) for h in poly if h in pos]
+            for a, b in zip(pts, pts[1:]):
+                one = set()
+                _ast_line(one, a, b, W, H)
+                segs.append(one)
+                d |= one
+        return d, segs
+
+    # A near-horizontal line that straddles a cell-row boundary draws as two
+    # runs a whole row apart, because braille dots do not tile across the gap
+    # between text lines. Triangulum Australe is three stars and its base is
+    # 0.3 degrees off level: it landed either side of a boundary and the
+    # triangle read as an open shape with a step in the bottom.
+    #
+    # Nothing about the sky needs to move to fix that -- only where the figure
+    # sits inside the grid. Every sub-pixel offset is tried and the one
+    # lighting the fewest cells wins, which is the one whose long shallow
+    # runs sit inside a single row.
+    # Scored per segment, not over the whole picture: what hurts is one line
+    # spread over two text rows, so count the rows each segment lands in and
+    # take the offset with the fewest. Total lit cells breaks ties.
+    # Fractional, and that is the whole point: a whole sub-pixel moves both
+    # ends of a shallow line together and never changes which side of a row
+    # boundary they fall on. Quarter steps do.
+    best = None
+    for dy in [i / 4 for i in range(AST_SUBY * 4)]:
+        for dx in [i / 4 for i in range(AST_SUBX * 4)]:
+            off_x, off_y = dx, dy
+            d, segs = draw()
+            rows = sum(len({y // AST_SUBY for _x, y in one}) for one in segs)
+            cells = len({(x // AST_SUBX, y // AST_SUBY) for x, y in d})
+            if best is None or (rows, cells) < best[0]:
+                best = ((rows, cells), off_x, off_y, d)
+    _s, off_x, off_y, dots = best
 
     # Braille first, stars over it. Same order the horizon chart settled on
     # and for the same reason: a line drawn after a star swallows the star,

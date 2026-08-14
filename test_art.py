@@ -482,6 +482,30 @@ class AsterismPortraits(unittest.TestCase):
             self.assertTrue(plain[0].strip(), name)
             self.assertTrue(plain[-1].strip(), name)
 
+    def test_no_line_runs_past_the_star_it_ends_at(self):
+        """A star takes the cell that contains its dot; the line sampler used
+        to round instead, so an endpoint at .6 of a sub-pixel laid its last
+        dot in the cell PAST the star and the figure grew a whisker. Corvus
+        had a tail hanging below Alchiba, Lepus one below Delta.
+
+        Every segment is straight and every endpoint is a star, so no drawn
+        dot can sit outside the box the stars themselves occupy."""
+        for name in self._names():
+            plain = self._plain(art.asterism_art(name))
+            marks, lines = [], []
+            for r, l in enumerate(plain):
+                for c, ch in enumerate(l):
+                    if ch in "●•·":
+                        marks.append((r, c))
+                    elif 0x2800 <= ord(ch) <= 0x28FF:
+                        lines.append((r, c))
+            top, bot = min(r for r, _ in marks), max(r for r, _ in marks)
+            lft, rgt = min(c for _, c in marks), max(c for _, c in marks)
+            for r, c in lines:
+                self.assertTrue(top <= r <= bot and lft <= c <= rgt,
+                                f"{name}: line at row {r} col {c} is outside "
+                                f"the stars (rows {top}-{bot}, cols {lft}-{rgt})")
+
     def test_the_shape_is_not_squashed(self):
         """A braille dot is half a cell wide and half a cell tall, so the
         sub-pixel grid is already square and must NOT get the CELL

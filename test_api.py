@@ -2174,8 +2174,14 @@ class EveryCatalogGroupIsSearchable(unittest.TestCase):
                                  o["name"])
 
     def test_the_shower_mark_is_the_one_the_chart_uses(self):
-        got = {o["glyph"] for o in api.complete_objects("perse")}
-        self.assertEqual(got, {api._SHOWER_GLYPH})
+        """"perse" answers with the Perseids and with Perseus, ever since
+        Perseus became a drawn figure. What is pinned here is that the
+        shower carries the chart's own mark -- not that it is the only
+        thing anyone typing those letters could have meant."""
+        got = {o["name"]: o["glyph"] for o in api.complete_objects("perse")}
+        self.assertEqual(got["Perseids"], api._SHOWER_GLYPH)
+        self.assertIn("Perseus", got)
+        self.assertNotEqual(got["Perseus"], api._SHOWER_GLYPH)
 
 
 class OnePictureHeader(unittest.TestCase):
