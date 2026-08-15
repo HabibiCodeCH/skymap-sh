@@ -1,0 +1,332 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>skymap.sh — ASCII etymology figures</title>
+<style>
+:root{
+  --bg:#04060a; --ink:#c9d1d9; --bright:#e6ebf2; --label:#8fb6e0;
+  --dim:#7d8694; --link:#9aa7b4; --hot:#87d7ff; --rule:#1c2027;
+  --plate:#070a0e;
+  --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
+  --sans:ui-sans-serif,-apple-system,"Segoe UI",Roboto,sans-serif;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--mono);
+  font-size:13px;line-height:1.5;padding:28px 18px 90px}
+.wrap{max-width:1200px;margin:0 auto}
+h1{font-size:26px;color:var(--bright);font-weight:600;letter-spacing:-.01em;
+  margin:0 0 .2rem}
+.sub{color:var(--dim);font-size:13px;margin:0 0 2.2rem}
+h2{font-family:var(--sans);font-size:12px;text-transform:uppercase;
+  letter-spacing:.09em;color:var(--label);font-weight:600;
+  margin:2.6rem 0 .3rem}
+h2 .n{color:var(--dim);margin-right:.5em}
+.note{font-family:var(--sans);font-size:13px;color:var(--dim);
+  line-height:1.55;margin:.15rem 0 .8rem;max-width:64ch}
+.note b{color:var(--ink);font-weight:600}
+.plate{background:var(--plate);border:1px solid var(--rule);border-radius:8px;
+  padding:16px 14px;margin:.5rem 0 .3rem;overflow-x:auto}
+pre{margin:0;font-family:var(--mono);font-size:11px;line-height:1.45;
+  white-space:pre;color:var(--ink)}
+pre.big{font-size:13px}
+.cap{font-family:var(--sans);font-size:11.5px;color:var(--dim);
+  margin:.35rem 0 1.6rem;letter-spacing:.02em}
+.cols{display:grid;grid-template-columns:390px 1fr;gap:0 26px;
+  align-items:start}
+@media (max-width:900px){.cols{grid-template-columns:1fr}}
+.side{border-right:1px solid var(--rule);padding-right:22px}
+@media (max-width:900px){.side{border-right:0;padding-right:0}}
+.ruler{color:var(--dim);font-size:11px}
+table{border-collapse:collapse;font-family:var(--sans);font-size:13px;
+  margin:.4rem 0 1rem}
+td,th{border-bottom:1px solid var(--rule);padding:6px 16px 6px 0;
+  text-align:left;vertical-align:top}
+th{color:var(--label);font-weight:600;font-size:11px;text-transform:uppercase;
+  letter-spacing:.08em}
+.yes{color:#7fd18a}.no{color:#d98b8b}
+.glyph{font-size:19px;letter-spacing:.12em}
+.bad{border-color:#4a2a2a}
+.bad .cap{color:#d98b8b}
+a{color:var(--link)}a:hover{color:var(--hot)}
+.lede{font-family:var(--sans);font-size:15px;color:var(--ink);
+  line-height:1.55;max-width:70ch;margin:0 0 1.6rem}
+</style></head><body><div class="wrap">
+
+<h1>Etymology figures, in ASCII</h1>
+<p class="sub">Six shapes for the names page &middot; rendered at the site's real
+background, colours and font stack &middot; scoping only, nothing built</p>
+
+<p class="lede">Everything below is drawn in the page's own font stack
+(<code>ui-monospace, SF Mono, Menlo, Consolas</code>) at 11px on
+<code>#04060a</code>, which is what the object pages actually use. So what
+you see here is what the page would show, including anything your browser
+gets wrong.</p>
+
+<h2><span class="n">00</span> First, what your browser can actually draw</h2>
+<p class="note">The disagreement worth settling before choosing a design. These
+are rendered live in the monospace stack the site uses. Anything that shows a
+box, or visibly changes width, is a script the figures must keep out of an
+aligned column.</p>
+<div class="plate">
+<pre class="big">braille      ⠀⠁⠂⠄⠆⠇⠉⠒⠤⡇⡧⡷⣿        used by every chart
+box drawing  ─ │ ┌ ┐ └ ┘ ├ ┤ ┬ ┴ ┼    used by the figures below
+arrows       → ← ↑ ↓ ▶ ▲ ▼            already on the site
+marks        ✕ ✦ ★ ● ◐ ☀ ☾ ∴          already on the site
+Greek        Ζεύς  Φαέθων  Πλειάδες   safe: in both bundled fonts
+Cyrillic     Луна  Земля
+Latin+marks  Kṛttikā  Jawzā'  Þórr  ā ī ū ṛ ṭ ḥ
+subscripts   *dyēus ph₂tēr
+Arabic       ذنب  يد الجوزاء  الثريا
+Hebrew       ירח  שבתאי  נוגה
+Devanagari   चन्द्र  कृत्तिका  बुध
+CJK          月  歲星  参宿四  北斗</pre>
+</div>
+<p class="cap">Rows 1&ndash;7 are safe. Rows 8&ndash;11 are the question. Compare the
+width of the space each one occupies against the rows above it.</p>
+
+<table>
+<tr><th>font</th><th>Greek</th><th>Arabic</th><th>Hebrew</th><th>Devanagari</th><th>CJK</th><th>braille</th><th>box</th></tr>
+<tr><td>JetBrains Mono <span style="color:#7d8694">(bundled, og.png + gif)</span></td>
+<td class="yes">yes</td><td class="no">no</td><td class="no">no</td><td class="no">no</td><td class="no">no</td><td class="no">no</td><td class="yes">yes</td></tr>
+<tr><td>DejaVu Sans Mono <span style="color:#7d8694">(bundled, fallback)</span></td>
+<td class="yes">yes</td><td class="yes">yes</td><td class="no">no</td><td class="no">no</td><td class="no">no</td><td class="no">no</td><td class="yes">yes</td></tr>
+<tr><td>drawn by hand <span style="color:#7d8694">(gif.py:151)</span></td>
+<td>&mdash;</td><td>&mdash;</td><td>&mdash;</td><td>&mdash;</td><td>&mdash;</td><td class="yes">yes</td><td>&mdash;</td></tr>
+</table>
+<p class="note">Measured from the cmap tables, not guessed from bitmaps &mdash;
+the same method <code>gif.py</code> insists on, for the reason its comment
+gives. <b>Braille is in neither font and is drawn geometrically instead</b>,
+which is the precedent that matters: when no font had the glyph, this project
+drew it. That works for eight dots on a grid. It does not scale to 参.</p>
+
+<h2><span class="n">01</span> The descent rail &mdash; narrow, fits the sidebar</h2>
+<p class="note">For a star, where the name came down one line of transmission and
+something went wrong on the way. The <b>✕</b> is the whole point of the figure:
+it marks where the meaning was lost, not just where the spelling changed.
+46 columns, so it fits the 390px static column.</p>
+<div class="cols">
+<div class="side">
+<div class="plate">
+<pre>┌ Greek · Ptolemy, 150 AD
+│ "the bright one on the shoulder"
+│
+├ Arabic · 9th century
+│ Yad al-Jawzā'
+│ "hand of Jawzā"
+│
+├ ✕ a scribe's dot, c.1100
+│ yā read as bā — one dot moved.
+│ Bat al-Jawzā', which means
+│ nothing in any language.
+│
+├ Latin · Alfonsine Tables, 1250
+│ Bedalgeuze
+│
+└ English · now
+  Betelgeuse</pre>
+</div>
+<p class="cap">46 columns &middot; sidebar width, shown at the real 390px</p>
+</div>
+<div>
+<p class="note">The rail reads as one continuous descent, which a stack of
+arrows does not. It also degrades well: an object with only two known stages
+still looks deliberate rather than stubby.<br><br>
+Arabic is romanised <b>inside</b> the figure and the original script goes in a
+plain list underneath, where nothing has to line up after it. That is the rule
+every figure here follows, and it is what row 00 is for.</p>
+<div class="plate">
+<pre>the same name, in the scripts that carried it
+
+  Arabic     يد الجوزاء        Yad al-Jawzā'
+  Greek      ἡ τοῦ ὤμου       hē tou ōmou
+  Latin      Bedalgeuze</pre>
+</div>
+<p class="cap">Script at the end of the line, never in a column</p>
+</div>
+</div>
+
+<h2><span class="n">02</span> The descent, widened for the terminal</h2>
+<p class="note">Same figure at 76 columns, which is what
+<code>object_infobox()</code> already formats to. Stage on the left, what
+changed in the middle, who recorded it on the right.</p>
+<div class="plate">
+<pre>  Greek     150 AD   "the bright one on the shoulder"     Ptolemy, Almagest
+     │
+  Arabic    9th c.   Yad al-Jawzā'  ·  hand of Jawzā
+     │
+     ✕      c.1100   one dot moves, yā to bā             Bat al-Jawzā',
+     │               and the phrase stops meaning anything
+     │
+  Latin     1250     Bedalgeuze                          Alfonsine Tables
+     │
+  English   now      Betelgeuse</pre>
+</div>
+<p class="cap">76 columns &middot; the house terminal width</p>
+
+<h2><span class="n">03</span> Transmission with a branch &mdash; the planets</h2>
+<p class="note">The planets are not a descent, they are one Babylonian list
+translated four times. The branch is the payoff: <b>Thursday and jeudi are the
+same day named twice</b>, once by translating the god and once by keeping him.
+No other figure on the site can show that.</p>
+<div class="plate">
+<pre>  Babylon    Marduk                      the city god of Babylon
+     │
+     │   Greek astronomers take the assignments over, 4th c. BC
+     ▼
+  Greece     Ζεύς                        before this: Φαέθων, "the blazing"
+     │
+     │   Roman translation
+     ▼
+  Rome       Iuppiter   ◂── *dyēus ph₂tēr, "sky father"
+     │                      Sanskrit keeps it whole: Dyaus Pitar
+     │
+     ├──▶ dies Iovis ──▶ jeudi · giovedì · jueves
+     │
+     │   Germanic translation of the Roman week, c.400 AD
+     ▼
+  North      Þórr                        Thursday</pre>
+</div>
+<p class="cap">76 columns &middot; one page carries the whole chain of custody</p>
+
+<h2><span class="n">04</span> The root cluster &mdash; a figure that is also navigation</h2>
+<p class="note">One Arabic root, four stars, four existing pages. Every leaf is a
+link, so the etymology block doubles as a way to move around the site. This is
+the cheapest reuse on offer: <code>dhanab</code> alone earns four pages, and
+<code>al-Jawzā'</code> ties Betelgeuse to Rigel as the hand and foot of one
+figure.</p>
+<div class="plate">
+<pre>                    dhanab  ·  "tail"                       ذنب
+                            │
+        ┌───────────┬───────┴───────┬────────────────┐
+     Deneb      Denebola      Deneb Algedi     Deneb Kaitos
+     α Cyg        β Leo           δ Cap            β Cet
+     the swan     the lion        the goat         the sea monster</pre>
+</div>
+<div class="plate">
+<pre>                 al-Jawzā'  ·  the central one                الجوزاء
+        a figure Arab astronomers saw where Greeks saw Orion
+                            │
+              ┌─────────────┴─────────────┐
+          Betelgeuse                    Rigel
+          yad, the hand                 rijl, the foot
+          α Ori                         β Ori</pre>
+</div>
+<p class="cap">Leaves are links &middot; 68 and 62 columns</p>
+
+<h2><span class="n">05</span> Convergence &mdash; when there is no tree</h2>
+<p class="note">The honest figure, and the one that stops the feature from
+lying. The Pleiades names share <b>no common ancestor</b>: five traditions
+named the same cluster independently. Drawing that as a descent would invent a
+relationship that does not exist, so the arrows point inward instead of
+down.</p>
+<div class="plate">
+<pre>   Greek      Pleiades     ─┐
+   Arabic     al-Thurayyā  ─┤
+   Sanskrit   Kṛttikā      ─┼──▶   ✦ ✦ ✦      one cluster
+   Japanese   Subaru       ─┤      ✦ ✦ ✦ ✦    five unrelated names
+   Māori      Matariki     ─┘
+
+   No shared root. Five traditions named it five times over, and
+   four of them counted seven stars in a cluster where six are
+   the most anyone can easily see.</pre>
+</div>
+<p class="cap">62 columns &middot; also the shape for the Big Dipper</p>
+
+<h2><span class="n">06</span> The designation ladder &mdash; free, and covers all 1,220</h2>
+<p class="note">Not etymology, but naming, and it needs <b>no prose written at
+all</b>. <code>stars.json</code> already carries the Bayer letter and
+constellation for all 2,887 stars; <code>deepsky.json</code> carries the
+NGC/M number for all 749. Only the right-hand gloss is hand-written, and only
+for the famous ones. A ladder, not a tree, because these are parallel
+registers rather than descent.</p>
+<div class="plate">
+<pre>  Betelgeuse     the name people use
+  α Ori          Bayer, 1603 — Greek letters, roughly by brightness
+  HR 2061        Yale Bright Star Catalogue</pre>
+</div>
+<div class="plate">
+<pre>  Crab Nebula    Rosse's sketch, 1844 — the drawing looked like one,
+                 the photographs never did
+  M1             Messier's first entry, 1758 — the comet that wasn't
+  NGC 1952       Dreyer's New General Catalogue, 1888</pre>
+</div>
+<p class="cap">Derived rows in full &middot; gloss optional &middot; 74 columns</p>
+
+<h2><span class="n">07</span> The failure this all avoids</h2>
+<p class="note">What happens when an original script sits in a column that
+something else has to line up after. The browser reorders the run and picks a
+different font for it, at a different width. <b>Look at the right-hand column
+below</b> &mdash; it should be flush, and it is not.</p>
+<div class="plate bad">
+<pre>  Arabic    يد الجوزاء     hand of Jawzā        9th century
+  Arabic    ذنب            tail                 the root of four names
+  Arabic    الثريا          the abundant one     the Pleiades
+  Latin     Bedalgeuze     meaningless          1250</pre>
+</div>
+<p class="cap bad">Broken on purpose &mdash; the same four rows, script inside the column</p>
+<div class="plate">
+<pre>  Arabic    Yad al-Jawzā'   hand of Jawzā          يد الجوزاء
+  Arabic    dhanab          tail                            ذنب
+  Arabic    al-Thurayyā     the abundant one             الثريا
+  Latin     Bedalgeuze      meaningless, 1250</pre>
+</div>
+<p class="cap">Fixed &mdash; romanised in the column, script parked at the end of the line</p>
+
+<h2><span class="n">08</span> The old descriptions &mdash; a second voice on the page</h2>
+<p class="note">Not a figure, but the other half of the idea. <b>109 of the 110
+Messier objects are already in <code>deepsky.json</code></b>, so Messier's own
+1781 words could land on 109 existing pages. He died in 1817; the text is
+unambiguously public domain.<br><br>
+Set apart and dated, so it reads as a quotation rather than as the site
+talking. The site's own sentence does the explaining underneath.</p>
+<div class="plate">
+<pre>  ┌─ Messier, 1781 ────────────────────── catalogued 12 September ─┐
+  │                                                                │
+  │  "Nébuleuse au-dessus de la corne méridionale du Taureau,      │
+  │   elle ne contient aucune étoile ; c'est une lumière           │
+  │   blanchâtre, allongée en forme de flamme de bougie."          │
+  │                                                                │
+  └────────────────────────────────────────────────────────────────┘
+
+  A whitish light shaped like a candle flame. He was hunting comets
+  and logged it so that he would stop mistaking it for one — which
+  is why the Crab is number 1 in a catalogue of things to ignore.</pre>
+</div>
+<p class="cap">M1 &middot; 68 columns &middot; quotation boxed, gloss in the house voice</p>
+<p class="note">A dated quotation is also the cleanest answer to the
+"avoid claims" problem. It is not an assertion about the object, it is a fact
+about what someone said &mdash; <b>true forever regardless of whether he was
+right</b>. Messier thought this might be a comet. The quote stays correct; the
+gloss underneath is where the site says what it actually is.<br><br>
+And because Messier consistently calls galaxies nebulae, the distinction not
+existing yet, roughly forty pages get free historical contrast at no writing
+cost.</p>
+<div class="plate">
+<pre>  ┌─ Smyth, 1844 ─────────────────────────── the Bedford Catalogue ─┐
+  │                                                                 │
+  │  "A double star, with a companion of a fine pale garnet;        │
+  │   the contrast of colours is beautifully marked."               │
+  │                                                                 │
+  └─────────────────────────────────────────────────────────────────┘</pre>
+</div>
+<p class="cap">Same block, second source &middot; a page can carry both, in date order</p>
+<p class="note">Two sources in date order is itself the content: you watch the
+same object get better understood. Smyth died in 1865, also public domain,
+about 850 objects including the double stars Messier never touched, and
+nobody else is using him.</p>
+
+<h2><span class="n">09</span> What this costs</h2>
+<p class="note">
+<b>Free:</b> figure 06 for every object on the site, from data already on disk.<br>
+<b>Cheap:</b> figures 01 and 05, which are plain text with box-drawing characters
+both bundled fonts already have.<br>
+<b>Needs a decision:</b> whether original scripts appear at all. If yes, they are
+web-only and end-of-line, and the og.png card silently drops them &mdash; the card
+renders through JetBrains Mono with DejaVu as fallback, and CJK, Hebrew and
+Devanagari are in neither. Drawing them the way braille is drawn is not an
+option at that complexity.<br>
+<b>Not recommended:</b> a webfont. There is currently no <code>@font-face</code>
+anywhere in the repo and nothing served from <code>fonts/</code> over HTTP, so
+this would be the first, on a site with a page-weight spec.</p>
+
+</div></body></html>
