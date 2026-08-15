@@ -115,7 +115,15 @@ This is the largest single gap. Two decisions needed before writing:
 Put the sign against the constellation on the twelve zodiac pages, in the
 data column on the left where Type, Constellation and Stars already sit.
 
-The symbols are already in the codebase: `PLANET_SYMBOLS` in `api.py` does
+**The plain glyph, never the emoji.** ♈ to ♓ are U+2648 to U+2653, and
+several of them carry emoji presentation by default, so a phone renders a
+colour picture where the page wants a monochrome mark. `PLANET_SYMBOLS` in
+`api.py` gets away with ♀ and ♂ because those two default to text; the
+zodiac dozen do not, and each one needs U+FE0E after it to pin it down.
+Nothing in the repo uses U+FE0E yet, so this is the first place that
+matters, and the wrong result is invisible on a Mac and obvious on iOS.
+
+The symbols themselves are the easy half: `PLANET_SYMBOLS` in `api.py` does
 the same job for the planets, and `object_glyph` already picks a mark by
 kind, so this is another row or another glyph rather than a new mechanism.
 Ten of the twelve are among the 57 drawn figures (Aquarius, Aries,

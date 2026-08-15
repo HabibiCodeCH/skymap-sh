@@ -94,11 +94,6 @@ ETYMOLOGY = {
         "from": "Latin",
         "reading": "Iuppiter",
         "literal": "sky father",
-        "story": "The oldest name in the sky. It is the same phrase as Greek "
-                 "Zeus pater and Sanskrit Dyaus Pitar, all three descended "
-                 "from one reconstructed form, and it is why Thursday and "
-                 "jeudi are the same day named twice: once by translating "
-                 "the god into Thor, once by keeping him.",
     },
     "Saturn": {
         "from": "Latin",
@@ -259,6 +254,329 @@ ETYMOLOGY = {
                  "yinhe, the silver river, and Sanskrit Akashaganga, the "
                  "Ganges of the sky.",
     },
+
+    # ------------------------------------------------------- the 57 figures
+    # Two kinds of name in one list, and they behave differently.
+    #
+    # The asterisms are mostly English and mostly recent: a ladle, a teapot,
+    # a kite. There is no descent to trace, so the row says what the words
+    # mean and the paragraph carries whatever history there is.
+    #
+    # The constellations are Latin, usually translating a Greek name that
+    # was itself translating a Babylonian one, and the row stops at the
+    # Latin. Where that chain is the interesting part it gets a figure
+    # instead of a sentence, because a list of four languages is a picture
+    # and not a paragraph.
+    #
+    # `story` is deliberately absent throughout: the origin is written into
+    # the blurb, and an entry carrying both prints the same words twice.
+    "Big Dipper": {
+        "from": "American English",
+        "reading": "the Big Dipper",
+        "literal": "the big ladle",
+    },
+    "Little Dipper": {
+        "from": "American English",
+        "reading": "the Little Dipper",
+        "literal": "the little ladle",
+    },
+    "Cassiopeia's W": {
+        "from": "English, after the Greek",
+        "reading": "Kassiopeia  ·  Κασσιόπεια",
+        "literal": "unknown",
+        "unsure": "The queen's name has no agreed derivation. Greek and "
+                  "Egyptian origins have both been argued and neither is "
+                  "settled.",
+    },
+    "Northern Cross": {
+        "from": "English",
+        "reading": "the Northern Cross",
+        "literal": "the cross in the north",
+    },
+    "Summer Triangle": {
+        "from": "English",
+        "reading": "the Summer Triangle",
+        "literal": "the summer triangle",
+        "unsure": "Who named it is not settled. Oswald Thomas used "
+                  "Sommerdreieck in the 1920s and Patrick Moore is usually "
+                  "credited with the English name in the 1950s.",
+    },
+    "Lyra": {
+        "from": "Latin, from Greek",
+        "reading": "Lyra  ·  λύρα",
+        "literal": "the lyre",
+    },
+    "Aquila": {
+        "from": "Latin",
+        "reading": "Aquila",
+        "literal": "the eagle",
+    },
+    "Keystone": {
+        "from": "English",
+        "reading": "the Keystone",
+        "literal": "the wedge at the top of an arch",
+    },
+    "Corona Borealis": {
+        "from": "Latin",
+        "reading": "Corona Borealis",
+        "literal": "the northern crown",
+    },
+    "Kite": {
+        "from": "English",
+        "reading": "the Kite",
+        "literal": "a kite",
+    },
+    "Job's Coffin": {
+        "from": "English",
+        "reading": "Job's Coffin",
+        "literal": "the coffin of Job",
+        "unsure": "No origin is recorded. The name turns up in English in the "
+                  "1800s already in use, with nothing said about what Job has "
+                  "to do with it.",
+    },
+    "Teapot": {
+        "from": "English",
+        "reading": "the Teapot",
+        "literal": "a teapot",
+    },
+    "Scorpius": {
+        "from": "Latin, from Greek",
+        "reading": "Scorpius  ·  Σκορπίος",
+        "literal": "the scorpion",
+    },
+    "Great Square": {
+        "from": "English",
+        "reading": "the Great Square",
+        "literal": "the great square",
+    },
+    "Andromeda": {
+        "from": "Greek",
+        "reading": "Andromeda  ·  Ἀνδρομέδα",
+        "literal": "ruler of men",
+    },
+    "Orion": {
+        "from": "Greek",
+        "reading": "Orion  ·  Ὠρίων",
+        "literal": "unknown",
+        "unsure": "Derivations from Akkadian Uru-anna, light of heaven, and "
+                  "from a Greek word for urine, after the birth story, have "
+                  "both been proposed. Neither is established.",
+    },
+    "Orion's Belt": {
+        "from": "English",
+        "reading": "Orion's Belt",
+        "literal": "the belt of Orion",
+    },
+    "Hyades V": {
+        "from": "English, after the Greek",
+        "reading": "Hyades  ·  Ὑάδες",
+        "literal": "disputed",
+        "unsure": "Read as the rainers, from hyein, to rain, and as the "
+                  "piglets, from hys, a pig, which is how Latin took it: "
+                  "Suculae, the little pigs.",
+    },
+    "Auriga": {
+        "from": "Latin",
+        "reading": "Auriga",
+        "literal": "the charioteer",
+    },
+    "Winter Triangle": {
+        "from": "English",
+        "reading": "the Winter Triangle",
+        "literal": "the winter triangle",
+    },
+    "Winter Hexagon": {
+        "from": "English",
+        "reading": "the Winter Hexagon",
+        "literal": "the winter hexagon",
+    },
+    "Sickle": {
+        "from": "English",
+        "reading": "the Sickle",
+        "literal": "a curved reaping blade",
+    },
+    "Spring Triangle": {
+        "from": "English",
+        "reading": "the Spring Triangle",
+        "literal": "the spring triangle",
+    },
+    "Great Diamond": {
+        "from": "English",
+        "reading": "the Great Diamond",
+        "literal": "the great diamond",
+    },
+    "Southern Cross": {
+        "from": "Latin",
+        "reading": "Crux",
+        "literal": "the cross",
+    },
+    "The Pointers": {
+        "from": "English",
+        "reading": "the Pointers",
+        "literal": "the ones that point",
+    },
+    "False Cross": {
+        "from": "English",
+        "reading": "the False Cross",
+        "literal": "the false cross",
+    },
+    "Grus": {
+        "from": "Latin",
+        "reading": "Grus",
+        "literal": "the crane",
+    },
+    "Canis Major": {
+        "from": "Latin",
+        "reading": "Canis Maior",
+        "literal": "the greater dog",
+    },
+    "Canis Minor": {
+        "from": "Latin",
+        "reading": "Canis Minor",
+        "literal": "the lesser dog",
+    },
+    "Gemini": {
+        "from": "Latin",
+        "reading": "Gemini",
+        "literal": "the twins",
+    },
+    "Virgo": {
+        "from": "Latin",
+        "reading": "Virgo",
+        "literal": "the maiden",
+    },
+    "Canes Venatici": {
+        "from": "Latin",
+        "reading": "Canes Venatici",
+        "literal": "the hunting dogs",
+    },
+    "Centaurus": {
+        "from": "Latin, from Greek",
+        "reading": "Kentauros  ·  Κένταυρος",
+        "literal": "the centaur",
+        "unsure": "The Greek word itself has no agreed derivation.",
+    },
+    "Carina": {
+        "from": "Latin",
+        "reading": "Carina",
+        "literal": "the keel",
+    },
+    "Vela": {
+        "from": "Latin",
+        "reading": "Vela",
+        "literal": "the sails",
+    },
+    "Puppis": {
+        "from": "Latin",
+        "reading": "Puppis",
+        "literal": "the stern",
+    },
+    "Aquarius": {
+        "from": "Latin",
+        "reading": "Aquarius",
+        "literal": "the water carrier",
+    },
+    "Aries": {
+        "from": "Latin",
+        "reading": "Aries",
+        "literal": "the ram",
+    },
+    "Capricornus": {
+        "from": "Latin",
+        "reading": "Capricornus",
+        "literal": "goat horned",
+    },
+    "Cepheus": {
+        "from": "Greek",
+        "reading": "Kepheus  ·  Κηφεύς",
+        "literal": "unknown",
+        "unsure": "The king's name has no agreed derivation.",
+    },
+    "Cetus": {
+        "from": "Latin, from Greek",
+        "reading": "ketos  ·  κῆτος",
+        "literal": "sea monster",
+    },
+    "Columba": {
+        "from": "Latin",
+        "reading": "Columba",
+        "literal": "the dove",
+    },
+    "Corvus": {
+        "from": "Latin",
+        "reading": "Corvus",
+        "literal": "the crow",
+    },
+    "Draco": {
+        "from": "Latin, from Greek",
+        "reading": "drakon  ·  δράκων",
+        "literal": "the one that stares",
+    },
+    "Eridanus": {
+        "from": "Greek",
+        "reading": "Eridanos  ·  Ἠριδανός",
+        "literal": "a river, otherwise unknown",
+        "unsure": "The Greeks identified the river with the Po and sometimes "
+                  "the Nile, but the name is older than either and has no "
+                  "settled derivation.",
+    },
+    "Hydra": {
+        "from": "Greek",
+        "reading": "hydra  ·  ὕδρα",
+        "literal": "water snake",
+    },
+    "Hydrus": {
+        "from": "Latin, from Greek",
+        "reading": "Hydrus",
+        "literal": "the male water snake",
+    },
+    "Lepus": {
+        "from": "Latin",
+        "reading": "Lepus",
+        "literal": "the hare",
+    },
+    "Libra": {
+        "from": "Latin",
+        "reading": "Libra",
+        "literal": "the scales",
+    },
+    "Ophiuchus": {
+        "from": "Greek",
+        "reading": "Ophiouchos  ·  Ὀφιοῦχος",
+        "literal": "serpent bearer",
+    },
+    "Pavo": {
+        "from": "Latin",
+        "reading": "Pavo",
+        "literal": "the peacock",
+    },
+    "Perseus": {
+        "from": "Greek",
+        "reading": "Perseus  ·  Περσεύς",
+        "literal": "unknown",
+        "unsure": "Usually linked to perthein, to destroy, which does not "
+                  "account for the whole name and is not agreed.",
+    },
+    "Phoenix": {
+        "from": "Latin, from Greek",
+        "reading": "phoinix  ·  φοῖνιξ",
+        "literal": "the phoenix, and also purple red",
+    },
+    "Piscis Austrinus": {
+        "from": "Latin",
+        "reading": "Piscis Austrinus",
+        "literal": "the southern fish",
+    },
+    "Serpens": {
+        "from": "Latin",
+        "reading": "Serpens",
+        "literal": "the serpent",
+    },
+    "Triangulum Australe": {
+        "from": "Latin",
+        "reading": "Triangulum Australe",
+        "literal": "the southern triangle",
+    },
 }
 
 
@@ -326,14 +644,21 @@ STAGES = {
         ("Latin", "medieval", "Algol", None),
         ("English", "now", "Algol, and ghoul, the same word", None),
     ]),
-    "Jupiter": ("branch", [
-        ("Babylon", "", "Marduk, the city god of Babylon", None),
-        ("Greece", "4th c. BC", "Zeus, taking the Babylonian assignment",
-         "Ζεύς"),
-        ("Rome", "", "Iuppiter, from dyeus phter, sky father", None),
-        ("fork", "", "dies Iovis  to  jeudi, giovedi, jueves", None),
-        ("North", "c.400", "Thor's day, and so Thursday", None),
-    ]),
+    # A cluster and not a descent, which is the whole claim. Latin did not
+    # take this from Greek: three languages inherited one phrase separately,
+    # and a top-to-bottom figure would say the opposite on its face.
+    #
+    # The weekday branch that used to hang here went for the same reason it
+    # went from Mars. dies Iovis into jeudi, and the Germanic swap that made
+    # it Thursday, are the name of the DAY descending, not the planet's.
+    "Jupiter": ("cluster",
+                "*dyeus pater", '"sky father", reconstructed',
+                [("Latin",    "Iuppiter",    "",          "and so Jupiter"),
+                 ("Greek",    "Zeu pater",   "\u0396\u03b5\u1fe6 \u03c0\u03ac\u03c4\u03b5\u03c1",
+                  "vocative, in Homer"),
+                 ("Sanskrit", "Dyaus Pitar",
+                  "\u0926\u094d\u092f\u094c\u0937\u094d\u092a\u093f\u0924\u0943",
+                  "in the Rigveda")]),
     "Mars": ("branch", [
         ("Babylon", "", "Nergal, god of plague", None),
         ("Greece", "4th c. BC", "Ares, before that Pyroeis, the fiery one",
@@ -351,7 +676,12 @@ STAGES = {
         ("Greece", "4th c. BC", "Kronos, before that Phainon, the shining",
          "Κρόνος"),
         ("Rome", "", "Saturnus", None),
-        ("English", "now", "Saturn, and Saturday", None),
+        # "and Saturday" came off here for the same reason the weekday
+        # branches came off Mars and Jupiter: that is the name of the DAY
+        # descending, not the planet's. The row itself stays, because
+        # "Saturn" on it is the planet's English name and the end of the
+        # line this figure is drawing.
+        ("English", "now", "Saturn", None),
     ]),
     "Pleiades": ("converge", [
         ("Greek", "Pleiades"),
@@ -367,7 +697,91 @@ STAGES = {
         ("Chinese", "yinhe, the silver river"),
         ("Sanskrit", "Akashaganga, the Ganges of the sky"),
     ], "milk in Europe, a river almost everywhere else"),
+
+    # -------------------------------------------------------- the 57 figures
+    # Ten of the 57 earn one. The other 47 are a Latin word for an animal,
+    # and a two-row figure saying Latin, then English, is a box drawn around
+    # nothing. What earns a figure here is a name that moved: a meaning lost
+    # (Libra, Aries), a figure that survived intact for 3,000 years
+    # (Capricornus), a shape every tradition named for itself (the Big
+    # Dipper, Orion's Belt), or one constellation becoming three (Argo).
+    "Libra": ("descent", [
+        ("Babylon", "", "Zibanitu, the scales", None),
+        ("break", "", "the scales are dropped, and the stars become the "
+                      "scorpion's claws", None),
+        ("Greece", "2nd c.", "Chelai, the claws", "Χηλαί"),
+        ("Rome", "1st c. BC", "Libra, weighed again", None),
+        ("English", "now", "Libra, with the claws left in the star names",
+         None),
+    ]),
+    "Scorpius": ("descent", [
+        ("Babylon", "", "Girtab, the scorpion", None),
+        ("Greece", "", "Skorpios", "Σκορπίος"),
+        ("break", "1st c. BC", "the claws are cut off to make Libra", None),
+        ("Rome", "", "Scorpius, without them", None),
+        ("English", "now", "Scorpius", None),
+    ]),
+    # The one that did not change. Every other figure on this page lost
+    # something on the way; the goat-fish came 3,000 years intact, which is
+    # why it is drawn as a descent with no break in it.
+    "Capricornus": ("descent", [
+        ("Babylon", "", "Suhurmashu, the goat-fish", None),
+        ("Greece", "", "Aigokeros, goat-horned", "Αἰγόκερως"),
+        ("Rome", "", "Capricornus, the same word again", None),
+        ("English", "now", "Capricorn, still half fish", None),
+    ]),
+    "Aquarius": ("descent", [
+        ("Babylon", "", "Gula, the great one, pouring a stream", None),
+        ("Greece", "", "Hydrokhoos, the water pourer", "Ὑδροχόος"),
+        ("Rome", "", "Aquarius, the same job in Latin", None),
+        ("English", "now", "Aquarius", None),
+    ]),
+    "Aries": ("descent", [
+        ("Babylon", "", "Luhunga, the hired man", None),
+        ("break", "", "the farm worker becomes a ram", None),
+        ("Greece", "", "Krios, the ram", "Κριός"),
+        ("Rome", "", "Aries", None),
+        ("English", "now", "Aries", None),
+    ]),
+    "Southern Cross": ("descent", [
+        ("Greece", "Ptolemy, 150", "part of Centaurus, unnamed", None),
+        ("Portuguese", "1500s", "Crusero, steered by on the way south", None),
+        ("Latin", "c.1600", "Crux, given its own place on a chart", None),
+        ("English", "now", "the Southern Cross", None),
+    ]),
+    "Big Dipper": ("converge", [
+        ("Greek", "Arktos, the bear"),
+        ("Latin", "Plaustrum, the wagon"),
+        ("English", "the Plough"),
+        ("American English", "the Big Dipper"),
+        ("Sanskrit", "Saptarishi, seven sages"),
+        ("Chinese", "Beidou, the northern ladle"),
+    ], "no shared root and no shared picture: the same seven stars are a "
+       "bear, a cart, a plough, a ladle and seven sages, depending on who "
+       "is looking"),
+    "Orion's Belt": ("converge", [
+        ("Arabic", "an-Nizam, the string of pearls"),
+        ("Spanish", "las Tres Marias"),
+        ("English", "the Three Kings"),
+        ("Swedish", "Friggerock, Frigg's distaff"),
+        ("Chinese", "Shen, the three stars"),
+    ], "three in a row is a picture every tradition drew for itself, and "
+       "hardly any of them drew a belt"),
 }
+
+# One constellation cut into three, which is a cluster and not a descent for
+# the same reason Jupiter is: nothing here descended from anything. Lacaille
+# took a figure apart in the 1750s and the pieces are siblings, not
+# generations. The three pages share the one figure because the split is the
+# only thing any of them has to say about its name.
+_ARGO = ("cluster", "Argo Navis", "the ship, taken apart in the 1750s", [
+    ("Carina", "the keel", "", "kept alpha"),
+    ("Puppis", "the stern", "", "kept zeta"),
+    ("Vela", "the sails", "", "kept gamma"),
+])
+STAGES["Carina"] = _ARGO
+STAGES["Puppis"] = _ARGO
+STAGES["Vela"] = _ARGO
 
 
 def _descent_lines(stages, branch=False):
@@ -404,6 +818,56 @@ def _descent_lines(stages, branch=False):
             out.append((f"{cont} {script}", True))
         if i != last:
             out.append(("│", False))
+    return out
+
+
+def _cluster_lines(root, root_script, cols):
+    """One root, and the names that came down from it side by side.
+
+    The other figures run top to bottom because they describe one name
+    travelling. This one describes a name that did not travel: three
+    languages inherited it separately from a common ancestor, and drawing
+    that as a descent would say Latin got it from Greek, which is exactly
+    the thing the figure exists to deny.
+
+    Columns are measured on the Latin lines only. A terminal cannot be
+    trusted to give a Devanagari cluster the width it claims, so the script
+    row is laid into the same columns and allowed to sit where it lands
+    rather than dragging every other row out of true with it.
+    """
+    w = [max(len(x) for x in (lang, name, gloss) if x) for lang, name, _sc, gloss in cols]
+    gap = 4
+    mid = [sum(w[:i]) + gap * i + w[i] // 2 for i in range(len(cols))]
+    span = mid[-1] - mid[0]
+    centre = mid[0] + span // 2
+
+    rail = [" "] * (mid[-1] + 1)
+    for i, m in enumerate(mid):
+        rail[m] = "┌" if i == 0 else "┐" if i == len(cols) - 1 else "┬"
+    for a, b in zip(mid, mid[1:]):
+        for x in range(a + 1, b):
+            rail[x] = "─"
+    if rail[centre] == "─":
+        rail[centre] = "┴"
+
+    def row(vals):
+        return "".join(v.ljust(w[i] + gap) for i, v in enumerate(vals)).rstrip()
+
+    out = [(" " * max(0, centre - len(root) // 2) + root, False)]
+    if root_script:
+        # Marked as script only when it actually is one. The flag exists so a
+        # browser can isolate a right-to-left run, and setting it on an
+        # ordinary Latin gloss asks for isolation nothing needs.
+        out.append((" " * max(0, centre - len(root_script) // 2) + root_script,
+                    any(ord(ch) > 0x2500 for ch in root_script)))
+    out.append((" " * centre + "│", False))
+    out.append(("".join(rail).rstrip(), False))
+    out.append((row([c[0] for c in cols]), False))
+    out.append((row([c[1] for c in cols]), False))
+    if any(c[2] for c in cols):
+        out.append((row([c[2] or "" for c in cols]), True))
+    if any(c[3] for c in cols):
+        out.append((row([c[3] or "" for c in cols]), False))
     return out
 
 
@@ -458,12 +922,33 @@ def figure_rows(name):
     kind = spec[0]
     if kind in ("descent", "branch"):
         return _descent_lines(spec[1], branch=(kind == "branch"))
+    if kind == "cluster":
+        return _cluster_lines(spec[1], spec[2], spec[3])
     return _converge_lines(spec[1], spec[2])
 
 
 def figure_lines(name):
     """The figure as plain lines, for a terminal."""
     return [text for text, _script in figure_rows(name)]
+
+
+# Names printed inside a figure that are objects with pages of their own.
+#
+# Listed rather than found at render time. A renderer scanning a figure for
+# words it recognises would link "Vela" wherever it fell, and half these
+# lines are ordinary words in four languages. The figure's own name is never
+# in its list, because a page does not link to itself.
+FIGURE_LINKS = {
+    "Carina": ("Puppis", "Vela"),
+    "Puppis": ("Carina", "Vela"),
+    "Vela": ("Carina", "Puppis"),
+}
+
+
+def figure_links(name):
+    """Which names inside this figure should be links, if it is drawn as
+    markup. A terminal gets the figure with none of them."""
+    return FIGURE_LINKS.get(name, ())
 
 
 def rows_for(name):

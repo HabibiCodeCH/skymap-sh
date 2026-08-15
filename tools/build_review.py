@@ -45,6 +45,7 @@ DONE = {
     "Triangulum Galaxy",    # approved as written 15 Aug
     "Triangulum Australe",  # voyage sentence rewritten, approved 15 Aug
     "Whirlpool Galaxy",     # Rosse and the telescope rewritten, approved 15 Aug
+    "Virgo",                # opening reworded, approved 15 Aug
     "Aquarius",             # first sentence rewritten, approved 15 Aug
     "Winter Triangle",      # rewritten, approved 15 Aug
 }
