@@ -110,27 +110,28 @@ This is the largest single gap. Two decisions needed before writing:
 
 ---
 
-## 2b. Parked: zodiac symbols in the left column
+## 2b. Zodiac symbols in the left column: raised and dropped, 15 Aug
 
-Put the sign against the constellation on the twelve zodiac pages, in the
-data column on the left where Type, Constellation and Stars already sit.
+The idea was to put the sign against the constellation on the twelve zodiac
+pages, in the data column on the left where Type, Constellation and Stars
+already sit, the way the planets carry theirs.
 
-**The plain glyph, never the emoji.** ♈ to ♓ are U+2648 to U+2653, and
-several of them carry emoji presentation by default, so a phone renders a
-colour picture where the page wants a monochrome mark. `PLANET_SYMBOLS` in
-`api.py` gets away with ♀ and ♂ because those two default to text; the
-zodiac dozen do not, and each one needs U+FE0E after it to pin it down.
-Nothing in the repo uses U+FE0E yet, so this is the first place that
-matters, and the wrong result is invisible on a Mac and obvious on iOS.
+**Dropped on the glyphs, not on the idea.** U+2648 to U+2653 carry emoji
+presentation by default and rendered as colour emoji in the terminal the
+moment they were pasted into one. `PLANET_SYMBOLS` in `api.py` gets away
+with ♀ and ♂ because those two default to text; the zodiac dozen do not.
+U+FE0E after each one is supposed to pin it to the text glyph, nothing in
+the repo uses U+FE0E yet, and it is honoured unevenly enough that the wrong
+result is invisible in one place and obvious in the next. A row of cartoons
+in a monospace column is worse than no row at all.
 
-The symbols themselves are the easy half: `PLANET_SYMBOLS` in `api.py` does
-the same job for the planets, and `object_glyph` already picks a mark by
-kind, so this is another row or another glyph rather than a new mechanism.
-Ten of the twelve are among the 57 drawn figures (Aquarius, Aries,
-Capricornus, Gemini, Libra, Scorpius, Virgo), and Leo, Sagittarius, Cancer,
-Taurus and Pisces are filed under an asterism or have no page at all, which
-is the same gap the `[[Sickle|Leo]]` link form works around. Worth settling
-that first: a sign with no page to put it on is the harder half.
+Anyone reviving this should settle the glyph question first, on a real
+terminal and a real phone, before touching the pages. The rest is easy:
+`object_glyph` already picks a mark by kind, so it is another row rather
+than a new mechanism. The second obstacle is that only seven of the twelve
+signs have a page here (Aquarius, Aries, Capricornus, Gemini, Libra,
+Scorpius, Virgo). Leo is filed under the Sickle, Sagittarius under the
+Teapot, and Cancer, Taurus and Pisces have no page at all.
 
 ---
 
