@@ -1754,7 +1754,7 @@ def object_prose(facts, tgt, r, width=76):
 
     if facts.get("constellation"):
         if _MOVES_AGAINST_THE_SKY(facts):
-            L.append(f"It is currently crossing {facts['constellation']}.")
+            L.append(f"{name} is currently crossing {facts['constellation']}.")
         else:
             L.append(f"You will find it in {facts['constellation']}.")
 
@@ -1779,9 +1779,9 @@ def object_prose(facts, tgt, r, width=76):
 
     pl = facts.get("planet", {})
     if pl:
-        L.append(f"It is {pl['distance_au']:.2f} AU away, which is "
-                 f"{pl['light_minutes']:.0f} light-minutes, so you are seeing it "
-                 f"as it was {pl['light_minutes']:.0f} minutes ago.")
+        # Distance and disc size are rows in the infobox already, word for
+        # word, a couple of inches up the same page. Saying them again in a
+        # sentence is length without information.
         if pl.get("lost_in_glare"):
             L.append(f"It is only {pl['elongation']:.0f}° from the Sun and lost in "
                      f"the glare.")
@@ -1796,18 +1796,13 @@ def object_prose(facts, tgt, r, width=76):
                    "clearly open" if ra_ < 22 else
                    "as wide as they ever get")
             L.append(f"The rings are tilted {ra_:.0f}° towards us, {how}.")
-        if pl.get("apparent_arcsec"):
-            L.append(f"The disc is {pl['apparent_arcsec']:.0f} arcseconds across"
-                     + (f", {pl['illuminated']:.0%} lit."
-                        if pl["illuminated"] < 0.95 else "."))
         if pl.get("retrograde"):
             L.append("It is retrograde at the moment, drifting westwards "
                      "against the stars.")
 
-    if facts.get("moons_tonight"):
-        L.append(f"Its four big moons tonight: {facts['moons_tonight']}. "
-                 f"Binoculars will show them, and they will have moved by "
-                 f"tomorrow night.")
+    # The four moons used to be a sentence here. They are a drawing under
+    # the chart now (moon_lines), which puts them where they actually are
+    # instead of listing which side of the planet each one is on.
 
     mo_f = facts.get("moon") or {}
     if mo_f.get("distance_km"):
@@ -1882,10 +1877,6 @@ def object_prose(facts, tgt, r, width=76):
                      f"{b['moon_illum']:.0%} on {b['date']}, and the sky is "
                      f"otherwise the same on both nights.")
 
-    also = facts.get("also_a_place")
-    if also:
-        L.append(f"{name} is also a place. For the sky above the town, use "
-                 f"skymap.sh{also['url']}.")
 
     import textwrap
     out = []
@@ -2287,8 +2278,7 @@ def infobox_html(blocks):
             # Escaped first, linked second: html.escape leaves [[ and ]]
             # alone, so the markers survive to be turned into anchors here
             # and the name inside one is escaped like any other text.
-            val = _COPY_LINK.sub(
-                lambda m: f'<a href="/{quote(m.group(1))}">{m.group(1)}</a>', val)
+            val = _COPY_LINK.sub(_copy_anchor, val)
             out.append(f"<dt>{html.escape(str(k))}</dt><dd>{val}</dd>")
     out.append("</dl>")
     return "".join(out)
@@ -2383,6 +2373,42 @@ def object_descriptor(facts):
     if con and not _MOVES_AGAINST_THE_SKY(facts):
         return f"{article} {word} in {con}"
     return f"{article} {word}"
+
+
+def moon_lines(canonical, when, c=True):
+    """Jupiter's four big moons across one line, or [] for anything else.
+
+    On the where page and under the chart, because this is the liveliest
+    thing on the site: Io shifts a whole Jupiter radius in about three
+    hours. It cannot go ON the chart -- all four moons and the planet span
+    0.39 degrees, and one braille sub-pixel is 0.41 on the finest view the
+    site draws, so the entire system lands inside a single dot.
+
+    Distances are Jupiter radii, never arcseconds. The planet's apparent
+    size changes by a factor of two over its orbit; the radii do not.
+    """
+    if canonical != "Jupiter":
+        return []
+    import moons
+    names, row, mid, hidden = moons.strip(when=when)
+    row = row.ljust(mid + 1)
+    # The chart's own planet mark, in the colour the chart gives Jupiter, so
+    # the thing in the middle of this line is recognisably the thing drawn
+    # above it. The names either side stay dim: they label a picture of the
+    # planet rather than compete with it.
+    line = (paint(row[:mid], C.LABEL, c)
+            + paint(JUPITER_MARK, PLANET_COLORS["Jupiter"], c)
+            + paint(row[mid + 1:], C.LABEL, c))
+    L = [paint("  " + MOON_TITLE, C.HEAD, c), ""]
+    L.append(paint("  East" + " " * 47 + "West", C.MUTE, c))
+    L.append(paint("  " + names, C.LABEL, c))
+    L.append("  " + line)
+    for name, where in hidden:
+        # Named rather than drawn. A label printed on top of the planet
+        # would claim a position the reader cannot check against the sky.
+        L.append("")
+        L.append(paint(f"  {name} is {where} the planet tonight", C.MUTE, c))
+    return L
 
 
 def evolution_lines(tgt, canonical, c=True):
@@ -2491,6 +2517,49 @@ def style_evolution_title(markup, canonical, _re=re):
     return _re.sub(pattern,
                    lambda m: f'<span class="obj-evo-title">{m.group(1)}'
                              f'{title}</span>', markup, count=1)
+
+
+MOON_TITLE = "Jupiter's Galilean moons, current position"
+# One character wide in the terminal, like everything else on the line, and
+# set larger in the browser by style_moon_block -- the planet is 27 times
+# Ganymede's width and a figure that draws them the same size is lying
+# about the one thing it is for.
+JUPITER_MARK = "◆"
+
+
+def style_moon_block(markup, _re=re):
+    """Frame the moon strip, the same way the evolution title is handled.
+
+    The block reaches the browser as part of the live column's preformatted
+    text, so there is nothing for a stylesheet to aim at until a class is
+    put on it here. The strip itself gets a border: four letters and a dot
+    on an otherwise empty line read as a stray line of output without one,
+    and the frame is what says this is a picture of something.
+    """
+    # Matched against the ESCAPED title. By the time the markup exists the
+    # apostrophe in "Jupiter's" is &#x27;, so a pattern built from the raw
+    # string matches nothing and the block silently arrives unstyled --
+    # which is exactly what it did.
+    esc = html.escape(MOON_TITLE)
+    markup = _re.sub(r'<span[^>]*>(\s*)' + _re.escape(esc) + r'</span>',
+                     lambda m: f'<span class="obj-moon-title">{m.group(1)}'
+                               f'{esc}</span>', markup, count=1)
+    # Everything from the east/west scale down to the end of the strip. It
+    # is anchored on the scale line rather than on a blank-line pair: the
+    # block is the last thing in the column on a night when no moon is
+    # hidden, so there is no trailing blank pair to find.
+    # The planet is enlarged INSIDE the frame and nowhere else. Doing it on
+    # the whole document replaced the first diamond in it, and the sky chart
+    # draws every planet with the same mark -- so the page came back with a
+    # giant glyph somewhere up in the chart and a moon strip untouched.
+    # There are fourteen diamonds on a Jupiter page; exactly one is this one.
+    def frame(m):
+        inner = m.group(2).replace(
+            JUPITER_MARK, f'<span class="obj-moon-planet">{JUPITER_MARK}</span>', 1)
+        return f'{m.group(1)}<span class="obj-moon-frame">{inner}</span>{m.group(3)}'
+
+    return _re.sub(r'(<span class="obj-moon-title">.*?</span>\n\n)(.*?◆.*?)(\n)',
+                   frame, markup, count=1, flags=_re.S)
 
 
 def link_star_labels(markup, canonical):
@@ -2748,14 +2817,17 @@ def history_blocks(canonical):
     desig = designations(canonical)
     if desig:
         blocks.append((HISTORY_KNOWN_AS, desig))
-    # Etymology sits between what it is called and what happened to it,
-    # because it explains the first and predates the second.
-    etym = etymology.rows_for(_facts_key(canonical))
-    if etym:
-        blocks.append((HISTORY_ETYMOLOGY, [(k, v, None) for k, v in etym]))
+    # What happened to the thing, then what it has been called. Etymology
+    # used to come first, on the grounds that it explains the name and
+    # predates the events -- true, and it put the shortest block on the page
+    # ahead of the one carrying discovery dates and spacecraft, which is not
+    # the order anybody reads them in.
     written = facts_table.history_for(_facts_key(canonical))
     if written:
         blocks.append((HISTORY_BLOCK, [(k, v, None) for k, v in written]))
+    etym = etymology.rows_for(_facts_key(canonical))
+    if etym:
+        blocks.append((HISTORY_ETYMOLOGY, [(k, v, None) for k, v in etym]))
     return blocks
 
 
@@ -2776,11 +2848,18 @@ def about_is_worth_reading(canonical):
     629 of the 1,244 objects have exactly one row, a bare NGC number, and a
     link to that is worse than no link.
 
-    Three things earn it. Any written history, however short -- the Perseids
+    Four things earn it. Any written history, however short -- the Perseids
     carry one row and it is the year somebody worked out where they come
     from, which is worth reading. Or more than one designation, which means
     the object has a name people use or a Messier number beside its
     catalogue entry, rather than only the entry.
+
+    Or a name origin, which is the fourth and was added for the 57 drawn
+    figures. A constellation has no discovery, no mission and no second
+    designation: it was there before anybody wrote anything down, so the
+    first three conditions refuse it forever no matter how much is written
+    about it. What /Perseus has to say is what the name means and where it
+    came from, and that is a whole page rather than a footnote to one.
 
     Or a standing sentence about the catalogue it came from, which is what
     changed this rule. It used to refuse the 629 objects whose history was a
@@ -2797,6 +2876,8 @@ def about_is_worth_reading(canonical):
     if blocks.get(HISTORY_BLOCK):
         return True
     if len(blocks.get(HISTORY_KNOWN_AS) or ()) > 1:
+        return True
+    if etymology.ETYMOLOGY.get(_facts_key(canonical)):
         return True
     return bool(catalogue_notes(canonical))
 
@@ -2891,16 +2972,54 @@ def about_facts(canonical, now=None):
 # bolted beside it, because that is how they read.
 #
 #   [[Vega]]   a link to /Vega, and just the word in a terminal
+#   [[Sickle|Leo]]
+#              a link to /Sickle that reads "Leo". Page first, like every
+#              wiki does it, so the first slot always names the object and
+#              the second is only ever how it is spelled in this sentence.
 #   العربية     any right-to-left run, isolated so it cannot reorder the
 #              punctuation around it
 #
+# The second form exists because a constellation is often filed under the
+# shape inside it: Cassiopeia's page is Cassiopeia's W, Leo's is the Sickle,
+# Sagittarius's is the Teapot. Writing "her mother Cassiopeia's W" to get a
+# link says something false about the sky, and leaving it unlinked strands
+# the reader. Nothing else needs it, so it does nothing else: no titles, no
+# anchors, no external URLs.
+#
 # Kept deliberately small. This is a house convention for forty paragraphs,
 # not a markup language, and anything more would need a parser and a spec.
-_COPY_LINK = re.compile(r"\[\[([^\]|]+)\]\]")
+_COPY_LINK = re.compile(r"\[\[([^\]|]+?)(?:\|([^\]|]+?))?\]\]")
 # Arabic and Hebrew. Greek and CJK render left to right and need no isolating,
 # only the no-break treatment every non-Latin run gets.
 _RTL_RUN = re.compile(r"[\u0590-\u06FF\u0750-\u077F][\u0590-\u06FF"
                       r"\u0750-\u077F\s\u200f]*")
+
+
+def _copy_anchor(m):
+    """One link marker, as an anchor, from copy that is already escaped.
+
+    Both callers escape the whole paragraph before linking it, because
+    html.escape leaves [[ and ]] alone and the markers survive. What it does
+    not leave alone is an apostrophe: Cassiopeia's W arrives here spelled
+    Cassiopeia&#x27;s W, and feeding that to quote() built a href of
+    /Cassiopeia%26%23x27%3Bs%20W, which is a 404, while escaping it a second
+    time printed the entity on the page as text.
+
+    So the name is unescaped once to get the object's real name for the URL,
+    and the text is passed through exactly as it arrived, escaped once and
+    no more. Any name carrying an apostrophe, an ampersand or an angle
+    bracket goes the same way, which is why this is a function and not two
+    lambdas that have to agree with each other.
+    """
+    target = m.group(1)
+    shown = m.group(2) or target
+    return f'<a href="/{quote(html.unescape(target))}">{shown}</a>'
+
+
+def _copy_shown(m):
+    """What a link marker reads as with no markup around it. The target is
+    a URL and a terminal has nowhere to put one, so only the words survive."""
+    return m.group(2) or m.group(1)
 
 
 def copy_html(text):
@@ -2917,15 +3036,13 @@ def copy_html(text):
         last = m.end()
     out.append(html.escape(text[last:]))
     joined = "".join(out)
-    return _COPY_LINK.sub(
-        lambda m: f'<a href="/{quote(m.group(1))}">{html.escape(m.group(1))}</a>',
-        joined)
+    return _COPY_LINK.sub(_copy_anchor, joined)
 
 
 def copy_text(text):
     """The same paragraph for a terminal: the link markers come off and the
     script stays, exactly as every other symbol on this site does."""
-    return _COPY_LINK.sub(lambda m: m.group(1), text)
+    return _COPY_LINK.sub(_copy_shown, text)
 
 
 def object_nav_html(canonical, current):
@@ -2983,7 +3100,7 @@ def object_static_html(data, static_text, canonical):
             + (f'<p class="obj-src">{html.escape(src)}</p>' if src else ""))
 
 
-def about_rows_html(blocks):
+def about_rows_html(blocks, extra=""):
     """The rows as a description list, with the catalogue note behind an (i).
 
     Same <dl> grid the object page's infobox uses, and deliberately the same
@@ -3000,13 +3117,20 @@ def about_rows_html(blocks):
     """
     out = ['<div class="hist-blocks">']
     for title, rows in blocks:
+        # Each block in a frame of its own, and the frame carries the
+        # block's name in its class so the order can be tested rather than
+        # eyeballed. Unframed they ran together as one long list of pairs
+        # with a heading somewhere in the middle of it.
+        # The name sits ABOVE its box, not inside it. Inside, it read as the
+        # first row of the list it was labelling.
+        if title:
+            out.append(f'<h3 class="hist-sec-name">{html.escape(title)}</h3>')
+        out.append(f'<section class="hist-sec hist-sec-'
+                   f'{html.escape((title or "").lower())}">')
         # One list per block, not one list with headings inside it. That is
         # what lets the three sit side by side on a wide screen and stack on
         # a narrow one -- a single grid can only ever be one column of pairs.
         out.append('<dl class="obj-facts obj-known">')
-        if title:
-            out.append(f'<dt class="obj-sec" role="presentation">'
-                       f'{html.escape(title)}</dt><dd class="obj-sec"></dd>')
         for label, value, note_key in rows:
             note = CATALOGUE_NOTES.get(note_key)
             tip = ""
@@ -3026,6 +3150,11 @@ def about_rows_html(blocks):
             out.append(f'<dt>{html.escape(label)}{tip}</dt>'
                        f'<dd>{_unbreakable(value)}</dd>')
         out.append("</dl>")
+        # The figure is a drawing of the descent the etymology rows list, so
+        # it goes inside that frame rather than loose underneath both.
+        if title == "Etymology" and extra:
+            out.append(extra)
+        out.append("</section>")
     out.append("</div>")
     return "".join(out)
 
@@ -3144,7 +3273,6 @@ def about_body_html(canonical):
     blurb = (blurbs.BLURBS.get(key) or ("", ""))[1]
     paras = ([blurb] if blurb else []) + etymology.prose_for(key)
     lede = "".join(f'<p class="hist-lede">{copy_html(p)}</p>' for p in paras)
-    rows = about_rows_html(rest) if rest else ""
     fig = etymology.figure_rows(key)
     figure = ""
     if fig:
@@ -3152,7 +3280,23 @@ def about_body_html(canonical):
             (f'<span class="obj-run">{html.escape(t)}</span>' if s
              else html.escape(t))
             for t, s in fig)
+        # Carina, Puppis and Vela are three pieces of one constellation, and
+        # a reader looking at the figure on any of the three wants the other
+        # two. Linked after the layout is finished and in one pass, so the
+        # columns keep their widths (an anchor is no wider in a pre) and no
+        # anchor can be rewritten by the name that follows it.
+        others = etymology.figure_links(key)
+        if others:
+            art = re.sub(r"\b(" + "|".join(re.escape(o) for o in others) + r")\b",
+                         lambda m: f'<a href="/{quote(m.group(1))}">'
+                                   f'{m.group(1)}</a>', art)
         figure = f'<div class="hist-lower"><pre class="hist-fig">{art}</pre></div>'
+    # Handed in, so the figure lands inside the etymology frame rather than
+    # after both of them. If there is no etymology block there is nothing
+    # for it to belong to, and it falls through to the end as before.
+    rows = about_rows_html(rest, figure) if rest else ""
+    if rows and any(t == HISTORY_ETYMOLOGY for t, _r in rest):
+        figure = ""
     if not (lede or rows or figure):
         lede = '<p class="hist-lede">Nothing recorded here yet.</p>'
     right = (f'<p class="obj-lede obj-live-head">'
@@ -3160,8 +3304,20 @@ def about_body_html(canonical):
              f'{lede}{rows}{figure}'
              f'<p class="obj-src"><a href="/{quote(canonical)}">'
              f'Where {html.escape(canonical)} is tonight</a></p>')
+    # The same control the where tab carries, in the same corner, so it does
+    # not vanish when a reader crosses between the two halves of an object.
+    #
+    # One link and not the object page's two or three. Those exist because
+    # /Saturn resolves to wherever the reader is and /Zurich/Saturn does not,
+    # a distinction this page does not have: nothing on it depends on where
+    # anybody is or what night it is. The box keeps the wording it was
+    # written with, which speaks of following the reader, and over a URL that
+    # follows nobody that sentence is doing no work.
+    share = eclipse_page.share_html(
+        canonical_url(f"/{quote(canonical)}/about"),
+        title=f"Share {canonical}", noun=canonical)
     return (f'<div class="obj-head-row">{about_heading_html(canonical)}'
-            f'{object_nav_html(canonical, "about")}</div>'
+            f'{object_nav_html(canonical, "about")}{share}</div>'
             + '<div class="obj-cols">'
             + f'<aside class="obj-static">{left}</aside>'
             + f'<div class="obj-live hist-page">{right}</div>'
@@ -3175,12 +3331,16 @@ def about_page(canonical, base_url):
     """
     return _object_page_template().format(
         title=html.escape(about_title(canonical)),
-        head_extra=about_head(canonical, base_url) + OBJECT_CSS,
+        head_extra=(about_head(canonical, base_url) + OBJECT_CSS
+                    + eclipse_page.SHARE_CSS),
         header=header_html(f"{canonical}/about"),
         controls=controls_html(EXPLORE),
         wide_class=" w-wide", coming_up_card="",
         kbd_urls="{}", shortcuts_hint="",
-        body=about_body_html(canonical))
+        # The button ships hidden and the script reveals it, so without this
+        # the control is on the page and invisible, which is how it would
+        # have failed silently.
+        body=about_body_html(canonical) + eclipse_page.share_script())
 
 
 def object_intro(facts, canonical, width=76):
@@ -3496,6 +3656,11 @@ def compose_object(r, canonical):
     if live_what:
         parts += [OBJWHAT_SLOT, live_what]
     parts += [OBJPROSE_SLOT, live, "", body, ""]
+    # Directly under the chart it belongs to, and above the evolution block,
+    # which is the one thing on the page less perishable than the facts.
+    galilean = moon_lines(canonical, r.when_utc, c)
+    if galilean:
+        parts += galilean + [""]
     if evo:
         parts += evo + [""]
     parts += [_footer(r.place, c), ""]
@@ -3778,6 +3943,25 @@ OBJECT_CSS = """
    labels (.ecl-maptitle) rather than like chart output. inline-block is
    what lets it take the space above it: a plain inline span inside a <pre>
    ignores vertical margin. */
+.obj-live .obj-moon-title{display:inline-block;color:#8fb6e0;font-size:11px;
+  letter-spacing:.09em;text-transform:uppercase;margin:1.5rem 0 .35rem;
+  line-height:1.2}
+/* The portrait's frame, on the moons. Four names and a diamond on an
+   otherwise empty line read as stray output without one, and the border is
+   what says this is a picture of something rather than a stray line of
+   text. Same border, radius and ground as .obj-art-frame; the padding is
+   smaller because this is one line tall and not twenty. */
+/* Jupiter is 27 times Ganymede's width. Drawing the planet and its moons at
+   one size is the single thing this figure must not say, so the glyph is
+   set well above the line it sits on. line-height:0 keeps the taller glyph
+   from pushing the row apart from the rows above and below it. */
+.obj-live .obj-moon-planet{font-size:2.6em;line-height:0;vertical-align:-.13em}
+/* inline-block, so the box is as wide as the strip and not as wide as the
+   column. block stretched it the full width of the live half and left a
+   third of the frame holding nothing. */
+.obj-live .obj-moon-frame{display:inline-block;border:1px solid #1c2027;
+  border-radius:8px;background:#070a0e;padding:8px 12px 10px;
+  margin:.1rem 0 1.15rem}
 .obj-live .obj-evo-title{display:inline-block;color:#8fb6e0;font-size:11px;
   letter-spacing:.09em;text-transform:uppercase;margin:1.5rem 0 .35rem;
   line-height:1.2}
@@ -3871,7 +4055,30 @@ OBJECT_CSS = """
    with wrap rather than a fixed grid: the blocks are different heights and
    there are two or three of them depending on the object, so a column count
    fixed in advance is wrong for most pages. */
-.hist-blocks{display:flex;flex-wrap:wrap;gap:0 52px;align-items:flex-start}
+/* Each section in its own box, so the two read as two things rather than
+   as one long list of pairs with a heading loose in the middle. Same
+   border, radius and ground as the portrait's frame. */
+.hist-sec-name{font-family:ui-monospace,SFMono-Regular,"SF Mono",Menlo,monospace;
+  color:#8fb6e0;font-size:11px;letter-spacing:.09em;text-transform:uppercase;
+  font-weight:400;margin:1.4rem 0 .4rem}
+/* fit-content, not block. A block-level box takes the whole column whatever
+   is in it, so both frames ran the full width of the page with most of the
+   border holding nothing. fit-content keeps it block-level -- each box still
+   starts on its own line under its own title -- while shrinking the box to
+   the rows inside it. max-width so a long mission name cannot push it past
+   the column. */
+.hist-sec{display:block;width:fit-content;max-width:100%;
+  border:1px solid #1c2027;border-radius:8px;
+  background:#070a0e;padding:14px 18px;margin:0 0 .4rem}
+/* Air above the figure. Butted straight under the last row it read as one
+   more value in the list rather than as a drawing of what the list says. */
+.hist-sec .hist-lower{margin-top:1.5rem}
+.hist-sec>dl{margin:0}
+/* A stack, not a row. This was a flex row so two bare lists could sit side
+   by side on a wide screen; now each block is a titled box, and flex made
+   every title its own item standing BESIDE the box it names instead of
+   above it. Boxes go full width, one under the next. */
+.hist-blocks{display:block}
 .hist-blocks>dl{margin:0 0 1.5rem}
 /* The figure stands on its own now that its story reads at the top, so it
    takes its natural width instead of holding a column open beside it. */
@@ -3880,7 +4087,7 @@ OBJECT_CSS = """
    characters and any other leading opens gaps in what should be one line. */
 .hist-fig{margin:0;font-size:12px;line-height:1.35;white-space:pre;
   overflow-x:auto;color:#c9d1d9}
-@media (max-width:820px){.hist-blocks{gap:0 30px}}
+
 
 /* A value part that must not be split across lines. Arabic broken mid-word
    does not merely look wrong -- in a right-to-left run it reorders what is
@@ -4186,6 +4393,8 @@ def object_html(r, canonical, text, data, place=None, base_url="",
                      # the picture, and passing "" here silently dropped all
                      # of it.
                      + chart_layout(rungs, zenith, prose))
+        if canonical == "Jupiter":
+            live_html = style_moon_block(live_html)
         if data.get("evolution"):
             # The panels are already here, in the column, under the chart --
             # they arrive as part of the prose text. Two jobs left: make the

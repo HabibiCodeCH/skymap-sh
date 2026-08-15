@@ -197,6 +197,7 @@ FACTS = {
     "Whirlpool Galaxy": {
         "distance_fixed": "31 million light years",
         "discovered": "1773, Charles Messier",
+        "first_drawn": "1845, Lord Rosse, the first spiral anyone recorded",
         "first_photo": "1889, Isaac Roberts, which showed the spiral was real",
     },
     "Ring Nebula": {
@@ -335,6 +336,12 @@ FIELD_ORDER = [
 # rows, and they are the ones least to do with finding the thing tonight.
 HISTORY_ORDER = [
     ("discovered", "Discovered"),
+    # Between finding it and photographing it there is a third act, and for
+    # the deep sky it is the one that mattered: somebody at an eyepiece
+    # drawing what they saw. Rosse's 1845 sketch of the Whirlpool is the
+    # first spiral anyone recorded and it sat 44 years ahead of the plate
+    # that confirmed it, with nothing on the page between the two dates.
+    ("first_drawn", "First drawn"),
     ("first_photo", "First photographed"),
     ("first_visit", "First visited"),
     ("missions", "Missions"),

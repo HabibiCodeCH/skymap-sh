@@ -1245,10 +1245,17 @@ def test_the_summary_is_in_the_heading_not_repeated_below(client):
     h = client.get("/Saturn", headers=BROWSER).text
     prose = re.search(r'id="chart-prose">(.*?)</pre>', h, re.S).group(1)
     txt = _h.unescape(re.sub(r"<[^>]+>", "", prose))
-    for keep in ("crossing", "AU away", "rings are tilted",
+    for keep in ("crossing", "rings are tilted",
                  "Best in the next 12 months"):
         assert keep in txt, f"the prose lost {keep!r}"
     assert "mag 1.0" not in txt, "the summary line should not be repeated"
+    # Distance and disc size left the prose because the infobox already
+    # carried both, word for word, a couple of inches up the same page.
+    # Said once, and this is which once.
+    for gone in ("AU away", "arcseconds across"):
+        assert gone not in txt, f"{gone!r} is the infobox's line now"
+    assert "<dt>Distance</dt><dd>8.78 AU" in h, "the infobox has to say it"
+    assert "<dt>Apparent size</dt>" in h
 
 
 def test_the_infobox_rows_reach_json(client):
@@ -1847,7 +1854,7 @@ def test_every_canonical_for_one_object_gets_the_same_history(client):
     pages = [server.api.history_blocks(n)
              for n in ("M31", "NGC224", "Andromeda Galaxy")]
     assert all(p == pages[0] for p in pages), pages
-    assert [t for t, _r in pages[0]] == ["Known as", "Etymology", "History"]
+    assert [t for t, _r in pages[0]] == ["Known as", "History", "Etymology"]
 
 
 def test_the_ladder_is_derived_so_it_covers_the_whole_catalogue():
@@ -1887,11 +1894,17 @@ def test_the_object_page_links_on_only_where_there_is_something_to_read(client):
     # else. It passes now because the page explains what Dreyer's catalogue
     # is, which is worth knowing once.
     assert server.api.about_is_worth_reading("NGC1980")
-    # An asterism has no catalogue name at all, so there is still nothing to
-    # send anyone to.
-    assert not server.api.about_is_worth_reading("Big Dipper")
-    assert "Big Dipper/about" not in body(
-        client.get("/Big%20Dipper", headers=CURL))
+    # The Big Dipper used to be the negative here, on the grounds that an
+    # asterism has no catalogue name and so nothing to send anyone to. It
+    # earns the link now, through the fourth condition: it has no discovery
+    # and no designation, and what it does have is a name that six
+    # traditions gave it separately, which is a page in its own right.
+    assert server.api.about_is_worth_reading("Big Dipper")
+    assert "Big Dipper/about" in body(client.get("/Big%20Dipper", headers=CURL))
+    # Still a negative, and now a narrow one: a variant designation with one
+    # bare row and not even a catalogue note under it.
+    assert not server.api.about_is_worth_reading("NGC2818A")
+    assert "NGC2818A/about" not in body(client.get("/NGC2818A", headers=CURL))
 
 
 def test_a_standing_sentence_explains_the_catalogue_it_cites(client):
@@ -1916,12 +1929,19 @@ def test_one_written_row_is_enough_to_earn_the_link():
 
 def test_both_renderings_use_one_threshold(client):
     """Two thresholds would put the link on the browser page and not the curl
-    one, or the other way round."""
+    one, or the other way round.
+
+    The browser href is percent-encoded and the terminal line is not, which
+    went unnoticed while the only two-word name here was one that wanted no
+    link at all: the test was looking for "/Big Dipper/about", a string the
+    page could never contain, and a missing link and a misspelt probe agreed
+    with each other."""
+    from urllib.parse import quote
     for name in ("Betelgeuse", "Big Dipper", "Perseids"):
         want = server.api.about_is_worth_reading(name)
         in_txt = f"{name}/about" in body(client.get(f"/{name}", headers=CURL))
-        in_html = f'"/{name}/about"' in client.get(f"/{name}",
-                                                     headers=BROWSER).text
+        in_html = f'"/{quote(name)}/about"' in client.get(
+            f"/{quote(name)}", headers=BROWSER).text
         assert in_txt == want, name
         assert in_html == want, name
 
@@ -1938,12 +1958,16 @@ def test_the_page_is_counted_apart_from_the_object_pages(client):
 
 
 def test_etymology_is_its_own_block(client):
-    """Between what it is called and what happened to it, because it
-    explains the first and predates the second."""
+    """After what happened to it, not before.
+
+    Etymology used to read first, on the grounds that it explains the name
+    and predates the events. True, and it put the shortest block on the page
+    ahead of the one carrying discovery dates and spacecraft, which is not
+    the order anybody reads them in."""
     t = body(client.get("/Betelgeuse/about", headers=CURL))
     assert "Etymology" in t
     assert "hand of Jawza" in t
-    assert t.index("Known as") < t.index("Etymology") < t.index("History")
+    assert t.index("Known as") < t.index("History") < t.index("Etymology")
 
 
 def test_a_contested_etymology_says_so_rather_than_picking(client):
@@ -2015,6 +2039,26 @@ def _every_written_string():
         yield f"note[{k}]", v
 
 
+def test_no_figure_traces_a_weekday():
+    """A planet's figure traces the planet's name and stops there.
+
+    dies Martis into mardi, the Germanic swap that made it Tuesday, Thor's
+    day, "and Saturday" -- every one of those is the name of the DAY
+    descending. It is a good story and it belongs to Tuesday, not to Mars.
+
+    Cut three times, from Mars, from Jupiter and from Saturn, each one found
+    by eye weeks apart. Pinned here so a fourth cannot go unnoticed."""
+    import etymology
+    days = ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday",
+            "Saturday", "Sunday", "mardi", "jeudi", "martes", "jueves",
+            "martedi", "giovedi", "dies Martis", "dies Iovis")
+    bad = []
+    for name, spec in etymology.STAGES.items():
+        blob = str(spec)
+        bad += [f"{name}: {d}" for d in days if d in blob]
+    assert not bad, bad
+
+
 def test_no_dashes_anywhere_in_the_copy():
     """House style, and it kept coming back because nothing checked."""
     bad = [where for where, s in _every_written_string()
@@ -2031,6 +2075,187 @@ def test_quotes_in_the_copy_are_straight():
     assert not bad, bad
 
 
+def test_a_history_block_reads_forwards():
+    """Every dated row in an object's history, in the order it happened.
+
+    HISTORY_ORDER fixes the sequence once for all 36 objects, so a row
+    inserted in the wrong slot is wrong on every page carrying that field at
+    once and right on none of them. Rosse drawing the Whirlpool in 1845 goes
+    between Messier finding it in 1773 and Roberts photographing it in 1889;
+    put "First drawn" after "First photographed" in the list and all three
+    dates print backwards.
+
+    Rows with no year lead ("known since antiquity") are skipped rather than
+    guessed at.
+    """
+    import re, facts
+    bad = []
+    for name in facts.FACTS:
+        years = [(label, int(m.group(1)))
+                 for label, value in facts.history_for(name)
+                 for m in [re.match(r"(\d{4})", str(value))] if m]
+        if years != sorted(years, key=lambda ly: ly[1]):
+            bad.append(f"{name}: {years}")
+    assert not bad, bad
+
+
+def test_no_proper_name_sits_on_two_different_stars():
+    """Alpha Canum Venaticorum was filed as Chara, which is beta.
+
+    So both stars in the constellation answered to one name, /Cor Caroli was
+    a 404, and the brightest star in the figure was reachable only under its
+    neighbour's. Copy written about it had to leave the name as plain text,
+    which is how it surfaced at all.
+
+    A shared name is normal and not what this looks for: Mizar is on both
+    components of zeta Ursae Majoris, Castor on both of alpha Geminorum, and
+    a visual double taking one name across its components is the catalogue
+    being right. Two DIFFERENT letters wearing one name is the mistake.
+    """
+    import sky, collections
+    by_name = collections.defaultdict(list)
+    for s in sky._load("stars.json"):
+        if s.get("n"):
+            by_name[s["n"]].append(s)
+    bad = []
+    for name, rows in by_name.items():
+        letters = {(r.get("b") or "").rstrip("¹²³") + (r.get("c") or "")
+                   for r in rows}
+        if len(letters) > 1:
+            bad.append(f"{name}: " + ", ".join(
+                f"{r.get('b')} {r.get('c')} (HR{r['hr']})" for r in rows))
+    # Three names checked by hand and left alone.
+    #
+    #   Al Thalimain  genuinely two stars, the two ostriches, lambda and
+    #                 iota Aquilae. Not an error.
+    #   Marfik        lambda Ophiuchi and kappa Herculis, both from the same
+    #                 Arabic word for an elbow. Not an error.
+    #   Markab        alpha Pegasi, which is right, and HR 2948, which is
+    #                 kappa Puppis carrying no Bayer letter or constellation
+    #                 at all. That one is doubtful: the IAU gives Markab to
+    #                 alpha Pegasi and the similar Markeb to kappa Velorum,
+    #                 and kappa Puppis has neither. /Markab happens to reach
+    #                 Pegasus today, which is the luck that ran out for Cor
+    #                 Caroli. Listed rather than fixed, because deleting a
+    #                 name is not a decision to make while passing.
+    KNOWN = ("Al Thalimain", "Marfik", "Markab")
+    bad = [b for b in bad if not b.startswith(KNOWN)]
+    assert not bad, bad
+
+
+def test_a_cross_link_survives_being_turned_into_markup():
+    """Every [[Name]] has to come out the other side as the same name.
+
+    Cassiopeia's W came out as Cassiopeia&#x27;s W printed on the page, with
+    a href of /Cassiopeia%26%23x27%3Bs%20W behind it, which is a 404. The
+    paragraph is escaped before it is linked, so an apostrophe was already
+    an entity by the time the anchor was built, and it was then escaped
+    again for the text and percent-encoded entity-and-all for the URL.
+
+    Checked over the real copy rather than a sample: this only shows up on
+    names carrying a character html.escape touches, and there are three of
+    those in the file.
+    """
+    import re
+    from urllib.parse import unquote
+    import html as H
+    import server
+    bad = []
+    for where, s in _every_written_string():
+        # The module's own pattern, so a change to the markers cannot leave
+        # this test quietly matching an older shape of them.
+        for m in server.api._COPY_LINK.finditer(s):
+            marker, target = m.group(0), m.group(1)
+            want = m.group(2) or target
+            got = server.api.copy_html(marker)
+            href = re.search(r'href="/([^"]*)"', got).group(1)
+            shown = re.search(r'>([^<]*)</a>', got).group(1)
+            if unquote(href) != target:
+                bad.append(f"{where}: href {unquote(href)!r} != {target!r}")
+            if H.unescape(shown) != want:
+                bad.append(f"{where}: text {H.unescape(shown)!r} != {want!r}")
+            if server.api.copy_text(marker) != want:
+                bad.append(f"{where}: terminal "
+                           f"{server.api.copy_text(marker)!r} != {want!r}")
+    assert not bad, bad
+
+
+def test_a_link_can_read_as_a_different_word_to_the_page_it_opens():
+    """[[Sickle|Leo]]: the page first, the words second.
+
+    A constellation is often filed under the shape inside it, so the name a
+    sentence wants and the name the page has are different words. Writing
+    "her mother Cassiopeia's W" to win a link says something false about the
+    sky, and leaving it plain strands the reader on a page that exists.
+
+    Page first is not arbitrary. It keeps the first slot meaning what it
+    already means in the plain [[Vega]] form, and it is the order every wiki
+    uses, so nobody writing these has to remember a local rule.
+    """
+    import server, objects
+    html = server.api.copy_html("the tail of [[Sickle|Leo]]")
+    assert html == 'the tail of <a href="/Sickle">Leo</a>'
+    # A terminal has nowhere to put a URL, so only the words survive.
+    assert server.api.copy_text("the tail of [[Sickle|Leo]]") == "the tail of Leo"
+    # An apostrophe in the target still has to reach the right page.
+    assert server.api.copy_html("[[Cassiopeia's W|Cassiopeia]]") == (
+        '<a href="/Cassiopeia%27s%20W">Cassiopeia</a>')
+    # Both forms in one sentence, and the plain one is unaffected.
+    both = server.api.copy_html("[[Vega]] and [[Teapot|Sagittarius]]")
+    assert both == ('<a href="/Vega">Vega</a> and '
+                    '<a href="/Teapot">Sagittarius</a>')
+    # The displayed word is free text and need not be an object at all,
+    # which is the point: "her mother" has no page.
+    assert objects.resolve_name("Leo") is None
+    assert objects.resolve_name("Sickle") is not None
+
+
+def test_a_cross_link_leads_to_a_page_that_exists():
+    """A name in double brackets is a claim that the page is there. Written
+    by hand, so a typo or a renamed object leaves a link into a 404.
+
+    Only the target is checked. In [[Sickle|Leo]] the second half is the
+    words in the sentence and Leo has no page of its own, which is the
+    reason that form exists."""
+    import objects, server
+    bad = []
+    for where, s in _every_written_string():
+        for m in server.api._COPY_LINK.finditer(s):
+            if objects.resolve_name(m.group(1)) is None:
+                bad.append(f"{where}: {m.group(1)}")
+    assert not bad, bad
+
+
+def test_every_drawn_figure_has_something_to_read():
+    """All 57 figures carry a paragraph and a name origin.
+
+    The 29 figures added in one go arrived with no copy at all, so pages
+    like /Perseus rendered a map, a star list and nothing else, and the gap
+    was invisible from anywhere except opening 57 pages by hand. Pinned so
+    that adding a 58th figure without writing for it fails here instead.
+    """
+    import blurbs, etymology, sky
+    missing = []
+    for entry in sky._load("asterisms.json"):
+        name = entry["name"]
+        if not (blurbs.BLURBS.get(name) or ("", ""))[1]:
+            missing.append(f"{name}: no blurb")
+        if not etymology.ETYMOLOGY.get(name):
+            missing.append(f"{name}: no etymology")
+    assert not missing, missing
+
+
+def test_a_shared_figure_is_the_same_object_on_every_page():
+    """Carina, Puppis and Vela are three pieces of one constellation and
+    share one figure. Copied three times it would drift; referenced three
+    times it cannot."""
+    import etymology
+    spec = etymology.STAGES["Carina"]
+    assert etymology.STAGES["Puppis"] is spec
+    assert etymology.STAGES["Vela"] is spec
+    assert "Argo Navis" in etymology.figure_lines("Vela")[0]
+
+
 def test_both_halves_are_reachable_from_either(client):
     """One object, two questions, and a way across from both sides. The
     history page used to have no way back except the browser button."""
@@ -2043,6 +2268,26 @@ def test_both_halves_are_reachable_from_either(client):
     # choice and not as a button that changes.
     assert 'aria-current="page">where<' in where
     assert 'aria-current="page">about<' in about
+
+
+def test_the_share_button_survives_the_toggle(client):
+    """One object, two tabs, and the same controls on both.
+
+    The button lived on the where page only, so crossing to about took it
+    away and coming back brought it out again. It ships hidden and a script
+    reveals it, so the stylesheet and the script have to reach this page
+    too: without them the control is in the markup and invisible, which is
+    the failure that looks like nothing at all.
+    """
+    for path in ("/Andromeda", "/Andromeda/about"):
+        page = client.get(path, headers=BROWSER).text
+        assert 'id="ecl-share"' in page, path
+        assert 'id="ecl-share-box"' in page, path
+        assert ".ecl-share" in page, f"{path}: no stylesheet"
+        assert "ecl-share-close" in page, path
+    # It shares the page it is on, not the other one.
+    about = client.get("/Andromeda/about", headers=BROWSER).text
+    assert "/Andromeda/about</code>" in about
 
 
 def test_the_left_column_is_the_same_on_both(client):
@@ -2068,6 +2313,48 @@ def test_the_left_column_is_the_same_on_both(client):
     # which is what lets that page be cached for a week.
     strip = lambda h: re.sub(r"<dd>naked eye[^<]*</dd>", "<dd>NEED</dd>", h)
     assert strip(where) == strip(about)
+
+
+def test_history_reads_before_etymology_and_both_are_framed(client):
+    """What happened to the thing, then what it has been called.
+
+    The two sat side by side in one flex row with etymology first, which
+    put the smallest block on the page ahead of the one carrying dates and
+    missions, and left neither with an edge of its own. Saturn has both and
+    a figure, so it is the case that shows the whole order.
+
+    The figure belongs inside the etymology frame: it is a drawing of the
+    descent the rows above it list, not a third section.
+    """
+    import re
+    h = client.get("/Saturn/about", headers=BROWSER).text
+    right = h[h.find('class="obj-live hist-page"'):]
+    hist = right.find('class="hist-sec hist-sec-history"')
+    etym = right.find('class="hist-sec hist-sec-etymology"')
+    assert hist != -1, "the history block has no frame"
+    assert etym != -1, "the etymology block has no frame"
+    assert hist < etym, "history reads first, under the paragraph"
+    # The paragraph stays above both.
+    assert right.find('class="hist-lede"') < hist
+    # And the figure is inside the etymology frame rather than loose after it.
+    fig = right.find('class="hist-fig"')
+    assert fig > etym, "the figure belongs to etymology"
+    tail = right[etym:]
+    assert tail.find("hist-fig") < tail.find('class="obj-src"')
+    # Each title sits directly above its own box. The container was a flex
+    # row, so lifting the titles out of the boxes made every one of them a
+    # flex ITEM standing beside the box it names rather than over it.
+    assert ".hist-blocks{display:block}" in h, "the blocks must stack"
+    # And each box hugs its rows. display:block alone takes the whole column
+    # however little is inside it, which put a border round a lot of nothing.
+    sec = re.search(r"\.hist-sec\{[^}]*\}", h).group(0)
+    assert "width:fit-content" in sec, sec
+    assert "display:flex" not in h[h.find(".hist-blocks"):h.find(".hist-blocks") + 60]
+    # And in the markup: title, then its box, then the next title.
+    order = re.findall(r'hist-sec-name">([A-Za-z]+)</h3>|class="hist-sec hist-sec-([a-z]+)"',
+                       right)
+    flat = [a or b for a, b in order]
+    assert flat == ["History", "history", "Etymology", "etymology"], flat
 
 
 def test_the_about_page_says_nothing_about_tonight(client):
