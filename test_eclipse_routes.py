@@ -14,6 +14,7 @@ the object cards and then the place cards. Every route below is registered
 ahead of /{place:path}, and if that ordering is ever disturbed these fail
 rather than the site quietly serving "unknown place" for /eclipse.
 """
+import datetime as dt
 import re
 import unittest
 
@@ -439,16 +440,31 @@ class TheWayIn(RouteTest):
             got = self.client.get("/catalog", headers=headers)
             self.assertIn(span, got.text)
 
+    # No date is written into either of the next two. This table empties
+    # from the top as eclipses happen, so a literal here passes until the
+    # eclipse it names takes place and then fails for good: "12 Aug 2026"
+    # did exactly that, four days after it was true. What holds for ever is
+    # that the rows are the ones eclipse_page would list, in its order.
     def test_the_catalogue_lists_the_next_few(self):
+        soon = eclipse_page.upcoming(dt.datetime.utcnow(), count=6)
+        self.assertTrue(soon, "the eclipse table has run out")
         got = self.client.get("/catalog", headers=TERMINAL)
         self.assertIn("ECLIPSES", got.text)
-        self.assertIn("12 Aug 2026", got.text)
-        self.assertIn("total solar", got.text)
+        for e in soon[:3]:
+            when = dt.datetime.fromisoformat(e["when_utc"])
+            self.assertIn(when.strftime("%d %b %Y").lstrip("0"), got.text)
+            self.assertIn(e["type"], got.text)
 
     def test_the_catalogue_links_them_in_a_browser(self):
+        soon = eclipse_page.upcoming(dt.datetime.utcnow(), count=6)
         got = self.client.get("/catalog", headers=BROWSER)
-        self.assertIn(f'href="/eclipse/{SOLAR}"', got.text)
-        self.assertIn(f'href="/eclipse/{LUNAR}"', got.text)
+        for e in soon[:3]:
+            self.assertIn(f'href="/eclipse/{eclipse_page.key_of(e)}"', got.text)
+        # Both kinds reach the page, which is the thing the two hardcoded
+        # dates were really pinning: a solar-only list would be a regression
+        # even while every link in it worked.
+        kinds = {eclipse_page.is_solar(e) for e in soon}
+        self.assertEqual(kinds, {True, False}, "the list should carry both kinds")
 
     def test_next_means_next_including_a_lunar_one(self):
         """/eclipse picks the next eclipse it can compute for a place, and

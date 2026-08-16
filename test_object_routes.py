@@ -1254,7 +1254,14 @@ def test_the_summary_is_in_the_heading_not_repeated_below(client):
     # Said once, and this is which once.
     for gone in ("AU away", "arcseconds across"):
         assert gone not in txt, f"{gone!r} is the infobox's line now"
-    assert "<dt>Distance</dt><dd>8.78 AU" in h, "the infobox has to say it"
+    # The row is recomputed per request, so the number cannot be written
+    # down here: "8.78 AU" was true the day this was written and false a
+    # fortnight later. What is permanently true is the range. Saturn is
+    # never nearer than about 8 AU (opposition, with the Earth between it
+    # and the Sun) nor further than about 11 (conjunction, on the far side).
+    au = re.search(r"<dt>Distance</dt><dd>(\d+\.\d+) AU", h)
+    assert au, "the infobox has to say it"
+    assert 7.9 < float(au.group(1)) < 11.2, f"Saturn is never at {au.group(1)} AU"
     assert "<dt>Apparent size</dt>" in h
 
 
