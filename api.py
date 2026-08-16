@@ -12539,19 +12539,32 @@ function skymapTakeover(frames,labels,opts){{
   var where=document.getElementById('where');
   if(!where)return;
   if(!skymapWasGuessed())return;
+  // Before saying anything: if they have already granted location, take it
+  // and correct the page instead of asking them to press a button about it.
+  // The same skymapLocate the button and the m key run, silently.
+  window.skymapAutoLocate(function(){{window.skymapLocate(function(){{}});}});
   var pageZone=where.getAttribute('data-zone');
   var pageName=where.getAttribute('data-place');
   var mine=null;
   try{{mine=Intl.DateTimeFormat().resolvedOptions().timeZone;}}catch(e){{}}
-  // No answer, or the same answer, or a page with no zone: say nothing. An
-  // old browser that cannot name its zone is not evidence of anything.
-  if(!mine||!pageZone||mine===pageZone)return;
+  // No answer at all, or a page with no zone: say nothing. An old browser
+  // that cannot name its zone is not evidence of anything.
+  if(!mine||!pageZone)return;
+  // A matching zone is no longer silence. It used to return here, on the
+  // grounds that a wrong COUNTRY is what people hit while travelling -- true,
+  // and it left the short-range failure with nothing to say: the carrier
+  // gateway that moved a reader from Geneva to Lausanne kept them inside
+  // Europe/Zurich, so the page named the wrong city with total confidence.
+  // Same rule as before for the loud case, quieter words for the quiet one.
+  var same=(mine===pageZone);
   if(skymapWavedOff(mine,pageZone))return;
   var note=document.createElement('p');
   note.className='where-note';
   note.setAttribute('role','status');
-  note.innerHTML='Looks like you\\'re not in '+pageName
-    +' &mdash; your device says <b>'+mine.replace(/_/g,' ')+'</b>. '
+  note.innerHTML=(same
+      ? 'Showing <b>'+pageName+'</b>, guessed from your network. '
+      : 'Looks like you\\'re not in '+pageName
+        +' &mdash; your device says <b>'+mine.replace(/_/g,' ')+'</b>. ')
     +'<button type="button" class="where-fix">use my location</button>'
     +'<button type="button" class="where-no" aria-label="Dismiss">✕</button>';
   var host=document.querySelector('.w')||document.body;
@@ -13459,6 +13472,45 @@ if(_skymapGuessed){{
   catch(e){{}}
 }}
 window.skymapWasGuessed=function(){{return _skymapGuessed;}};
+
+// Use the position the reader has ALREADY agreed to give, on a guessed
+// arrival, without asking anybody anything.
+//
+// The rule about never raising a permission sheet unprompted stands and is
+// not what this touches: "granted" means the sheet was raised at some point
+// and answered yes, so there is none left to raise. The only thing between
+// that reader and their real position was that nothing ever went and looked
+// -- every visit fell back to the IP guess no matter how many times they
+// had tapped the button.
+//
+// Which matters because the IP guess fails quietly at short range. A phone
+// leaving wifi for mobile data reports the carrier's gateway: Geneva became
+// Lausanne, 40 km off, and the zone test below waved it through because
+// both are Europe/Zurich. Travelling is the loud failure and the one the
+// notice was built for; this is the quiet one.
+//
+// "prompt" and "denied" both do nothing at all. No Permissions API, no
+// geolocation, a query that throws: also nothing. Every unknown is a no.
+// Decides only. It does NOT ask the device anything: the page passes in
+// whatever locating code it already has, and this says whether to run it.
+//
+// That split is the point. Each document owns exactly one
+// getCurrentPosition call -- skymapLocate on the chart, the welcome
+// screen's own on the sphere -- and a second copy is how the two drift
+// apart, which is a rule with a test on it. Adding a third here to serve
+// this one decision would have been the same mistake in a new place.
+//
+// The corrected page arrives without #ip, because the server only marks a
+// bare-domain landing, so this returns at its first line and there is no
+// second lap.
+window.skymapAutoLocate=function(run){{
+  if(!_skymapGuessed||!navigator.geolocation)return;
+  if(!navigator.permissions||!navigator.permissions.query)return;
+  var q;
+  try{{q=navigator.permissions.query({{name:'geolocation'}});}}catch(e){{return;}}
+  if(!q||!q.then)return;
+  q.then(function(st){{ if(st&&st.state==='granted')run(); }},function(){{}});
+}};
 var SKYMAP_WAVE_KEY='skymap.notHere', SKYMAP_WAVE_DAYS=30;
 function _skymapPair(mine,theirs){{return mine+'>'+theirs;}}
 function _skymapWaves(){{
@@ -14124,17 +14176,30 @@ function checkWhere(data) {{
   // being asked "are you sure you're there?" every time is the thing that
   // makes a warning worth ignoring when it is finally right.
   if (!window.skymapWasGuessed()) return;
+  // Already granted means already asked. Correct the page rather than put a
+  // question on it -- see skymapAutoLocate in WHERE_RULE_JS. It runs the
+  // same sphereLocate the button does, so the reader who arrived in 3D
+  // stays in 3D.
+  window.skymapAutoLocate(sphereLocate);
   var mine = null;
   try {{ mine = Intl.DateTimeFormat().resolvedOptions().timeZone; }} catch (e) {{}}
-  // No answer, or the same answer: say nothing. A browser too old to name
-  // its own zone is not evidence that the reader is somewhere else.
-  if (!mine || mine === data.zone) return;
+  // No answer at all: say nothing. A browser too old to name its own zone
+  // is not evidence that the reader is somewhere else.
+  if (!mine) return;
+  // A matching zone speaks up now too, quietly. It used to return here, and
+  // that is exactly how a phone stepping from wifi onto mobile data was
+  // moved from Geneva to Lausanne and told nothing: both Europe/Zurich.
+  var same = (mine === data.zone);
   if (window.skymapWavedOff(mine, data.zone)) return;
-  document.getElementById('where-off-msg').innerHTML =
-    "Looks like you're not in <b>" + data.place + "</b> \\u2014 your phone says <b>"
-    + mine.replace(/_/g, ' ') + "</b>. This sky is drawn for " + data.place + '.';
+  document.getElementById('where-off-msg').innerHTML = same
+    ? "Showing <b>" + data.place + "</b>, guessed from your network."
+    : "Looks like you're not in <b>" + data.place + "</b> \\u2014 your phone says <b>"
+      + mine.replace(/_/g, ' ') + "</b>. This sky is drawn for " + data.place + '.';
   box.hidden = false;
-  document.getElementById('where-off-fix').addEventListener('click', function () {{
+  document.getElementById('where-off-fix').addEventListener('click', sphereLocate);
+  // Named, so the button and the already-granted path below run one copy of
+  // it. Two getCurrentPosition calls in one document is how they drift.
+  function sphereLocate() {{
     var b = document.getElementById('where-off-fix');
     if (!navigator.geolocation) {{ b.textContent = 'Not available here'; return; }}
     b.textContent = 'Locating\\u2026';
@@ -14150,7 +14215,7 @@ function checkWhere(data) {{
     }}, function (err) {{
       b.textContent = err && err.message ? err.message : 'Could not locate you';
     }}, {{timeout: 10000, maximumAge: 60000}});
-  }});
+  }}
   // "Stay here" hides the panel and leaves the sky alone, and is remembered
   // against this pair of zones for thirty days -- see WHERE_RULE_JS. One
   // tap covers the rest of the trip.
