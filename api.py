@@ -2416,11 +2416,18 @@ def evolution_lines(tgt, canonical, c=True):
     changed underneath it. [] for anything that is not an asterism.
 
     Only asterisms, because a shape is the only thing here that can deform:
-    one star moving is a fact for its own page, not a picture. It sits at the
-    bottom of the page because it is the least perishable thing on it -- the
-    chart above changes every few minutes and this changes never.
+    one star moving is a fact for its own page, not a picture.
+
+    It reads on the about tab, at the bottom, under the paragraph and the
+    name origin. That is where it belongs: the chart on the other tab is
+    redrawn every few minutes and this drawing is the same for every reader
+    on every night of their life.
+
+    tgt may be None, which is how the about page calls it: that page knows
+    the name and has no target dict to hand, and motion.summary below
+    refuses anything that is not a drawn asterism anyway.
     """
-    if tgt.get("kind") != "asterism":
+    if tgt is not None and tgt.get("kind") != "asterism":
         return []
     s = motion.summary(canonical)
     if not s:
@@ -3249,6 +3256,11 @@ def about_text(canonical):
     for note in catalogue_notes(canonical):
         out.append("")
         out += _wrap_note(note)
+    # Last, under everything written about the name. The three panels and
+    # the caption, uncoloured, because the rest of this page is too.
+    evo = evolution_lines(None, canonical, c=False)
+    if evo:
+        out += [""] + evo
     out += ["", f"  where it is tonight:  skymap.sh/{canonical}", ""]
     return "\n".join(out)
 
@@ -3318,9 +3330,22 @@ def about_body_html(canonical):
         figure = ""
     if not (lede or rows or figure):
         lede = '<p class="hist-lede">Nothing recorded here yet.</p>'
+    # The shape over 100,000 years, last, under everything written about the
+    # name. tgt is None because this page has a name and no target dict;
+    # evolution_lines refuses anything that is not a drawn asterism itself.
+    #
+    # Same two finishing passes it had on the object page: the names beside
+    # the stars become links, and the animation hangs off the bottom of the
+    # panels rather than floating on its own.
+    evo = evolution_lines(None, canonical)
+    evolution = ""
+    if evo:
+        evolution = style_evolution_title(
+            link_star_labels(chart_pre(ansi_to_html("\n".join(evo))), canonical),
+            canonical) + evolution_gif_html(canonical)
     right = (f'<p class="obj-lede obj-live-head">'
              f'More information about {html.escape(canonical)}</p>'
-             f'{lede}{rows}{figure}'
+             f'{lede}{rows}{figure}{evolution}'
              f'<p class="obj-src"><a href="/{quote(canonical)}">'
              f'Where {html.escape(canonical)} is tonight</a></p>')
     # The same control the where tab carries, in the same corner, so it does
@@ -3664,10 +3689,13 @@ def compose_object(r, canonical):
     # is crossing, how far, the rings, the best night this year -- reads
     # after the picture, because it is context rather than a reason to go
     # outside in the next hour.
-    # Last on the page, under everything the reader came for. It is the one
-    # block here that is the same for every visitor on every night, which is
-    # also why the browser lifts it out into its own full-width section
-    # rather than squeezing it into either column.
+    #
+    # The evolution panels are no longer here. They are the one block on this
+    # page that is the same for every visitor on every night, and that is the
+    # about tab's whole subject: this page answers "where is it tonight" and
+    # that one answers "what is it and what has happened to it". Still built
+    # here, because ?format=json exposes it and the drawing is expensive
+    # enough that the JSON should not have to ask twice.
     evo = evolution_lines(tgt, canonical, c)
     parts += [OBJECT_SLOT, live_head, live_sub]
     # Only when there is one. An empty seam would leave a blank line in the
@@ -3680,8 +3708,6 @@ def compose_object(r, canonical):
     galilean = moon_lines(canonical, r.when_utc, c)
     if galilean:
         parts += galilean + [""]
-    if evo:
-        parts += evo + [""]
     parts += [_footer(r.place, c), ""]
     text = "\n".join(parts)
     data = dict(res.data)
@@ -4414,16 +4440,8 @@ def object_html(r, canonical, text, data, place=None, base_url="",
                      + chart_layout(rungs, zenith, prose))
         if canonical == "Jupiter":
             live_html = style_moon_block(live_html)
-        if data.get("evolution"):
-            # The panels are already here, in the column, under the chart --
-            # they arrive as part of the prose text. Two jobs left: make the
-            # names beside the stars clickable, and hang the animation off
-            # the bottom of them. It was a full-width section under both
-            # columns for a while and that was worse: narrower drawing, and
-            # it read as a separate page rather than the end of this one.
-            live_html = style_evolution_title(
-                link_star_labels(live_html, canonical), canonical)
-            live_html += evolution_gif_html(canonical)
+        # The evolution panels used to be styled and given their animation
+        # here. They live on the about tab now; see about_body_html.
     elif live.strip():
         static_html = chart_pre(ansi_to_html(fallback_static))
         live_html = chart_pre(ansi_to_html(live))

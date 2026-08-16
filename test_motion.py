@@ -191,14 +191,21 @@ class TheDataIsComplete(unittest.TestCase):
             self.assertIn("no measured distance", caption)
 
 
-class ThePanelsAreOnTheAsterismPages(unittest.TestCase):
+class ThePanelsAreOnTheAsterismAboutPages(unittest.TestCase):
+    """The drawing reads on the about tab, not on the object page.
+
+    It is the one block about an asterism that is the same for every reader
+    on every night of their life, which is what the about tab is for: the
+    object page answers "where is it tonight" and is redrawn every few
+    minutes, and this answers "what is it" and never changes at all."""
+
     def setUp(self):
         cm = TestClient(server.app)
         self.client = cm.__enter__()
         self.addCleanup(cm.__exit__, None, None, None)
 
     def test_the_terminal_gets_the_drawing_not_a_link_to_it(self):
-        got = self.client.get("/Big Dipper", headers=TERMINAL)
+        got = self.client.get("/Big Dipper/about", headers=TERMINAL)
         self.assertIn(api.evolution_title("Big Dipper"), got.text)
         self.assertIn("-50,000 years", got.text)
         self.assertIn("+50,000 years", got.text)
@@ -206,9 +213,18 @@ class ThePanelsAreOnTheAsterismPages(unittest.TestCase):
         self.assertTrue(any(0x2800 <= ord(ch) <= 0x28FF for ch in got.text))
 
     def test_the_browser_gets_the_same_section(self):
-        got = self.client.get("/Big Dipper", headers=BROWSER)
+        got = self.client.get("/Big Dipper/about", headers=BROWSER)
         self.assertIn("obj-evo", got.text)
         self.assertIn("evolution.gif", got.text)
+
+    def test_the_object_page_no_longer_carries_it(self):
+        """Both renderings, because the panels reached the browser as part
+        of the terminal column's text and dropping one without the other
+        would leave the drawing on half the site."""
+        for headers in (TERMINAL, BROWSER):
+            got = self.client.get("/Big Dipper", headers=headers)
+            self.assertNotIn("The evolution of", api.strip_ansi(got.text))
+            self.assertNotIn("evolution.gif", got.text)
 
     def test_the_two_say_the_same_thing_about_it(self):
         """One caption function, so the page and the terminal cannot end up
@@ -216,12 +232,12 @@ class ThePanelsAreOnTheAsterismPages(unittest.TestCase):
         caption = api.evolution_caption("Big Dipper")
         self.assertIn("Dubhe", caption)
         for headers in (TERMINAL, BROWSER):
-            got = self.client.get("/Big Dipper", headers=headers)
+            got = self.client.get("/Big Dipper/about", headers=headers)
             self.assertIn(caption.split(",")[0], api.strip_ansi(got.text))
 
     def test_things_that_are_not_asterisms_get_no_section(self):
         for name in ("Vega", "Saturn", "M31"):
-            got = self.client.get(f"/{name}", headers=TERMINAL)
+            got = self.client.get(f"/{name}/about", headers=TERMINAL)
             self.assertNotIn("The evolution of", got.text, name)
 
     def test_the_gif_is_served_and_is_a_gif(self):
@@ -280,12 +296,12 @@ class TheStarsAreNamedAndClickable(unittest.TestCase):
 
     def test_the_browser_links_them_to_their_own_pages(self):
         """Through the page itself, since the panels reach the browser as
-        part of the live column's text rather than as a section of their
-        own."""
+        preformatted text rather than as markup built name by name. On the
+        about tab, which is where the drawing lives."""
         cm = TestClient(server.app)
         client = cm.__enter__()
         self.addCleanup(cm.__exit__, None, None, None)
-        got = client.get("/Big Dipper", headers=BROWSER)
+        got = client.get("/Big Dipper/about", headers=BROWSER)
         for star in ("Dubhe", "Alkaid", "Mizar"):
             self.assertIn(f'<a href="/{star}">{star}</a>', got.text)
 
