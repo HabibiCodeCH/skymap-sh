@@ -1965,9 +1965,18 @@ DSO_ART = {
                 "bulge_amp": 0.55},                   # M31, Andromeda
     "NGC5194": {"model": "spiral", "ramp": "gal_white", "pa": 28.0,
                 "pitch": 18.0, "bulge_amp": 0.50},    # M51, the Whirlpool
+    # The lane was 0.06 units across, sitting just below centre, and it never
+    # appeared: one output row is 0.068 units, so a lane that thin straddles a
+    # row boundary, each of the two rows keeps about half its light, and it
+    # falls exactly where the bulge is brightest. Half of very bright is still
+    # bright, so the thing the galaxy is named for was being averaged away.
+    #
+    # Centred and one row deep instead. Wider than the real lane, which is the
+    # trade: at 17 rows the choice is a lane thicker than life or no lane at
+    # all, and no lane is a picture of a different galaxy.
     "NGC4594": {"model": "lens", "ramp": "gal", "pa": 90.0, "disc_q": 0.20,
                 "disc_h": 0.55, "bulge_q": 0.58, "bulge_re": 0.22,
-                "lane_v": -0.03, "lane_w": 0.030},    # M104, the Sombrero
+                "lane_v": 0.0, "lane_w": 0.055},      # M104, the Sombrero
     "NGC4486": {"model": "elliptical", "ramp": "gal",
                 "pa": 152.0},                         # M87
     # Round, so there is no angle to get wrong: dsoinfo.json has no minor
