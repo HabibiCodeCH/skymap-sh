@@ -6187,8 +6187,22 @@ class TheChartPlaneCountersAreShippedWithTheParameter(unittest.TestCase):
         for k in ("chart_planes", "chart_noplanes", "chart_planes_night"):
             server._stat[k] = 0
 
+    @staticmethod
+    def daylit():
+        """A place where the Sun is up, whatever time this runs.
+
+        These asked for /Geneva, and planes are drawn by default in daylight
+        only, so the counters they check never moved after a Geneva sunset:
+        green all afternoon and red all evening. The equator at local solar
+        noon has the Sun overhead on every day of the year, and the site
+        takes bare coordinates, so this needs no city and no clock luck.
+        """
+        now = dt.datetime.utcnow()
+        lon = ((12 - (now.hour + now.minute / 60)) * 15 + 180) % 360 - 180
+        return f"/0,{lon:.2f}"
+
     def test_they_reach_both_stats_views(self):
-        self.client.get("/Geneva", headers=TERMINAL)
+        self.client.get(self.daylit(), headers=TERMINAL)
         text = self.client.get("/stats", headers=TERMINAL).text
         self.assertIn("planes on the chart", text)
         data = self.client.get("/stats?format=json").json()
@@ -6200,7 +6214,8 @@ class TheChartPlaneCountersAreShippedWithTheParameter(unittest.TestCase):
         """The composer sits behind a fifteen-second cache, so counting
         there showed three readers in one bucket as one."""
         before = server._stat["chart_planes"] + server._stat["chart_noplanes"]
+        place = self.daylit()
         for _ in range(3):
-            self.client.get("/Geneva", headers=TERMINAL)
+            self.client.get(place, headers=TERMINAL)
         after = server._stat["chart_planes"] + server._stat["chart_noplanes"]
         self.assertEqual(after - before, 3)
