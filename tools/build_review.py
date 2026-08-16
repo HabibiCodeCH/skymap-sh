@@ -11,6 +11,34 @@ sys.path.insert(0, os.path.join(os.path.dirname(
     os.path.dirname(os.path.abspath(__file__)))))
 import etymology as e, blurbs, facts, api
 
+# The one-liners are a separate pass with a separate record, for the same
+# reason they have their own checkbox keys: a paragraph being signed off
+# says nothing about its gloss. Rewritten wholesale on 16 Aug to carry one
+# fact each, and read back in alphabetical order from the top.
+GLOSS_DONE = {
+    "Achernar", "Acrux", "Adhara", "Aldebaran", "Algol", "Altair",
+    "Andromeda", "Andromeda Galaxy", "Antares", "Aquarius", "Aquila",
+    "Arcturus", "Aries", "Auriga", "Betelgeuse", "Big Dipper",
+    "Canes Venatici", "Canis Major", "Canis Minor", "Canopus", "Capella",
+    "Capricornus", "Carina", "Cassiopeia's W", "Centaurus", "Cepheus",
+    "Cetus", "Columba", "Corona Borealis", "Corvus", "Crab Nebula",
+    "Deneb", "Double Cluster", "Draco", "Dumbbell Nebula", "Eridanus",
+    "False Cross", "Fomalhaut", "Gemini", "Geminids", "Great Diamond",
+    "Great Square", "Grus", "Hadar", "Hercules Cluster", "Hyades V",
+    "Hydra", "Hydrus", "Job's Coffin", "Jupiter", "Keystone", "Kite",
+    "Lagoon Nebula", "Lepus", "Libra", "Little Dipper", "Lyra", "Lyrids",
+    "Mars", "Mercury", "Milky Way", "Mimosa", "Moon", "Neptune",
+    "Northern Cross", "Ophiuchus", "Orion", "Orion Nebula", "Orion's Belt",
+    "Pavo", "Perseids", "Perseus", "Phoenix", "Piscis Austrinus",
+    "Pleiades", "Polaris", "Pollux", "Procyon", "Puppis", "Quadrantids",
+    "Regulus", "Rigel", "Rigil Kentaurus", "Ring Nebula", "Saturn",
+    "Scorpius", "Serpens", "Sickle", "Sirius", "Sombrero Galaxy",
+    "Southern Cross", "Spica", "Spring Triangle", "Summer Triangle",
+    "Sun", "Teapot", "The Pointers", "Triangulum Australe",
+    "Triangulum Galaxy", "Uranus", "Vega", "Vela", "Venus", "Virgo",
+    "Whirlpool Galaxy", "Winter Hexagon", "Winter Triangle",
+}
+
 DONE = {
     "note-Messier",          # rewritten and approved 14 Aug
     "note-Dreyer",           # approved as written 14 Aug
@@ -233,7 +261,7 @@ pre{{display:inline-block;margin:4px 0 0;font-size:12px;line-height:1.35;white-s
 title and not on any page yet, so this list is the only place they can be
 judged against each other. Counted separately: <span id=gcount></span>.</p>
 <ul>{one_liners}</ul></div><script>
-var K='skymap.copyreview', SEED={json.dumps(sorted(DONE))};
+var K='skymap.copyreview', SEED={json.dumps(sorted(DONE | {f"gloss-{n}" for n in GLOSS_DONE}))};
 function load(){{try{{return JSON.parse(localStorage.getItem(K)||'{{}}')}}catch(e){{return {{}}}}}}
 var st=load();
 SEED.forEach(function(k){{ if(st[k]===undefined) st[k]=true; }});
@@ -258,4 +286,5 @@ document.getElementById('reset').onclick=function(e){{e.preventDefault();
 paint();
 </script></body></html>"""
 open(f"{S}/copy-review.html", "w").write(doc)
-print("rebuilt with", len(DONE), "marked done")
+print("rebuilt with", len(DONE), "marked done,",
+      len(GLOSS_DONE), "one-liners read")
