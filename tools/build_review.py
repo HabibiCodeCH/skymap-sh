@@ -46,8 +46,85 @@ DONE = {
     "Triangulum Australe",  # voyage sentence rewritten, approved 15 Aug
     "Whirlpool Galaxy",     # Rosse and the telescope rewritten, approved 15 Aug
     "Virgo",                # opening reworded, approved 15 Aug
+    "Venus",                # etymology merged in, story dropped, approved 15 Aug
+    "Vela",                 # rewritten to explain the missing letters, approved 15 Aug
+    "Vega",                 # etymology merged in with the Arabic, approved 15 Aug
+    "Uranus",               # naming argument merged in, approved 15 Aug
+    "The Pointers",         # pointer stars linked, approved 15 Aug
+    "Teapot",               # approved as rewritten 15 Aug
+    "Spring Triangle",      # names the triangle in the first line, approved 15 Aug
+    "Sun",                  # etymology merged in, Celtic claim dropped, approved 15 Aug
+    "Canis Major",          # approved as rewritten 16 Aug
+    "Canis Minor",          # Greek added inline, approved 16 Aug
+    "Capricornus",          # approved as rewritten 16 Aug
+    "Carina",               # approved as rewritten 16 Aug
+    "Cassiopeia's W",       # not-settled note kept, approved 16 Aug
+    "Centaurus",            # approved as written 16 Aug
+    "Cepheus",              # Delta Cephei's distance added, approved 16 Aug
+    "Cetus",                # approved as rewritten 16 Aug
+    "Columba",              # opening split in two, approved 16 Aug
+    "Corona Borealis",      # approved 16 Aug
+    "Corvus",               # Crater and Hydra named in the prose, approved 16 Aug
+    "Draco",                # approved as written 16 Aug
+    "Eridanus",             # Epsilon Eridani linked as Ran, approved 16 Aug
+    "False Cross",          # ship clause dropped, approved 16 Aug
+    "Gemini",               # approved as written 16 Aug
+    "Great Diamond",        # approved as written 16 Aug
+    "Scorpius",             # named in the opening, approved 16 Aug
+    "Milky Way",            # named in the opening, approved 16 Aug
+    "Summer Triangle",      # named in the opening, approved 16 Aug
+    "Southern Cross",       # five flags named inline, approved 16 Aug
+    "Sombrero Galaxy",      # reworded twice, and the dust lane now draws, approved 16 Aug
+    "Sirius",               # white dwarf corrected, Canis Major linked, approved 16 Aug
+    "Serpens",              # approved as rewritten 16 Aug
+    "Sickle",               # opens on the shape, comet named, approved 16 Aug
+    "Ring Nebula",          # approved as rewritten 16 Aug
+    "Saturn",               # etymology merged in, not-settled note kept, approved 16 Aug
+    "Rigel",                # Arabic added inline, approved 16 Aug
     "Aquarius",             # first sentence rewritten, approved 15 Aug
     "Winter Triangle",      # rewritten, approved 15 Aug
+    "Achernar",             # blurb + etymology combined 14 Aug
+    "Acrux",                # blurb + etymology combined 14 Aug
+    "Adhara",               # blurb + etymology combined 14 Aug
+    "Canopus",              # blurb + etymology combined 14 Aug
+    "Fomalhaut",            # blurb + etymology combined 14 Aug
+    "Great Square",         # blurb + etymology combined 14 Aug
+    "Grus",                 # blurb + etymology combined 14 Aug
+    "Hadar",                # blurb + etymology combined 14 Aug
+    "Hyades V",             # blurb + etymology combined 14 Aug
+    "Hydra",                # blurb + etymology combined 14 Aug
+    "Hydrus",               # blurb + etymology combined 14 Aug
+    "Job's Coffin",         # blurb + etymology combined 14 Aug
+    "Keystone",             # blurb + etymology combined 14 Aug
+    "Kite",                 # blurb + etymology combined 14 Aug
+    "Lepus",                # blurb + etymology combined 14 Aug
+    "Libra",                # blurb + etymology combined 14 Aug
+    "Little Dipper",        # blurb + etymology combined 14 Aug
+    "Lyra",                 # blurb + etymology combined 14 Aug
+    "Mars",                 # blurb + etymology combined 14 Aug
+    "Mercury",              # blurb + etymology combined 14 Aug
+    "Mimosa",               # blurb + etymology combined 14 Aug
+    "Moon",                 # blurb + etymology combined 14 Aug
+    "Neptune",              # blurb + etymology combined 14 Aug
+    "Northern Cross",       # blurb + etymology combined 14 Aug
+    "Ophiuchus",            # blurb + etymology combined 14 Aug
+    "Orion",                # blurb + etymology combined 14 Aug
+    "Orion's Belt",         # blurb + etymology combined 14 Aug
+    "Orion Nebula",         # blurb + etymology combined 14 Aug
+    "Pavo",                 # blurb + etymology combined 14 Aug
+    "Perseus",              # blurb + etymology combined 14 Aug
+    "Perseids",             # blurb + etymology combined 14 Aug
+    "Phoenix",              # blurb + etymology combined 14 Aug
+    "Piscis Austrinus",     # blurb + etymology combined 14 Aug
+    "Pleiades",             # blurb + etymology combined 14 Aug
+    "Polaris",              # blurb + etymology combined 14 Aug
+    "Pollux",               # blurb + etymology combined 14 Aug
+    "Procyon",              # blurb + etymology combined 14 Aug
+    "Puppis",               # blurb + etymology combined 14 Aug
+    "Quadrantids",          # blurb + etymology combined 14 Aug
+    "Regulus",              # blurb + etymology combined 14 Aug
+    "Rigil Kentaurus",      # blurb + etymology combined 14 Aug
+    "Spica",                # blurb + etymology combined 14 Aug
 }
 
 PORT = sys.argv[1] if len(sys.argv) > 1 else "8000"
@@ -80,10 +157,12 @@ for n in names:
     rows.append(f'''<li class="row"><label><input type="checkbox" data-k="{esc(n)}">
       <span class="nm">{esc(n)}</span></label><span class="tags">{tags}</span>
       <a class="go" href="http://127.0.0.1:{PORT}/{quote(n)}/about" target="_blank">open &rarr;</a>
+      <button type="button" class="peek">show</button>
       <div class="body">{"".join(bits)}</div></li>''')
 
 notes = "".join(f'''<li class="row"><label><input type="checkbox" data-k="note-{k}">
     <span class="nm">{esc(k)}</span></label><span class="tags"><span class="tag">standing note</span></span>
+    <button type="button" class="peek">show</button>
     <div class="body"><div class="c">{esc(v)}</div></div></li>'''
     for k, v in api.CATALOGUE_NOTES.items())
 
@@ -116,7 +195,19 @@ h2{{font-family:ui-sans-serif,-apple-system,sans-serif;font-size:11px;
 text-transform:uppercase;letter-spacing:.09em;color:#8fb6e0;margin:2.4rem 0 .6rem}}
 ul{{list-style:none;padding:0;margin:0}}
 .row{{border:1px solid #1c2027;border-radius:8px;background:#070a0e;padding:12px 14px;margin:0 0 10px}}
-.row.done{{opacity:.38}} label{{cursor:pointer;display:inline-flex;align-items:center;gap:9px}}
+.row.done{{opacity:.5;padding:7px 14px}}
+/* Signed off means read, so the words come off the page and only the name
+   stays. Sixty-nine expanded paragraphs between you and the next unread one
+   is the reason nobody scrolls to the bottom. */
+.row.done .body{{display:none}}
+.row.done.peeking .body{{display:block}}
+.row.done .go{{display:none}}
+.peek{{display:none;float:right;margin-left:10px;font:inherit;font-size:11px;
+color:#7d8694;background:none;border:1px solid #262c35;border-radius:4px;
+padding:1px 7px;cursor:pointer}}
+.peek:hover{{color:#c9d1d9;border-color:#3d4757}}
+.row.done .peek{{display:inline-block}}
+label{{cursor:pointer;display:inline-flex;align-items:center;gap:9px}}
 input{{width:15px;height:15px;accent-color:#87d7ff;cursor:pointer}}
 .nm{{font-size:15px;color:#e6ebf2}} .tags{{margin-left:10px}}
 .tag{{display:inline-block;font-size:10px;text-transform:uppercase;letter-spacing:.07em;
@@ -155,6 +246,10 @@ function paint(){{var n=0,t=0,gn=0,gt=0;
     if(i.checked){{ if(g){{gn++}}else{{n++}} }}}});
   document.getElementById('count').textContent=n+' of '+t+' reviewed';
   document.getElementById('gcount').textContent=gn+' of '+gt+' read';}}
+document.addEventListener('click',function(ev){{
+  if(!ev.target.classList.contains('peek'))return;
+  var r=ev.target.closest('.row'); r.classList.toggle('peeking');
+  ev.target.textContent=r.classList.contains('peeking')?'hide':'show';}});
 document.addEventListener('change',function(ev){{var i=ev.target;
   if(!i.dataset||!i.dataset.k)return; st[i.dataset.k]=i.checked;
   localStorage.setItem(K,JSON.stringify(st)); paint();}});

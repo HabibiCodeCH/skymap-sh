@@ -40,10 +40,17 @@ def apply(name, text):
     m = re.search(r'(%s: \()(.*?"\),\n)' % re.escape(f'"{name}"'), src, re.S)
     if not m:
         sys.exit(f"no blurb entry for {name!r}")
-    glyph = re.match(r'\s*("(?:[^"\\]|\\.)*")\s*,', m.group(2)).group(1)
+    # One or more string literals, because a long gloss is wrapped across
+    # lines and Python joins them. Hydrus and Ophiuchus are both written
+    # that way, and matching a single literal threw on both.
+    run = re.match(r'\s*((?:"(?:[^"\\]|\\.)*"\s*)+),', m.group(2))
+    if not run:
+        sys.exit(f"cannot read the gloss for {name!r}")
+    glyph = "\n".join(f'        {s}'
+                      for s in re.findall(r'"(?:[^"\\]|\\.)*"', run.group(1)))
     body = text.replace("\\", "\\\\").replace('"', '\\"')
     io.open(p, "w", encoding="utf-8").write(
-        src[:m.start()] + f'{m.group(1)}\n        {glyph},\n        "{body}"),\n'
+        src[:m.start()] + f'{m.group(1)}\n{glyph},\n        "{body}"),\n'
         + src[m.end():])
 
     p = f"{REPO}/etymology.py"

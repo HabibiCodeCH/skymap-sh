@@ -45,48 +45,26 @@ ETYMOLOGY = {
         "from": "Old English",
         "reading": "sunne",
         "literal": "the sun",
-        "story": "From the same root as Latin sol and Greek helios, and one "
-                 "of the oldest words that can be reconstructed. Germanic "
-                 "made it feminine, which is why German still has die Sonne "
-                 "against a masculine Mond.",
     },
     "Moon": {
         "from": "Old English",
         "reading": "mona",
         "literal": "the measurer",
-        "story": "The same root as month and as measure. The moon is the "
-                 "thing you count with, and the merge is near-universal: "
-                 "Finnish kuu, Turkish ay, Hebrew yareach and Chinese yue "
-                 "all mean both the moon and the month, in four unrelated "
-                 "families.",
     },
     "Mercury": {
         "from": "Latin",
         "reading": "Mercurius",
         "literal": "of merchandise",
-        "story": "From merx, goods for sale: the god of trade, matched to "
-                 "Babylonian Nabu, the scribe. The metal is named after the "
-                 "planet rather than the other way round, which is why "
-                 "Swahili calls it Zebaki, from the Arabic for quicksilver.",
     },
     "Venus": {
         "from": "Latin",
         "reading": "Venus",
         "literal": "desire, charm",
-        "story": "The same root as venerate, and as venom, which began as a "
-                 "love potion. Venus carries two names in almost every "
-                 "tradition, because the morning star and the evening star "
-                 "were taken for two objects for a very long time: Greek had "
-                 "Phosphoros and Hesperos, Czech has Jitrenka and Vecernice.",
     },
     "Mars": {
         "from": "Latin",
         "reading": "Mars, older Mavors",
         "literal": "unknown",
-        "story": "The god of war, matched to Babylonian Nergal, god of "
-                 "plague. The Greeks had called the planet Pyroeis, the "
-                 "fiery one, for its colour, and half the world's names for "
-                 "it still describe the colour rather than the god.",
         "unsure": "The root of Mars itself is not known. An Etruscan origin "
                   "is often proposed and cannot be shown.",
     },
@@ -99,9 +77,6 @@ ETYMOLOGY = {
         "from": "Latin",
         "reading": "Saturnus",
         "literal": "unknown",
-        "story": "The Romans linked it to serere, to sow, which is folk "
-                 "etymology. Persian still calls the planet Keyvan, straight "
-                 "from Babylonian Kajamanu, the steady one, a name for its slowness that has been in use for about 2,500 years.",
         "unsure": "Probably Etruscan, from Satre, but the Roman derivation "
                   "from sowing is a guess made after the fact.",
     },
@@ -109,18 +84,11 @@ ETYMOLOGY = {
         "from": "Greek",
         "reading": "Ouranos",
         "literal": "sky",
-        "story": "The only planet with a Greek rather than a Roman name, and "
-                 "the only one whose naming was an argument. Herschel wanted "
-                 "Georgium Sidus for the king; Bode proposed Uranus in 1782 "
-                 "and it took most of a century to settle.",
     },
     "Neptune": {
         "from": "Latin",
         "reading": "Neptunus",
         "literal": "unknown, god of water",
-        "story": "Chosen in 1846 within weeks of the discovery, over Le "
-                 "Verrier's own preference, which was to name it after "
-                 "himself.",
         "unsure": "The root is disputed. A link to Vedic Apam Napat, child "
                   "of the waters, is a serious proposal and not settled.",
     },
@@ -139,9 +107,6 @@ ETYMOLOGY = {
         "from": "Arabic",
         "reading": "Rijl al-Jawza'  ·  رجل الجوزاء",
         "literal": "foot of Jawza",
-        "story": "The same figure as Betelgeuse, at the other end. Orion's "
-                 "two brightest stars are the hand and the foot of one body "
-                 "that Arab astronomers saw where the Greeks saw a hunter.",
     },
     "Aldebaran": {
         "from": "Arabic",
@@ -152,9 +117,6 @@ ETYMOLOGY = {
         "from": "Arabic",
         "reading": "al-Waqi'  ·  الواقع",
         "literal": "the falling one",
-        "story": "From an-nasr al-waqi', the falling eagle. Altair is "
-                 "at-ta'ir, the flying one, so two thirds of the Summer "
-                 "Triangle is a pair of birds.",
     },
     "Altair": {
         "from": "Arabic",
@@ -175,9 +137,6 @@ ETYMOLOGY = {
         "from": "Greek",
         "reading": "Seirios  ·  Σείριος",
         "literal": "scorching",
-        "story": "Its rising with the Sun opened the hottest weeks of the "
-                 "Mediterranean year, which is where dog days comes from: the constellation is the Great Dog and the star is its "
-                 "brightest.",
     },
     "Arcturus": {
         "from": "Greek",
@@ -193,24 +152,16 @@ ETYMOLOGY = {
         "from": "Greek",
         "reading": "Prokyon  ·  Προκύων",
         "literal": "before the dog",
-        "story": "It rises shortly before Sirius. Another name that is a "
-                 "piece of practical instruction rather than a description.",
     },
     "Polaris": {
         "from": "Latin",
         "reading": "stella polaris",
         "literal": "the pole star",
-        "story": "A recent name for a temporary job. Precession moves the "
-                 "pole about a degree every 72 years, so Thuban held the "
-                 "post 4,700 years ago and Vega will hold it in 12,000.",
     },
     "Regulus": {
         "from": "Latin",
         "reading": "Regulus",
         "literal": "little king",
-        "story": "Coined by Copernicus, calquing older names that all say "
-                 "the same thing: Greek Basiliskos, Arabic Qalb al-Asad, "
-                 "the lion's heart, and Babylonian Sharru, the king.",
     },
     "Capella": {
         "from": "Latin",
@@ -223,16 +174,9 @@ ETYMOLOGY = {
         "from": "Greek",
         "reading": "Pleiades  ·  Πλειάδες",
         "literal": "disputed",
-        "story": "The best-named object in the sky, because almost every "
-                 "tradition named it separately: Subaru in Japanese, "
-                 "gathered together; Krittika in Sanskrit, the first of the "
-                 "27 nakshatras; Matariki in Maori, which opens the year; "
-                 "al-Thurayya in Arabic, the abundant one. What they share "
-                 "is the count: nearly everyone says seven, and six is all "
-                 "most people can see.",
-        "unsure": "The Greek name has been derived from plein, to sail, "
-                  "from pleios, full, and from the mother Pleione. None is "
-                  "settled.",
+        "unsure": "The Greek name has been derived from πλεῖν, plein, \"to "
+                  "sail\", from πλέος, pleios, \"full\", and from the mother "
+                  "Πληιόνη, Pleione. None is settled.",
     },
     "Andromeda Galaxy": {
         "from": "Greek",
@@ -554,8 +498,8 @@ ETYMOLOGY = {
         "from": "Greek",
         "reading": "Perseus  ·  Περσεύς",
         "literal": "unknown",
-        "unsure": "Usually linked to perthein, to destroy, which does not "
-                  "account for the whole name and is not agreed.",
+        "unsure": "Usually linked to πέρθειν, perthein, \"to destroy\", which "
+                  "does not account for the whole name and is not agreed.",
     },
     "Phoenix": {
         "from": "Latin, from Greek",
