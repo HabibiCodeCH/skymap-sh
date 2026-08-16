@@ -30,6 +30,17 @@ record, and nothing else stores it.
   and आकाशगंगा equivalents.
 - **The one-liners render nowhere.** They are written, reviewed and unused:
   `object_intro` prints the generated descriptor instead. See 2d.
+- **Sualocin and Rotanev have pages and no words.** β Del (3.63) and α Del
+  (3.77), linked from the Job's Coffin paragraph, with no blurb and no
+  etymology entry of their own, so both pages render a chart and stop. The
+  story is worth a page each and is currently told in a single clause
+  somewhere else: the names are Nicolaus Venator spelled backwards, the
+  Latinised name of Niccolò Cacciatore, assistant and later successor to
+  Giuseppe Piazzi at the Palermo observatory, who put himself into the
+  catalogue his employer published in 1814. Nobody worked it out until the
+  1850s. **Check before writing:** every other Bayer letter in Delphinus is
+  ordinary, and it is worth saying which of the two is which, since Rotanev
+  is the brighter and carries beta.
 - **Acrux and Arcturus rank by the book, not by `stars.json`.** The copy
   counts a multiple star as one object, as every reference does, so Acrux
   is the brightest of the Southern Cross (combined 0.76) while the star
