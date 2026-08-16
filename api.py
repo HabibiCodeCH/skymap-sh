@@ -2882,6 +2882,25 @@ def about_is_worth_reading(canonical):
     return bool(catalogue_notes(canonical))
 
 
+def about_is_worth_indexing(canonical):
+    """Whether this about page earns a line in the sitemap.
+
+    Stricter than about_is_worth_reading, and deliberately so. That one lets
+    a catalogue note earn the link, and the note is the same sentence on 749
+    pages: cheap and worth reading once, a click from the object it explains.
+    Submitted to a search engine 749 times over it is the thin repeated
+    content sitemap_names() already refuses to advertise, and the docstring
+    above says as much.
+
+    So the bar here is words this page does not share with any other one: a
+    blurb, a name origin, or a written history.
+    """
+    key = _facts_key(canonical)
+    if blurbs.BLURBS.get(key) or etymology.ETYMOLOGY.get(key):
+        return True
+    return bool(dict(history_blocks(canonical)).get(HISTORY_BLOCK))
+
+
 def about_heading_html(canonical):
     """The same coloured mark and title the object page carries.
 

@@ -17,9 +17,11 @@ import unittest
 
 import pytest
 from starlette.testclient import TestClient
+from urllib.parse import quote, unquote
 
 import api
 import art
+import objects
 import server
 
 BROWSER = {"accept": "text/html", "user-agent": "Mozilla/5.0"}
@@ -5522,6 +5524,81 @@ class TheSitemapCarriesTheEclipsePages(unittest.TestCase):
     def test_robots_does_not_block_what_the_sitemap_offers(self):
         robots = self.c.get("/robots.txt").text
         self.assertNotIn("Disallow: /eclipse", robots)
+
+
+class TheSitemapCarriesTheAboutPages(unittest.TestCase):
+    """The about tab is a separate URL with its own words -- a name origin,
+    a history table, a paragraph -- and it was in no sitemap at all,
+    reachable only by following a link from a page a crawler had already
+    decided was thin."""
+
+    def setUp(self):
+        client_cm = TestClient(server.app)
+        self.c = client_cm.__enter__()
+        self.addCleanup(client_cm.__exit__, None, None, None)
+
+    def test_a_page_with_written_copy_is_listed(self):
+        xml = self.c.get("/sitemap.xml").text
+        self.assertIn("<loc>https://skymap.sh/Auriga/about</loc>", xml)
+
+    def test_a_page_whose_about_is_only_a_catalogue_note_is_not(self):
+        """about_is_worth_reading lets a standing catalogue note earn the
+        link, because it is worth reading once. Submitted 749 times over it
+        is the repeated content sitemap_names() already refuses."""
+        only_notes = [n for n in objects.sitemap_names()
+                      if api.about_is_worth_reading(n)
+                      and not api.about_is_worth_indexing(n)]
+        self.assertTrue(only_notes, "nothing to prove this with")
+        xml = self.c.get("/sitemap.xml").text
+        for n in only_notes[:20]:
+            self.assertNotIn(f"<loc>https://skymap.sh/{quote(n)}/about</loc>", xml)
+
+    def test_every_listed_about_url_resolves(self):
+        xml = self.c.get("/sitemap.xml").text
+        urls = re.findall(r"<loc>https://skymap\.sh(/[^<]*/about)</loc>", xml)
+        self.assertTrue(urls)
+        for u in urls[:40]:
+            self.assertEqual(self.c.get(u, headers=BROWSER).status_code, 200, u)
+
+
+class TheSitemapDatesWhatChanged(unittest.TestCase):
+    """A crawler that has already seen /Auriga as a chart with no words has
+    no reason to look again. lastmod is the only thing in this file that can
+    tell it otherwise, so it goes on the pages whose words actually changed
+    and nowhere else -- a date that moves on every deploy is the abuse that
+    taught search engines to ignore the field."""
+
+    def setUp(self):
+        client_cm = TestClient(server.app)
+        self.c = client_cm.__enter__()
+        self.addCleanup(client_cm.__exit__, None, None, None)
+
+    def test_a_written_page_carries_one(self):
+        xml = self.c.get("/sitemap.xml").text
+        self.assertRegex(
+            xml,
+            r"<loc>https://skymap\.sh/Auriga</loc><lastmod>\d{4}-\d\d-\d\d</lastmod>")
+
+    def test_the_home_page_does_not(self):
+        """It is a live render of tonight's sky. Every date would be a lie
+        and today's would be the biggest one."""
+        xml = self.c.get("/sitemap.xml").text
+        self.assertIn("<loc>https://skymap.sh/</loc></url>", xml)
+
+    def test_the_date_is_when_the_copy_last_changed(self):
+        """Not when the server started, and not when this ran."""
+        xml = self.c.get("/sitemap.xml").text
+        stamps = set(re.findall(r"<lastmod>([^<]+)</lastmod>", xml))
+        self.assertEqual(stamps, {server._copy_lastmod()})
+
+    def test_every_stamped_url_is_one_of_the_written_ones(self):
+        xml = self.c.get("/sitemap.xml").text
+        stamped = re.findall(
+            r"<loc>https://skymap\.sh/([^<]+)</loc><lastmod>", xml)
+        self.assertTrue(stamped)
+        for u in stamped:
+            name = unquote(u[:-len("/about")] if u.endswith("/about") else u)
+            self.assertTrue(api.about_is_worth_indexing(name), name)
 
 
 class TheCrossingRoute(unittest.TestCase):

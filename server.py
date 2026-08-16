@@ -3263,6 +3263,22 @@ SITEMAP_PLACES = ("Nairobi", "Tokyo", "London", "New York", "Buenos Aires", "Syd
 SITEMAP_STATIC = ("/", "/demo", "/help", "/legend", "/eclipse")
 
 
+# The written half of an object page lives in these three files and nowhere
+# else, so the day one of them last changed is the day the words on those
+# pages last changed. git only rewrites a file it actually touches, so on a
+# box that deploys by pulling, the mtime survives every deploy that leaves
+# the copy alone -- which is the whole point. A lastmod that moves on every
+# deploy is worse than none: it is the abuse Google learned to ignore.
+_COPY_FILES = ("blurbs.py", "etymology.py", "facts.py")
+
+
+def _copy_lastmod():
+    """The date the hand-written copy last changed, as YYYY-MM-DD."""
+    here = os.path.dirname(os.path.abspath(__file__))
+    newest = max(os.path.getmtime(os.path.join(here, f)) for f in _COPY_FILES)
+    return dt.datetime.utcfromtimestamp(newest).strftime("%Y-%m-%d")
+
+
 @app.get("/sitemap.xml", response_class=Response)
 def sitemap():
     urls = [f"https://skymap.sh{p}" for p in SITEMAP_STATIC]
@@ -3278,6 +3294,23 @@ def sitemap():
     # to read that tag. Blocking it would leave the duplicates indexable by
     # URL alone with no canonical ever seen.
     urls += [f"https://skymap.sh/{quote(n)}" for n in objects.sitemap_names()]
+    # The about tab, where a name origin, a history table and the catalogue
+    # notes live. It is a separate URL with its own words, and it was in no
+    # sitemap at all: reachable only by following a link from the object
+    # page, on pages a crawler already treats as low value.
+    #
+    # Only where the link is worth a click, which api decides once for the
+    # page itself and for this list, so the sitemap can never advertise an
+    # about tab the site declines to link to.
+    written = [n for n in objects.sitemap_names() if api.about_is_worth_indexing(n)]
+    urls += [f"https://skymap.sh/{quote(n)}/about" for n in written]
+    # Dated, because these are the pages that changed. A crawler that has
+    # already decided /Auriga is a chart with no words has no reason to look
+    # again, and lastmod is the only thing in this file that can tell it
+    # otherwise.
+    stamped = {f"https://skymap.sh/{quote(n)}" for n in written}
+    stamped |= {u + "/about" for u in stamped}
+    when = _copy_lastmod()
     # One page per eclipse still to come. These are the closest thing here to
     # an ordinary web page -- a fixed date, a fixed track across the Earth,
     # text that will read the same next year as it does today -- so they are
@@ -3294,7 +3327,9 @@ def sitemap():
              for e in api.eclipse_page.upcoming(dt.datetime.utcnow(), count=None)]
     body = ('<?xml version="1.0" encoding="UTF-8"?>\n'
             '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n' +
-            "".join(f"<url><loc>{u}</loc></url>\n" for u in urls) +
+            "".join(f"<url><loc>{u}</loc>"
+                    + (f"<lastmod>{when}</lastmod>" if u in stamped else "")
+                    + "</url>\n" for u in urls) +
             "</urlset>\n")
     return Response(body, media_type="application/xml",
                     headers={"Cache-Control": "public, max-age=86400"})
