@@ -974,6 +974,54 @@ class ClientMixAndFinds(unittest.TestCase):
         self.assertIn("10%", plain)      # json
 
 
+class TheHourlyJsonSumsAnHourThatWasDeployedIn(unittest.TestCase):
+    """A restart flushes the hour it was in and the next process starts a
+    fresh bucket for the same hour, so the log holds two honest lines for
+    it. The text table and the charts have always added them up; the JSON
+    handed both lines over, so an hour with a deploy in it appeared twice,
+    each time with a slice of its traffic."""
+
+    def setUp(self):
+        self._log = server.HOURLY_LOG
+        self.addCleanup(setattr, server, "HOURLY_LOG", self._log)
+        server.HOURLY_LOG = os.path.join(tempfile.mkdtemp(), "hourly.jsonl")
+        self._hour_stat = server._hour_stat.copy()
+        self._hour_key = server._hour_key
+        self.addCleanup(self._restore)
+        server._hour_stat.clear()
+        # An hour ago, so the row is history rather than the hour in
+        # progress: the in-progress one is merged from memory and would
+        # prove something else.
+        self.hour = (dt.datetime.utcnow() - dt.timedelta(hours=1)
+                     ).strftime("%Y-%m-%dT%H:00")
+        with open(server.HOURLY_LOG, "w") as f:
+            for req, hit, miss in ((41, 1, 37), (5, 0, 5)):
+                f.write(json.dumps(dict(hour=self.hour, requests=req, hit=hit,
+                                        miss=miss, day=0, night=req)) + "\n")
+
+    def _restore(self):
+        server._hour_stat.clear()
+        server._hour_stat.update(self._hour_stat)
+        server._hour_key = self._hour_key
+
+    def _row(self):
+        rows = [r for r in server.stats_hourly_json(days=1)["hours"]
+                if r["hour"] == self.hour]
+        self.assertEqual(len(rows), 1, "the hour should appear once")
+        return rows[0]
+
+    def test_the_hour_appears_once(self):
+        self._row()
+
+    def test_its_traffic_is_the_two_halves_added_up(self):
+        self.assertEqual(self._row()["requests"], 46)
+
+    def test_the_text_view_and_the_json_agree(self):
+        """They read the same log through the same merge now. They did not,
+        and the two views of one hour disagreed by the size of a deploy."""
+        self.assertIn("46", server.stats_hourly_text(days=1))
+
+
 class HourlyLogLosesNothing(unittest.TestCase):
     """/stats' header counts every request; the charts count what reached the
     hourly log. They used to disagree by a wide margin -- 730 against 544 over
@@ -1134,8 +1182,16 @@ class NotFoundsAreCountedSeparately(unittest.TestCase):
         # made this fail for a reason that had nothing to do with 404s
         # reaching the rollup.
         base = server.stats_daily_json()["days"][-1]["notfound"]
+        # The hourly figure needs the same treatment, and for a sharper
+        # reason than the daily one: the JSON sums the log's rows for an
+        # hour with the part of it still in memory, so any 404 another test
+        # in this process already flushed into this same hour is in here
+        # too. It was only ever 3 on its own because that view used to hand
+        # back the in-memory half unmerged, which was the bug.
+        hbase = server.stats_hourly_json()["hours"][-1]["notfound"]
         server._hour_stat["notfound"] = 3
-        self.assertEqual(server.stats_hourly_json()["hours"][-1]["notfound"], 3)
+        self.assertEqual(server.stats_hourly_json()["hours"][-1]["notfound"],
+                         hbase + 3)
         self.assertIn("404", server.stats_hourly_text())
         self.assertIn("404", server.stats_daily_text())
         self.assertEqual(server.stats_daily_json()["days"][-1]["notfound"],

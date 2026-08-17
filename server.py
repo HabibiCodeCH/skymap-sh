@@ -1835,7 +1835,18 @@ def stats_daily_json(days=CHART_DAYS):
 
 
 def stats_hourly_json(days=7):
-    rows = _hourly_rows(days)
+    # Merged, the way the text table and both charts already do it. A
+    # restart flushes the hour it was in and the next process opens a fresh
+    # bucket for the same hour, so the log holds two legitimate lines for
+    # any hour containing a deploy. Every reader has to add them up, and
+    # this one did not: three deploys on 16 Aug put six rows in the JSON
+    # for three hours, each carrying a slice of its traffic.
+    rows = _merge_hour_rows(_hourly_rows(days))
+    # The merge writes top_referrers only when an hour had some, which is
+    # right for the log and wrong here: this endpoint has always handed back
+    # the key on every hour, empty when there was nothing, and a script
+    # reading it should not have to tell "no referrers" from "old row".
+    rows = [dict(r, top_referrers=r.get("top_referrers", {})) for r in rows]
     if rows and rows[-1]["hour"] == _hour_key:
         rows[-1] = dict(rows[-1], in_progress=True)
     return dict(hours=rows)
