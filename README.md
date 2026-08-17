@@ -1,6 +1,6 @@
 # skymap.sh
 
-The night sky above you, as text: CLI, web, Bluesky bot, and now mobile too.
+The sky above you, as text: CLI, web, Bluesky bot, and now mobile too.
 
 ```
 curl skymap.sh                      located by IP

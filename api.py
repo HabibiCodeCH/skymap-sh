@@ -3812,10 +3812,10 @@ def object_description(facts):
 # page never ends up advertising two different cards.
 _GENERIC_HEAD_BLOCK = """\
 <link rel="canonical" href="{canonical}">
-<meta name="description" content="The night sky above you, as plain text. curl skymap.sh">
+<meta name="description" content="The sky above you, as plain text. curl skymap.sh">
 <meta property="og:type" content="website">
 <meta property="og:title" content="{title}">
-<meta property="og:description" content="The night sky above you, as plain text. No signup, no API key.">
+<meta property="og:description" content="The sky above you, as plain text. No signup, no API key.">
 <meta property="og:image" content="https://skymap.sh/og.png">
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
@@ -9724,7 +9724,7 @@ def compose(r):
 
 # ---------------------------------------------------------------- help
 HELP = """\
-skymap.sh: the night sky above you, as text
+skymap.sh: the sky above you, as text
 
   curl skymap.sh                      your sky now, located by IP
   curl skymap.sh/Zurich               a named city
@@ -10664,10 +10664,10 @@ PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>{title}</title>
 <link rel="canonical" href="{canonical}">
-<meta name="description" content="The night sky above you, as plain text. curl skymap.sh">
+<meta name="description" content="The sky above you, as plain text. curl skymap.sh">
 <meta property="og:type" content="website">
 <meta property="og:title" content="{title}">
-<meta property="og:description" content="The night sky above you, as plain text. No signup, no API key.">
+<meta property="og:description" content="The sky above you, as plain text. No signup, no API key.">
 <meta property="og:image" content="https://skymap.sh/og.png">
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
@@ -13723,7 +13723,7 @@ SPHERE_PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
 <title>{title}</title>
 <link rel="canonical" href="{canonical}">
-<meta name="description" content="The night sky above you, in 3D -- look around by tilting your phone.">
+<meta name="description" content="The sky above you, in 3D -- look around by tilting your phone.">
 <link rel="icon" href="/favicon.ico" sizes="any">
 <link rel="apple-touch-icon" href="/apple-touch-icon.png">
 <style>

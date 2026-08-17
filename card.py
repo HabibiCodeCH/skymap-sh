@@ -474,7 +474,7 @@ GENERIC_PLACE = (-24.63, -70.40)
 GENERIC_WHEN = (2026, 7, 15, 4, 0)      # UTC; local midnight in Chile
 
 GENERIC_HEAD = "skymap.sh"
-GENERIC_SUB = "the night sky above you, as plain text"
+GENERIC_SUB = "the sky above you, as plain text"
 GENERIC_TAIL = "curl skymap.sh"
 
 
