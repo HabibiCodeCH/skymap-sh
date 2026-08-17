@@ -1426,6 +1426,31 @@ def _all_joinable(con, cpos, jd, lat, lst, joinable):
     return True
 
 
+# A named asterism takes its sector's label ahead of a constellation: the
+# Plough and the Teapot are the shapes people point at, and a chart that
+# labels Ursa Major instead is naming something nobody says out loud.
+#
+# It held for nothing at all until 17 Aug. Every entry in asterisms.json
+# carried ast: true, including the 37 that are ordinary constellations, so
+# the tiebreak compared 0 against 0 and the order was brightness alone --
+# which is how KEYSTONE lost its label to LYRA when the file grew from 28
+# figures to 57.
+#
+# The magnitude floor is the other half. Priority with no floor is just as
+# wrong in the other direction: Job's Coffin is four stars of 3.6 and
+# fainter, and giving it a sector ahead of Aquila labels a box most readers
+# cannot find. An asterism has to carry one star bright enough to hang the
+# name on, and 3.0 is where the site already draws that line -- it is the
+# cutoff sitemap_names() uses to decide a star has anything to say for
+# itself. Every asterism in the file clears it except Job's Coffin.
+LABEL_AST_MAG = 3.0
+
+
+def _labels_first(con):
+    """Whether this figure outranks a constellation for a label slot."""
+    return bool(con.get("ast")) and con.get("lead", 99) <= LABEL_AST_MAG
+
+
 def pick_constellations(cpos, cons, jd, lat, lst, alt_max, sectors=6, extra=2,
                         in_view=None, joinable=None):
     """Brightest figure per azimuth sector, so the sky is covered evenly instead
@@ -1468,7 +1493,7 @@ def pick_constellations(cpos, cons, jd, lat, lst, alt_max, sectors=6, extra=2,
         caz = math.degrees(math.atan2(y, x)) % 360
         scored.append(dict(con=con, flux=flux, caz=caz,
                            calt=sum(alts) / len(alts), ast=bool(con.get("ast"))))
-    scored.sort(key=lambda s: (0 if s["con"].get("ast") else 1, -s["flux"]))
+    scored.sort(key=lambda s: (0 if _labels_first(s["con"]) else 1, -s["flux"]))
     def hips(entry):
         return {h for poly in entry["con"]["lines"] for h in poly}
 
